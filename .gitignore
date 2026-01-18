@@ -1,3 +1,9 @@
+.DS_Store
+
+JUCE/
+build/
+.venv
+
 # Prerequisites
 *.d
 
@@ -39,3 +45,8 @@
 
 # debug information files
 *.dwo
+
+# agents
+.claude
+CLAUDE.md
+
