@@ -144,4 +144,4 @@ plugin.process(input_audio, output_audio)
 
 ## License
 
-[Add license information here]
+GPL3
