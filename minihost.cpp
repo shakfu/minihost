@@ -1070,3 +1070,50 @@ extern "C" double mh_get_sample_rate(MH_Plugin* p)
     return p->sampleRate;
 }
 
+extern "C" int mh_scan_directory(const char* directory_path,
+                                 MH_ScanCallback callback,
+                                 void* user_data)
+{
+    if (!directory_path || directory_path[0] == '\0' || !callback)
+        return -1;
+
+    File dir(String::fromUTF8(directory_path));
+    if (!dir.exists() || !dir.isDirectory())
+        return -1;
+
+    int count = 0;
+
+    // Find all .vst3 and .component files recursively
+    Array<File> pluginFiles;
+
+    // VST3 plugins (.vst3 bundles)
+    dir.findChildFiles(pluginFiles, File::findDirectories, true, "*.vst3");
+
+    // AudioUnit plugins (.component bundles) - macOS only
+   #if JUCE_MAC
+    dir.findChildFiles(pluginFiles, File::findDirectories, true, "*.component");
+   #endif
+
+    // Process each plugin file
+    for (const auto& pluginFile : pluginFiles)
+    {
+        MH_PluginDesc desc;
+        char errBuf[256];
+
+        // Try to probe the plugin
+        if (mh_probe(pluginFile.getFullPathName().toRawUTF8(), &desc, errBuf, sizeof(errBuf)))
+        {
+            // Fill in the path field
+            std::snprintf(desc.path, sizeof(desc.path), "%s",
+                          pluginFile.getFullPathName().toRawUTF8());
+
+            // Call the callback
+            callback(&desc, user_data);
+            ++count;
+        }
+        // Invalid plugins are silently skipped
+    }
+
+    return count;
+}
+

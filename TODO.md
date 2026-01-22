@@ -21,6 +21,7 @@
 - [x] **Sidechain support** - Multiple input bus configuration
 - [x] **Bus layout queries** - Query plugin I/O topology
 - [x] **Sample rate change** - Change sample rate without reloading, preserving parameter state
+- [x] **Plugin scanning** - Discover plugins in a directory via `mh_scan_directory()`
 
 ## Future (if needed)
 
@@ -37,13 +38,6 @@ int mh_open_async(const char* path, double sr, int block, int in, int out,
                   MH_LoadCallback cb, void* user);
 ```
 Server startup with many plugins. Could be handled at application level with threads.
-
-### Plugin scanning
-```c
-typedef void (*MH_ScanCallback)(const MH_PluginDesc* desc, void* user);
-int mh_scan_directory(const char* path, MH_ScanCallback cb, void* user);
-```
-Plugin discovery. Can be built on top of `mh_probe()` by iterating directory contents.
 
 ## Non-goals
 

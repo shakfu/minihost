@@ -24,6 +24,7 @@ typedef struct MH_PluginDesc {
     char version[64];
     char format[16];            // "VST3" or "AU"
     char unique_id[64];         // for state compatibility checking
+    char path[1024];            // full path to plugin file (populated by mh_scan_directory)
     int accepts_midi;
     int produces_midi;
     int num_inputs;             // default input channel count
@@ -274,6 +275,20 @@ int mh_set_sample_rate(MH_Plugin* p, double new_sample_rate);
 
 // Get current sample rate
 double mh_get_sample_rate(MH_Plugin* p);
+
+// Plugin directory scanning callback
+// Called for each valid plugin found in the directory
+// desc: plugin metadata (includes path field with full path to plugin)
+// user_data: user-provided context pointer
+typedef void (*MH_ScanCallback)(const MH_PluginDesc* desc, void* user_data);
+
+// Scan a directory for plugins
+// Recursively searches for .vst3 and .component (AU) files
+// Calls callback for each valid plugin found (invalid plugins are silently skipped)
+// Returns number of plugins found, or -1 on error (e.g., directory doesn't exist)
+int mh_scan_directory(const char* directory_path,
+                      MH_ScanCallback callback,
+                      void* user_data);
 
 #ifdef __cplusplus
 }

@@ -12,6 +12,9 @@
 - `MH_PluginDesc` struct for plugin metadata (name, vendor, version, format, unique_id, MIDI flags, channel counts)
 - `mh_set_sample_rate()` - Change sample rate without reloading plugin (preserves parameter state)
 - `mh_get_sample_rate()` - Query current sample rate
+- `MH_ScanCallback` typedef for plugin scanning callback
+- `mh_scan_directory()` - Recursively scan directory for VST3/AudioUnit plugins
+- `MH_PluginDesc.path` field added for scan results
 
 #### Parameter & Preset Access
 
@@ -35,6 +38,7 @@
 All C API additions are exposed in the Python `minihost` module:
 
 - `minihost.probe(path)` - Module-level function for plugin metadata
+- `minihost.scan_directory(path)` - Scan directory for plugins, returns list of metadata dicts
 - `Plugin` constructor now accepts `sidechain_channels` parameter
 - New properties: `non_realtime`, `num_programs`, `program`, `sidechain_channels`, `num_input_buses`, `num_output_buses`, `sample_rate` (read/write)
 - New methods: `reset()`, `param_to_text()`, `param_from_text()`, `get_program_name()`, `get_bus_info()`, `process_sidechain()`

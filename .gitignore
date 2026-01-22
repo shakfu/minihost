@@ -4,6 +4,7 @@ JUCE/
 build/
 __pycache__
 .venv
+.*_cache
 
 # Prerequisites
 *.d

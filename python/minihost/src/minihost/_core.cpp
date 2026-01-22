@@ -514,6 +514,7 @@ nb::dict probe_plugin(const std::string& path) {
     d["version"] = std::string(desc.version);
     d["format"] = std::string(desc.format);
     d["unique_id"] = std::string(desc.unique_id);
+    d["path"] = std::string(desc.path);
     d["accepts_midi"] = desc.accepts_midi != 0;
     d["produces_midi"] = desc.produces_midi != 0;
     d["num_inputs"] = desc.num_inputs;
@@ -521,13 +522,58 @@ nb::dict probe_plugin(const std::string& path) {
     return d;
 }
 
+// Callback context for scan_directory
+struct ScanContext {
+    std::vector<nb::dict>* results;
+};
+
+static void scan_callback(const MH_PluginDesc* desc, void* user_data) {
+    auto* ctx = static_cast<ScanContext*>(user_data);
+
+    nb::dict d;
+    d["name"] = std::string(desc->name);
+    d["vendor"] = std::string(desc->vendor);
+    d["version"] = std::string(desc->version);
+    d["format"] = std::string(desc->format);
+    d["unique_id"] = std::string(desc->unique_id);
+    d["path"] = std::string(desc->path);
+    d["accepts_midi"] = desc->accepts_midi != 0;
+    d["produces_midi"] = desc->produces_midi != 0;
+    d["num_inputs"] = desc->num_inputs;
+    d["num_outputs"] = desc->num_outputs;
+
+    ctx->results->push_back(d);
+}
+
+// Module-level scan_directory function
+nb::list scan_directory(const std::string& directory_path) {
+    std::vector<nb::dict> results;
+    ScanContext ctx{&results};
+
+    int count = mh_scan_directory(directory_path.c_str(), scan_callback, &ctx);
+
+    if (count < 0) {
+        throw std::runtime_error("Failed to scan directory: " + directory_path);
+    }
+
+    nb::list result_list;
+    for (const auto& d : results) {
+        result_list.append(d);
+    }
+    return result_list;
+}
+
 NB_MODULE(_core, m) {
     m.doc() = "minihost - Python bindings for audio plugin hosting";
 
-    // Module-level function
+    // Module-level functions
     m.def("probe", &probe_plugin,
           nb::arg("path"),
           "Get plugin metadata without full instantiation");
+
+    m.def("scan_directory", &scan_directory,
+          nb::arg("directory_path"),
+          "Scan a directory for plugins (VST3, AudioUnit). Returns list of plugin metadata dicts.");
 
     nb::class_<Plugin>(m, "Plugin")
         .def(nb::init<const std::string&, double, int, int, int, int>(),

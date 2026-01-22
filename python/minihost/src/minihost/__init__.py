@@ -31,7 +31,7 @@ Example usage:
     >>> plugin.set_state(state)
 """
 
-from minihost._core import Plugin, probe
+from minihost._core import Plugin, probe, scan_directory
 
-__all__ = ["Plugin", "probe"]
+__all__ = ["Plugin", "probe", "scan_directory"]
 __version__ = "0.1.0"

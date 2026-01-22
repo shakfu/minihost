@@ -15,6 +15,12 @@ def test_module_has_probe_function():
     assert callable(minihost.probe)
 
 
+def test_module_has_scan_directory_function():
+    """Test that scan_directory function is exported."""
+    assert hasattr(minihost, 'scan_directory')
+    assert callable(minihost.scan_directory)
+
+
 def test_plugin_class_has_expected_methods():
     """Test that Plugin class has expected methods."""
     expected_methods = [
@@ -137,6 +143,43 @@ def test_probe_wrong_file_type_raises():
     try:
         with pytest.raises(RuntimeError, match="Failed to probe plugin"):
             minihost.probe(temp_path)
+    finally:
+        os.unlink(temp_path)
+
+
+def test_scan_directory_nonexistent_raises():
+    """Test that scanning nonexistent directory raises RuntimeError."""
+    with pytest.raises(RuntimeError, match="Failed to scan directory"):
+        minihost.scan_directory("/nonexistent/directory/path")
+
+
+def test_scan_directory_empty_path_raises():
+    """Test that scanning empty path raises RuntimeError."""
+    with pytest.raises(RuntimeError, match="Failed to scan directory"):
+        minihost.scan_directory("")
+
+
+def test_scan_directory_no_plugins():
+    """Test that scanning directory with no plugins returns empty list."""
+    import tempfile
+    import os
+    # Create a temp directory with no plugins
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = minihost.scan_directory(tmpdir)
+        assert isinstance(result, list)
+        assert len(result) == 0
+
+
+def test_scan_directory_file_not_directory_raises():
+    """Test that scanning a file instead of directory raises RuntimeError."""
+    import tempfile
+    import os
+    with tempfile.NamedTemporaryFile(delete=False) as f:
+        f.write(b"not a directory")
+        temp_path = f.name
+    try:
+        with pytest.raises(RuntimeError, match="Failed to scan directory"):
+            minihost.scan_directory(temp_path)
     finally:
         os.unlink(temp_path)
 
@@ -449,3 +492,49 @@ class TestPluginIntegration:
 
         # Process should still work
         plugin.process(input_audio, output_audio)
+
+    def test_scan_directory(self, plugin_path):
+        """Test scanning a directory containing plugins."""
+        import os
+
+        # Scan the parent directory of the test plugin
+        plugin_dir = os.path.dirname(plugin_path)
+        if not plugin_dir:
+            plugin_dir = "."
+
+        results = minihost.scan_directory(plugin_dir)
+
+        assert isinstance(results, list)
+        # Should find at least the test plugin
+        assert len(results) >= 1
+
+        # Check that results contain expected fields
+        for info in results:
+            assert isinstance(info, dict)
+            assert 'name' in info
+            assert 'vendor' in info
+            assert 'version' in info
+            assert 'format' in info
+            assert 'unique_id' in info
+            assert 'path' in info
+            assert 'accepts_midi' in info
+            assert 'produces_midi' in info
+            assert 'num_inputs' in info
+            assert 'num_outputs' in info
+
+            # Check types
+            assert isinstance(info['name'], str)
+            assert isinstance(info['path'], str)
+            assert isinstance(info['format'], str)
+            assert isinstance(info['accepts_midi'], bool)
+            assert isinstance(info['num_inputs'], int)
+
+            # Path should be non-empty and exist
+            assert len(info['path']) > 0
+
+        # Check that we found our test plugin
+        test_plugin_name = os.path.basename(plugin_path)
+        found_test_plugin = any(
+            test_plugin_name in info['path'] for info in results
+        )
+        assert found_test_plugin, f"Did not find test plugin {test_plugin_name} in scan results"
