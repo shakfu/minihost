@@ -22,22 +22,8 @@
 - [x] **Bus layout queries** - Query plugin I/O topology
 - [x] **Sample rate change** - Change sample rate without reloading, preserving parameter state
 - [x] **Plugin scanning** - Discover plugins in a directory via `mh_scan_directory()`
-
-## Future (if needed)
-
-### Double precision processing
-```c
-int mh_process_double(MH_Plugin* p, const double* const* in, double* const* out, int n);
-```
-64-bit processing for plugins that support it. Marginal benefit for most use cases.
-
-### Async plugin loading
-```c
-typedef void (*MH_LoadCallback)(MH_Plugin* p, const char* error, void* user);
-int mh_open_async(const char* path, double sr, int block, int in, int out,
-                  MH_LoadCallback cb, void* user);
-```
-Server startup with many plugins. Could be handled at application level with threads.
+- [x] **Double precision processing** - 64-bit audio processing via `mh_process_double()`
+- [x] **Async plugin loading** - Background thread loading via `mh_open_async()`
 
 ## Non-goals
 

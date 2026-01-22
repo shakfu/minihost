@@ -14,6 +14,7 @@ namespace nb = nanobind;
 
 // Helper to convert numpy arrays to raw pointers
 using AudioArray = nb::ndarray<float, nb::shape<-1, -1>, nb::c_contig, nb::device::cpu>;
+using DoubleAudioArray = nb::ndarray<double, nb::shape<-1, -1>, nb::c_contig, nb::device::cpu>;
 
 // Python wrapper class for MH_Plugin
 class Plugin {
@@ -491,6 +492,41 @@ public:
         }
     }
 
+    // Double precision support
+    bool supports_double() const {
+        return mh_supports_double(plugin_) != 0;
+    }
+
+    // Process audio with double precision
+    void process_double(DoubleAudioArray input, DoubleAudioArray output) {
+        int in_channels = static_cast<int>(input.shape(0));
+        int out_channels = static_cast<int>(output.shape(0));
+        int in_frames = static_cast<int>(input.shape(1));
+        int out_frames = static_cast<int>(output.shape(1));
+
+        if (in_frames != out_frames) {
+            throw std::runtime_error("Input and output frame counts must match");
+        }
+        if (in_frames > max_block_size_) {
+            throw std::runtime_error("Frame count exceeds max block size");
+        }
+
+        // Set up channel pointers
+        std::vector<const double*> in_ptrs(in_channels);
+        std::vector<double*> out_ptrs(out_channels);
+
+        for (int ch = 0; ch < in_channels; ++ch) {
+            in_ptrs[ch] = input.data() + ch * in_frames;
+        }
+        for (int ch = 0; ch < out_channels; ++ch) {
+            out_ptrs[ch] = output.data() + ch * out_frames;
+        }
+
+        if (!mh_process_double(plugin_, in_ptrs.data(), out_ptrs.data(), in_frames)) {
+            throw std::runtime_error("Process (double) failed");
+        }
+    }
+
 private:
     MH_Plugin* plugin_ = nullptr;
     double sample_rate_;
@@ -562,6 +598,24 @@ nb::list scan_directory(const std::string& directory_path) {
     }
     return result_list;
 }
+
+// Note: Async plugin loading in Python is best done using Python's threading module:
+//
+//   import threading
+//   import minihost
+//
+//   def load_plugin_async(path, callback):
+//       def loader():
+//           try:
+//               plugin = minihost.Plugin(path, sample_rate=48000)
+//               callback(plugin, None)
+//           except Exception as e:
+//               callback(None, str(e))
+//       thread = threading.Thread(target=loader, daemon=True)
+//       thread.start()
+//       return thread
+//
+// The C API provides mh_open_async() for C/C++ applications needing async loading.
 
 NB_MODULE(_core, m) {
     m.doc() = "minihost - Python bindings for audio plugin hosting";
@@ -683,5 +737,12 @@ NB_MODULE(_core, m) {
              "Process with sample-accurate automation. param_changes: list of (sample_offset, param_index, value)")
         .def("process_sidechain", &Plugin::process_sidechain,
              nb::arg("main_in"), nb::arg("main_out"), nb::arg("sidechain_in"),
-             "Process audio with sidechain input (all arrays shape: [channels, frames])");
+             "Process audio with sidechain input (all arrays shape: [channels, frames])")
+
+        // Double precision processing
+        .def_prop_ro("supports_double", &Plugin::supports_double,
+                     "True if plugin supports native double precision processing")
+        .def("process_double", &Plugin::process_double,
+             nb::arg("input"), nb::arg("output"),
+             "Process audio with double precision (float64). Shape: [channels, frames]");
 }

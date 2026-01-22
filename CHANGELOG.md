@@ -15,6 +15,10 @@
 - `MH_ScanCallback` typedef for plugin scanning callback
 - `mh_scan_directory()` - Recursively scan directory for VST3/AudioUnit plugins
 - `MH_PluginDesc.path` field added for scan results
+- `mh_process_double()` - Process audio with 64-bit double precision
+- `mh_supports_double()` - Check if plugin supports native double precision
+- `MH_LoadCallback` typedef for async loading callback
+- `mh_open_async()` - Load plugin in background thread
 
 #### Parameter & Preset Access
 
@@ -40,5 +44,6 @@ All C API additions are exposed in the Python `minihost` module:
 - `minihost.probe(path)` - Module-level function for plugin metadata
 - `minihost.scan_directory(path)` - Scan directory for plugins, returns list of metadata dicts
 - `Plugin` constructor now accepts `sidechain_channels` parameter
-- New properties: `non_realtime`, `num_programs`, `program`, `sidechain_channels`, `num_input_buses`, `num_output_buses`, `sample_rate` (read/write)
-- New methods: `reset()`, `param_to_text()`, `param_from_text()`, `get_program_name()`, `get_bus_info()`, `process_sidechain()`
+- New properties: `non_realtime`, `num_programs`, `program`, `sidechain_channels`, `num_input_buses`, `num_output_buses`, `sample_rate` (read/write), `supports_double`
+- New methods: `reset()`, `param_to_text()`, `param_from_text()`, `get_program_name()`, `get_bus_info()`, `process_sidechain()`, `process_double()`
+- Note: For async loading in Python, use Python's `threading` module with the regular `Plugin()` constructor

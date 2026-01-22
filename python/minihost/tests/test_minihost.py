@@ -37,6 +37,7 @@ def test_plugin_class_has_expected_methods():
         'process_midi',
         'process_auto',
         'process_sidechain',
+        'process_double',
         'reset',
         'get_program_name',
         'get_bus_info',
@@ -78,6 +79,7 @@ def test_plugin_class_has_expected_properties():
         'sidechain_channels',
         'num_input_buses',
         'num_output_buses',
+        'supports_double',
         'sample_rate',
     ]
     for prop in expected_props:
@@ -538,3 +540,24 @@ class TestPluginIntegration:
             test_plugin_name in info['path'] for info in results
         )
         assert found_test_plugin, f"Did not find test plugin {test_plugin_name} in scan results"
+
+    def test_double_precision(self, plugin):
+        """Test double precision audio processing."""
+        import numpy as np
+
+        # Check supports_double property
+        supports_double = plugin.supports_double
+        assert isinstance(supports_double, bool)
+
+        in_ch = max(plugin.num_input_channels, 2)
+        out_ch = max(plugin.num_output_channels, 2)
+
+        # Create float64 buffers
+        input_audio = np.zeros((in_ch, 512), dtype=np.float64)
+        output_audio = np.zeros((out_ch, 512), dtype=np.float64)
+
+        # Process with double precision (works regardless of native support)
+        plugin.process_double(input_audio, output_audio)
+
+        # Verify output is still float64
+        assert output_audio.dtype == np.float64

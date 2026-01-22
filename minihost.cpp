@@ -5,6 +5,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <mutex>
+#include <thread>
 
 using namespace juce;
 
@@ -1115,5 +1116,155 @@ extern "C" int mh_scan_directory(const char* directory_path,
     }
 
     return count;
+}
+
+extern "C" int mh_supports_double(MH_Plugin* p)
+{
+    if (!p || !p->inst) return 0;
+    return p->inst->supportsDoublePrecisionProcessing() ? 1 : 0;
+}
+
+extern "C" int mh_process_double(MH_Plugin* p,
+                                 const double* const* inputs,
+                                 double* const* outputs,
+                                 int nframes)
+{
+    if (!p || !p->inst) return 0;
+    if (nframes < 0 || nframes > p->maxBlockSize) return 0;
+
+    // Check if plugin supports native double precision
+    if (p->inst->supportsDoublePrecisionProcessing())
+    {
+        // Use native double precision processing
+        AudioBuffer<double> inBuf(p->inCh, nframes);
+        AudioBuffer<double> outBuf(p->outCh, nframes);
+
+        // Copy input to buffer
+        if (inputs)
+        {
+            for (int ch = 0; ch < p->inCh; ++ch)
+                std::memcpy(inBuf.getWritePointer(ch), inputs[ch], sizeof(double) * nframes);
+        }
+        else
+        {
+            inBuf.clear();
+        }
+
+        // Copy input to output for in-place processing
+        if (inputs && outputs)
+        {
+            int minCh = jmin(p->inCh, p->outCh);
+            for (int ch = 0; ch < minCh; ++ch)
+                std::memcpy(outBuf.getWritePointer(ch), inputs[ch], sizeof(double) * nframes);
+            for (int ch = minCh; ch < p->outCh; ++ch)
+                outBuf.clear(ch, 0, nframes);
+        }
+        else if (outputs)
+        {
+            outBuf.clear();
+        }
+
+        // Process with double precision
+        MidiBuffer midi;
+        p->inst->processBlock(outBuf, midi);
+
+        // Copy output back
+        if (outputs)
+        {
+            for (int ch = 0; ch < p->outCh; ++ch)
+                std::memcpy(outputs[ch], outBuf.getReadPointer(ch), sizeof(double) * nframes);
+        }
+    }
+    else
+    {
+        // Convert to float, process, convert back
+        AudioBuffer<float> inBuf(p->inCh, nframes);
+        AudioBuffer<float> outBuf(p->outCh, nframes);
+
+        // Convert double input to float
+        if (inputs)
+        {
+            for (int ch = 0; ch < p->inCh; ++ch)
+            {
+                auto* dest = inBuf.getWritePointer(ch);
+                for (int i = 0; i < nframes; ++i)
+                    dest[i] = static_cast<float>(inputs[ch][i]);
+            }
+        }
+        else
+        {
+            inBuf.clear();
+        }
+
+        // Copy input to output for in-place processing
+        if (inputs && outputs)
+        {
+            int minCh = jmin(p->inCh, p->outCh);
+            for (int ch = 0; ch < minCh; ++ch)
+            {
+                auto* dest = outBuf.getWritePointer(ch);
+                for (int i = 0; i < nframes; ++i)
+                    dest[i] = static_cast<float>(inputs[ch][i]);
+            }
+            for (int ch = minCh; ch < p->outCh; ++ch)
+                outBuf.clear(ch, 0, nframes);
+        }
+        else if (outputs)
+        {
+            outBuf.clear();
+        }
+
+        // Process with float
+        MidiBuffer midi;
+        p->inst->processBlock(outBuf, midi);
+
+        // Convert float output back to double
+        if (outputs)
+        {
+            for (int ch = 0; ch < p->outCh; ++ch)
+            {
+                const auto* src = outBuf.getReadPointer(ch);
+                for (int i = 0; i < nframes; ++i)
+                    outputs[ch][i] = static_cast<double>(src[i]);
+            }
+        }
+    }
+
+    return 1;
+}
+
+extern "C" int mh_open_async(const char* plugin_path,
+                             double sample_rate,
+                             int max_block_size,
+                             int requested_in_ch,
+                             int requested_out_ch,
+                             MH_LoadCallback callback,
+                             void* user_data)
+{
+    if (!plugin_path || plugin_path[0] == '\0' || !callback)
+        return 0;
+
+    // Copy parameters for the thread
+    std::string path(plugin_path);
+
+    // Launch loading thread (detached - it manages its own lifetime)
+    std::thread loadThread([=]() {
+        char errBuf[1024] = {0};
+        MH_Plugin* plugin = mh_open(path.c_str(), sample_rate, max_block_size,
+                                     requested_in_ch, requested_out_ch,
+                                     errBuf, sizeof(errBuf));
+
+        if (plugin)
+        {
+            callback(plugin, nullptr, user_data);
+        }
+        else
+        {
+            callback(nullptr, errBuf, user_data);
+        }
+    });
+
+    loadThread.detach();
+    return 1;
 }
 

@@ -290,6 +290,38 @@ int mh_scan_directory(const char* directory_path,
                       MH_ScanCallback callback,
                       void* user_data);
 
+// Double precision processing
+// Process audio using 64-bit floating point samples
+// Returns 1 on success, 0 on failure
+// Note: Internally converts to/from float if plugin doesn't support double precision
+int mh_process_double(MH_Plugin* p,
+                      const double* const* inputs,
+                      double* const* outputs,
+                      int nframes);
+
+// Check if plugin supports double precision processing natively
+// Returns 1 if plugin supports double precision, 0 otherwise
+int mh_supports_double(MH_Plugin* p);
+
+// Async plugin loading callback
+// Called when plugin loading completes (on success or failure)
+// plugin: the loaded plugin (NULL on failure)
+// error: error message (NULL on success, non-NULL on failure)
+// user_data: user-provided context pointer
+typedef void (*MH_LoadCallback)(MH_Plugin* plugin, const char* error, void* user_data);
+
+// Asynchronously load a plugin in a background thread
+// Callback is invoked from the background thread when loading completes
+// Returns 1 if async load started successfully, 0 if failed to start
+// Note: On success, caller must NOT use the plugin until callback is invoked
+int mh_open_async(const char* plugin_path,
+                  double sample_rate,
+                  int max_block_size,
+                  int requested_in_ch,
+                  int requested_out_ch,
+                  MH_LoadCallback callback,
+                  void* user_data);
+
 #ifdef __cplusplus
 }
 #endif

@@ -42,6 +42,12 @@ target_compile_definitions(minihost PRIVATE
     JUCE_USE_CURL=0
 )
 
-add_executable(example_c example_c.c)
-target_link_libraries(example_c PRIVATE minihost)
+# C CLI tool
+add_executable(minihost_c main.c)
+target_link_libraries(minihost_c PRIVATE minihost)
+
+# C++ CLI tool (uses CLI11)
+add_executable(minihost_cpp main.cpp)
+target_include_directories(minihost_cpp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(minihost_cpp PRIVATE minihost)
 
