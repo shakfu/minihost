@@ -5,12 +5,14 @@
 ### Added
 
 #### Core Utilities
+
 - `mh_reset()` - Reset plugin internal state (clears delay lines, reverb tails, filter states)
 - `mh_set_non_realtime()` - Enable higher-quality algorithms for offline/batch processing
 - `mh_probe()` - Get plugin metadata without full instantiation
 - `MH_PluginDesc` struct for plugin metadata (name, vendor, version, format, unique_id, MIDI flags, channel counts)
 
 #### Parameter & Preset Access
+
 - `mh_param_to_text()` - Convert normalized parameter value to display string (e.g., "2500 Hz")
 - `mh_param_from_text()` - Convert display string to normalized value
 - `mh_get_num_programs()` - Get number of factory presets
@@ -18,6 +20,7 @@
 - `mh_get_program()` / `mh_set_program()` - Get/set current factory preset
 
 #### Bus Layout & Sidechain
+
 - `MH_BusInfo` struct for bus information (name, channels, is_main, is_enabled)
 - `mh_get_num_buses()` - Query number of input/output buses
 - `mh_get_bus_info()` - Get detailed bus information
