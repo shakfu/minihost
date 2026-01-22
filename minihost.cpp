@@ -1033,3 +1033,40 @@ extern "C" int mh_get_sidechain_channels(MH_Plugin* p)
     return p->sidechainCh;
 }
 
+extern "C" int mh_set_sample_rate(MH_Plugin* p, double new_sample_rate)
+{
+    if (!p || !p->inst) return 0;
+    if (new_sample_rate <= 0.0) return 0;
+
+    std::lock_guard<std::mutex> lock(p->stateMutex);
+
+    // Save current state
+    MemoryBlock stateData;
+    p->inst->getStateInformation(stateData);
+
+    // Release current resources
+    p->inst->releaseResources();
+
+    // Update sample rate
+    p->sampleRate = new_sample_rate;
+    p->playHead.sampleRate = new_sample_rate;
+
+    // Re-prepare with new sample rate
+    p->inst->setRateAndBufferSizeDetails(new_sample_rate, p->maxBlockSize);
+    p->inst->prepareToPlay(new_sample_rate, p->maxBlockSize);
+
+    // Restore state
+    if (stateData.getSize() > 0)
+    {
+        p->inst->setStateInformation(stateData.getData(), static_cast<int>(stateData.getSize()));
+    }
+
+    return 1;
+}
+
+extern "C" double mh_get_sample_rate(MH_Plugin* p)
+{
+    if (!p) return 0.0;
+    return p->sampleRate;
+}
+

@@ -98,6 +98,18 @@ public:
         return mh_get_sidechain_channels(plugin_);
     }
 
+    // Sample rate
+    double get_sample_rate() const {
+        return mh_get_sample_rate(plugin_);
+    }
+
+    void set_sample_rate(double new_rate) {
+        if (!mh_set_sample_rate(plugin_, new_rate)) {
+            throw std::runtime_error("Failed to set sample rate");
+        }
+        sample_rate_ = new_rate;
+    }
+
     // Bus layout queries
     int num_input_buses() const {
         return mh_get_num_buses(plugin_, 1);
@@ -544,6 +556,8 @@ NB_MODULE(_core, m) {
                      "Number of input buses")
         .def_prop_ro("num_output_buses", &Plugin::num_output_buses,
                      "Number of output buses")
+        .def_prop_rw("sample_rate", &Plugin::get_sample_rate, &Plugin::set_sample_rate,
+                     "Current sample rate (can be changed without reloading)")
 
         // Bus layout
         .def("get_bus_info", &Plugin::get_bus_info,

@@ -267,6 +267,14 @@ int mh_process_sidechain(MH_Plugin* p,
 // Returns 0 if no sidechain or plugin opened with mh_open() instead of mh_open_ex()
 int mh_get_sidechain_channels(MH_Plugin* p);
 
+// Change sample rate without reloading the plugin
+// Preserves parameter state across the change
+// Returns 1 on success, 0 on failure
+int mh_set_sample_rate(MH_Plugin* p, double new_sample_rate);
+
+// Get current sample rate
+double mh_get_sample_rate(MH_Plugin* p);
+
 #ifdef __cplusplus
 }
 #endif

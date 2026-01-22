@@ -72,6 +72,7 @@ def test_plugin_class_has_expected_properties():
         'sidechain_channels',
         'num_input_buses',
         'num_output_buses',
+        'sample_rate',
     ]
     for prop in expected_props:
         assert hasattr(minihost.Plugin, prop), f"Plugin missing property: {prop}"
@@ -411,3 +412,40 @@ class TestPluginIntegration:
         else:
             # Plugin doesn't support sidechain, use regular process
             plugin_sc.process(main_in, main_out)
+
+    def test_sample_rate_change(self, plugin):
+        """Test sample rate change without reloading."""
+        import numpy as np
+
+        # Get initial sample rate
+        initial_rate = plugin.sample_rate
+        assert initial_rate == 48000  # We opened with 48000
+
+        # Set a parameter to a known value (if plugin has params)
+        original_param_val = None
+        if plugin.num_params > 0:
+            plugin.set_param(0, 0.75)
+            original_param_val = plugin.get_param(0)
+
+        # Change sample rate
+        plugin.sample_rate = 44100
+        assert plugin.sample_rate == 44100
+
+        # Parameter state should be preserved
+        if plugin.num_params > 0:
+            new_param_val = plugin.get_param(0)
+            assert abs(new_param_val - original_param_val) < 0.01
+
+        # Process should work at new sample rate
+        in_ch = max(plugin.num_input_channels, 2)
+        out_ch = max(plugin.num_output_channels, 2)
+        input_audio = np.zeros((in_ch, 512), dtype=np.float32)
+        output_audio = np.zeros((out_ch, 512), dtype=np.float32)
+        plugin.process(input_audio, output_audio)
+
+        # Change back to original rate
+        plugin.sample_rate = initial_rate
+        assert plugin.sample_rate == initial_rate
+
+        # Process should still work
+        plugin.process(input_audio, output_audio)

@@ -20,14 +20,9 @@
 - [x] **Factory presets** - Access built-in plugin presets
 - [x] **Sidechain support** - Multiple input bus configuration
 - [x] **Bus layout queries** - Query plugin I/O topology
+- [x] **Sample rate change** - Change sample rate without reloading, preserving parameter state
 
 ## Future (if needed)
-
-### Sample rate change without reload
-```c
-int mh_set_sample_rate(MH_Plugin* p, double new_rate);
-```
-Processing files at various sample rates without losing parameter state.
 
 ### Double precision processing
 ```c

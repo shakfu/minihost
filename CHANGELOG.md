@@ -10,6 +10,8 @@
 - `mh_set_non_realtime()` - Enable higher-quality algorithms for offline/batch processing
 - `mh_probe()` - Get plugin metadata without full instantiation
 - `MH_PluginDesc` struct for plugin metadata (name, vendor, version, format, unique_id, MIDI flags, channel counts)
+- `mh_set_sample_rate()` - Change sample rate without reloading plugin (preserves parameter state)
+- `mh_get_sample_rate()` - Query current sample rate
 
 #### Parameter & Preset Access
 
@@ -34,5 +36,5 @@ All C API additions are exposed in the Python `minihost` module:
 
 - `minihost.probe(path)` - Module-level function for plugin metadata
 - `Plugin` constructor now accepts `sidechain_channels` parameter
-- New properties: `non_realtime`, `num_programs`, `program`, `sidechain_channels`, `num_input_buses`, `num_output_buses`
+- New properties: `non_realtime`, `num_programs`, `program`, `sidechain_channels`, `num_input_buses`, `num_output_buses`, `sample_rate` (read/write)
 - New methods: `reset()`, `param_to_text()`, `param_from_text()`, `get_program_name()`, `get_bus_info()`, `process_sidechain()`
