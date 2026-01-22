@@ -1,6 +1,6 @@
 # minihost
 
-A minimal audio plugin host library for loading and processing VST3 and AudioUnit plugins. Provides a simple C API suitable for embedding in audio applications, with Python bindings available.
+A minimal audio plugin host library for loading and processing VST3 and AudioUnit plugins. Provides a simple C API suitable for embedding in audio applications, and also Python bindings.
 
 ## Features
 
@@ -94,10 +94,7 @@ mh_close(plugin);
 
 ## Python Bindings
 
-See [python/minihost/README.md](python/minihost/README.md) for Python usage.
-
 ```bash
-cd python/minihost
 uv sync
 ```
 

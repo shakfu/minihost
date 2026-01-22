@@ -1,12 +1,12 @@
-[build-system]
-requires = ["scikit-build-core", "nanobind"]
-build-backend = "scikit_build_core.build"
-
 [project]
 name = "minihost"
 version = "0.1.0"
-description = "A Python extension module built with nanobind"
+description = "A minimal juce-based plugin host using nanobind"
 requires-python = ">=3.9"
+
+[build-system]
+requires = ["scikit-build-core", "nanobind"]
+build-backend = "scikit_build_core.build"
 
 [tool.scikit-build]
 wheel.packages = ["src/minihost"]
