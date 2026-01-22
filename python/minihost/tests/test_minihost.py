@@ -9,12 +9,20 @@ def test_module_has_plugin_class():
     assert hasattr(minihost, 'Plugin')
 
 
+def test_module_has_probe_function():
+    """Test that probe function is exported."""
+    assert hasattr(minihost, 'probe')
+    assert callable(minihost.probe)
+
+
 def test_plugin_class_has_expected_methods():
     """Test that Plugin class has expected methods."""
     expected_methods = [
         'get_param',
         'set_param',
         'get_param_info',
+        'param_to_text',
+        'param_from_text',
         'get_state',
         'set_state',
         'set_transport',
@@ -22,6 +30,10 @@ def test_plugin_class_has_expected_methods():
         'process',
         'process_midi',
         'process_auto',
+        'process_sidechain',
+        'reset',
+        'get_program_name',
+        'get_bus_info',
     ]
     for method in expected_methods:
         assert hasattr(minihost.Plugin, method), f"Plugin missing method: {method}"
@@ -54,6 +66,12 @@ def test_plugin_class_has_expected_properties():
         'latency_samples',
         'tail_seconds',
         'bypass',
+        'non_realtime',
+        'num_programs',
+        'program',
+        'sidechain_channels',
+        'num_input_buses',
+        'num_output_buses',
     ]
     for prop in expected_props:
         assert hasattr(minihost.Plugin, prop), f"Plugin missing property: {prop}"
@@ -94,6 +112,32 @@ def test_module_docstring():
     """Test that module has docstring."""
     assert minihost.__doc__ is not None
     assert 'Plugin' in minihost.__doc__
+
+
+def test_probe_invalid_path_raises():
+    """Test that probing invalid path raises RuntimeError."""
+    with pytest.raises(RuntimeError, match="Failed to probe plugin"):
+        minihost.probe("/nonexistent/path/to/plugin.vst3")
+
+
+def test_probe_empty_path_raises():
+    """Test that probing empty path raises RuntimeError."""
+    with pytest.raises(RuntimeError, match="Failed to probe plugin"):
+        minihost.probe("")
+
+
+def test_probe_wrong_file_type_raises():
+    """Test that probing wrong file type raises RuntimeError."""
+    import tempfile
+    import os
+    with tempfile.NamedTemporaryFile(suffix='.txt', delete=False) as f:
+        f.write(b"not a plugin")
+        temp_path = f.name
+    try:
+        with pytest.raises(RuntimeError, match="Failed to probe plugin"):
+            minihost.probe(temp_path)
+    finally:
+        os.unlink(temp_path)
 
 
 # Integration tests that require a real plugin - skip if no plugin available
@@ -191,3 +235,179 @@ class TestPluginIntegration:
         _ = plugin.bypass
         plugin.bypass = True
         plugin.bypass = False
+
+    def test_reset(self, plugin):
+        """Test reset clears internal state."""
+        import numpy as np
+
+        in_ch = max(plugin.num_input_channels, 2)
+        out_ch = max(plugin.num_output_channels, 2)
+
+        # Process some audio first
+        input_audio = np.zeros((in_ch, 512), dtype=np.float32)
+        output_audio = np.zeros((out_ch, 512), dtype=np.float32)
+        plugin.process(input_audio, output_audio)
+
+        # Reset should succeed
+        plugin.reset()
+
+        # Should be able to process again
+        plugin.process(input_audio, output_audio)
+
+    def test_non_realtime(self, plugin):
+        """Test non-realtime mode toggle."""
+        # Default should be False
+        assert plugin.non_realtime is False
+
+        # Set to True
+        plugin.non_realtime = True
+        assert plugin.non_realtime is True
+
+        # Set back to False
+        plugin.non_realtime = False
+        assert plugin.non_realtime is False
+
+    def test_probe(self, plugin_path):
+        """Test probing plugin metadata."""
+        info = minihost.probe(plugin_path)
+
+        assert isinstance(info, dict)
+        assert 'name' in info
+        assert 'vendor' in info
+        assert 'version' in info
+        assert 'format' in info
+        assert 'unique_id' in info
+        assert 'accepts_midi' in info
+        assert 'produces_midi' in info
+        assert 'num_inputs' in info
+        assert 'num_outputs' in info
+
+        # Types
+        assert isinstance(info['name'], str)
+        assert isinstance(info['format'], str)
+        assert isinstance(info['accepts_midi'], bool)
+        assert isinstance(info['num_inputs'], int)
+        assert isinstance(info['num_outputs'], int)
+
+    def test_param_to_text(self, plugin):
+        """Test parameter value to text conversion."""
+        if plugin.num_params > 0:
+            # Convert a few values to text
+            text_0 = plugin.param_to_text(0, 0.0)
+            text_50 = plugin.param_to_text(0, 0.5)
+            text_100 = plugin.param_to_text(0, 1.0)
+
+            assert isinstance(text_0, str)
+            assert isinstance(text_50, str)
+            assert isinstance(text_100, str)
+
+    def test_param_from_text(self, plugin):
+        """Test text to parameter value conversion."""
+        if plugin.num_params > 0:
+            # Get current text representation
+            info = plugin.get_param_info(0)
+            text = info['current_value_str']
+
+            # Try to convert it back - note: not all plugins implement this well
+            try:
+                value = plugin.param_from_text(0, text)
+                assert 0.0 <= value <= 1.0
+            except RuntimeError:
+                # Some plugins don't implement text-to-value
+                pass
+
+    def test_factory_presets(self, plugin):
+        """Test factory preset (program) access."""
+        num_programs = plugin.num_programs
+        assert isinstance(num_programs, int)
+        assert num_programs >= 0
+
+        if num_programs > 0:
+            # Get current program
+            current = plugin.program
+            assert isinstance(current, int)
+            assert 0 <= current < num_programs
+
+            # Get program names
+            for i in range(min(num_programs, 5)):  # Test first 5
+                name = plugin.get_program_name(i)
+                assert isinstance(name, str)
+
+            # Set program
+            plugin.program = 0
+            assert plugin.program == 0
+
+            if num_programs > 1:
+                plugin.program = 1
+                assert plugin.program == 1
+                # Restore original
+                plugin.program = current
+
+    def test_bus_layout(self, plugin):
+        """Test bus layout query."""
+        # Check number of buses
+        num_in_buses = plugin.num_input_buses
+        num_out_buses = plugin.num_output_buses
+
+        assert isinstance(num_in_buses, int)
+        assert isinstance(num_out_buses, int)
+        assert num_in_buses >= 0
+        assert num_out_buses >= 0
+
+        # Query bus info for each bus
+        for i in range(num_in_buses):
+            info = plugin.get_bus_info(True, i)
+            assert isinstance(info, dict)
+            assert 'name' in info
+            assert 'num_channels' in info
+            assert 'is_main' in info
+            assert 'is_enabled' in info
+            assert isinstance(info['name'], str)
+            assert isinstance(info['num_channels'], int)
+            assert isinstance(info['is_main'], bool)
+            assert isinstance(info['is_enabled'], bool)
+
+        for i in range(num_out_buses):
+            info = plugin.get_bus_info(False, i)
+            assert isinstance(info, dict)
+            assert 'name' in info
+
+    def test_sidechain_properties(self, plugin):
+        """Test sidechain channel property."""
+        sc_ch = plugin.sidechain_channels
+        assert isinstance(sc_ch, int)
+        # Default plugin opened without sidechain should have 0
+        assert sc_ch >= 0
+
+    def test_process_sidechain(self, plugin_path):
+        """Test processing with sidechain input."""
+        import numpy as np
+
+        # Open plugin with sidechain support
+        try:
+            plugin_sc = minihost.Plugin(
+                plugin_path,
+                sample_rate=48000,
+                max_block_size=512,
+                in_channels=2,
+                out_channels=2,
+                sidechain_channels=2
+            )
+        except RuntimeError:
+            pytest.skip("Plugin may not support sidechain")
+            return
+
+        in_ch = max(plugin_sc.num_input_channels, 2)
+        out_ch = max(plugin_sc.num_output_channels, 2)
+        sc_ch = plugin_sc.sidechain_channels
+
+        # Create test buffers
+        main_in = np.zeros((in_ch, 512), dtype=np.float32)
+        main_out = np.zeros((out_ch, 512), dtype=np.float32)
+
+        if sc_ch > 0:
+            sidechain_in = np.zeros((sc_ch, 512), dtype=np.float32)
+            plugin_sc.process_sidechain(main_in, main_out, sidechain_in)
+        else:
+            # Plugin doesn't support sidechain, use regular process
+            plugin_sc.process(main_in, main_out)

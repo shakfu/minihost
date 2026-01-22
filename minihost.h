@@ -17,6 +17,19 @@ extern "C" {
 
 typedef struct MH_Plugin MH_Plugin;
 
+// Plugin metadata (available without full instantiation via mh_probe)
+typedef struct MH_PluginDesc {
+    char name[256];
+    char vendor[256];
+    char version[64];
+    char format[16];            // "VST3" or "AU"
+    char unique_id[64];         // for state compatibility checking
+    int accepts_midi;
+    int produces_midi;
+    int num_inputs;             // default input channel count
+    int num_outputs;            // default output channel count
+} MH_PluginDesc;
+
 typedef struct MH_Info {
     int num_params;
     int num_input_ch;
@@ -64,6 +77,14 @@ typedef struct MH_ParamChange {
     int param_index;                       // parameter index
     float value;                           // normalized value (0.0 to 1.0)
 } MH_ParamChange;
+
+// Bus information for understanding plugin I/O topology
+typedef struct MH_BusInfo {
+    char name[64];                         // bus name (e.g., "Main", "Sidechain")
+    int num_channels;                      // number of channels in this bus
+    int is_main;                           // 1 if main bus, 0 if aux/sidechain
+    int is_enabled;                        // 1 if bus is currently enabled
+} MH_BusInfo;
 
 // plugin_path: .vst3 bundle on macOS, .vst3 folder on Win/Linux, .component for AU (mac)
 // returns NULL on failure
@@ -165,6 +186,86 @@ int mh_process_auto(MH_Plugin* p,
                     int* num_midi_out,
                     const MH_ParamChange* param_changes,
                     int num_param_changes);
+
+// Reset plugin internal state (clears delay lines, reverb tails, filter states)
+// Call between unrelated audio segments to avoid artifacts
+// Returns 1 on success, 0 on failure
+int mh_reset(MH_Plugin* p);
+
+// Set non-realtime mode for offline/batch processing
+// When non_realtime=1, plugins may use higher-quality algorithms
+// Returns 1 on success, 0 on failure
+int mh_set_non_realtime(MH_Plugin* p, int non_realtime);
+
+// Get plugin metadata without full instantiation
+// Useful for validation, inventory, state file compatibility checks
+// Returns 1 on success, 0 on failure (with error message in err_buf)
+int mh_probe(const char* plugin_path,
+             MH_PluginDesc* out_desc,
+             char* err_buf,
+             size_t err_buf_size);
+
+// Parameter value text conversion
+// Convert normalized value (0-1) to display string (e.g., "2500 Hz", "-6.0 dB")
+// Returns 1 on success, 0 on failure
+int mh_param_to_text(MH_Plugin* p, int index, float value, char* buf, size_t buf_size);
+
+// Convert display string to normalized value (0-1)
+// Returns 1 on success, 0 on failure (e.g., invalid text format)
+// Note: Not all plugins implement text-to-value conversion
+int mh_param_from_text(MH_Plugin* p, int index, const char* text, float* out_value);
+
+// Factory preset (program) access
+// Returns number of factory presets, or 0 if none
+int mh_get_num_programs(MH_Plugin* p);
+
+// Get name of factory preset at index
+// Returns 1 on success, 0 on failure
+int mh_get_program_name(MH_Plugin* p, int index, char* buf, size_t buf_size);
+
+// Get currently selected program index
+// Returns -1 if no program selected or on error
+int mh_get_program(MH_Plugin* p);
+
+// Select a factory preset by index
+// Returns 1 on success, 0 on failure
+int mh_set_program(MH_Plugin* p, int index);
+
+// Bus layout query
+// Get number of input or output buses
+// is_input: 1 for input buses, 0 for output buses
+int mh_get_num_buses(MH_Plugin* p, int is_input);
+
+// Get information about a specific bus
+// Returns 1 on success, 0 on failure
+int mh_get_bus_info(MH_Plugin* p, int is_input, int bus_index, MH_BusInfo* out_info);
+
+// Extended open with sidechain support
+// sidechain_in_ch: number of sidechain input channels (0 to disable)
+// returns NULL on failure
+MH_Plugin* mh_open_ex(const char* plugin_path,
+                      double sample_rate,
+                      int max_block_size,
+                      int main_in_ch,
+                      int main_out_ch,
+                      int sidechain_in_ch,
+                      char* err_buf,
+                      size_t err_buf_size);
+
+// Process with sidechain input
+// main_in: main input channels [main_in_ch][nframes]
+// main_out: main output channels [main_out_ch][nframes]
+// sidechain_in: sidechain input channels [sidechain_ch][nframes] (can be NULL if no sidechain)
+// Returns 1 on success, 0 on failure
+int mh_process_sidechain(MH_Plugin* p,
+                         const float* const* main_in,
+                         float* const* main_out,
+                         const float* const* sidechain_in,
+                         int nframes);
+
+// Get number of sidechain input channels configured for this plugin
+// Returns 0 if no sidechain or plugin opened with mh_open() instead of mh_open_ex()
+int mh_get_sidechain_channels(MH_Plugin* p);
 
 #ifdef __cplusplus
 }

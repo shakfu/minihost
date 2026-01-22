@@ -19,12 +19,19 @@ using AudioArray = nb::ndarray<float, nb::shape<-1, -1>, nb::c_contig, nb::devic
 class Plugin {
 public:
     Plugin(const std::string& path, double sample_rate, int max_block_size,
-           int in_channels = 2, int out_channels = 2)
+           int in_channels = 2, int out_channels = 2, int sidechain_channels = 0)
         : sample_rate_(sample_rate), max_block_size_(max_block_size)
     {
         char err[1024] = {0};
-        plugin_ = mh_open(path.c_str(), sample_rate, max_block_size,
-                          in_channels, out_channels, err, sizeof(err));
+        if (sidechain_channels > 0) {
+            // Use extended open with sidechain support
+            plugin_ = mh_open_ex(path.c_str(), sample_rate, max_block_size,
+                                 in_channels, out_channels, sidechain_channels,
+                                 err, sizeof(err));
+        } else {
+            plugin_ = mh_open(path.c_str(), sample_rate, max_block_size,
+                              in_channels, out_channels, err, sizeof(err));
+        }
         if (!plugin_) {
             throw std::runtime_error(std::string("Failed to open plugin: ") + err);
         }
@@ -87,6 +94,33 @@ public:
         return mh_get_tail_seconds(plugin_);
     }
 
+    int sidechain_channels() const {
+        return mh_get_sidechain_channels(plugin_);
+    }
+
+    // Bus layout queries
+    int num_input_buses() const {
+        return mh_get_num_buses(plugin_, 1);
+    }
+
+    int num_output_buses() const {
+        return mh_get_num_buses(plugin_, 0);
+    }
+
+    nb::dict get_bus_info(bool is_input, int bus_index) const {
+        MH_BusInfo info;
+        if (!mh_get_bus_info(plugin_, is_input ? 1 : 0, bus_index, &info)) {
+            throw std::runtime_error("Failed to get bus info");
+        }
+
+        nb::dict d;
+        d["name"] = std::string(info.name);
+        d["num_channels"] = info.num_channels;
+        d["is_main"] = info.is_main != 0;
+        d["is_enabled"] = info.is_enabled != 0;
+        return d;
+    }
+
     // Parameter access
     float get_param(int index) const {
         return mh_get_param(plugin_, index);
@@ -115,6 +149,46 @@ public:
         d["is_automatable"] = info.is_automatable != 0;
         d["is_boolean"] = info.is_boolean != 0;
         return d;
+    }
+
+    // Parameter text conversion
+    std::string param_to_text(int index, float value) const {
+        char buf[256] = {0};
+        if (!mh_param_to_text(plugin_, index, value, buf, sizeof(buf))) {
+            throw std::runtime_error("Failed to convert parameter to text");
+        }
+        return std::string(buf);
+    }
+
+    float param_from_text(int index, const std::string& text) const {
+        float value = 0.0f;
+        if (!mh_param_from_text(plugin_, index, text.c_str(), &value)) {
+            throw std::runtime_error("Failed to convert text to parameter value");
+        }
+        return value;
+    }
+
+    // Factory presets (programs)
+    int num_programs() const {
+        return mh_get_num_programs(plugin_);
+    }
+
+    std::string get_program_name(int index) const {
+        char buf[256] = {0};
+        if (!mh_get_program_name(plugin_, index, buf, sizeof(buf))) {
+            throw std::runtime_error("Failed to get program name");
+        }
+        return std::string(buf);
+    }
+
+    int get_program() const {
+        return mh_get_program(plugin_);
+    }
+
+    void set_program(int index) {
+        if (!mh_set_program(plugin_, index)) {
+            throw std::runtime_error("Failed to set program");
+        }
     }
 
     // State management
@@ -170,6 +244,26 @@ public:
 
     void clear_transport() {
         mh_set_transport(plugin_, nullptr);
+    }
+
+    // Reset internal state
+    void reset() {
+        if (!mh_reset(plugin_)) {
+            throw std::runtime_error("Failed to reset plugin");
+        }
+    }
+
+    // Non-realtime mode
+    bool get_non_realtime() const {
+        // Note: JUCE doesn't provide a getter, so we track it ourselves
+        return non_realtime_;
+    }
+
+    void set_non_realtime(bool non_realtime) {
+        if (!mh_set_non_realtime(plugin_, non_realtime ? 1 : 0)) {
+            throw std::runtime_error("Failed to set non-realtime mode");
+        }
+        non_realtime_ = non_realtime;
     }
 
     // Process audio (simple version - no MIDI)
@@ -338,24 +432,100 @@ public:
         return result;
     }
 
+    // Process with sidechain input
+    void process_sidechain(AudioArray main_in, AudioArray main_out,
+                           nb::ndarray<float, nb::shape<-1, -1>, nb::c_contig, nb::device::cpu> sidechain_in)
+    {
+        int main_in_ch = static_cast<int>(main_in.shape(0));
+        int main_out_ch = static_cast<int>(main_out.shape(0));
+        int main_in_frames = static_cast<int>(main_in.shape(1));
+        int main_out_frames = static_cast<int>(main_out.shape(1));
+        int sc_ch = static_cast<int>(sidechain_in.shape(0));
+        int sc_frames = static_cast<int>(sidechain_in.shape(1));
+
+        if (main_in_frames != main_out_frames || main_in_frames != sc_frames) {
+            throw std::runtime_error("All buffer frame counts must match");
+        }
+        if (main_in_frames > max_block_size_) {
+            throw std::runtime_error("Frame count exceeds max block size");
+        }
+
+        int nframes = main_in_frames;
+
+        // Set up channel pointers for main input
+        std::vector<const float*> main_in_ptrs(main_in_ch);
+        for (int ch = 0; ch < main_in_ch; ++ch) {
+            main_in_ptrs[ch] = main_in.data() + ch * nframes;
+        }
+
+        // Set up channel pointers for main output
+        std::vector<float*> main_out_ptrs(main_out_ch);
+        for (int ch = 0; ch < main_out_ch; ++ch) {
+            main_out_ptrs[ch] = main_out.data() + ch * nframes;
+        }
+
+        // Set up channel pointers for sidechain
+        std::vector<const float*> sc_ptrs(sc_ch);
+        for (int ch = 0; ch < sc_ch; ++ch) {
+            sc_ptrs[ch] = sidechain_in.data() + ch * nframes;
+        }
+
+        if (!mh_process_sidechain(plugin_,
+                                  main_in_ptrs.data(),
+                                  main_out_ptrs.data(),
+                                  sc_ptrs.data(),
+                                  nframes)) {
+            throw std::runtime_error("Process with sidechain failed");
+        }
+    }
+
 private:
     MH_Plugin* plugin_ = nullptr;
     double sample_rate_;
     int max_block_size_;
+    bool non_realtime_ = false;
 };
 
+
+// Module-level probe function
+nb::dict probe_plugin(const std::string& path) {
+    MH_PluginDesc desc;
+    char err[1024] = {0};
+
+    if (!mh_probe(path.c_str(), &desc, err, sizeof(err))) {
+        throw std::runtime_error(std::string("Failed to probe plugin: ") + err);
+    }
+
+    nb::dict d;
+    d["name"] = std::string(desc.name);
+    d["vendor"] = std::string(desc.vendor);
+    d["version"] = std::string(desc.version);
+    d["format"] = std::string(desc.format);
+    d["unique_id"] = std::string(desc.unique_id);
+    d["accepts_midi"] = desc.accepts_midi != 0;
+    d["produces_midi"] = desc.produces_midi != 0;
+    d["num_inputs"] = desc.num_inputs;
+    d["num_outputs"] = desc.num_outputs;
+    return d;
+}
 
 NB_MODULE(_core, m) {
     m.doc() = "minihost - Python bindings for audio plugin hosting";
 
+    // Module-level function
+    m.def("probe", &probe_plugin,
+          nb::arg("path"),
+          "Get plugin metadata without full instantiation");
+
     nb::class_<Plugin>(m, "Plugin")
-        .def(nb::init<const std::string&, double, int, int, int>(),
+        .def(nb::init<const std::string&, double, int, int, int, int>(),
              nb::arg("path"),
              nb::arg("sample_rate") = 48000.0,
              nb::arg("max_block_size") = 512,
              nb::arg("in_channels") = 2,
              nb::arg("out_channels") = 2,
-             "Open an audio plugin (VST3 or AudioUnit)")
+             nb::arg("sidechain_channels") = 0,
+             "Open an audio plugin (VST3 or AudioUnit). Use sidechain_channels > 0 for sidechain support.")
 
         // Properties
         .def_prop_ro("num_params", &Plugin::num_params,
@@ -368,6 +538,17 @@ NB_MODULE(_core, m) {
                      "Plugin latency in samples")
         .def_prop_ro("tail_seconds", &Plugin::tail_seconds,
                      "Plugin tail length in seconds")
+        .def_prop_ro("sidechain_channels", &Plugin::sidechain_channels,
+                     "Number of sidechain input channels (0 if none)")
+        .def_prop_ro("num_input_buses", &Plugin::num_input_buses,
+                     "Number of input buses")
+        .def_prop_ro("num_output_buses", &Plugin::num_output_buses,
+                     "Number of output buses")
+
+        // Bus layout
+        .def("get_bus_info", &Plugin::get_bus_info,
+             nb::arg("is_input"), nb::arg("bus_index"),
+             "Get bus info as dict (name, num_channels, is_main, is_enabled)")
 
         // Parameter access
         .def("get_param", &Plugin::get_param,
@@ -379,6 +560,21 @@ NB_MODULE(_core, m) {
         .def("get_param_info", &Plugin::get_param_info,
              nb::arg("index"),
              "Get parameter metadata as dict")
+        .def("param_to_text", &Plugin::param_to_text,
+             nb::arg("index"), nb::arg("value"),
+             "Convert normalized value (0-1) to display string (e.g., '2500 Hz')")
+        .def("param_from_text", &Plugin::param_from_text,
+             nb::arg("index"), nb::arg("text"),
+             "Convert display string to normalized value (0-1)")
+
+        // Factory presets (programs)
+        .def_prop_ro("num_programs", &Plugin::num_programs,
+                     "Number of factory presets")
+        .def("get_program_name", &Plugin::get_program_name,
+             nb::arg("index"),
+             "Get name of factory preset at index")
+        .def_prop_rw("program", &Plugin::get_program, &Plugin::set_program,
+                     "Current factory preset index")
 
         // State
         .def("get_state", &Plugin::get_state,
@@ -390,6 +586,14 @@ NB_MODULE(_core, m) {
         // Bypass
         .def_prop_rw("bypass", &Plugin::get_bypass, &Plugin::set_bypass,
                      "Bypass state")
+
+        // Reset
+        .def("reset", &Plugin::reset,
+             "Reset internal state (clears delay lines, reverb tails, etc.)")
+
+        // Non-realtime mode
+        .def_prop_rw("non_realtime", &Plugin::get_non_realtime, &Plugin::set_non_realtime,
+                     "Non-realtime mode (enables higher-quality algorithms for offline processing)")
 
         // Transport
         .def("set_transport", &Plugin::set_transport,
@@ -416,5 +620,8 @@ NB_MODULE(_core, m) {
              "Process audio with MIDI. midi_in: list of (sample_offset, status, data1, data2)")
         .def("process_auto", &Plugin::process_auto,
              nb::arg("input"), nb::arg("output"), nb::arg("midi_in"), nb::arg("param_changes"),
-             "Process with sample-accurate automation. param_changes: list of (sample_offset, param_index, value)");
+             "Process with sample-accurate automation. param_changes: list of (sample_offset, param_index, value)")
+        .def("process_sidechain", &Plugin::process_sidechain,
+             nb::arg("main_in"), nb::arg("main_out"), nb::arg("sidechain_in"),
+             "Process audio with sidechain input (all arrays shape: [channels, frames])");
 }

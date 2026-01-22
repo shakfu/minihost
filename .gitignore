@@ -2,6 +2,7 @@
 
 JUCE/
 build/
+__pycache__
 .venv
 
 # Prerequisites

@@ -59,9 +59,11 @@ struct MH_Plugin
     int maxBlockSize = 0;
     int inCh = 0;
     int outCh = 0;
+    int sidechainCh = 0;  // sidechain input channels (0 if none)
 
     AudioBuffer<float> inBuf;
     AudioBuffer<float> outBuf;
+    AudioBuffer<float> sidechainBuf;  // sidechain input buffer
     MidiBuffer midi;
 
     // Mutex for thread-safe access to plugin state from non-audio threads
@@ -135,6 +137,40 @@ static void tryConfigureBuses(AudioPluginInstance& inst, int reqIn, int reqOut)
     }
 
     // Apply combined layout if possible
+    auto layout = inst.getBusesLayout();
+    inst.setBusesLayout(layout);
+}
+
+static void tryConfigureBusesEx(AudioPluginInstance& inst, int reqIn, int reqOut, int reqSidechain)
+{
+    // Extended bus configuration with sidechain support
+    inst.enableAllBuses();
+
+    // Main buses (bus 0)
+    if (inst.getBusCount(true) > 0)
+    {
+        if (reqIn > 0)
+            inst.setChannelLayoutOfBus(true, 0, AudioChannelSet::canonicalChannelSet(reqIn));
+    }
+
+    if (inst.getBusCount(false) > 0)
+    {
+        if (reqOut > 0)
+            inst.setChannelLayoutOfBus(false, 0, AudioChannelSet::canonicalChannelSet(reqOut));
+    }
+
+    // Sidechain bus (typically bus 1 for inputs)
+    if (reqSidechain > 0 && inst.getBusCount(true) > 1)
+    {
+        auto* bus = inst.getBus(true, 1);
+        if (bus != nullptr)
+        {
+            bus->enable(true);
+            inst.setChannelLayoutOfBus(true, 1, AudioChannelSet::canonicalChannelSet(reqSidechain));
+        }
+    }
+
+    // Apply combined layout
     auto layout = inst.getBusesLayout();
     inst.setBusesLayout(layout);
 }
@@ -636,5 +672,364 @@ extern "C" int mh_process_auto(MH_Plugin* p,
         *num_midi_out = midi_out_idx;
 
     return 1;
+}
+
+extern "C" int mh_reset(MH_Plugin* p)
+{
+    if (!p || !p->inst) return 0;
+    std::lock_guard<std::mutex> lock(p->stateMutex);
+    p->inst->reset();
+    return 1;
+}
+
+extern "C" int mh_set_non_realtime(MH_Plugin* p, int non_realtime)
+{
+    if (!p || !p->inst) return 0;
+    std::lock_guard<std::mutex> lock(p->stateMutex);
+    p->inst->setNonRealtime(non_realtime != 0);
+    return 1;
+}
+
+extern "C" int mh_probe(const char* plugin_path,
+                        MH_PluginDesc* out_desc,
+                        char* err_buf,
+                        size_t err_buf_size)
+{
+    if (!plugin_path || plugin_path[0] == '\0')
+    {
+        setErr(err_buf, err_buf_size, "plugin_path is empty");
+        return 0;
+    }
+
+    if (!out_desc)
+    {
+        setErr(err_buf, err_buf_size, "out_desc is null");
+        return 0;
+    }
+
+    // Zero out the descriptor
+    std::memset(out_desc, 0, sizeof(MH_PluginDesc));
+
+    File f(String::fromUTF8(plugin_path));
+    if (!f.exists())
+    {
+        setErr(err_buf, err_buf_size, "Plugin file does not exist: " + f.getFullPathName());
+        return 0;
+    }
+
+    // Create a temporary format manager to scan the plugin
+    AudioPluginFormatManager fm;
+    fm.addFormat(std::make_unique<VST3PluginFormat>());
+   #if JUCE_MAC
+    fm.addFormat(std::make_unique<AudioUnitPluginFormat>());
+   #endif
+
+    // Find plugin description without instantiating
+    PluginDescription desc;
+    bool found = false;
+    String formatName;
+
+    for (int i = 0; i < fm.getNumFormats(); ++i)
+    {
+        auto* format = fm.getFormat(i);
+        OwnedArray<PluginDescription> types;
+        format->findAllTypesForFile(types, f.getFullPathName());
+
+        if (types.size() > 0)
+        {
+            desc = *types[0];
+            formatName = format->getName();
+            found = true;
+            break;
+        }
+    }
+
+    if (!found)
+    {
+        setErr(err_buf, err_buf_size, "No compatible plugin types found for file: " + f.getFullPathName());
+        return 0;
+    }
+
+    // Fill in the descriptor
+    std::snprintf(out_desc->name, sizeof(out_desc->name), "%s", desc.name.toRawUTF8());
+    std::snprintf(out_desc->vendor, sizeof(out_desc->vendor), "%s", desc.manufacturerName.toRawUTF8());
+    std::snprintf(out_desc->version, sizeof(out_desc->version), "%s", desc.version.toRawUTF8());
+    std::snprintf(out_desc->format, sizeof(out_desc->format), "%s", formatName.toRawUTF8());
+
+    // uniqueId is an int, convert to hex string for portability
+    std::snprintf(out_desc->unique_id, sizeof(out_desc->unique_id), "%08X", desc.uniqueId);
+
+    // isInstrument indicates the plugin accepts MIDI (synthesizers, samplers)
+    // Note: PluginDescription doesn't expose producesMidiOutput directly
+    out_desc->accepts_midi = desc.isInstrument ? 1 : 0;
+    out_desc->produces_midi = 0;  // Cannot determine from description alone
+    out_desc->num_inputs = desc.numInputChannels;
+    out_desc->num_outputs = desc.numOutputChannels;
+
+    return 1;
+}
+
+extern "C" int mh_param_to_text(MH_Plugin* p, int index, float value, char* buf, size_t buf_size)
+{
+    if (!p || !p->inst || !buf || buf_size == 0) return 0;
+    std::lock_guard<std::mutex> lock(p->stateMutex);
+
+    auto& params = p->inst->getParameters();
+    if (index < 0 || index >= params.size()) return 0;
+
+    auto* param = params.getUnchecked(index);
+    value = jlimit(0.0f, 1.0f, value);
+
+    // getText returns the display string for a given normalized value
+    // Second parameter is maximum string length hint
+    String text = param->getText(value, static_cast<int>(buf_size) - 1);
+    std::snprintf(buf, buf_size, "%s", text.toRawUTF8());
+
+    return 1;
+}
+
+extern "C" int mh_param_from_text(MH_Plugin* p, int index, const char* text, float* out_value)
+{
+    if (!p || !p->inst || !text || !out_value) return 0;
+    std::lock_guard<std::mutex> lock(p->stateMutex);
+
+    auto& params = p->inst->getParameters();
+    if (index < 0 || index >= params.size()) return 0;
+
+    auto* param = params.getUnchecked(index);
+
+    // getValueForText converts display string to normalized value
+    // Note: Many plugins don't implement this properly and return 0
+    float value = param->getValueForText(String::fromUTF8(text));
+
+    // Clamp to valid range
+    *out_value = jlimit(0.0f, 1.0f, value);
+
+    return 1;
+}
+
+extern "C" int mh_get_num_programs(MH_Plugin* p)
+{
+    if (!p || !p->inst) return 0;
+    std::lock_guard<std::mutex> lock(p->stateMutex);
+    return p->inst->getNumPrograms();
+}
+
+extern "C" int mh_get_program_name(MH_Plugin* p, int index, char* buf, size_t buf_size)
+{
+    if (!p || !p->inst || !buf || buf_size == 0) return 0;
+    std::lock_guard<std::mutex> lock(p->stateMutex);
+
+    int numPrograms = p->inst->getNumPrograms();
+    if (index < 0 || index >= numPrograms) return 0;
+
+    String name = p->inst->getProgramName(index);
+    std::snprintf(buf, buf_size, "%s", name.toRawUTF8());
+
+    return 1;
+}
+
+extern "C" int mh_get_program(MH_Plugin* p)
+{
+    if (!p || !p->inst) return -1;
+    std::lock_guard<std::mutex> lock(p->stateMutex);
+    return p->inst->getCurrentProgram();
+}
+
+extern "C" int mh_set_program(MH_Plugin* p, int index)
+{
+    if (!p || !p->inst) return 0;
+    std::lock_guard<std::mutex> lock(p->stateMutex);
+
+    int numPrograms = p->inst->getNumPrograms();
+    if (index < 0 || index >= numPrograms) return 0;
+
+    p->inst->setCurrentProgram(index);
+    return 1;
+}
+
+extern "C" int mh_get_num_buses(MH_Plugin* p, int is_input)
+{
+    if (!p || !p->inst) return 0;
+    std::lock_guard<std::mutex> lock(p->stateMutex);
+    return p->inst->getBusCount(is_input != 0);
+}
+
+extern "C" int mh_get_bus_info(MH_Plugin* p, int is_input, int bus_index, MH_BusInfo* out_info)
+{
+    if (!p || !p->inst || !out_info) return 0;
+    std::lock_guard<std::mutex> lock(p->stateMutex);
+
+    bool input = (is_input != 0);
+    int numBuses = p->inst->getBusCount(input);
+    if (bus_index < 0 || bus_index >= numBuses) return 0;
+
+    auto* bus = p->inst->getBus(input, bus_index);
+    if (!bus) return 0;
+
+    // Clear output struct
+    std::memset(out_info, 0, sizeof(MH_BusInfo));
+
+    // Bus name
+    String name = bus->getName();
+    std::snprintf(out_info->name, sizeof(out_info->name), "%s", name.toRawUTF8());
+
+    // Channel count
+    out_info->num_channels = bus->getNumberOfChannels();
+
+    // Is main bus (bus 0 is typically the main bus)
+    out_info->is_main = (bus_index == 0) ? 1 : 0;
+
+    // Is enabled
+    out_info->is_enabled = bus->isEnabled() ? 1 : 0;
+
+    return 1;
+}
+
+extern "C" MH_Plugin* mh_open_ex(const char* plugin_path,
+                                 double sample_rate,
+                                 int max_block_size,
+                                 int main_in_ch,
+                                 int main_out_ch,
+                                 int sidechain_in_ch,
+                                 char* err_buf,
+                                 size_t err_buf_size)
+{
+    if (plugin_path == nullptr || plugin_path[0] == '\0')
+    {
+        setErr(err_buf, err_buf_size, "plugin_path is empty");
+        return nullptr;
+    }
+
+    std::unique_ptr<MH_Plugin> p(new MH_Plugin());
+    p->sampleRate = sample_rate;
+    p->maxBlockSize = max_block_size;
+
+    File f(String::fromUTF8(plugin_path));
+    if (! f.exists())
+    {
+        setErr(err_buf, err_buf_size, "Plugin file does not exist: " + f.getFullPathName());
+        return nullptr;
+    }
+
+    PluginDescription desc;
+    String err;
+    if (! findFirstTypeForFile(p->fm, f, desc, err))
+    {
+        setErr(err_buf, err_buf_size, err);
+        return nullptr;
+    }
+
+    String createErr;
+    std::unique_ptr<AudioPluginInstance> inst(
+        p->fm.createPluginInstance(desc, sample_rate, max_block_size, createErr)
+    );
+
+    if (! inst)
+    {
+        setErr(err_buf, err_buf_size, "createPluginInstance failed: " + createErr);
+        return nullptr;
+    }
+
+    // Extended bus/channel layout with sidechain
+    tryConfigureBusesEx(*inst, main_in_ch, main_out_ch, sidechain_in_ch);
+
+    p->inCh  = jmax(1, main_in_ch  > 0 ? main_in_ch  : inst->getTotalNumInputChannels());
+    p->outCh = jmax(1, main_out_ch > 0 ? main_out_ch : inst->getTotalNumOutputChannels());
+
+    // Determine actual sidechain channels
+    p->sidechainCh = 0;
+    if (sidechain_in_ch > 0 && inst->getBusCount(true) > 1)
+    {
+        auto* scBus = inst->getBus(true, 1);
+        if (scBus && scBus->isEnabled())
+        {
+            p->sidechainCh = scBus->getNumberOfChannels();
+        }
+    }
+
+    inst->setRateAndBufferSizeDetails(sample_rate, max_block_size);
+    inst->prepareToPlay(sample_rate, max_block_size);
+
+    p->inBuf.setSize(p->inCh, max_block_size, false, false, true);
+    p->outBuf.setSize(p->outCh, max_block_size, false, false, true);
+    if (p->sidechainCh > 0)
+    {
+        p->sidechainBuf.setSize(p->sidechainCh, max_block_size, false, false, true);
+    }
+
+    // Set up playhead for transport info
+    p->playHead.sampleRate = sample_rate;
+    inst->setPlayHead(&p->playHead);
+
+    p->inst = std::move(inst);
+    return p.release();
+}
+
+extern "C" int mh_process_sidechain(MH_Plugin* p,
+                                    const float* const* main_in,
+                                    float* const* main_out,
+                                    const float* const* sidechain_in,
+                                    int nframes)
+{
+    if (!p || !p->inst) return 0;
+    if (nframes < 0 || nframes > p->maxBlockSize) return 0;
+
+    // Total channels needed = max(main_in + sidechain, main_out)
+    // JUCE processBlock uses a single buffer for in-place processing
+    int totalInCh = p->inCh + p->sidechainCh;
+    int totalCh = jmax(totalInCh, p->outCh);
+
+    // Create a combined buffer large enough for all channels
+    AudioBuffer<float> buffer(totalCh, nframes);
+
+    // Copy main input to first channels
+    if (main_in)
+    {
+        for (int ch = 0; ch < p->inCh; ++ch)
+            buffer.copyFrom(ch, 0, main_in[ch], nframes);
+    }
+    else
+    {
+        for (int ch = 0; ch < p->inCh; ++ch)
+            buffer.clear(ch, 0, nframes);
+    }
+
+    // Copy sidechain input to subsequent channels
+    if (sidechain_in && p->sidechainCh > 0)
+    {
+        for (int ch = 0; ch < p->sidechainCh; ++ch)
+            buffer.copyFrom(p->inCh + ch, 0, sidechain_in[ch], nframes);
+    }
+    else if (p->sidechainCh > 0)
+    {
+        for (int ch = p->inCh; ch < totalInCh; ++ch)
+            buffer.clear(ch, 0, nframes);
+    }
+
+    // Clear any remaining output channels
+    for (int ch = totalInCh; ch < totalCh; ++ch)
+        buffer.clear(ch, 0, nframes);
+
+    // Clear MIDI buffer
+    p->midi.clear();
+
+    // Process
+    p->inst->processBlock(buffer, p->midi);
+
+    // Copy output back to caller's buffer
+    if (main_out)
+    {
+        for (int ch = 0; ch < p->outCh; ++ch)
+            std::memcpy(main_out[ch], buffer.getReadPointer(ch), sizeof(float) * nframes);
+    }
+
+    return 1;
+}
+
+extern "C" int mh_get_sidechain_channels(MH_Plugin* p)
+{
+    if (!p) return 0;
+    return p->sidechainCh;
 }
 
