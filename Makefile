@@ -2,7 +2,7 @@
 # Supports both C/C++ CLI tools and Python bindings
 
 .PHONY: all juce cli sync build rebuild test wheel sdist clean distclean help \
-		check publish-test publish
+		check publish-test publish lint format typecheck qa
 
 # Default target - build Python bindings
 all: build
@@ -17,18 +17,33 @@ cli: juce
 
 # Sync Python environment (initial setup)
 sync:
-	uv sync --all-groups
+	@uv sync --all-groups
 
 # Build/rebuild Python extension
 build: juce
-	uv sync --all-groups --reinstall-package minihost
+	@uv sync --all-groups --reinstall-package minihost
 
 # Alias for build
 rebuild: build
 
 # Run Python tests
 test: build
-	uv run pytest tests/ -v
+	@uv run pytest tests/ -v
+
+# Run lint
+lint:
+	@uv run ruff check --fix src/
+
+# Run format
+format:
+	@uv run ruff format src/ tests/
+
+# Run typecheck
+typecheck:
+	@uv run mypy src/
+
+# Run qa
+qa: test lint typecheck format
 
 # Build wheel
 wheel: juce
@@ -71,15 +86,22 @@ distclean: clean
 # Show help
 help:
 	@echo "Available targets:"
-	@echo "  all       - Build Python extension (default)"
-	@echo "  juce      - Download JUCE if needed"
-	@echo "  cli       - Build C/C++ CLI tools only"
-	@echo "  sync      - Sync Python environment (initial setup)"
-	@echo "  build     - Build/rebuild Python extension"
-	@echo "  rebuild   - Alias for build"
-	@echo "  test      - Run Python tests"
-	@echo "  wheel     - Build wheel distribution"
-	@echo "  sdist     - Build source distribution"
-	@echo "  clean     - Remove build artifacts"
-	@echo "  distclean - Remove all generated files"
-	@echo "  help      - Show this help message"
+	@echo "  all          - Build Python extension (default)"
+	@echo "  juce         - Download JUCE if needed"
+	@echo "  cli          - Build C/C++ CLI tools only"
+	@echo "  sync         - Sync Python environment (initial setup)"
+	@echo "  build        - Build/rebuild Python extension"
+	@echo "  rebuild      - Alias for build"
+	@echo "  test         - Run Python tests"
+	@echo "  lint         - Run ruff linter with auto-fix"
+	@echo "  format       - Run code formatter"
+	@echo "  typecheck    - Run mypy type checker"
+	@echo "  qa           - Run test, lint, typecheck, and format"
+	@echo "  wheel        - Build wheel distribution"
+	@echo "  sdist        - Build source distribution"
+	@echo "  check        - Check distribution with twine"
+	@echo "  publish-test - Publish to TestPyPI"
+	@echo "  publish      - Publish to PyPI"
+	@echo "  clean        - Remove build artifacts"
+	@echo "  distclean    - Remove all generated files"
+	@echo "  help         - Show this help message"

@@ -6,50 +6,50 @@ import minihost
 
 def test_module_has_plugin_class():
     """Test that Plugin class is exported."""
-    assert hasattr(minihost, 'Plugin')
+    assert hasattr(minihost, "Plugin")
 
 
 def test_module_has_plugin_chain_class():
     """Test that PluginChain class is exported."""
-    assert hasattr(minihost, 'PluginChain')
+    assert hasattr(minihost, "PluginChain")
 
 
 def test_module_has_audio_device_class():
     """Test that AudioDevice class is exported."""
-    assert hasattr(minihost, 'AudioDevice')
+    assert hasattr(minihost, "AudioDevice")
 
 
 def test_module_has_midi_functions():
     """Test that MIDI functions are exported."""
-    assert hasattr(minihost, 'midi_get_input_ports')
-    assert hasattr(minihost, 'midi_get_output_ports')
+    assert hasattr(minihost, "midi_get_input_ports")
+    assert hasattr(minihost, "midi_get_output_ports")
     assert callable(minihost.midi_get_input_ports)
     assert callable(minihost.midi_get_output_ports)
 
 
 def test_module_has_probe_function():
     """Test that probe function is exported."""
-    assert hasattr(minihost, 'probe')
+    assert hasattr(minihost, "probe")
     assert callable(minihost.probe)
 
 
 def test_module_has_scan_directory_function():
     """Test that scan_directory function is exported."""
-    assert hasattr(minihost, 'scan_directory')
+    assert hasattr(minihost, "scan_directory")
     assert callable(minihost.scan_directory)
 
 
 def test_module_has_midifile_class():
     """Test that MidiFile class is exported."""
-    assert hasattr(minihost, 'MidiFile')
+    assert hasattr(minihost, "MidiFile")
 
 
 def test_module_has_render_functions():
     """Test that render functions are exported."""
-    assert hasattr(minihost, 'render_midi')
-    assert hasattr(minihost, 'render_midi_stream')
-    assert hasattr(minihost, 'render_midi_to_file')
-    assert hasattr(minihost, 'MidiRenderer')
+    assert hasattr(minihost, "render_midi")
+    assert hasattr(minihost, "render_midi_stream")
+    assert hasattr(minihost, "render_midi_to_file")
+    assert hasattr(minihost, "MidiRenderer")
     assert callable(minihost.render_midi)
     assert callable(minihost.render_midi_stream)
     assert callable(minihost.render_midi_to_file)
@@ -58,50 +58,58 @@ def test_module_has_render_functions():
 def test_audio_device_class_has_expected_methods():
     """Test that AudioDevice class has expected methods."""
     expected_methods = [
-        'start',
-        'stop',
+        "start",
+        "stop",
     ]
     for method in expected_methods:
-        assert hasattr(minihost.AudioDevice, method), f"AudioDevice missing method: {method}"
+        assert hasattr(minihost.AudioDevice, method), (
+            f"AudioDevice missing method: {method}"
+        )
 
 
 def test_audio_device_class_has_expected_properties():
     """Test that AudioDevice class has expected properties."""
     expected_props = [
-        'is_playing',
-        'sample_rate',
-        'buffer_frames',
-        'channels',
-        'midi_input_port',
-        'midi_output_port',
+        "is_playing",
+        "sample_rate",
+        "buffer_frames",
+        "channels",
+        "midi_input_port",
+        "midi_output_port",
     ]
     for prop in expected_props:
-        assert hasattr(minihost.AudioDevice, prop), f"AudioDevice missing property: {prop}"
+        assert hasattr(minihost.AudioDevice, prop), (
+            f"AudioDevice missing property: {prop}"
+        )
 
 
 def test_audio_device_class_has_midi_methods():
     """Test that AudioDevice class has MIDI methods."""
     expected_methods = [
-        'connect_midi_input',
-        'connect_midi_output',
-        'disconnect_midi_input',
-        'disconnect_midi_output',
-        'create_virtual_midi_input',
-        'create_virtual_midi_output',
-        'send_midi',
+        "connect_midi_input",
+        "connect_midi_output",
+        "disconnect_midi_input",
+        "disconnect_midi_output",
+        "create_virtual_midi_input",
+        "create_virtual_midi_output",
+        "send_midi",
     ]
     for method in expected_methods:
-        assert hasattr(minihost.AudioDevice, method), f"AudioDevice missing method: {method}"
+        assert hasattr(minihost.AudioDevice, method), (
+            f"AudioDevice missing method: {method}"
+        )
 
 
 def test_audio_device_class_has_virtual_midi_properties():
     """Test that AudioDevice class has virtual MIDI properties."""
     expected_props = [
-        'is_midi_input_virtual',
-        'is_midi_output_virtual',
+        "is_midi_input_virtual",
+        "is_midi_output_virtual",
     ]
     for prop in expected_props:
-        assert hasattr(minihost.AudioDevice, prop), f"AudioDevice missing property: {prop}"
+        assert hasattr(minihost.AudioDevice, prop), (
+            f"AudioDevice missing property: {prop}"
+        )
 
 
 def test_midi_port_enumeration():
@@ -115,37 +123,37 @@ def test_midi_port_enumeration():
     # If there are ports, check structure
     for port in inputs:
         assert isinstance(port, dict)
-        assert 'name' in port
-        assert 'index' in port
-        assert isinstance(port['name'], str)
-        assert isinstance(port['index'], int)
+        assert "name" in port
+        assert "index" in port
+        assert isinstance(port["name"], str)
+        assert isinstance(port["index"], int)
 
     for port in outputs:
         assert isinstance(port, dict)
-        assert 'name' in port
-        assert 'index' in port
+        assert "name" in port
+        assert "index" in port
 
 
 def test_plugin_class_has_expected_methods():
     """Test that Plugin class has expected methods."""
     expected_methods = [
-        'get_param',
-        'set_param',
-        'get_param_info',
-        'param_to_text',
-        'param_from_text',
-        'get_state',
-        'set_state',
-        'set_transport',
-        'clear_transport',
-        'process',
-        'process_midi',
-        'process_auto',
-        'process_sidechain',
-        'process_double',
-        'reset',
-        'get_program_name',
-        'get_bus_info',
+        "get_param",
+        "set_param",
+        "get_param_info",
+        "param_to_text",
+        "param_from_text",
+        "get_state",
+        "set_state",
+        "set_transport",
+        "clear_transport",
+        "process",
+        "process_midi",
+        "process_auto",
+        "process_sidechain",
+        "process_double",
+        "reset",
+        "get_program_name",
+        "get_bus_info",
     ]
     for method in expected_methods:
         assert hasattr(minihost.Plugin, method), f"Plugin missing method: {method}"
@@ -154,28 +162,32 @@ def test_plugin_class_has_expected_methods():
 def test_plugin_chain_class_has_expected_methods():
     """Test that PluginChain class has expected methods."""
     expected_methods = [
-        'get_plugin',
-        'process',
-        'process_midi',
-        'reset',
-        'set_non_realtime',
+        "get_plugin",
+        "process",
+        "process_midi",
+        "reset",
+        "set_non_realtime",
     ]
     for method in expected_methods:
-        assert hasattr(minihost.PluginChain, method), f"PluginChain missing method: {method}"
+        assert hasattr(minihost.PluginChain, method), (
+            f"PluginChain missing method: {method}"
+        )
 
 
 def test_plugin_chain_class_has_expected_properties():
     """Test that PluginChain class has expected properties."""
     expected_props = [
-        'num_plugins',
-        'latency_samples',
-        'num_input_channels',
-        'num_output_channels',
-        'sample_rate',
-        'tail_seconds',
+        "num_plugins",
+        "latency_samples",
+        "num_input_channels",
+        "num_output_channels",
+        "sample_rate",
+        "tail_seconds",
     ]
     for prop in expected_props:
-        assert hasattr(minihost.PluginChain, prop), f"PluginChain missing property: {prop}"
+        assert hasattr(minihost.PluginChain, prop), (
+            f"PluginChain missing property: {prop}"
+        )
 
 
 def test_plugin_invalid_path_raises():
@@ -192,27 +204,27 @@ def test_plugin_empty_path_raises():
 
 def test_version():
     """Test that version is defined."""
-    assert hasattr(minihost, '__version__')
+    assert hasattr(minihost, "__version__")
     assert minihost.__version__ == "0.1.0"
 
 
 def test_plugin_class_has_expected_properties():
     """Test that Plugin class has expected properties."""
     expected_props = [
-        'num_params',
-        'num_input_channels',
-        'num_output_channels',
-        'latency_samples',
-        'tail_seconds',
-        'bypass',
-        'non_realtime',
-        'num_programs',
-        'program',
-        'sidechain_channels',
-        'num_input_buses',
-        'num_output_buses',
-        'supports_double',
-        'sample_rate',
+        "num_params",
+        "num_input_channels",
+        "num_output_channels",
+        "latency_samples",
+        "tail_seconds",
+        "bypass",
+        "non_realtime",
+        "num_programs",
+        "program",
+        "sidechain_channels",
+        "num_input_buses",
+        "num_output_buses",
+        "supports_double",
+        "sample_rate",
     ]
     for prop in expected_props:
         assert hasattr(minihost.Plugin, prop), f"Plugin missing property: {prop}"
@@ -223,9 +235,9 @@ def test_plugin_constructor_docstring():
     # nanobind doesn't support inspect.signature, so check docstring instead
     doc = minihost.Plugin.__init__.__doc__
     assert doc is not None
-    assert 'path' in doc
-    assert 'sample_rate' in doc
-    assert 'VST3' in doc or 'AudioUnit' in doc
+    assert "path" in doc
+    assert "sample_rate" in doc
+    assert "VST3" in doc or "AudioUnit" in doc
 
 
 def test_plugin_nonexistent_directory_raises():
@@ -238,8 +250,9 @@ def test_plugin_wrong_extension_raises():
     """Test that loading wrong file type raises RuntimeError."""
     import tempfile
     import os
+
     # Create a temp file with wrong extension
-    with tempfile.NamedTemporaryFile(suffix='.txt', delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
         f.write(b"not a plugin")
         temp_path = f.name
     try:
@@ -252,7 +265,7 @@ def test_plugin_wrong_extension_raises():
 def test_module_docstring():
     """Test that module has docstring."""
     assert minihost.__doc__ is not None
-    assert 'Plugin' in minihost.__doc__
+    assert "Plugin" in minihost.__doc__
 
 
 def test_probe_invalid_path_raises():
@@ -271,7 +284,8 @@ def test_probe_wrong_file_type_raises():
     """Test that probing wrong file type raises RuntimeError."""
     import tempfile
     import os
-    with tempfile.NamedTemporaryFile(suffix='.txt', delete=False) as f:
+
+    with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
         f.write(b"not a plugin")
         temp_path = f.name
     try:
@@ -297,6 +311,7 @@ def test_scan_directory_no_plugins():
     """Test that scanning directory with no plugins returns empty list."""
     import tempfile
     import os
+
     # Create a temp directory with no plugins
     with tempfile.TemporaryDirectory() as tmpdir:
         result = minihost.scan_directory(tmpdir)
@@ -308,6 +323,7 @@ def test_scan_directory_file_not_directory_raises():
     """Test that scanning a file instead of directory raises RuntimeError."""
     import tempfile
     import os
+
     with tempfile.NamedTemporaryFile(delete=False) as f:
         f.write(b"not a directory")
         temp_path = f.name
@@ -323,7 +339,8 @@ def test_scan_directory_file_not_directory_raises():
 def plugin_path():
     """Get a test plugin path from environment or skip."""
     import os
-    path = os.environ.get('MINIHOST_TEST_PLUGIN')
+
+    path = os.environ.get("MINIHOST_TEST_PLUGIN")
     if not path:
         pytest.skip("Set MINIHOST_TEST_PLUGIN env var to run integration tests")
     return path
@@ -362,10 +379,10 @@ class TestPluginIntegration:
         """Test parameter info retrieval."""
         if plugin.num_params > 0:
             info = plugin.get_param_info(0)
-            assert 'name' in info
-            assert 'label' in info
-            assert 'default_value' in info
-            assert 'is_automatable' in info
+            assert "name" in info
+            assert "label" in info
+            assert "default_value" in info
+            assert "is_automatable" in info
 
     def test_state_save_restore(self, plugin):
         """Test state save and restore."""
@@ -450,22 +467,22 @@ class TestPluginIntegration:
         info = minihost.probe(plugin_path)
 
         assert isinstance(info, dict)
-        assert 'name' in info
-        assert 'vendor' in info
-        assert 'version' in info
-        assert 'format' in info
-        assert 'unique_id' in info
-        assert 'accepts_midi' in info
-        assert 'produces_midi' in info
-        assert 'num_inputs' in info
-        assert 'num_outputs' in info
+        assert "name" in info
+        assert "vendor" in info
+        assert "version" in info
+        assert "format" in info
+        assert "unique_id" in info
+        assert "accepts_midi" in info
+        assert "produces_midi" in info
+        assert "num_inputs" in info
+        assert "num_outputs" in info
 
         # Types
-        assert isinstance(info['name'], str)
-        assert isinstance(info['format'], str)
-        assert isinstance(info['accepts_midi'], bool)
-        assert isinstance(info['num_inputs'], int)
-        assert isinstance(info['num_outputs'], int)
+        assert isinstance(info["name"], str)
+        assert isinstance(info["format"], str)
+        assert isinstance(info["accepts_midi"], bool)
+        assert isinstance(info["num_inputs"], int)
+        assert isinstance(info["num_outputs"], int)
 
     def test_param_to_text(self, plugin):
         """Test parameter value to text conversion."""
@@ -484,7 +501,7 @@ class TestPluginIntegration:
         if plugin.num_params > 0:
             # Get current text representation
             info = plugin.get_param_info(0)
-            text = info['current_value_str']
+            text = info["current_value_str"]
 
             # Try to convert it back - note: not all plugins implement this well
             try:
@@ -536,19 +553,19 @@ class TestPluginIntegration:
         for i in range(num_in_buses):
             info = plugin.get_bus_info(True, i)
             assert isinstance(info, dict)
-            assert 'name' in info
-            assert 'num_channels' in info
-            assert 'is_main' in info
-            assert 'is_enabled' in info
-            assert isinstance(info['name'], str)
-            assert isinstance(info['num_channels'], int)
-            assert isinstance(info['is_main'], bool)
-            assert isinstance(info['is_enabled'], bool)
+            assert "name" in info
+            assert "num_channels" in info
+            assert "is_main" in info
+            assert "is_enabled" in info
+            assert isinstance(info["name"], str)
+            assert isinstance(info["num_channels"], int)
+            assert isinstance(info["is_main"], bool)
+            assert isinstance(info["is_enabled"], bool)
 
         for i in range(num_out_buses):
             info = plugin.get_bus_info(False, i)
             assert isinstance(info, dict)
-            assert 'name' in info
+            assert "name" in info
 
     def test_sidechain_properties(self, plugin):
         """Test sidechain channel property."""
@@ -569,7 +586,7 @@ class TestPluginIntegration:
                 max_block_size=512,
                 in_channels=2,
                 out_channels=2,
-                sidechain_channels=2
+                sidechain_channels=2,
             )
         except RuntimeError:
             pytest.skip("Plugin may not support sidechain")
@@ -645,33 +662,33 @@ class TestPluginIntegration:
         # Check that results contain expected fields
         for info in results:
             assert isinstance(info, dict)
-            assert 'name' in info
-            assert 'vendor' in info
-            assert 'version' in info
-            assert 'format' in info
-            assert 'unique_id' in info
-            assert 'path' in info
-            assert 'accepts_midi' in info
-            assert 'produces_midi' in info
-            assert 'num_inputs' in info
-            assert 'num_outputs' in info
+            assert "name" in info
+            assert "vendor" in info
+            assert "version" in info
+            assert "format" in info
+            assert "unique_id" in info
+            assert "path" in info
+            assert "accepts_midi" in info
+            assert "produces_midi" in info
+            assert "num_inputs" in info
+            assert "num_outputs" in info
 
             # Check types
-            assert isinstance(info['name'], str)
-            assert isinstance(info['path'], str)
-            assert isinstance(info['format'], str)
-            assert isinstance(info['accepts_midi'], bool)
-            assert isinstance(info['num_inputs'], int)
+            assert isinstance(info["name"], str)
+            assert isinstance(info["path"], str)
+            assert isinstance(info["format"], str)
+            assert isinstance(info["accepts_midi"], bool)
+            assert isinstance(info["num_inputs"], int)
 
             # Path should be non-empty and exist
-            assert len(info['path']) > 0
+            assert len(info["path"]) > 0
 
         # Check that we found our test plugin
         test_plugin_name = os.path.basename(plugin_path)
-        found_test_plugin = any(
-            test_plugin_name in info['path'] for info in results
+        found_test_plugin = any(test_plugin_name in info["path"] for info in results)
+        assert found_test_plugin, (
+            f"Did not find test plugin {test_plugin_name} in scan results"
         )
-        assert found_test_plugin, f"Did not find test plugin {test_plugin_name} in scan results"
 
     def test_double_precision(self, plugin):
         """Test double precision audio processing."""
@@ -732,10 +749,7 @@ class TestPluginIntegration:
 
         # Create audio device with specific settings
         audio = minihost.AudioDevice(
-            plugin,
-            sample_rate=48000,
-            buffer_frames=512,
-            output_channels=2
+            plugin, sample_rate=48000, buffer_frames=512, output_channels=2
         )
 
         # Verify properties (actual values may differ from requested)
@@ -760,8 +774,8 @@ class TestPluginIntegration:
         inputs = minihost.midi_get_input_ports()
         if inputs:
             # Connect to first input port
-            audio.connect_midi_input(inputs[0]['index'])
-            assert audio.midi_input_port == inputs[0]['index']
+            audio.connect_midi_input(inputs[0]["index"])
+            assert audio.midi_input_port == inputs[0]["index"]
 
             # Disconnect
             audio.disconnect_midi_input()
@@ -770,8 +784,8 @@ class TestPluginIntegration:
         outputs = minihost.midi_get_output_ports()
         if outputs:
             # Connect to first output port
-            audio.connect_midi_output(outputs[0]['index'])
-            assert audio.midi_output_port == outputs[0]['index']
+            audio.connect_midi_output(outputs[0]["index"])
+            assert audio.midi_output_port == outputs[0]["index"]
 
             # Disconnect
             audio.disconnect_midi_output()
@@ -807,8 +821,8 @@ class TestMidiFile:
         assert len(events) >= 2
 
         # Find note events
-        note_ons = [e for e in events if e['type'] == 'note_on']
-        note_offs = [e for e in events if e['type'] == 'note_off']
+        note_ons = [e for e in events if e["type"] == "note_on"]
+        note_offs = [e for e in events if e["type"] == "note_off"]
         assert len(note_ons) >= 1
         assert len(note_offs) >= 1
 
@@ -818,9 +832,9 @@ class TestMidiFile:
         mf.add_tempo(0, 0, 120.0)
 
         events = mf.get_events(0)
-        tempo_events = [e for e in events if e['type'] == 'tempo']
+        tempo_events = [e for e in events if e["type"] == "tempo"]
         assert len(tempo_events) >= 1
-        assert abs(tempo_events[0]['bpm'] - 120.0) < 0.01
+        assert abs(tempo_events[0]["bpm"] - 120.0) < 0.01
 
     def test_midifile_add_control_change(self):
         """Test adding control change events."""
@@ -828,10 +842,10 @@ class TestMidiFile:
         mf.add_control_change(0, 0, 0, 1, 64)  # CC1 (mod wheel) = 64
 
         events = mf.get_events(0)
-        cc_events = [e for e in events if e['type'] == 'control_change']
+        cc_events = [e for e in events if e["type"] == "control_change"]
         assert len(cc_events) >= 1
-        assert cc_events[0]['controller'] == 1
-        assert cc_events[0]['value'] == 64
+        assert cc_events[0]["controller"] == 1
+        assert cc_events[0]["value"] == 64
 
     def test_midifile_add_program_change(self):
         """Test adding program change events."""
@@ -839,9 +853,9 @@ class TestMidiFile:
         mf.add_program_change(0, 0, 0, 42)
 
         events = mf.get_events(0)
-        pc_events = [e for e in events if e['type'] == 'program_change']
+        pc_events = [e for e in events if e["type"] == "program_change"]
         assert len(pc_events) >= 1
-        assert pc_events[0]['program'] == 42
+        assert pc_events[0]["program"] == 42
 
     def test_midifile_save_load(self):
         """Test saving and loading MIDI files."""
@@ -854,7 +868,7 @@ class TestMidiFile:
         mf.add_note_off(0, 480, 0, 60, 0)
 
         # Save to temp file
-        with tempfile.NamedTemporaryFile(suffix='.mid', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as f:
             temp_path = f.name
 
         try:
@@ -867,9 +881,9 @@ class TestMidiFile:
 
             # Check events
             events = mf2.get_events(0)
-            note_ons = [e for e in events if e['type'] == 'note_on']
+            note_ons = [e for e in events if e["type"] == "note_on"]
             assert len(note_ons) >= 1
-            assert note_ons[0]['pitch'] == 60
+            assert note_ons[0]["pitch"] == 60
         finally:
             os.unlink(temp_path)
 
@@ -884,7 +898,9 @@ class TestMidiFile:
         mf = minihost.MidiFile()
         mf.add_tempo(0, 0, 120.0)  # 120 BPM = 2 beats/sec
         mf.add_note_on(0, 0, 0, 60, 100)
-        mf.add_note_off(0, 480, 0, 60, 0)  # 480 ticks at 120 TPQ = 4 quarters = 2 sec at 120 BPM
+        mf.add_note_off(
+            0, 480, 0, 60, 0
+        )  # 480 ticks at 120 TPQ = 4 quarters = 2 sec at 120 BPM
 
         # Duration should be positive
         duration = mf.duration_seconds
@@ -910,7 +926,8 @@ class TestMidiRendering:
     def synth_plugin(self):
         """Get a synth plugin for testing."""
         import os
-        path = os.environ.get('MINIHOST_TEST_PLUGIN')
+
+        path = os.environ.get("MINIHOST_TEST_PLUGIN")
         if not path:
             pytest.skip("Set MINIHOST_TEST_PLUGIN env var to run rendering tests")
         return minihost.Plugin(path, sample_rate=48000, max_block_size=512)
@@ -929,27 +946,23 @@ class TestMidiRendering:
         import numpy as np
 
         audio = minihost.render_midi(
-            synth_plugin,
-            test_midi_file,
-            block_size=512,
-            tail_seconds=0.5
+            synth_plugin, test_midi_file, block_size=512, tail_seconds=0.5
         )
 
         assert isinstance(audio, np.ndarray)
         assert audio.ndim == 2
         assert audio.shape[0] >= 1  # At least 1 channel
-        assert audio.shape[1] > 0   # Some samples
+        assert audio.shape[1] > 0  # Some samples
 
     def test_render_midi_stream_yields_blocks(self, synth_plugin, test_midi_file):
         """Test that render_midi_stream yields audio blocks."""
         import numpy as np
 
-        blocks = list(minihost.render_midi_stream(
-            synth_plugin,
-            test_midi_file,
-            block_size=256,
-            tail_seconds=0.1
-        ))
+        blocks = list(
+            minihost.render_midi_stream(
+                synth_plugin, test_midi_file, block_size=256, tail_seconds=0.1
+            )
+        )
 
         assert len(blocks) > 0
         for block in blocks:
@@ -961,15 +974,12 @@ class TestMidiRendering:
         import tempfile
         import os
 
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             temp_path = f.name
 
         try:
             samples = minihost.render_midi_to_file(
-                synth_plugin,
-                test_midi_file,
-                temp_path,
-                tail_seconds=0.1
+                synth_plugin, test_midi_file, temp_path, tail_seconds=0.1
             )
 
             assert samples > 0
@@ -982,10 +992,7 @@ class TestMidiRendering:
     def test_midi_renderer_class(self, synth_plugin, test_midi_file):
         """Test MidiRenderer class."""
         renderer = minihost.MidiRenderer(
-            synth_plugin,
-            test_midi_file,
-            block_size=512,
-            tail_seconds=0.5
+            synth_plugin, test_midi_file, block_size=512, tail_seconds=0.5
         )
 
         assert renderer.duration_seconds > 0
@@ -1014,18 +1021,14 @@ class TestMidiRendering:
         mf.add_note_on(0, 0, 0, 60, 100)
         mf.add_note_off(0, 240, 0, 60, 0)
 
-        with tempfile.NamedTemporaryFile(suffix='.mid', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as f:
             midi_path = f.name
 
         try:
             mf.save(midi_path)
 
             # Render from path
-            audio = minihost.render_midi(
-                synth_plugin,
-                midi_path,
-                tail_seconds=0.1
-            )
+            audio = minihost.render_midi(synth_plugin, midi_path, tail_seconds=0.1)
 
             assert audio.shape[1] > 0
         finally:
@@ -1040,7 +1043,8 @@ class TestPluginChain:
     def plugin_path(self):
         """Get a test plugin path from environment or skip."""
         import os
-        path = os.environ.get('MINIHOST_TEST_PLUGIN')
+
+        path = os.environ.get("MINIHOST_TEST_PLUGIN")
         if not path:
             pytest.skip("Set MINIHOST_TEST_PLUGIN env var to run PluginChain tests")
         return path

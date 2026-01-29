@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Iterator, Optional, Union
 
 if TYPE_CHECKING:
     import numpy as np
-    from numpy.typing import NDArray
 
 from minihost._core import Plugin, PluginChain, MidiFile
 
@@ -29,10 +28,10 @@ def _build_tempo_map(midi_file: MidiFile) -> list[tuple[int, float]]:
     for track_idx in range(midi_file.num_tracks):
         events = midi_file.get_events(track_idx)
         for event in events:
-            if event.get('type') == 'tempo':
-                bpm = event['bpm']
+            if event.get("type") == "tempo":
+                bpm = event["bpm"]
                 us_per_quarter = 60_000_000.0 / bpm
-                tempo_map.append((event['tick'], us_per_quarter))
+                tempo_map.append((event["tick"], us_per_quarter))
 
     # Sort by tick, default tempo if none specified
     if not tempo_map:
@@ -91,40 +90,47 @@ def _collect_midi_events(midi_file: MidiFile) -> list[dict]:
         events = midi_file.get_events(track_idx)
         for event in events:
             # Only include playable events (not meta events like tempo)
-            event_type = event.get('type')
-            if event_type in ('note_on', 'note_off', 'control_change',
-                             'program_change', 'pitch_bend'):
+            event_type = event.get("type")
+            if event_type in (
+                "note_on",
+                "note_off",
+                "control_change",
+                "program_change",
+                "pitch_bend",
+            ):
                 all_events.append(event)
 
     # Sort by tick
-    all_events.sort(key=lambda x: x['tick'])
+    all_events.sort(key=lambda x: x["tick"])
     return all_events
 
 
-def _event_to_midi_tuple(event: dict, sample_offset: int) -> tuple[int, int, int, int]:
+def _event_to_midi_tuple(
+    event: dict, sample_offset: int
+) -> tuple[int, int, int, int] | None:
     """Convert event dict to (sample_offset, status, data1, data2) tuple."""
-    event_type = event['type']
-    channel = event.get('channel', 0)
+    event_type = event["type"]
+    channel = event.get("channel", 0)
 
-    if event_type == 'note_on':
+    if event_type == "note_on":
         status = 0x90 | channel
-        data1 = event['pitch']
-        data2 = event['velocity']
-    elif event_type == 'note_off':
+        data1 = event["pitch"]
+        data2 = event["velocity"]
+    elif event_type == "note_off":
         status = 0x80 | channel
-        data1 = event['pitch']
-        data2 = event.get('velocity', 0)
-    elif event_type == 'control_change':
+        data1 = event["pitch"]
+        data2 = event.get("velocity", 0)
+    elif event_type == "control_change":
         status = 0xB0 | channel
-        data1 = event['controller']
-        data2 = event['value']
-    elif event_type == 'program_change':
+        data1 = event["controller"]
+        data2 = event["value"]
+    elif event_type == "program_change":
         status = 0xC0 | channel
-        data1 = event['program']
+        data1 = event["program"]
         data2 = 0
-    elif event_type == 'pitch_bend':
+    elif event_type == "pitch_bend":
         status = 0xE0 | channel
-        value = event['value']
+        value = event["value"]
         data1 = value & 0x7F
         data2 = (value >> 7) & 0x7F
     else:
@@ -191,7 +197,7 @@ def render_midi_stream(
 
     # Find total duration from last event
     if all_events:
-        last_tick = max(e['tick'] for e in all_events)
+        last_tick = max(e["tick"] for e in all_events)
         midi_duration = _tick_to_seconds(last_tick, tempo_map, tpq)
     else:
         midi_duration = 0.0
@@ -202,7 +208,7 @@ def render_midi_stream(
     # Convert all events to sample positions
     events_with_samples = []
     for event in all_events:
-        tick = event['tick']
+        tick = event["tick"]
         seconds = _tick_to_seconds(tick, tempo_map, tpq)
         sample_pos = _seconds_to_samples(seconds, sample_rate)
         events_with_samples.append((sample_pos, event))
@@ -298,37 +304,42 @@ def render_midi(
     return result
 
 
-def _write_wav_header(f, channels: int, sample_rate: int, bits_per_sample: int, data_size: int):
+def _write_wav_header(
+    f, channels: int, sample_rate: int, bits_per_sample: int, data_size: int
+):
     """Write WAV file header."""
     byte_rate = sample_rate * channels * bits_per_sample // 8
     block_align = channels * bits_per_sample // 8
 
     # RIFF header
-    f.write(b'RIFF')
-    f.write(struct.pack('<I', 36 + data_size))  # File size - 8
-    f.write(b'WAVE')
+    f.write(b"RIFF")
+    f.write(struct.pack("<I", 36 + data_size))  # File size - 8
+    f.write(b"WAVE")
 
     # fmt chunk
-    f.write(b'fmt ')
-    f.write(struct.pack('<I', 16))  # Chunk size
+    f.write(b"fmt ")
+    f.write(struct.pack("<I", 16))  # Chunk size
 
     if bits_per_sample == 32:
         audio_format = 3  # IEEE float
     else:
         audio_format = 1  # PCM
 
-    f.write(struct.pack('<HHIIHH',
-        audio_format,      # Audio format
-        channels,          # Number of channels
-        sample_rate,       # Sample rate
-        byte_rate,         # Byte rate
-        block_align,       # Block align
-        bits_per_sample    # Bits per sample
-    ))
+    f.write(
+        struct.pack(
+            "<HHIIHH",
+            audio_format,  # Audio format
+            channels,  # Number of channels
+            sample_rate,  # Sample rate
+            byte_rate,  # Byte rate
+            block_align,  # Block align
+            bits_per_sample,  # Bits per sample
+        )
+    )
 
     # data chunk header
-    f.write(b'data')
-    f.write(struct.pack('<I', data_size))
+    f.write(b"data")
+    f.write(struct.pack("<I", data_size))
 
 
 def render_midi_to_file(
@@ -359,7 +370,7 @@ def render_midi_to_file(
     """
     import numpy as np
 
-    if not output_path.lower().endswith('.wav'):
+    if not output_path.lower().endswith(".wav"):
         raise ValueError("Only .wav output is currently supported")
 
     if bit_depth not in (16, 24, 32):
@@ -374,7 +385,7 @@ def render_midi_to_file(
 
     if not blocks:
         # Write empty WAV file
-        with open(output_path, 'wb') as f:
+        with open(output_path, "wb") as f:
             _write_wav_header(f, out_channels, sample_rate, bit_depth, 0)
         return 0
 
@@ -391,7 +402,7 @@ def render_midi_to_file(
 
     data_size = total_samples * out_channels * bytes_per_sample
 
-    with open(output_path, 'wb') as f:
+    with open(output_path, "wb") as f:
         _write_wav_header(f, out_channels, sample_rate, bit_depth, data_size)
 
         # Interleave channels and write
@@ -404,10 +415,12 @@ def render_midi_to_file(
         elif bit_depth == 24:
             # 24-bit PCM
             # Scale to 24-bit range and convert
-            scaled = np.clip(interleaved * 8388607.0, -8388608, 8388607).astype(np.int32)
+            scaled = np.clip(interleaved * 8388607.0, -8388608, 8388607).astype(
+                np.int32
+            )
             # Write as 3 bytes per sample (little-endian)
             for sample in scaled:
-                f.write(struct.pack('<i', sample)[:3])
+                f.write(struct.pack("<i", sample)[:3])
         else:
             # 16-bit PCM
             scaled = np.clip(interleaved * 32767.0, -32768, 32767).astype(np.int16)
@@ -449,6 +462,7 @@ class MidiRenderer:
             tail_seconds: Extra time after MIDI ends for tails
         """
         import numpy as np
+
         self._np = np  # Store for later use
 
         self.plugin = plugin
@@ -481,25 +495,33 @@ class MidiRenderer:
 
         # Find total duration
         if all_events:
-            last_tick = max(e['tick'] for e in all_events)
-            self._midi_duration = _tick_to_seconds(last_tick, self._tempo_map, self._tpq)
+            last_tick = max(e["tick"] for e in all_events)
+            self._midi_duration = _tick_to_seconds(
+                last_tick, self._tempo_map, self._tpq
+            )
         else:
             self._midi_duration = 0.0
 
         self._total_duration = self._midi_duration + self._tail_seconds
-        self._total_samples = _seconds_to_samples(self._total_duration, self.sample_rate)
+        self._total_samples = _seconds_to_samples(
+            self._total_duration, self.sample_rate
+        )
 
         # Convert events to sample positions
         self._events_with_samples = []
         for event in all_events:
-            tick = event['tick']
+            tick = event["tick"]
             seconds = _tick_to_seconds(tick, self._tempo_map, self._tpq)
             sample_pos = _seconds_to_samples(seconds, self.sample_rate)
             self._events_with_samples.append((sample_pos, event))
 
         # Create buffers
-        self._input_buffer = self._np.zeros((self._in_channels, block_size), dtype=self._np.float32)
-        self._output_buffer = self._np.zeros((self._out_channels, block_size), dtype=self._np.float32)
+        self._input_buffer = self._np.zeros(
+            (self._in_channels, block_size), dtype=self._np.float32
+        )
+        self._output_buffer = self._np.zeros(
+            (self._out_channels, block_size), dtype=self._np.float32
+        )
 
         # State
         self._current_sample = 0
@@ -587,11 +609,15 @@ class MidiRenderer:
 
         if this_block_size < self.block_size:
             in_slice = self._input_buffer[:, :this_block_size].copy()
-            out_slice = self._np.zeros((self._out_channels, this_block_size), dtype=self._np.float32)
+            out_slice = self._np.zeros(
+                (self._out_channels, this_block_size), dtype=self._np.float32
+            )
             self.plugin.process_midi(in_slice, out_slice, block_events)
             result = out_slice
         else:
-            self.plugin.process_midi(self._input_buffer, self._output_buffer, block_events)
+            self.plugin.process_midi(
+                self._input_buffer, self._output_buffer, block_events
+            )
             result = self._output_buffer.copy()
 
         self._current_sample += this_block_size
