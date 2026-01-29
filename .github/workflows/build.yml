@@ -1,0 +1,231 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-cli:
+    name: Build CLI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            artifact-name: cli-macos-arm64
+          - os: macos-13
+            artifact-name: cli-macos-x64
+          - os: ubuntu-22.04
+            artifact-name: cli-linux-x64
+          - os: windows-2022
+            artifact-name: cli-windows-x64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libfreetype6-dev \
+            libfontconfig1-dev \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libgl1-mesa-dev \
+            libcurl4-openssl-dev \
+            pkg-config
+
+      - name: Download JUCE
+        shell: bash
+        run: ./scripts/download_juce.sh
+
+      - name: Configure CMake (Unix)
+        if: runner.os != 'Windows'
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Configure CMake (Windows)
+        if: runner.os == 'Windows'
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -G "Visual Studio 17 2022"
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Collect artifacts (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist
+          cp build/projects/minihost_c/minihost_c dist/ || true
+          cp build/projects/minihost_cpp/minihost_cpp dist/ || true
+          cp build/projects/libminihost/libminihost.a dist/ || true
+          cp projects/libminihost/minihost.h dist/
+
+      - name: Collect artifacts (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp build/projects/minihost_c/Release/minihost_c.exe dist/ || true
+          cp build/projects/minihost_cpp/Release/minihost_cpp.exe dist/ || true
+          cp build/projects/libminihost/Release/minihost.lib dist/ || true
+          cp projects/libminihost/minihost.h dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: dist/
+
+  build-wheels:
+    name: Build wheels (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            cibw_archs: arm64
+            artifact-name: wheels-macos-arm64
+          - os: macos-13
+            cibw_archs: x86_64
+            artifact-name: wheels-macos-x64
+          - os: ubuntu-22.04
+            cibw_archs: x86_64
+            artifact-name: wheels-linux-x64
+          - os: windows-2022
+            cibw_archs: AMD64
+            artifact-name: wheels-windows-x64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install cibuildwheel
+        run: pip install cibuildwheel
+
+      - name: Build wheels
+        env:
+          CIBW_ARCHS: ${{ matrix.cibw_archs }}
+          CIBW_BUILD: cp39-* cp310-* cp311-* cp312-* cp313-*
+          CIBW_SKIP: '*-musllinux_*'
+          CIBW_BEFORE_ALL_LINUX: >
+            (yum install -y curl alsa-lib-devel freetype-devel fontconfig-devel
+            gtk3-devel mesa-libGL-devel libcurl-devel webkit2gtk3-devel pkgconfig ||
+            apt-get update && apt-get install -y curl libasound2-dev libfreetype6-dev
+            libfontconfig1-dev libwebkit2gtk-4.1-dev libgtk-3-dev libgl1-mesa-dev
+            libcurl4-openssl-dev pkg-config) && bash {project}/scripts/download_juce.sh
+          CIBW_BEFORE_ALL_MACOS: bash {project}/scripts/download_juce.sh
+          CIBW_BEFORE_ALL_WINDOWS: bash {project}/scripts/download_juce.sh
+        run: cibuildwheel --output-dir wheelhouse
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: wheelhouse/*.whl
+
+  build-sdist:
+    name: Build source distribution
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build tools
+        run: pip install build
+
+      - name: Build sdist
+        run: python -m build --sdist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  aggregate:
+    name: Aggregate artifacts
+    runs-on: ubuntu-22.04
+    needs: [build-cli, build-wheels, build-sdist]
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Organize artifacts
+        run: |
+          mkdir -p release/cli/macos-arm64
+          mkdir -p release/cli/macos-x64
+          mkdir -p release/cli/linux-x64
+          mkdir -p release/cli/windows-x64
+          mkdir -p release/wheels
+          mkdir -p release/sdist
+
+          # CLI binaries
+          cp -r artifacts/cli-macos-arm64/* release/cli/macos-arm64/ || true
+          cp -r artifacts/cli-macos-x64/* release/cli/macos-x64/ || true
+          cp -r artifacts/cli-linux-x64/* release/cli/linux-x64/ || true
+          cp -r artifacts/cli-windows-x64/* release/cli/windows-x64/ || true
+
+          # Wheels
+          cp artifacts/wheels-*/*.whl release/wheels/ || true
+
+          # Source distribution
+          cp artifacts/sdist/*.tar.gz release/sdist/ || true
+
+          # Summary
+          echo "=== Release Contents ==="
+          find release -type f | sort
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: minihost-all
+          path: release/
+
+  release:
+    name: Create release
+    runs-on: ubuntu-22.04
+    needs: [aggregate]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download aggregated artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: minihost-all
+          path: release
+
+      - name: Create archives
+        run: |
+          cd release
+          # Create platform-specific CLI archives
+          tar -czvf ../minihost-cli-macos-arm64.tar.gz -C cli/macos-arm64 .
+          tar -czvf ../minihost-cli-macos-x64.tar.gz -C cli/macos-x64 .
+          tar -czvf ../minihost-cli-linux-x64.tar.gz -C cli/linux-x64 .
+          cd cli/windows-x64 && zip -r ../../../minihost-cli-windows-x64.zip . && cd ../..
+          # Create wheels archive
+          cd wheels && zip -r ../../minihost-wheels.zip . && cd ..
+          cd ..
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            minihost-cli-macos-arm64.tar.gz
+            minihost-cli-macos-x64.tar.gz
+            minihost-cli-linux-x64.tar.gz
+            minihost-cli-windows-x64.zip
+            minihost-wheels.zip
+            release/sdist/*.tar.gz
+          generate_release_notes: true
