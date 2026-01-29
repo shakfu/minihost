@@ -4,6 +4,9 @@ add_library(minihost STATIC
     minihost.cpp
 )
 
+# Required for linking into shared libraries (e.g., Python module)
+set_target_properties(minihost PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 target_include_directories(minihost PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_link_libraries(minihost PRIVATE

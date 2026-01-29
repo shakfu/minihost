@@ -74,9 +74,9 @@ struct MH_Plugin
 
     MH_Plugin()
     {
-        fm.addFormat(std::make_unique<VST3PluginFormat>());
+        fm.addFormat(new VST3PluginFormat());
        #if JUCE_MAC
-        fm.addFormat(std::make_unique<AudioUnitPluginFormat>());
+        fm.addFormat(new AudioUnitPluginFormat());
        #endif
     }
 };
@@ -720,9 +720,9 @@ extern "C" int mh_probe(const char* plugin_path,
 
     // Create a temporary format manager to scan the plugin
     AudioPluginFormatManager fm;
-    fm.addFormat(std::make_unique<VST3PluginFormat>());
+    fm.addFormat(new VST3PluginFormat());
    #if JUCE_MAC
-    fm.addFormat(std::make_unique<AudioUnitPluginFormat>());
+    fm.addFormat(new AudioUnitPluginFormat());
    #endif
 
     // Find plugin description without instantiating

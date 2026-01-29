@@ -23,7 +23,11 @@ A minimal audio plugin host library for loading and processing VST3 and AudioUni
 
 - **macOS**: Xcode command line tools
 - **Windows**: Visual Studio 2019+ or MinGW
-- **Linux**: ALSA development libraries
+- **Linux**: Install the following development libraries:
+  ```bash
+  sudo apt install libasound2-dev libfreetype-dev libfontconfig1-dev \
+      libwebkit2gtk-4.1-dev libgtk-3-dev libgl-dev libcurl4-openssl-dev
+  ```
 
 ## Building
 

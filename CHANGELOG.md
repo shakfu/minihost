@@ -37,6 +37,13 @@
 - `mh_process_sidechain()` - Process audio with sidechain input
 - `mh_get_sidechain_channels()` - Query configured sidechain channel count
 
+### Fixed
+
+#### Linux Compilation
+- Added Linux build dependencies to README.md (JUCE requires freetype, fontconfig, webkit2gtk, gtk3, etc.)
+- Fixed `addFormat()` calls to use raw pointers instead of `std::make_unique<>()` (JUCE's API expects raw pointers)
+- Added `POSITION_INDEPENDENT_CODE ON` to libminihost CMakeLists.txt for linking into shared libraries (e.g., Python module)
+
 ### Python Bindings
 
 All C API additions are exposed in the Python `minihost` module:
