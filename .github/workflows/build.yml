@@ -18,7 +18,7 @@ jobs:
         include:
           - os: macos-14
             artifact-name: cli-macos-universal
-            cmake-args: -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+            cmake-args: -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13
           - os: ubuntu-22.04
             artifact-name: cli-linux-x64
             cmake-args: ""
@@ -114,6 +114,7 @@ jobs:
             gtk3-devel mesa-libGL-devel libcurl-devel webkit2gtk3-devel pkgconfig &&
             bash {project}/scripts/download_juce.sh
           CIBW_BEFORE_ALL_MACOS: bash {project}/scripts/download_juce.sh
+          CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET=10.13
           CIBW_BEFORE_ALL_WINDOWS: bash {project}/scripts/download_juce.sh
         run: cibuildwheel --output-dir wheelhouse
 
