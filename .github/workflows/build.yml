@@ -17,13 +17,14 @@ jobs:
       matrix:
         include:
           - os: macos-14
-            artifact-name: cli-macos-arm64
-          - os: macos-13
-            artifact-name: cli-macos-x64
+            artifact-name: cli-macos-universal
+            cmake-args: -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
           - os: ubuntu-22.04
             artifact-name: cli-linux-x64
+            cmake-args: ""
           - os: windows-2022
             artifact-name: cli-windows-x64
+            cmake-args: -G "Visual Studio 17 2022"
 
     steps:
       - uses: actions/checkout@v4
@@ -46,13 +47,8 @@ jobs:
         shell: bash
         run: ./scripts/download_juce.sh
 
-      - name: Configure CMake (Unix)
-        if: runner.os != 'Windows'
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
-
-      - name: Configure CMake (Windows)
-        if: runner.os == 'Windows'
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -G "Visual Studio 17 2022"
+      - name: Configure CMake
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmake-args }}
 
       - name: Build
         run: cmake --build build --config Release
@@ -82,18 +78,15 @@ jobs:
           path: dist/
 
   build-wheels:
-    name: Build wheels (${{ matrix.os }})
+    name: Build wheels (${{ matrix.os }}, ${{ matrix.cibw_archs }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-14
-            cibw_archs: arm64
-            artifact-name: wheels-macos-arm64
-          - os: macos-13
-            cibw_archs: x86_64
-            artifact-name: wheels-macos-x64
+            cibw_archs: arm64 x86_64
+            artifact-name: wheels-macos
           - os: ubuntu-22.04
             cibw_archs: x86_64
             artifact-name: wheels-linux-x64
@@ -162,16 +155,14 @@ jobs:
 
       - name: Organize artifacts
         run: |
-          mkdir -p release/cli/macos-arm64
-          mkdir -p release/cli/macos-x64
+          mkdir -p release/cli/macos-universal
           mkdir -p release/cli/linux-x64
           mkdir -p release/cli/windows-x64
           mkdir -p release/wheels
           mkdir -p release/sdist
 
           # CLI binaries
-          cp -r artifacts/cli-macos-arm64/* release/cli/macos-arm64/ || true
-          cp -r artifacts/cli-macos-x64/* release/cli/macos-x64/ || true
+          cp -r artifacts/cli-macos-universal/* release/cli/macos-universal/ || true
           cp -r artifacts/cli-linux-x64/* release/cli/linux-x64/ || true
           cp -r artifacts/cli-windows-x64/* release/cli/windows-x64/ || true
 
@@ -208,8 +199,7 @@ jobs:
         run: |
           cd release
           # Create platform-specific CLI archives
-          tar -czvf ../minihost-cli-macos-arm64.tar.gz -C cli/macos-arm64 .
-          tar -czvf ../minihost-cli-macos-x64.tar.gz -C cli/macos-x64 .
+          tar -czvf ../minihost-cli-macos-universal.tar.gz -C cli/macos-universal .
           tar -czvf ../minihost-cli-linux-x64.tar.gz -C cli/linux-x64 .
           cd cli/windows-x64 && zip -r ../../../minihost-cli-windows-x64.zip . && cd ../..
           # Create wheels archive
@@ -220,8 +210,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            minihost-cli-macos-arm64.tar.gz
-            minihost-cli-macos-x64.tar.gz
+            minihost-cli-macos-universal.tar.gz
             minihost-cli-linux-x64.tar.gz
             minihost-cli-windows-x64.zip
             minihost-wheels.zip
