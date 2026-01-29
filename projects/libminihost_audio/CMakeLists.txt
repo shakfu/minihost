@@ -7,11 +7,11 @@ add_library(minihost_audio STATIC
 )
 
 # Required for linking into shared libraries (e.g., Python module)
-set_target_properties(minihost_audio PROPERTIES POSITION_INDEPENDENT_CODE ON)
-
 # C++20 required for libremidi
-set_source_files_properties(minihost_midi.cpp PROPERTIES
-    COMPILE_FLAGS "-std=c++20"
+set_target_properties(minihost_audio PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
 )
 
 target_include_directories(minihost_audio PUBLIC
