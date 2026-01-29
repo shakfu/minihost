@@ -9,6 +9,19 @@ def test_module_has_plugin_class():
     assert hasattr(minihost, 'Plugin')
 
 
+def test_module_has_audio_device_class():
+    """Test that AudioDevice class is exported."""
+    assert hasattr(minihost, 'AudioDevice')
+
+
+def test_module_has_midi_functions():
+    """Test that MIDI functions are exported."""
+    assert hasattr(minihost, 'midi_get_input_ports')
+    assert hasattr(minihost, 'midi_get_output_ports')
+    assert callable(minihost.midi_get_input_ports)
+    assert callable(minihost.midi_get_output_ports)
+
+
 def test_module_has_probe_function():
     """Test that probe function is exported."""
     assert hasattr(minihost, 'probe')
@@ -19,6 +32,76 @@ def test_module_has_scan_directory_function():
     """Test that scan_directory function is exported."""
     assert hasattr(minihost, 'scan_directory')
     assert callable(minihost.scan_directory)
+
+
+def test_audio_device_class_has_expected_methods():
+    """Test that AudioDevice class has expected methods."""
+    expected_methods = [
+        'start',
+        'stop',
+    ]
+    for method in expected_methods:
+        assert hasattr(minihost.AudioDevice, method), f"AudioDevice missing method: {method}"
+
+
+def test_audio_device_class_has_expected_properties():
+    """Test that AudioDevice class has expected properties."""
+    expected_props = [
+        'is_playing',
+        'sample_rate',
+        'buffer_frames',
+        'channels',
+        'midi_input_port',
+        'midi_output_port',
+    ]
+    for prop in expected_props:
+        assert hasattr(minihost.AudioDevice, prop), f"AudioDevice missing property: {prop}"
+
+
+def test_audio_device_class_has_midi_methods():
+    """Test that AudioDevice class has MIDI methods."""
+    expected_methods = [
+        'connect_midi_input',
+        'connect_midi_output',
+        'disconnect_midi_input',
+        'disconnect_midi_output',
+        'create_virtual_midi_input',
+        'create_virtual_midi_output',
+    ]
+    for method in expected_methods:
+        assert hasattr(minihost.AudioDevice, method), f"AudioDevice missing method: {method}"
+
+
+def test_audio_device_class_has_virtual_midi_properties():
+    """Test that AudioDevice class has virtual MIDI properties."""
+    expected_props = [
+        'is_midi_input_virtual',
+        'is_midi_output_virtual',
+    ]
+    for prop in expected_props:
+        assert hasattr(minihost.AudioDevice, prop), f"AudioDevice missing property: {prop}"
+
+
+def test_midi_port_enumeration():
+    """Test that MIDI port enumeration returns lists."""
+    inputs = minihost.midi_get_input_ports()
+    outputs = minihost.midi_get_output_ports()
+
+    assert isinstance(inputs, list)
+    assert isinstance(outputs, list)
+
+    # If there are ports, check structure
+    for port in inputs:
+        assert isinstance(port, dict)
+        assert 'name' in port
+        assert 'index' in port
+        assert isinstance(port['name'], str)
+        assert isinstance(port['index'], int)
+
+    for port in outputs:
+        assert isinstance(port, dict)
+        assert 'name' in port
+        assert 'index' in port
 
 
 def test_plugin_class_has_expected_methods():
@@ -561,3 +644,86 @@ class TestPluginIntegration:
 
         # Verify output is still float64
         assert output_audio.dtype == np.float64
+
+    def test_audio_device(self, plugin):
+        """Test AudioDevice creation and properties."""
+        # Create audio device
+        audio = minihost.AudioDevice(plugin)
+
+        # Check properties
+        assert audio.sample_rate > 0
+        assert audio.buffer_frames > 0
+        assert audio.channels > 0
+        assert audio.is_playing is False
+
+    def test_audio_device_start_stop(self, plugin):
+        """Test AudioDevice start/stop."""
+        audio = minihost.AudioDevice(plugin)
+
+        # Start playback
+        audio.start()
+        assert audio.is_playing is True
+
+        # Stop playback
+        audio.stop()
+        assert audio.is_playing is False
+
+    def test_audio_device_context_manager(self, plugin):
+        """Test AudioDevice as context manager."""
+        with minihost.AudioDevice(plugin) as audio:
+            assert audio.is_playing is True
+            assert audio.sample_rate > 0
+        # After exiting context, should be stopped
+        # Note: audio object is invalid after close, so we don't check is_playing
+
+    def test_audio_device_with_config(self, plugin_path):
+        """Test AudioDevice with custom configuration."""
+        # Create plugin with specific sample rate
+        plugin = minihost.Plugin(plugin_path, sample_rate=48000, max_block_size=1024)
+
+        # Create audio device with specific settings
+        audio = minihost.AudioDevice(
+            plugin,
+            sample_rate=48000,
+            buffer_frames=512,
+            output_channels=2
+        )
+
+        # Verify properties (actual values may differ from requested)
+        assert audio.sample_rate > 0
+        assert audio.buffer_frames > 0
+        assert audio.channels > 0
+
+        audio.stop()  # Cleanup
+
+    def test_audio_device_midi_properties(self, plugin):
+        """Test AudioDevice MIDI properties."""
+        audio = minihost.AudioDevice(plugin)
+
+        # Should not be connected to any MIDI port by default
+        assert audio.midi_input_port == -1
+        assert audio.midi_output_port == -1
+
+    def test_audio_device_midi_connection(self, plugin):
+        """Test AudioDevice MIDI connection (if ports available)."""
+        audio = minihost.AudioDevice(plugin)
+
+        inputs = minihost.midi_get_input_ports()
+        if inputs:
+            # Connect to first input port
+            audio.connect_midi_input(inputs[0]['index'])
+            assert audio.midi_input_port == inputs[0]['index']
+
+            # Disconnect
+            audio.disconnect_midi_input()
+            assert audio.midi_input_port == -1
+
+        outputs = minihost.midi_get_output_ports()
+        if outputs:
+            # Connect to first output port
+            audio.connect_midi_output(outputs[0]['index'])
+            assert audio.midi_output_port == outputs[0]['index']
+
+            # Disconnect
+            audio.disconnect_midi_output()
+            assert audio.midi_output_port == -1

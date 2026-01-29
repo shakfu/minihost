@@ -24,6 +24,7 @@ add_subdirectory(${JUCE_PATH} ${CMAKE_CURRENT_BINARY_DIR}/JUCE)
 
 # Add project subdirectories
 add_subdirectory(projects/libminihost)
+add_subdirectory(projects/libminihost_audio)
 
 # Only build CLI tools for standalone builds (not Python wheel builds)
 if(NOT DEFINED SKBUILD)
@@ -37,8 +38,10 @@ if(DEFINED SKBUILD)
     find_package(nanobind CONFIG REQUIRED)
 
     nanobind_add_module(_core src/minihost/_core.cpp)
-    target_link_libraries(_core PRIVATE minihost)
-    target_include_directories(_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/projects/libminihost)
+    target_link_libraries(_core PRIVATE minihost minihost_audio)
+    target_include_directories(_core PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/projects/libminihost
+        ${CMAKE_CURRENT_SOURCE_DIR}/projects/libminihost_audio)
 
     install(TARGETS _core DESTINATION minihost)
 endif()

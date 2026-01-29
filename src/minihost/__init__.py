@@ -31,7 +31,21 @@ Example usage:
     >>> plugin.set_state(state)
 """
 
-from minihost._core import Plugin, probe, scan_directory
+from minihost._core import (
+    Plugin,
+    AudioDevice,
+    probe,
+    scan_directory,
+    midi_get_input_ports,
+    midi_get_output_ports,
+)
 
-__all__ = ["Plugin", "probe", "scan_directory"]
+__all__ = [
+    "Plugin",
+    "AudioDevice",
+    "probe",
+    "scan_directory",
+    "midi_get_input_ports",
+    "midi_get_output_ports",
+]
 __version__ = "0.1.0"

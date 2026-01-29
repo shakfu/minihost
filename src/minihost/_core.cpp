@@ -9,6 +9,8 @@
 #include <cstring>
 
 #include "minihost.h"
+#include "minihost_audio.h"
+#include "minihost_midi.h"
 
 namespace nb = nanobind;
 
@@ -532,6 +534,154 @@ private:
     double sample_rate_;
     int max_block_size_;
     bool non_realtime_ = false;
+
+    // Allow AudioDevice to access raw plugin pointer
+    friend class AudioDevice;
+};
+
+
+// Python wrapper class for MH_AudioDevice
+class AudioDevice {
+public:
+    AudioDevice(Plugin& plugin, double sample_rate = 0, int buffer_frames = 0,
+                int output_channels = 0, int midi_input_port = -1, int midi_output_port = -1)
+        : plugin_ref_(&plugin)
+    {
+        MH_AudioConfig config;
+        config.sample_rate = sample_rate;
+        config.buffer_frames = buffer_frames;
+        config.output_channels = output_channels;
+        config.midi_input_port = midi_input_port;
+        config.midi_output_port = midi_output_port;
+
+        char err[1024] = {0};
+        device_ = mh_audio_open(plugin.plugin_, &config, err, sizeof(err));
+        if (!device_) {
+            throw std::runtime_error(std::string("Failed to open audio device: ") + err);
+        }
+    }
+
+    ~AudioDevice() {
+        if (device_) {
+            mh_audio_close(device_);
+            device_ = nullptr;
+        }
+    }
+
+    // Disable copy
+    AudioDevice(const AudioDevice&) = delete;
+    AudioDevice& operator=(const AudioDevice&) = delete;
+
+    // Enable move
+    AudioDevice(AudioDevice&& other) noexcept
+        : device_(other.device_), plugin_ref_(other.plugin_ref_)
+    {
+        other.device_ = nullptr;
+        other.plugin_ref_ = nullptr;
+    }
+
+    AudioDevice& operator=(AudioDevice&& other) noexcept {
+        if (this != &other) {
+            if (device_) mh_audio_close(device_);
+            device_ = other.device_;
+            plugin_ref_ = other.plugin_ref_;
+            other.device_ = nullptr;
+            other.plugin_ref_ = nullptr;
+        }
+        return *this;
+    }
+
+    void start() {
+        if (!mh_audio_start(device_)) {
+            throw std::runtime_error("Failed to start audio");
+        }
+    }
+
+    void stop() {
+        if (!mh_audio_stop(device_)) {
+            throw std::runtime_error("Failed to stop audio");
+        }
+    }
+
+    bool is_playing() const {
+        return mh_audio_is_playing(device_) != 0;
+    }
+
+    double get_sample_rate() const {
+        return mh_audio_get_sample_rate(device_);
+    }
+
+    int get_buffer_frames() const {
+        return mh_audio_get_buffer_frames(device_);
+    }
+
+    int get_channels() const {
+        return mh_audio_get_channels(device_);
+    }
+
+    // MIDI connection
+    void connect_midi_input(int port_index) {
+        if (!mh_audio_connect_midi_input(device_, port_index)) {
+            throw std::runtime_error("Failed to connect MIDI input");
+        }
+    }
+
+    void connect_midi_output(int port_index) {
+        if (!mh_audio_connect_midi_output(device_, port_index)) {
+            throw std::runtime_error("Failed to connect MIDI output");
+        }
+    }
+
+    void disconnect_midi_input() {
+        mh_audio_disconnect_midi_input(device_);
+    }
+
+    void disconnect_midi_output() {
+        mh_audio_disconnect_midi_output(device_);
+    }
+
+    int get_midi_input_port() const {
+        return mh_audio_get_midi_input_port(device_);
+    }
+
+    int get_midi_output_port() const {
+        return mh_audio_get_midi_output_port(device_);
+    }
+
+    // Virtual MIDI ports
+    void create_virtual_midi_input(const std::string& port_name) {
+        if (!mh_audio_create_virtual_midi_input(device_, port_name.c_str())) {
+            throw std::runtime_error("Failed to create virtual MIDI input (may not be supported on this platform)");
+        }
+    }
+
+    void create_virtual_midi_output(const std::string& port_name) {
+        if (!mh_audio_create_virtual_midi_output(device_, port_name.c_str())) {
+            throw std::runtime_error("Failed to create virtual MIDI output (may not be supported on this platform)");
+        }
+    }
+
+    bool is_midi_input_virtual() const {
+        return mh_audio_is_midi_input_virtual(device_) != 0;
+    }
+
+    bool is_midi_output_virtual() const {
+        return mh_audio_is_midi_output_virtual(device_) != 0;
+    }
+
+    // Context manager support
+    AudioDevice& enter() {
+        start();
+        return *this;
+    }
+
+    void exit(nb::object, nb::object, nb::object) {
+        stop();
+    }
+
+private:
+    MH_AudioDevice* device_ = nullptr;
+    Plugin* plugin_ref_ = nullptr;  // Keep reference to prevent plugin from being GC'd
 };
 
 
@@ -599,6 +749,46 @@ nb::list scan_directory(const std::string& directory_path) {
     return result_list;
 }
 
+// MIDI port enumeration callback context
+struct MidiPortContext {
+    std::vector<nb::dict>* results;
+};
+
+static void midi_port_callback(const MH_MidiPortInfo* port, void* user_data) {
+    auto* ctx = static_cast<MidiPortContext*>(user_data);
+    nb::dict d;
+    d["name"] = std::string(port->name);
+    d["index"] = port->index;
+    ctx->results->push_back(d);
+}
+
+// Module-level MIDI port enumeration
+nb::list midi_get_input_ports() {
+    std::vector<nb::dict> results;
+    MidiPortContext ctx{&results};
+
+    mh_midi_enumerate_inputs(midi_port_callback, &ctx);
+
+    nb::list result_list;
+    for (const auto& d : results) {
+        result_list.append(d);
+    }
+    return result_list;
+}
+
+nb::list midi_get_output_ports() {
+    std::vector<nb::dict> results;
+    MidiPortContext ctx{&results};
+
+    mh_midi_enumerate_outputs(midi_port_callback, &ctx);
+
+    nb::list result_list;
+    for (const auto& d : results) {
+        result_list.append(d);
+    }
+    return result_list;
+}
+
 // Note: Async plugin loading in Python is best done using Python's threading module:
 //
 //   import threading
@@ -628,6 +818,12 @@ NB_MODULE(_core, m) {
     m.def("scan_directory", &scan_directory,
           nb::arg("directory_path"),
           "Scan a directory for plugins (VST3, AudioUnit). Returns list of plugin metadata dicts.");
+
+    // MIDI port enumeration
+    m.def("midi_get_input_ports", &midi_get_input_ports,
+          "Get list of available MIDI input ports. Returns list of dicts with 'name' and 'index'.");
+    m.def("midi_get_output_ports", &midi_get_output_ports,
+          "Get list of available MIDI output ports. Returns list of dicts with 'name' and 'index'.");
 
     nb::class_<Plugin>(m, "Plugin")
         .def(nb::init<const std::string&, double, int, int, int, int>(),
@@ -745,4 +941,66 @@ NB_MODULE(_core, m) {
         .def("process_double", &Plugin::process_double,
              nb::arg("input"), nb::arg("output"),
              "Process audio with double precision (float64). Shape: [channels, frames]");
+
+    // AudioDevice class for real-time playback
+    nb::class_<AudioDevice>(m, "AudioDevice")
+        .def(nb::init<Plugin&, double, int, int, int, int>(),
+             nb::arg("plugin"),
+             nb::arg("sample_rate") = 0.0,
+             nb::arg("buffer_frames") = 0,
+             nb::arg("output_channels") = 0,
+             nb::arg("midi_input_port") = -1,
+             nb::arg("midi_output_port") = -1,
+             "Open an audio device for real-time playback. "
+             "sample_rate=0 uses device default. "
+             "buffer_frames=0 uses auto (~256-512). "
+             "output_channels=0 uses plugin's output channels. "
+             "midi_input_port=-1 means no MIDI input. "
+             "midi_output_port=-1 means no MIDI output.")
+
+        .def("start", &AudioDevice::start,
+             "Start audio playback")
+        .def("stop", &AudioDevice::stop,
+             "Stop audio playback")
+
+        .def_prop_ro("is_playing", &AudioDevice::is_playing,
+                     "True if audio is currently playing")
+        .def_prop_ro("sample_rate", &AudioDevice::get_sample_rate,
+                     "Actual sample rate (may differ from requested)")
+        .def_prop_ro("buffer_frames", &AudioDevice::get_buffer_frames,
+                     "Actual buffer size in frames")
+        .def_prop_ro("channels", &AudioDevice::get_channels,
+                     "Number of output channels")
+
+        // MIDI
+        .def("connect_midi_input", &AudioDevice::connect_midi_input,
+             nb::arg("port_index"),
+             "Connect to a MIDI input port")
+        .def("connect_midi_output", &AudioDevice::connect_midi_output,
+             nb::arg("port_index"),
+             "Connect to a MIDI output port")
+        .def("disconnect_midi_input", &AudioDevice::disconnect_midi_input,
+             "Disconnect MIDI input")
+        .def("disconnect_midi_output", &AudioDevice::disconnect_midi_output,
+             "Disconnect MIDI output")
+        .def_prop_ro("midi_input_port", &AudioDevice::get_midi_input_port,
+                     "Connected MIDI input port index (-1 if not connected or virtual)")
+        .def_prop_ro("midi_output_port", &AudioDevice::get_midi_output_port,
+                     "Connected MIDI output port index (-1 if not connected or virtual)")
+
+        // Virtual MIDI ports
+        .def("create_virtual_midi_input", &AudioDevice::create_virtual_midi_input,
+             nb::arg("port_name"),
+             "Create a virtual MIDI input port that other applications can send MIDI to")
+        .def("create_virtual_midi_output", &AudioDevice::create_virtual_midi_output,
+             nb::arg("port_name"),
+             "Create a virtual MIDI output port that other applications can receive MIDI from")
+        .def_prop_ro("is_midi_input_virtual", &AudioDevice::is_midi_input_virtual,
+                     "True if MIDI input is a virtual port")
+        .def_prop_ro("is_midi_output_virtual", &AudioDevice::is_midi_output_virtual,
+                     "True if MIDI output is a virtual port")
+
+        // Context manager support
+        .def("__enter__", &AudioDevice::enter, nb::rv_policy::reference)
+        .def("__exit__", &AudioDevice::exit);
 }

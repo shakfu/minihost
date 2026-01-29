@@ -6,6 +6,9 @@ A minimal audio plugin host library for loading and processing VST3 and AudioUni
 
 - Load VST3 plugins (macOS, Windows, Linux)
 - Load AudioUnit plugins (macOS only)
+- **Real-time audio playback** via miniaudio (cross-platform)
+- **Real-time MIDI I/O** via libremidi (cross-platform)
+- **Virtual MIDI ports** - create named ports that DAWs can connect to (macOS, Linux)
 - Process audio with sample-accurate parameter automation
 - MIDI input/output support
 - Transport info for tempo-synced plugins
@@ -96,6 +99,59 @@ mh_set_state(plugin, state, size);
 mh_close(plugin);
 ```
 
+### Real-time Audio Playback
+
+```c
+#include "minihost_audio.h"
+
+// Open audio device for real-time playback
+MH_AudioConfig config = { .sample_rate = 48000, .buffer_frames = 512 };
+MH_AudioDevice* audio = mh_audio_open(plugin, &config, err, sizeof(err));
+
+// Start playback
+mh_audio_start(audio);
+
+// Plugin is now producing audio through speakers
+// Send MIDI, adjust parameters, etc.
+
+// Stop and cleanup
+mh_audio_stop(audio);
+mh_audio_close(audio);
+mh_close(plugin);
+```
+
+### Real-time MIDI I/O
+
+```c
+#include "minihost_midi.h"
+
+// Enumerate available MIDI ports
+int num_inputs = mh_midi_get_num_inputs();
+int num_outputs = mh_midi_get_num_outputs();
+
+for (int i = 0; i < num_inputs; i++) {
+    char name[256];
+    mh_midi_get_input_name(i, name, sizeof(name));
+    printf("MIDI Input %d: %s\n", i, name);
+}
+
+// Connect MIDI to audio device
+MH_AudioConfig config = {
+    .sample_rate = 48000,
+    .midi_input_port = 0,   // Connect to first MIDI input
+    .midi_output_port = -1  // No MIDI output
+};
+MH_AudioDevice* audio = mh_audio_open(plugin, &config, err, sizeof(err));
+
+// Or connect/disconnect dynamically
+mh_audio_connect_midi_input(audio, 1);
+mh_audio_disconnect_midi_input(audio);
+
+// Create virtual MIDI ports (appear in system MIDI, DAWs can connect)
+mh_audio_create_virtual_midi_input(audio, "minihost Input");
+mh_audio_create_virtual_midi_output(audio, "minihost Output");
+```
+
 ## Python Bindings
 
 ```bash
@@ -113,6 +169,62 @@ output_audio = np.zeros((2, 512), dtype=np.float32)
 plugin.process(input_audio, output_audio)
 ```
 
+### Real-time Audio Playback
+
+```python
+import minihost
+import time
+
+plugin = minihost.Plugin("/path/to/synth.vst3", sample_rate=48000)
+
+# Use as context manager for automatic start/stop
+with minihost.AudioDevice(plugin) as audio:
+    # Plugin is now producing audio through speakers
+    plugin.process_midi(None, None, [(0, 0x90, 60, 100)])  # Note on
+    time.sleep(1)
+    plugin.process_midi(None, None, [(0, 0x80, 60, 0)])    # Note off
+    time.sleep(0.5)
+
+# Or manual control
+audio = minihost.AudioDevice(plugin)
+audio.start()
+# ... do stuff ...
+audio.stop()
+```
+
+### Real-time MIDI I/O
+
+```python
+import minihost
+
+# Enumerate available MIDI ports
+inputs = minihost.midi_get_input_ports()
+outputs = minihost.midi_get_output_ports()
+print(f"MIDI Inputs: {inputs}")
+print(f"MIDI Outputs: {outputs}")
+
+# Connect MIDI when creating AudioDevice
+with minihost.AudioDevice(plugin, midi_input_port=0) as audio:
+    # MIDI from port 0 is now routed to the plugin
+    pass
+
+# Or connect dynamically
+audio = minihost.AudioDevice(plugin)
+audio.connect_midi_input(0)
+audio.start()
+# ...
+audio.disconnect_midi_input()
+audio.stop()
+
+# Create virtual MIDI ports (appear in system MIDI, DAWs can connect)
+audio = minihost.AudioDevice(plugin)
+audio.create_virtual_midi_input("minihost Input")
+audio.create_virtual_midi_output("minihost Output")
+audio.start()
+# Other apps can now send MIDI to "minihost Input"
+# and receive MIDI from "minihost Output"
+```
+
 ## Thread Safety
 
 - `mh_process`, `mh_process_midi`, `mh_process_midi_io`, `mh_process_auto`: Call from audio thread only (no locking)
@@ -120,6 +232,8 @@ plugin.process(input_audio, output_audio)
 - Do not call `mh_close` while another thread is using the plugin
 
 ## API Reference
+
+### Plugin Functions
 
 | Function | Description |
 |----------|-------------|
@@ -142,6 +256,43 @@ plugin.process(input_audio, output_audio)
 | `mh_get_bypass` | Get bypass state |
 | `mh_set_bypass` | Set bypass state |
 | `mh_get_latency_samples` | Get plugin latency |
+
+### Audio Device Functions (minihost_audio.h)
+
+| Function | Description |
+|----------|-------------|
+| `mh_audio_open` | Open audio device for real-time playback |
+| `mh_audio_close` | Close audio device |
+| `mh_audio_start` | Start audio playback |
+| `mh_audio_stop` | Stop audio playback |
+| `mh_audio_is_playing` | Check if audio is playing |
+| `mh_audio_set_input_callback` | Set input callback for effects |
+| `mh_audio_get_sample_rate` | Get actual sample rate |
+| `mh_audio_get_buffer_frames` | Get actual buffer size |
+| `mh_audio_get_channels` | Get number of output channels |
+| `mh_audio_connect_midi_input` | Connect MIDI input port to device |
+| `mh_audio_connect_midi_output` | Connect MIDI output port to device |
+| `mh_audio_disconnect_midi_input` | Disconnect MIDI input |
+| `mh_audio_disconnect_midi_output` | Disconnect MIDI output |
+| `mh_audio_get_midi_input_port` | Get connected MIDI input port index |
+| `mh_audio_get_midi_output_port` | Get connected MIDI output port index |
+| `mh_audio_create_virtual_midi_input` | Create virtual MIDI input port |
+| `mh_audio_create_virtual_midi_output` | Create virtual MIDI output port |
+| `mh_audio_is_midi_input_virtual` | Check if MIDI input is virtual |
+| `mh_audio_is_midi_output_virtual` | Check if MIDI output is virtual |
+
+### MIDI Functions (minihost_midi.h)
+
+| Function | Description |
+|----------|-------------|
+| `mh_midi_enumerate_inputs` | Enumerate MIDI input ports via callback |
+| `mh_midi_enumerate_outputs` | Enumerate MIDI output ports via callback |
+| `mh_midi_get_num_inputs` | Get number of MIDI input ports |
+| `mh_midi_get_num_outputs` | Get number of MIDI output ports |
+| `mh_midi_get_input_name` | Get MIDI input port name by index |
+| `mh_midi_get_output_name` | Get MIDI output port name by index |
+| `mh_midi_in_open_virtual` | Create virtual MIDI input port |
+| `mh_midi_out_open_virtual` | Create virtual MIDI output port |
 
 ## License
 

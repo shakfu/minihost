@@ -4,6 +4,43 @@
 
 ### Added
 
+#### Real-time Audio Playback (miniaudio integration)
+
+- `MH_AudioDevice` opaque struct for audio device management
+- `MH_AudioConfig` struct for device configuration (sample_rate, buffer_frames, output_channels, midi_input_port, midi_output_port)
+- `MH_AudioInputCallback` typedef for effect plugin input audio
+- `mh_audio_open()` - Open audio device for real-time playback through a plugin
+- `mh_audio_close()` - Close audio device
+- `mh_audio_start()` / `mh_audio_stop()` - Start/stop audio playback
+- `mh_audio_is_playing()` - Check if audio is currently playing
+- `mh_audio_set_input_callback()` - Set input callback for effect plugins
+- `mh_audio_get_sample_rate()` - Get actual device sample rate
+- `mh_audio_get_buffer_frames()` - Get actual buffer size
+- `mh_audio_get_channels()` - Get number of output channels
+- New `libminihost_audio` library using miniaudio for cross-platform audio I/O
+
+#### Real-time MIDI I/O (libremidi integration)
+
+- `MH_MidiPortInfo` struct for MIDI port information
+- `MH_MidiPortCallback` typedef for port enumeration callbacks
+- `mh_midi_enumerate_inputs()` / `mh_midi_enumerate_outputs()` - Enumerate available MIDI ports
+- `mh_midi_get_num_inputs()` / `mh_midi_get_num_outputs()` - Get MIDI port count
+- `mh_midi_get_input_name()` / `mh_midi_get_output_name()` - Get MIDI port name by index
+- `mh_audio_connect_midi_input()` / `mh_audio_connect_midi_output()` - Connect MIDI ports to AudioDevice
+- `mh_audio_disconnect_midi_input()` / `mh_audio_disconnect_midi_output()` - Disconnect MIDI
+- `mh_audio_get_midi_input_port()` / `mh_audio_get_midi_output_port()` - Query connected MIDI ports
+- Lock-free ring buffer for thread-safe MIDI transfer between MIDI and audio threads
+
+#### Virtual MIDI Ports
+
+- `mh_midi_in_open_virtual()` - Create a virtual MIDI input port (other apps can send MIDI to it)
+- `mh_midi_out_open_virtual()` - Create a virtual MIDI output port (other apps can receive MIDI from it)
+- `mh_audio_create_virtual_midi_input()` - Create virtual MIDI input for AudioDevice
+- `mh_audio_create_virtual_midi_output()` - Create virtual MIDI output for AudioDevice
+- `mh_audio_is_midi_input_virtual()` / `mh_audio_is_midi_output_virtual()` - Check if MIDI port is virtual
+- Virtual ports appear in system MIDI port lists, allowing DAWs and other apps to connect
+- Platform support: macOS (CoreMIDI), Linux (ALSA); not supported on Windows
+
 #### Core Utilities
 
 - `mh_reset()` - Reset plugin internal state (clears delay lines, reverb tails, filter states)
@@ -48,6 +85,13 @@
 
 All C API additions are exposed in the Python `minihost` module:
 
+- `minihost.AudioDevice` class for real-time audio playback with MIDI
+  - Constructor: `AudioDevice(plugin, sample_rate=0, buffer_frames=0, output_channels=0, midi_input_port=-1, midi_output_port=-1)`
+  - Methods: `start()`, `stop()`, `connect_midi_input()`, `connect_midi_output()`, `disconnect_midi_input()`, `disconnect_midi_output()`, `create_virtual_midi_input()`, `create_virtual_midi_output()`
+  - Properties: `is_playing`, `sample_rate`, `buffer_frames`, `channels`, `midi_input_port`, `midi_output_port`, `is_midi_input_virtual`, `is_midi_output_virtual`
+  - Context manager support (`with AudioDevice(plugin) as audio:`)
+- `minihost.midi_get_input_ports()` - Get list of available MIDI input ports
+- `minihost.midi_get_output_ports()` - Get list of available MIDI output ports
 - `minihost.probe(path)` - Module-level function for plugin metadata
 - `minihost.scan_directory(path)` - Scan directory for plugins, returns list of metadata dicts
 - `Plugin` constructor now accepts `sidechain_channels` parameter

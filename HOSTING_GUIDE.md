@@ -16,8 +16,10 @@ This guide covers how to host VST3 and AudioUnit plugins using minihost as an em
 10. [Latency Compensation](#latency-compensation)
 11. [Offline Processing](#offline-processing)
 12. [Plugin Discovery](#plugin-discovery)
-13. [Performance Guidelines](#performance-guidelines)
-14. [Common Pitfalls](#common-pitfalls)
+13. [Real-time Audio I/O](#real-time-audio-io)
+14. [Real-time MIDI I/O](#real-time-midi-io)
+15. [Performance Guidelines](#performance-guidelines)
+16. [Common Pitfalls](#common-pitfalls)
 
 ---
 
@@ -542,6 +544,369 @@ printf("Found %d plugins\n", count);
 
 ---
 
+## Real-time Audio I/O
+
+minihost includes `libminihost_audio`, a companion library using [miniaudio](https://miniaud.io/) for cross-platform real-time audio playback. This handles audio device management and buffer conversion automatically.
+
+### Headers
+
+```c
+#include "minihost.h"
+#include "minihost_audio.h"
+```
+
+### Linking
+
+```cmake
+target_link_libraries(your_app PRIVATE minihost minihost_audio)
+```
+
+### Basic Usage
+
+```c
+// 1. Open plugin as usual
+char err[1024];
+MH_Plugin* plugin = mh_open("/path/to/synth.vst3", 48000.0, 512, 0, 2, err, sizeof(err));
+
+// 2. Open audio device with default settings
+MH_AudioDevice* audio = mh_audio_open(plugin, NULL, err, sizeof(err));
+if (!audio) {
+    fprintf(stderr, "Failed to open audio: %s\n", err);
+    mh_close(plugin);
+    return;
+}
+
+// 3. Start playback
+mh_audio_start(audio);
+
+// Plugin is now producing audio through speakers!
+// The audio callback runs automatically in a separate thread.
+
+// 4. Interact with the plugin
+mh_set_param(plugin, 0, 0.5f);  // Change parameters
+// Send MIDI via mh_process_midi() if needed (see Real-time MIDI I/O section)
+
+// 5. Stop and cleanup
+mh_audio_stop(audio);
+mh_audio_close(audio);
+mh_close(plugin);
+```
+
+### Configuration
+
+Use `MH_AudioConfig` to customize the audio device:
+
+```c
+MH_AudioConfig config = {
+    .sample_rate = 48000,      // 0 = use device default
+    .buffer_frames = 256,      // 0 = auto (~256-512)
+    .output_channels = 2,      // 0 = use plugin's output channels
+    .midi_input_port = -1,     // -1 = no MIDI, >= 0 = port index
+    .midi_output_port = -1     // -1 = no MIDI, >= 0 = port index
+};
+
+MH_AudioDevice* audio = mh_audio_open(plugin, &config, err, sizeof(err));
+```
+
+### Querying Actual Configuration
+
+The device may negotiate different settings than requested:
+
+```c
+double actual_rate = mh_audio_get_sample_rate(audio);
+int actual_buffer = mh_audio_get_buffer_frames(audio);
+int actual_channels = mh_audio_get_channels(audio);
+
+printf("Audio: %.0f Hz, %d frames, %d channels\n",
+       actual_rate, actual_buffer, actual_channels);
+```
+
+The plugin's sample rate is automatically updated to match the device if they differ.
+
+### Effect Plugins (With Audio Input)
+
+For effect plugins that process audio input, provide an input callback:
+
+```c
+void my_input_callback(float* const* buffer, int nframes, void* user_data) {
+    // Fill buffer with audio to be processed
+    // buffer[channel][frame] - non-interleaved format
+    MyAudioSource* source = (MyAudioSource*)user_data;
+
+    for (int ch = 0; ch < 2; ch++) {
+        for (int f = 0; f < nframes; f++) {
+            buffer[ch][f] = get_sample(source, ch);
+        }
+    }
+}
+
+// Set the callback before starting
+mh_audio_set_input_callback(audio, my_input_callback, my_audio_source);
+mh_audio_start(audio);
+```
+
+Without an input callback, the plugin receives silence (appropriate for synths/instruments).
+
+### Thread Safety
+
+The audio device creates its own audio thread internally:
+
+- `mh_audio_start()`, `mh_audio_stop()`, `mh_audio_is_playing()` - Safe from any thread
+- `mh_audio_open()`, `mh_audio_close()` - Call from main thread
+- The input callback runs on the audio thread - keep it fast, no allocations
+
+**Critical**: Do not call `mh_audio_close()` while callbacks might be running. Always call `mh_audio_stop()` first.
+
+### Error Handling
+
+```c
+MH_AudioDevice* audio = mh_audio_open(plugin, &config, err, sizeof(err));
+if (!audio) {
+    // err contains description: "No audio device found",
+    // "Failed to set sample rate", etc.
+    fprintf(stderr, "Audio error: %s\n", err);
+}
+```
+
+---
+
+## Real-time MIDI I/O
+
+minihost includes [libremidi](https://github.com/jcelerier/libremidi) integration for cross-platform MIDI I/O. This allows connecting hardware MIDI controllers to plugins and receiving MIDI output.
+
+### Headers
+
+```c
+#include "minihost_audio.h"  // AudioDevice MIDI functions
+#include "minihost_midi.h"   // Port enumeration, standalone MIDI
+```
+
+### Port Enumeration
+
+```c
+// Get number of ports
+int num_inputs = mh_midi_get_num_inputs();
+int num_outputs = mh_midi_get_num_outputs();
+
+// Get port names
+for (int i = 0; i < num_inputs; i++) {
+    char name[256];
+    mh_midi_get_input_name(i, name, sizeof(name));
+    printf("Input %d: %s\n", i, name);
+}
+
+for (int i = 0; i < num_outputs; i++) {
+    char name[256];
+    mh_midi_get_output_name(i, name, sizeof(name));
+    printf("Output %d: %s\n", i, name);
+}
+```
+
+### Callback-Based Enumeration
+
+```c
+void on_port(const MH_MidiPortInfo* port, void* user_data) {
+    printf("[%d] %s\n", port->index, port->name);
+}
+
+printf("MIDI Inputs:\n");
+mh_midi_enumerate_inputs(on_port, NULL);
+
+printf("MIDI Outputs:\n");
+mh_midi_enumerate_outputs(on_port, NULL);
+```
+
+### Connecting MIDI to AudioDevice
+
+The easiest way to use MIDI is through `MH_AudioDevice`:
+
+```c
+// Connect at creation time
+MH_AudioConfig config = {
+    .sample_rate = 48000,
+    .midi_input_port = 0,    // First MIDI input device
+    .midi_output_port = -1   // No output
+};
+MH_AudioDevice* audio = mh_audio_open(plugin, &config, err, sizeof(err));
+
+// Or connect dynamically
+mh_audio_connect_midi_input(audio, 0);   // Connect to port 0
+mh_audio_connect_midi_output(audio, 1);  // Connect output to port 1
+
+// Query current connections
+int in_port = mh_audio_get_midi_input_port(audio);   // -1 if not connected
+int out_port = mh_audio_get_midi_output_port(audio);
+
+// Disconnect
+mh_audio_disconnect_midi_input(audio);
+mh_audio_disconnect_midi_output(audio);
+```
+
+When MIDI is connected to an AudioDevice:
+- **Input**: MIDI messages are buffered in a lock-free ring buffer and processed at the start of each audio callback
+- **Output**: MIDI generated by the plugin is sent to the output port immediately
+
+### Virtual MIDI Ports
+
+Virtual ports create named MIDI ports that appear in the system's MIDI port list. Other applications (DAWs, etc.) can connect to them.
+
+```c
+// Create virtual ports
+mh_audio_create_virtual_midi_input(audio, "My App Input");
+mh_audio_create_virtual_midi_output(audio, "My App Output");
+
+// Check if current connection is virtual
+if (mh_audio_is_midi_input_virtual(audio)) {
+    printf("Using virtual MIDI input\n");
+}
+```
+
+**Platform Support**:
+- **macOS**: Full support via CoreMIDI
+- **Linux**: Full support via ALSA
+- **Windows**: Not supported (returns failure)
+
+### Standalone MIDI (Without AudioDevice)
+
+For advanced use cases, you can open MIDI ports directly:
+
+```c
+// Callback for incoming MIDI
+void on_midi(const unsigned char* data, size_t len, void* user_data) {
+    printf("MIDI: %02X %02X %02X\n", data[0],
+           len >= 2 ? data[1] : 0,
+           len >= 3 ? data[2] : 0);
+}
+
+// Open input
+char err[256];
+MH_MidiIn* midi_in = mh_midi_in_open(0, on_midi, NULL, err, sizeof(err));
+
+// Open output
+MH_MidiOut* midi_out = mh_midi_out_open(0, err, sizeof(err));
+
+// Send MIDI
+unsigned char note_on[] = {0x90, 60, 100};
+mh_midi_out_send(midi_out, note_on, 3);
+
+// Virtual ports
+MH_MidiIn* virtual_in = mh_midi_in_open_virtual("My Virtual Input",
+                                                  on_midi, NULL, err, sizeof(err));
+MH_MidiOut* virtual_out = mh_midi_out_open_virtual("My Virtual Output",
+                                                     err, sizeof(err));
+
+// Cleanup
+mh_midi_in_close(midi_in);
+mh_midi_out_close(midi_out);
+```
+
+### Complete Example: Synth with MIDI Controller
+
+```c
+#include "minihost.h"
+#include "minihost_audio.h"
+#include "minihost_midi.h"
+#include <stdio.h>
+#include <signal.h>
+
+static volatile int running = 1;
+
+void on_signal(int sig) {
+    running = 0;
+}
+
+int main(int argc, char** argv) {
+    char err[1024];
+
+    // List MIDI inputs
+    printf("Available MIDI inputs:\n");
+    int num_inputs = mh_midi_get_num_inputs();
+    for (int i = 0; i < num_inputs; i++) {
+        char name[256];
+        mh_midi_get_input_name(i, name, sizeof(name));
+        printf("  [%d] %s\n", i, name);
+    }
+
+    if (num_inputs == 0) {
+        printf("No MIDI inputs found. Creating virtual port.\n");
+    }
+
+    // Load synth plugin
+    MH_Plugin* plugin = mh_open(argv[1], 48000.0, 512, 0, 2, err, sizeof(err));
+    if (!plugin) {
+        fprintf(stderr, "Failed to load plugin: %s\n", err);
+        return 1;
+    }
+
+    // Open audio with MIDI
+    MH_AudioConfig config = {
+        .sample_rate = 48000,
+        .midi_input_port = (num_inputs > 0) ? 0 : -1
+    };
+
+    MH_AudioDevice* audio = mh_audio_open(plugin, &config, err, sizeof(err));
+    if (!audio) {
+        fprintf(stderr, "Failed to open audio: %s\n", err);
+        mh_close(plugin);
+        return 1;
+    }
+
+    // Create virtual MIDI input if no hardware available
+    if (num_inputs == 0) {
+        if (mh_audio_create_virtual_midi_input(audio, "minihost Synth")) {
+            printf("Created virtual MIDI input: 'minihost Synth'\n");
+            printf("Connect your DAW or MIDI app to this port.\n");
+        }
+    }
+
+    // Start audio
+    mh_audio_start(audio);
+    printf("Playing. Press Ctrl+C to stop.\n");
+
+    // Handle Ctrl+C
+    signal(SIGINT, on_signal);
+
+    // Run until interrupted
+    while (running) {
+        // Could update parameters, display info, etc.
+        usleep(100000);  // 100ms
+    }
+
+    // Cleanup
+    printf("\nStopping...\n");
+    mh_audio_stop(audio);
+    mh_audio_close(audio);
+    mh_close(plugin);
+
+    return 0;
+}
+```
+
+### Thread Safety for MIDI
+
+- **Port enumeration**: Thread-safe, can be called from any thread
+- **MIDI callbacks**: Run on the MIDI thread (libremidi's thread)
+- **Ring buffer**: Lock-free SPSC (single-producer single-consumer) for MIDI -> audio transfer
+- **mh_audio_connect/disconnect**: Safe to call while audio is running
+
+The internal architecture ensures no locks are held in the audio callback path:
+
+```
+MIDI Thread                    Audio Thread
+    |                              |
+    v                              v
+mh_midi_in callback           audio_callback
+    |                              |
+    v                              v
+ring_buffer_push() --------> ring_buffer_pop_all()
+(lock-free)                  (lock-free)
+    |                              |
+    |                              v
+    |                         mh_process_midi_io()
+```
+
+---
+
 ## Performance Guidelines
 
 ### Do
@@ -689,6 +1054,8 @@ process_silence_for(tail * sample_rate);
 
 ## Quick Reference
 
+### Plugin Functions
+
 | Task | Function |
 |------|----------|
 | Open plugin | `mh_open()` |
@@ -703,3 +1070,33 @@ process_silence_for(tail * sample_rate);
 | Reset plugin | `mh_reset()` |
 | Probe without loading | `mh_probe()` |
 | Scan directory | `mh_scan_directory()` |
+
+### Audio Device Functions (minihost_audio.h)
+
+| Task | Function |
+|------|----------|
+| Open audio device | `mh_audio_open()` |
+| Close audio device | `mh_audio_close()` |
+| Start/stop playback | `mh_audio_start()` / `mh_audio_stop()` |
+| Check playing state | `mh_audio_is_playing()` |
+| Set effect input callback | `mh_audio_set_input_callback()` |
+| Query sample rate | `mh_audio_get_sample_rate()` |
+| Query buffer size | `mh_audio_get_buffer_frames()` |
+| Query channel count | `mh_audio_get_channels()` |
+| Connect MIDI input | `mh_audio_connect_midi_input()` |
+| Connect MIDI output | `mh_audio_connect_midi_output()` |
+| Create virtual MIDI input | `mh_audio_create_virtual_midi_input()` |
+| Create virtual MIDI output | `mh_audio_create_virtual_midi_output()` |
+
+### MIDI Functions (minihost_midi.h)
+
+| Task | Function |
+|------|----------|
+| Count MIDI ports | `mh_midi_get_num_inputs()` / `mh_midi_get_num_outputs()` |
+| Get port name | `mh_midi_get_input_name()` / `mh_midi_get_output_name()` |
+| Enumerate ports | `mh_midi_enumerate_inputs()` / `mh_midi_enumerate_outputs()` |
+| Open MIDI input | `mh_midi_in_open()` |
+| Open MIDI output | `mh_midi_out_open()` |
+| Open virtual input | `mh_midi_in_open_virtual()` |
+| Open virtual output | `mh_midi_out_open_virtual()` |
+| Send MIDI | `mh_midi_out_send()` |
