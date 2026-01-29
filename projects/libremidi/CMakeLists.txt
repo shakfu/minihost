@@ -74,14 +74,3 @@ include(libremidi.net)
 ### Install ###
 include(libremidi.install)
 
-### Examples ###
-if(LIBREMIDI_EXAMPLES)
-  message(STATUS "libremidi: compiling examples")
-  include(libremidi.examples)
-endif()
-
-### Tests ###
-if(LIBREMIDI_TESTS)
-  message(STATUS "libremidi: compiling tests")
-  include(libremidi.tests)
-endif()
