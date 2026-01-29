@@ -38,8 +38,29 @@
 - `mh_audio_create_virtual_midi_input()` - Create virtual MIDI input for AudioDevice
 - `mh_audio_create_virtual_midi_output()` - Create virtual MIDI output for AudioDevice
 - `mh_audio_is_midi_input_virtual()` / `mh_audio_is_midi_output_virtual()` - Check if MIDI port is virtual
+- `mh_audio_send_midi()` - Send MIDI events programmatically during real-time playback
 - Virtual ports appear in system MIDI port lists, allowing DAWs and other apps to connect
 - Platform support: macOS (CoreMIDI), Linux (ALSA); not supported on Windows
+
+#### MIDI File Read/Write (midifile integration)
+
+- Integrated `midifile` library for Standard MIDI File (SMF) read/write capability
+- Python `MidiFile` class for creating, loading, and saving MIDI files
+  - Create MIDI files programmatically with note on/off, tempo, control change, program change, pitch bend events
+  - Load existing MIDI files and iterate through events
+  - Save MIDI files to disk
+  - Access event timing in both ticks and seconds
+
+#### MIDI File Rendering
+
+- `render_midi()` - Render MIDI file through plugin to numpy array
+- `render_midi_stream()` - Generator yielding audio blocks for streaming/large files
+- `render_midi_to_file()` - Render MIDI file directly to WAV file (16/24/32-bit)
+- `MidiRenderer` class - Stateful renderer with progress tracking and fine-grained control
+  - Properties: `duration_seconds`, `progress`, `is_finished`, `current_time`
+  - Methods: `render_block()`, `render_all()`, `reset()`
+- Automatic tempo map handling for correct timing
+- Configurable tail length for reverb/delay tails
 
 #### Core Utilities
 
@@ -81,17 +102,36 @@
 - Fixed `addFormat()` calls to use raw pointers instead of `std::make_unique<>()` (JUCE's API expects raw pointers)
 - Added `POSITION_INDEPENDENT_CODE ON` to libminihost CMakeLists.txt for linking into shared libraries (e.g., Python module)
 
+### Command Line Interface
+
+- `minihost` CLI tool with subcommands for common operations:
+  - `probe` - Get plugin metadata without full instantiation
+  - `scan` - Recursively scan directory for VST3/AudioUnit plugins
+  - `info` - Show detailed plugin info (buses, presets, latency)
+  - `params` - List plugin parameters with current values
+  - `midi-ports` - List available MIDI input/output ports
+  - `play` - Real-time audio playback with MIDI input
+  - `render` - Render MIDI file through plugin to WAV (16/24/32-bit)
+  - `process` - Offline audio file processing through effects
+- Global options: `--sample-rate`, `--block-size`
+- JSON output support (`--json`) for probe, scan, params, midi-ports
+- Plugin state and preset loading for render command
+- Virtual MIDI port creation for play command
+
 ### Python Bindings
 
 All C API additions are exposed in the Python `minihost` module:
 
 - `minihost.AudioDevice` class for real-time audio playback with MIDI
   - Constructor: `AudioDevice(plugin, sample_rate=0, buffer_frames=0, output_channels=0, midi_input_port=-1, midi_output_port=-1)`
-  - Methods: `start()`, `stop()`, `connect_midi_input()`, `connect_midi_output()`, `disconnect_midi_input()`, `disconnect_midi_output()`, `create_virtual_midi_input()`, `create_virtual_midi_output()`
+  - Methods: `start()`, `stop()`, `connect_midi_input()`, `connect_midi_output()`, `disconnect_midi_input()`, `disconnect_midi_output()`, `create_virtual_midi_input()`, `create_virtual_midi_output()`, `send_midi()`
   - Properties: `is_playing`, `sample_rate`, `buffer_frames`, `channels`, `midi_input_port`, `midi_output_port`, `is_midi_input_virtual`, `is_midi_output_virtual`
   - Context manager support (`with AudioDevice(plugin) as audio:`)
 - `minihost.midi_get_input_ports()` - Get list of available MIDI input ports
 - `minihost.midi_get_output_ports()` - Get list of available MIDI output ports
+- `minihost.MidiFile` class for MIDI file read/write
+  - Methods: `load()`, `save()`, `add_track()`, `add_tempo()`, `add_note_on()`, `add_note_off()`, `add_control_change()`, `add_program_change()`, `add_pitch_bend()`, `get_events()`, `join_tracks()`, `split_tracks()`
+  - Properties: `num_tracks`, `ticks_per_quarter`, `duration_seconds`
 - `minihost.probe(path)` - Module-level function for plugin metadata
 - `minihost.scan_directory(path)` - Scan directory for plugins, returns list of metadata dicts
 - `Plugin` constructor now accepts `sidechain_channels` parameter

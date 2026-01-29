@@ -34,18 +34,35 @@ Example usage:
 from minihost._core import (
     Plugin,
     AudioDevice,
+    MidiFile,
     probe,
     scan_directory,
     midi_get_input_ports,
     midi_get_output_ports,
 )
 
+from minihost.render import (
+    render_midi,
+    render_midi_stream,
+    render_midi_to_file,
+    MidiRenderer,
+)
+
 __all__ = [
+    # Core classes
     "Plugin",
     "AudioDevice",
+    "MidiFile",
+    # Plugin discovery
     "probe",
     "scan_directory",
+    # MIDI ports
     "midi_get_input_ports",
     "midi_get_output_ports",
+    # MIDI rendering
+    "render_midi",
+    "render_midi_stream",
+    "render_midi_to_file",
+    "MidiRenderer",
 ]
 __version__ = "0.1.0"

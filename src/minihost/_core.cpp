@@ -11,6 +11,7 @@
 #include "minihost.h"
 #include "minihost_audio.h"
 #include "minihost_midi.h"
+#include "MidiFile.h"
 
 namespace nb = nanobind;
 
@@ -669,6 +670,16 @@ public:
         return mh_audio_is_midi_output_virtual(device_) != 0;
     }
 
+    // Send MIDI event programmatically
+    void send_midi(int status, int data1, int data2) {
+        if (!mh_audio_send_midi(device_,
+                                static_cast<unsigned char>(status),
+                                static_cast<unsigned char>(data1),
+                                static_cast<unsigned char>(data2))) {
+            throw std::runtime_error("Failed to send MIDI (queue may be full)");
+        }
+    }
+
     // Context manager support
     AudioDevice& enter() {
         start();
@@ -788,6 +799,163 @@ nb::list midi_get_output_ports() {
     }
     return result_list;
 }
+
+// MIDI file wrapper class
+class MidiFile {
+public:
+    MidiFile() = default;
+
+    // Load from file
+    bool load(const std::string& path) {
+        if (!file_.read(path)) {
+            return false;
+        }
+        file_.doTimeAnalysis();
+        file_.linkNotePairs();
+        return true;
+    }
+
+    // Save to file
+    bool save(const std::string& path) {
+        return file_.write(path);
+    }
+
+    // Get number of tracks
+    int num_tracks() const {
+        return file_.getTrackCount();
+    }
+
+    // Get ticks per quarter note
+    int ticks_per_quarter() const {
+        return file_.getTicksPerQuarterNote();
+    }
+
+    // Set ticks per quarter note
+    void set_ticks_per_quarter(int tpq) {
+        file_.setTicksPerQuarterNote(tpq);
+    }
+
+    // Get total duration in seconds
+    double duration_seconds() {
+        file_.doTimeAnalysis();
+        return file_.getFileDurationInSeconds();
+    }
+
+    // Add a track
+    int add_track() {
+        return file_.addTrack();
+    }
+
+    // Add a tempo event (BPM)
+    void add_tempo(int track, int tick, double bpm) {
+        file_.addTempo(track, tick, bpm);
+    }
+
+    // Add a note on event
+    void add_note_on(int track, int tick, int channel, int pitch, int velocity) {
+        file_.addNoteOn(track, tick, channel, pitch, velocity);
+    }
+
+    // Add a note off event
+    void add_note_off(int track, int tick, int channel, int pitch, int velocity = 0) {
+        file_.addNoteOff(track, tick, channel, pitch, velocity);
+    }
+
+    // Add a control change event
+    void add_control_change(int track, int tick, int channel, int controller, int value) {
+        file_.addController(track, tick, channel, controller, value);
+    }
+
+    // Add a program change event
+    void add_program_change(int track, int tick, int channel, int program) {
+        file_.addPatchChange(track, tick, channel, program);
+    }
+
+    // Add a pitch bend event
+    void add_pitch_bend(int track, int tick, int channel, int value) {
+        file_.addPitchBend(track, tick, channel, value);
+    }
+
+    // Get all events from a track as a list of dicts
+    nb::list get_events(int track) const {
+        nb::list events;
+
+        if (track < 0 || track >= file_.getTrackCount()) {
+            return events;
+        }
+
+        const auto& track_events = file_[track];
+        for (int i = 0; i < track_events.getEventCount(); i++) {
+            const auto& event = track_events[i];
+
+            nb::dict d;
+            d["tick"] = event.tick;
+            d["seconds"] = event.seconds;
+
+            if (event.isNoteOn()) {
+                d["type"] = "note_on";
+                d["channel"] = event.getChannel();
+                d["pitch"] = event.getKeyNumber();
+                d["velocity"] = event.getVelocity();
+            } else if (event.isNoteOff()) {
+                d["type"] = "note_off";
+                d["channel"] = event.getChannel();
+                d["pitch"] = event.getKeyNumber();
+                d["velocity"] = event.getVelocity();
+            } else if (event.isController()) {
+                d["type"] = "control_change";
+                d["channel"] = event.getChannel();
+                d["controller"] = event.getP1();
+                d["value"] = event.getP2();
+            } else if (event.isTimbre()) {
+                d["type"] = "program_change";
+                d["channel"] = event.getChannel();
+                d["program"] = event.getP1();
+            } else if (event.isPitchbend()) {
+                d["type"] = "pitch_bend";
+                d["channel"] = event.getChannel();
+                d["value"] = event.getP1() | (event.getP2() << 7);
+            } else if (event.isTempo()) {
+                d["type"] = "tempo";
+                d["bpm"] = event.getTempoBPM();
+            } else if (event.isMeta()) {
+                d["type"] = "meta";
+                d["meta_type"] = static_cast<int>(event[1]);
+            } else {
+                d["type"] = "other";
+                d["status"] = static_cast<int>(event[0]);
+            }
+
+            events.append(d);
+        }
+
+        return events;
+    }
+
+    // Convert to absolute ticks
+    void make_absolute_ticks() {
+        file_.makeAbsoluteTicks();
+    }
+
+    // Convert to delta ticks
+    void make_delta_ticks() {
+        file_.makeDeltaTicks();
+    }
+
+    // Join all tracks into track 0 (Type 0 format)
+    void join_tracks() {
+        file_.joinTracks();
+    }
+
+    // Split tracks (Type 1 format)
+    void split_tracks() {
+        file_.splitTracks();
+    }
+
+private:
+    smf::MidiFile file_;
+};
+
 
 // Note: Async plugin loading in Python is best done using Python's threading module:
 //
@@ -1000,7 +1168,74 @@ NB_MODULE(_core, m) {
         .def_prop_ro("is_midi_output_virtual", &AudioDevice::is_midi_output_virtual,
                      "True if MIDI output is a virtual port")
 
+        // Programmatic MIDI
+        .def("send_midi", &AudioDevice::send_midi,
+             nb::arg("status"), nb::arg("data1"), nb::arg("data2"),
+             "Send a MIDI event to the plugin (e.g., send_midi(0x90, 60, 100) for note on)")
+
         // Context manager support
         .def("__enter__", &AudioDevice::enter, nb::rv_policy::reference)
-        .def("__exit__", &AudioDevice::exit);
+        .def("__exit__", [](AudioDevice& self, const nb::args&) {
+            self.stop();
+        });
+
+    // MidiFile class for MIDI file read/write
+    nb::class_<MidiFile>(m, "MidiFile")
+        .def(nb::init<>(),
+             "Create a new empty MIDI file")
+
+        // File I/O
+        .def("load", &MidiFile::load,
+             nb::arg("path"),
+             "Load a MIDI file. Returns True on success.")
+        .def("save", &MidiFile::save,
+             nb::arg("path"),
+             "Save to a MIDI file. Returns True on success.")
+
+        // Properties
+        .def_prop_ro("num_tracks", &MidiFile::num_tracks,
+                     "Number of tracks")
+        .def_prop_rw("ticks_per_quarter", &MidiFile::ticks_per_quarter, &MidiFile::set_ticks_per_quarter,
+                     "Ticks per quarter note (resolution)")
+        .def_prop_ro("duration_seconds", &MidiFile::duration_seconds,
+                     "Total duration in seconds")
+
+        // Track management
+        .def("add_track", &MidiFile::add_track,
+             "Add a new track. Returns the track index.")
+
+        // Adding events
+        .def("add_tempo", &MidiFile::add_tempo,
+             nb::arg("track"), nb::arg("tick"), nb::arg("bpm"),
+             "Add a tempo change event")
+        .def("add_note_on", &MidiFile::add_note_on,
+             nb::arg("track"), nb::arg("tick"), nb::arg("channel"), nb::arg("pitch"), nb::arg("velocity"),
+             "Add a note on event")
+        .def("add_note_off", &MidiFile::add_note_off,
+             nb::arg("track"), nb::arg("tick"), nb::arg("channel"), nb::arg("pitch"), nb::arg("velocity") = 0,
+             "Add a note off event")
+        .def("add_control_change", &MidiFile::add_control_change,
+             nb::arg("track"), nb::arg("tick"), nb::arg("channel"), nb::arg("controller"), nb::arg("value"),
+             "Add a control change (CC) event")
+        .def("add_program_change", &MidiFile::add_program_change,
+             nb::arg("track"), nb::arg("tick"), nb::arg("channel"), nb::arg("program"),
+             "Add a program change event")
+        .def("add_pitch_bend", &MidiFile::add_pitch_bend,
+             nb::arg("track"), nb::arg("tick"), nb::arg("channel"), nb::arg("value"),
+             "Add a pitch bend event (value: 0-16383, center=8192)")
+
+        // Reading events
+        .def("get_events", &MidiFile::get_events,
+             nb::arg("track"),
+             "Get all events from a track as a list of dicts")
+
+        // Track format conversion
+        .def("make_absolute_ticks", &MidiFile::make_absolute_ticks,
+             "Convert all events to absolute tick times")
+        .def("make_delta_ticks", &MidiFile::make_delta_ticks,
+             "Convert all events to delta tick times")
+        .def("join_tracks", &MidiFile::join_tracks,
+             "Merge all tracks into track 0 (Type 0 format)")
+        .def("split_tracks", &MidiFile::split_tracks,
+             "Split by channel into separate tracks (Type 1 format)");
 }

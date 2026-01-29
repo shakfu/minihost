@@ -34,6 +34,22 @@ def test_module_has_scan_directory_function():
     assert callable(minihost.scan_directory)
 
 
+def test_module_has_midifile_class():
+    """Test that MidiFile class is exported."""
+    assert hasattr(minihost, 'MidiFile')
+
+
+def test_module_has_render_functions():
+    """Test that render functions are exported."""
+    assert hasattr(minihost, 'render_midi')
+    assert hasattr(minihost, 'render_midi_stream')
+    assert hasattr(minihost, 'render_midi_to_file')
+    assert hasattr(minihost, 'MidiRenderer')
+    assert callable(minihost.render_midi)
+    assert callable(minihost.render_midi_stream)
+    assert callable(minihost.render_midi_to_file)
+
+
 def test_audio_device_class_has_expected_methods():
     """Test that AudioDevice class has expected methods."""
     expected_methods = [
@@ -67,6 +83,7 @@ def test_audio_device_class_has_midi_methods():
         'disconnect_midi_output',
         'create_virtual_midi_input',
         'create_virtual_midi_output',
+        'send_midi',
     ]
     for method in expected_methods:
         assert hasattr(minihost.AudioDevice, method), f"AudioDevice missing method: {method}"
@@ -727,3 +744,258 @@ class TestPluginIntegration:
             # Disconnect
             audio.disconnect_midi_output()
             assert audio.midi_output_port == -1
+
+
+class TestMidiFile:
+    """Tests for MidiFile class."""
+
+    def test_midifile_creation(self):
+        """Test MidiFile creation."""
+        mf = minihost.MidiFile()
+        assert mf.num_tracks >= 0
+        assert mf.ticks_per_quarter > 0
+
+    def test_midifile_add_track(self):
+        """Test adding tracks."""
+        mf = minihost.MidiFile()
+        initial_tracks = mf.num_tracks
+        idx = mf.add_track()
+        assert mf.num_tracks == initial_tracks + 1
+        assert idx == initial_tracks
+
+    def test_midifile_add_notes(self):
+        """Test adding note events."""
+        mf = minihost.MidiFile()
+        # Add note on and off
+        mf.add_note_on(0, 0, 0, 60, 100)
+        mf.add_note_off(0, 480, 0, 60, 0)
+
+        # Get events
+        events = mf.get_events(0)
+        assert len(events) >= 2
+
+        # Find note events
+        note_ons = [e for e in events if e['type'] == 'note_on']
+        note_offs = [e for e in events if e['type'] == 'note_off']
+        assert len(note_ons) >= 1
+        assert len(note_offs) >= 1
+
+    def test_midifile_add_tempo(self):
+        """Test adding tempo events."""
+        mf = minihost.MidiFile()
+        mf.add_tempo(0, 0, 120.0)
+
+        events = mf.get_events(0)
+        tempo_events = [e for e in events if e['type'] == 'tempo']
+        assert len(tempo_events) >= 1
+        assert abs(tempo_events[0]['bpm'] - 120.0) < 0.01
+
+    def test_midifile_add_control_change(self):
+        """Test adding control change events."""
+        mf = minihost.MidiFile()
+        mf.add_control_change(0, 0, 0, 1, 64)  # CC1 (mod wheel) = 64
+
+        events = mf.get_events(0)
+        cc_events = [e for e in events if e['type'] == 'control_change']
+        assert len(cc_events) >= 1
+        assert cc_events[0]['controller'] == 1
+        assert cc_events[0]['value'] == 64
+
+    def test_midifile_add_program_change(self):
+        """Test adding program change events."""
+        mf = minihost.MidiFile()
+        mf.add_program_change(0, 0, 0, 42)
+
+        events = mf.get_events(0)
+        pc_events = [e for e in events if e['type'] == 'program_change']
+        assert len(pc_events) >= 1
+        assert pc_events[0]['program'] == 42
+
+    def test_midifile_save_load(self):
+        """Test saving and loading MIDI files."""
+        import tempfile
+        import os
+
+        mf = minihost.MidiFile()
+        mf.add_tempo(0, 0, 120.0)
+        mf.add_note_on(0, 0, 0, 60, 100)
+        mf.add_note_off(0, 480, 0, 60, 0)
+
+        # Save to temp file
+        with tempfile.NamedTemporaryFile(suffix='.mid', delete=False) as f:
+            temp_path = f.name
+
+        try:
+            assert mf.save(temp_path) is True
+
+            # Load it back
+            mf2 = minihost.MidiFile()
+            assert mf2.load(temp_path) is True
+            assert mf2.num_tracks >= 1
+
+            # Check events
+            events = mf2.get_events(0)
+            note_ons = [e for e in events if e['type'] == 'note_on']
+            assert len(note_ons) >= 1
+            assert note_ons[0]['pitch'] == 60
+        finally:
+            os.unlink(temp_path)
+
+    def test_midifile_ticks_per_quarter(self):
+        """Test setting ticks per quarter note."""
+        mf = minihost.MidiFile()
+        mf.ticks_per_quarter = 480
+        assert mf.ticks_per_quarter == 480
+
+    def test_midifile_duration(self):
+        """Test duration calculation."""
+        mf = minihost.MidiFile()
+        mf.add_tempo(0, 0, 120.0)  # 120 BPM = 2 beats/sec
+        mf.add_note_on(0, 0, 0, 60, 100)
+        mf.add_note_off(0, 480, 0, 60, 0)  # 480 ticks at 120 TPQ = 4 quarters = 2 sec at 120 BPM
+
+        # Duration should be positive
+        duration = mf.duration_seconds
+        assert duration > 0
+
+    def test_midifile_load_nonexistent(self):
+        """Test loading nonexistent file returns False."""
+        mf = minihost.MidiFile()
+        assert mf.load("/nonexistent/path/to/file.mid") is False
+
+    def test_midifile_get_events_invalid_track(self):
+        """Test getting events from invalid track returns empty list."""
+        mf = minihost.MidiFile()
+        events = mf.get_events(999)  # Invalid track index
+        assert isinstance(events, list)
+        assert len(events) == 0
+
+
+class TestMidiRendering:
+    """Tests for MIDI rendering functions (require a plugin)."""
+
+    @pytest.fixture
+    def synth_plugin(self):
+        """Get a synth plugin for testing."""
+        import os
+        path = os.environ.get('MINIHOST_TEST_PLUGIN')
+        if not path:
+            pytest.skip("Set MINIHOST_TEST_PLUGIN env var to run rendering tests")
+        return minihost.Plugin(path, sample_rate=48000, max_block_size=512)
+
+    @pytest.fixture
+    def test_midi_file(self):
+        """Create a simple test MIDI file."""
+        mf = minihost.MidiFile()
+        mf.add_tempo(0, 0, 120.0)
+        mf.add_note_on(0, 0, 0, 60, 100)
+        mf.add_note_off(0, 480, 0, 60, 0)
+        return mf
+
+    def test_render_midi_returns_array(self, synth_plugin, test_midi_file):
+        """Test that render_midi returns a numpy array."""
+        import numpy as np
+
+        audio = minihost.render_midi(
+            synth_plugin,
+            test_midi_file,
+            block_size=512,
+            tail_seconds=0.5
+        )
+
+        assert isinstance(audio, np.ndarray)
+        assert audio.ndim == 2
+        assert audio.shape[0] >= 1  # At least 1 channel
+        assert audio.shape[1] > 0   # Some samples
+
+    def test_render_midi_stream_yields_blocks(self, synth_plugin, test_midi_file):
+        """Test that render_midi_stream yields audio blocks."""
+        import numpy as np
+
+        blocks = list(minihost.render_midi_stream(
+            synth_plugin,
+            test_midi_file,
+            block_size=256,
+            tail_seconds=0.1
+        ))
+
+        assert len(blocks) > 0
+        for block in blocks:
+            assert isinstance(block, np.ndarray)
+            assert block.ndim == 2
+
+    def test_render_midi_to_file(self, synth_plugin, test_midi_file):
+        """Test rendering MIDI to WAV file."""
+        import tempfile
+        import os
+
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
+            temp_path = f.name
+
+        try:
+            samples = minihost.render_midi_to_file(
+                synth_plugin,
+                test_midi_file,
+                temp_path,
+                tail_seconds=0.1
+            )
+
+            assert samples > 0
+            assert os.path.exists(temp_path)
+            assert os.path.getsize(temp_path) > 44  # At least header size
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+    def test_midi_renderer_class(self, synth_plugin, test_midi_file):
+        """Test MidiRenderer class."""
+        renderer = minihost.MidiRenderer(
+            synth_plugin,
+            test_midi_file,
+            block_size=512,
+            tail_seconds=0.5
+        )
+
+        assert renderer.duration_seconds > 0
+        assert renderer.total_samples > 0
+        assert renderer.progress == 0.0
+        assert not renderer.is_finished
+
+        # Render a few blocks
+        block = renderer.render_block()
+        assert block is not None
+        assert renderer.progress > 0.0
+
+        # Render rest
+        audio = renderer.render_all()
+        assert renderer.is_finished
+        assert renderer.progress == 1.0
+
+    def test_render_midi_from_file_path(self, synth_plugin):
+        """Test rendering from MIDI file path."""
+        import tempfile
+        import os
+
+        # Create a temp MIDI file
+        mf = minihost.MidiFile()
+        mf.add_tempo(0, 0, 120.0)
+        mf.add_note_on(0, 0, 0, 60, 100)
+        mf.add_note_off(0, 240, 0, 60, 0)
+
+        with tempfile.NamedTemporaryFile(suffix='.mid', delete=False) as f:
+            midi_path = f.name
+
+        try:
+            mf.save(midi_path)
+
+            # Render from path
+            audio = minihost.render_midi(
+                synth_plugin,
+                midi_path,
+                tail_seconds=0.1
+            )
+
+            assert audio.shape[1] > 0
+        finally:
+            if os.path.exists(midi_path):
+                os.unlink(midi_path)

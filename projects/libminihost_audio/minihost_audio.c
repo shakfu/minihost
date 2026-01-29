@@ -517,3 +517,15 @@ int mh_audio_is_midi_output_virtual(MH_AudioDevice* dev) {
     if (!dev) return 0;
     return dev->midi_out_virtual;
 }
+
+int mh_audio_send_midi(MH_AudioDevice* dev, unsigned char status, unsigned char data1, unsigned char data2) {
+    if (!dev || !dev->midi_in_buffer) return 0;
+
+    MH_MidiEvent event;
+    event.sample_offset = 0;  // Will be processed at start of next audio buffer
+    event.status = status;
+    event.data1 = data1;
+    event.data2 = data2;
+
+    return mh_midi_ringbuffer_push(dev->midi_in_buffer, &event);
+}

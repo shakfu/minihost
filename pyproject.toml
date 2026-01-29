@@ -3,6 +3,10 @@ name = "minihost"
 version = "0.1.0"
 description = "A minimal juce-based plugin host using nanobind"
 requires-python = ">=3.9"
+dependencies = ["numpy>=1.20"]
+
+[project.scripts]
+minihost = "minihost.cli:main"
 
 [build-system]
 requires = ["scikit-build-core", "nanobind"]

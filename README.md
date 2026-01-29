@@ -180,15 +180,18 @@ plugin = minihost.Plugin("/path/to/synth.vst3", sample_rate=48000)
 # Use as context manager for automatic start/stop
 with minihost.AudioDevice(plugin) as audio:
     # Plugin is now producing audio through speakers
-    plugin.process_midi(None, None, [(0, 0x90, 60, 100)])  # Note on
+    # Send MIDI programmatically
+    audio.send_midi(0x90, 60, 100)  # Note on: C4, velocity 100
     time.sleep(1)
-    plugin.process_midi(None, None, [(0, 0x80, 60, 0)])    # Note off
+    audio.send_midi(0x80, 60, 0)    # Note off
     time.sleep(0.5)
 
 # Or manual control
 audio = minihost.AudioDevice(plugin)
 audio.start()
-# ... do stuff ...
+audio.send_midi(0x90, 64, 80)  # E4 note on
+time.sleep(0.5)
+audio.send_midi(0x80, 64, 0)   # E4 note off
 audio.stop()
 ```
 
@@ -224,6 +227,148 @@ audio.start()
 # Other apps can now send MIDI to "minihost Input"
 # and receive MIDI from "minihost Output"
 ```
+
+### MIDI File Read/Write
+
+```python
+import minihost
+
+# Create a new MIDI file
+mf = minihost.MidiFile()
+mf.ticks_per_quarter = 480
+
+# Add events
+mf.add_tempo(0, 0, 120.0)  # 120 BPM at tick 0
+mf.add_note_on(0, 0, 0, 60, 100)    # C4 note on at tick 0
+mf.add_note_off(0, 480, 0, 60, 0)   # C4 note off at tick 480
+
+# Save to file
+mf.save("output.mid")
+
+# Load existing MIDI file
+mf2 = minihost.MidiFile()
+mf2.load("input.mid")
+
+# Read events
+events = mf2.get_events(0)  # Get events from track 0
+for event in events:
+    if event['type'] == 'note_on':
+        print(f"Note {event['pitch']} vel {event['velocity']} at {event['seconds']:.2f}s")
+```
+
+### MIDI File Rendering
+
+Render MIDI files through plugins to produce audio output:
+
+```python
+import minihost
+
+plugin = minihost.Plugin("/path/to/synth.vst3", sample_rate=48000)
+
+# Render to numpy array
+audio = minihost.render_midi(plugin, "song.mid")
+print(f"Rendered {audio.shape[1] / 48000:.2f} seconds of audio")
+
+# Render directly to WAV file
+samples = minihost.render_midi_to_file(plugin, "song.mid", "output.wav", bit_depth=24)
+
+# Stream blocks for large files or real-time processing
+for block in minihost.render_midi_stream(plugin, "song.mid", block_size=512):
+    # Process each block (shape: channels, block_size)
+    pass
+
+# Fine-grained control with MidiRenderer class
+renderer = minihost.MidiRenderer(plugin, "song.mid")
+print(f"Duration: {renderer.duration_seconds:.2f}s")
+
+while not renderer.is_finished:
+    block = renderer.render_block()
+    print(f"Progress: {renderer.progress:.1%}")
+```
+
+## Command Line Interface
+
+The `minihost` command provides a CLI for common plugin operations:
+
+```bash
+# Install (from source)
+uv sync
+
+# Available commands
+minihost --help
+```
+
+### Commands
+
+#### `minihost probe` - Get plugin metadata
+```bash
+minihost probe /path/to/plugin.vst3
+minihost probe /path/to/plugin.vst3 --json
+```
+
+#### `minihost scan` - Scan directory for plugins
+```bash
+minihost scan /Library/Audio/Plug-Ins/VST3/
+minihost scan ~/Music/Plugins --json
+```
+
+#### `minihost info` - Show detailed plugin info
+```bash
+minihost info /path/to/plugin.vst3
+```
+Shows runtime information including sample rate, channels, latency, buses, and factory presets.
+
+#### `minihost params` - List plugin parameters
+```bash
+minihost params /path/to/plugin.vst3
+minihost params /path/to/plugin.vst3 --json
+```
+
+#### `minihost midi-ports` - List available MIDI ports
+```bash
+minihost midi-ports
+minihost midi-ports --json
+```
+
+#### `minihost play` - Play plugin with real-time audio/MIDI
+```bash
+# Connect to MIDI input port 0
+minihost play /path/to/synth.vst3 --midi 0
+
+# Create a virtual MIDI port (macOS/Linux)
+minihost play /path/to/synth.vst3 --virtual-midi "My Synth"
+```
+
+#### `minihost render` - Render MIDI file through plugin
+```bash
+# Basic render to WAV
+minihost render /path/to/synth.vst3 song.mid output.wav
+
+# With preset and tail length
+minihost render /path/to/synth.vst3 song.mid output.wav --preset 5 --tail 3.0
+
+# With custom bit depth
+minihost render /path/to/synth.vst3 song.mid output.wav --bit-depth 16
+
+# Load plugin state
+minihost render /path/to/synth.vst3 song.mid output.wav --state preset.fxp
+```
+
+#### `minihost process` - Process audio file offline
+```bash
+# Process raw float32 audio through effect
+minihost process /path/to/effect.vst3 input.raw output.raw
+
+# Use double precision
+minihost process /path/to/effect.vst3 input.raw output.raw --double
+```
+
+### Global Options
+
+| Option | Description |
+|--------|-------------|
+| `-r, --sample-rate` | Sample rate in Hz (default: 48000) |
+| `-b, --block-size` | Block size in samples (default: 512) |
 
 ## Thread Safety
 
@@ -280,6 +425,7 @@ audio.start()
 | `mh_audio_create_virtual_midi_output` | Create virtual MIDI output port |
 | `mh_audio_is_midi_input_virtual` | Check if MIDI input is virtual |
 | `mh_audio_is_midi_output_virtual` | Check if MIDI output is virtual |
+| `mh_audio_send_midi` | Send MIDI event programmatically |
 
 ### MIDI Functions (minihost_midi.h)
 
@@ -293,6 +439,56 @@ audio.start()
 | `mh_midi_get_output_name` | Get MIDI output port name by index |
 | `mh_midi_in_open_virtual` | Create virtual MIDI input port |
 | `mh_midi_out_open_virtual` | Create virtual MIDI output port |
+
+### MidiFile Class (Python)
+
+| Method/Property | Description |
+|-----------------|-------------|
+| `MidiFile()` | Create new MIDI file |
+| `load(path)` | Load MIDI file from path |
+| `save(path)` | Save MIDI file to path |
+| `num_tracks` | Number of tracks (read-only) |
+| `ticks_per_quarter` | Ticks per quarter note (resolution) |
+| `duration_seconds` | Total duration in seconds |
+| `add_track()` | Add a new track |
+| `add_tempo(track, tick, bpm)` | Add tempo event |
+| `add_note_on(track, tick, channel, pitch, velocity)` | Add note on event |
+| `add_note_off(track, tick, channel, pitch, velocity)` | Add note off event |
+| `add_control_change(track, tick, channel, controller, value)` | Add CC event |
+| `add_program_change(track, tick, channel, program)` | Add program change |
+| `add_pitch_bend(track, tick, channel, value)` | Add pitch bend event |
+| `get_events(track)` | Get all events from track as list of dicts |
+| `join_tracks()` | Merge all tracks into track 0 |
+| `split_tracks()` | Split by channel into separate tracks |
+
+### MIDI Rendering (Python)
+
+| Function/Class | Description |
+|----------------|-------------|
+| `render_midi(plugin, midi_file, ...)` | Render MIDI to numpy array |
+| `render_midi_stream(plugin, midi_file, ...)` | Generator yielding audio blocks |
+| `render_midi_to_file(plugin, midi_file, output_path, ...)` | Render MIDI to WAV file |
+| `MidiRenderer(plugin, midi_file, ...)` | Stateful renderer for fine-grained control |
+
+**MidiRenderer properties:**
+
+| Property | Description |
+|----------|-------------|
+| `duration_seconds` | Total duration including tail |
+| `midi_duration_seconds` | MIDI content duration (no tail) |
+| `total_samples` | Total samples to render |
+| `current_sample` | Current position |
+| `current_time` | Current time in seconds |
+| `progress` | Progress as fraction (0.0-1.0) |
+| `is_finished` | True when rendering complete |
+
+**MidiRenderer methods:**
+
+| Method | Description |
+|--------|-------------|
+| `render_block()` | Render next block, returns numpy array |
+| `render_all()` | Render all remaining audio |
+| `reset()` | Reset to beginning |
 
 ## License
 

@@ -26,6 +26,10 @@ add_subdirectory(${JUCE_PATH} ${CMAKE_CURRENT_BINARY_DIR}/JUCE)
 add_subdirectory(projects/libminihost)
 add_subdirectory(projects/libminihost_audio)
 
+# midifile library (MIDI file read/write) - build library only, skip tools
+set(BUILD_MIDILIBRARY_ONLY ON CACHE BOOL "Build only the midifile library" FORCE)
+add_subdirectory(projects/midifile)
+
 # Only build CLI tools for standalone builds (not Python wheel builds)
 if(NOT DEFINED SKBUILD)
     add_subdirectory(projects/minihost_c)
@@ -38,10 +42,11 @@ if(DEFINED SKBUILD)
     find_package(nanobind CONFIG REQUIRED)
 
     nanobind_add_module(_core src/minihost/_core.cpp)
-    target_link_libraries(_core PRIVATE minihost minihost_audio)
+    target_link_libraries(_core PRIVATE minihost minihost_audio midifile)
     target_include_directories(_core PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/projects/libminihost
-        ${CMAKE_CURRENT_SOURCE_DIR}/projects/libminihost_audio)
+        ${CMAKE_CURRENT_SOURCE_DIR}/projects/libminihost_audio
+        ${CMAKE_CURRENT_SOURCE_DIR}/projects/midifile/include)
 
     install(TARGETS _core DESTINATION minihost)
 endif()

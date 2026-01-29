@@ -118,6 +118,14 @@ int mh_audio_is_midi_input_virtual(MH_AudioDevice* dev);
 // Returns 1 if virtual, 0 if physical port or not connected
 int mh_audio_is_midi_output_virtual(MH_AudioDevice* dev);
 
+// Send MIDI event to the plugin (thread-safe, can be called while playing)
+// Events are queued and processed at the start of the next audio buffer
+// status: MIDI status byte (e.g., 0x90 for note on, 0x80 for note off)
+// data1: first data byte (e.g., note number)
+// data2: second data byte (e.g., velocity)
+// Returns 1 on success, 0 on failure (e.g., queue full)
+int mh_audio_send_midi(MH_AudioDevice* dev, unsigned char status, unsigned char data1, unsigned char data2);
+
 #ifdef __cplusplus
 }
 #endif
