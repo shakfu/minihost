@@ -1,7 +1,8 @@
 # Makefile for minihost
 # Supports both C/C++ CLI tools and Python bindings
 
-.PHONY: all juce cli sync build rebuild test wheel sdist clean distclean help
+.PHONY: all juce cli sync build rebuild test wheel sdist clean distclean help \
+		check publish-test publish
 
 # Default target - build Python bindings
 all: build
@@ -36,6 +37,21 @@ wheel: juce
 # Build source distribution
 sdist:
 	uv build --sdist
+
+# Check wheel
+check:
+	@echo "checking distribution with twine"
+	@uv run twine check dist/*
+
+# Publish test to testpypi
+publish-test: check
+	@echo "uploading to TestPyPI"
+	@uv run twine upload --repository testpypi dist/*
+
+# Publish to pypi
+publish: check
+	@echo "uploading to PyPI"
+	@uv run twine upload dist/*
 
 # Clean build artifacts
 clean:

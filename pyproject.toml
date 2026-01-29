@@ -2,11 +2,53 @@
 name = "minihost"
 version = "0.1.0"
 description = "A minimal juce-based plugin host using nanobind"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = ["numpy>=1.20"]
+readme = "README.md"
+license = "GPL-3.0-or-later"
+authors = [
+    { name = "Shakeeb Alireza", email = "shakfu@users.noreply.github.com" }
+]
+keywords = [
+    "audiounit",
+    "vst3",
+    "plugin",
+    "dsp",
+    "synthesis",
+    "music",
+    "juce",
+    "nanobind",
+    "midi",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Windows",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Multimedia :: Sound/Audio",
+    "Topic :: Multimedia :: Sound/Audio :: Sound Synthesis",
+    "Topic :: Scientific/Engineering",
+]
 
 [project.scripts]
 minihost = "minihost.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/shakfu/minihost"
+Repository = "https://github.com/shakfu/minihost"
+Issues = "https://github.com/shakfu/minihost/issues"
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
 
 [build-system]
 requires = ["scikit-build-core", "nanobind"]
@@ -14,6 +56,6 @@ build-backend = "scikit_build_core.build"
 
 [tool.scikit-build]
 wheel.packages = ["src/minihost"]
+sdist.include = ["JUCE"]
+wheel.exclude = ["**.cpp"]
 
-[dependency-groups]
-dev = ["pytest>=8.0"]

@@ -107,7 +107,7 @@ jobs:
       - name: Build wheels
         env:
           CIBW_ARCHS: ${{ matrix.cibw_archs }}
-          CIBW_BUILD: cp39-* cp310-* cp311-* cp312-* cp313-*
+          CIBW_BUILD: cp310-* cp311-* cp312-* cp313-* cp314-*
           CIBW_SKIP: '*-musllinux_*'
           CIBW_BEFORE_ALL_LINUX: >
             yum install -y curl alsa-lib-devel freetype-devel fontconfig-devel
