@@ -11,6 +11,7 @@
 #include "minihost_midi.h"
 #include "midi_ringbuffer.h"
 #include "minihost.h"
+#include "minihost_chain.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -18,7 +19,8 @@
 struct MH_AudioDevice {
     ma_device device;
     ma_context context;
-    MH_Plugin* plugin;
+    MH_Plugin* plugin;           // Single plugin (NULL if chain)
+    MH_PluginChain* chain;       // Plugin chain (NULL if single plugin)
 
     // Audio configuration
     double sample_rate;
@@ -121,22 +123,40 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
         num_midi_events = mh_midi_ringbuffer_pop_all(dev->midi_in_buffer, midi_events, 256);
     }
 
-    // Process through the plugin with MIDI
+    // Process through the plugin or chain with MIDI
     MH_MidiEvent midi_out[256];
     int num_midi_out = 0;
 
-    if (num_midi_events > 0) {
-        mh_process_midi_io(dev->plugin,
-                          (const float* const*)dev->input_buffers,
-                          dev->output_buffers,
-                          frames,
-                          midi_events, num_midi_events,
-                          midi_out, 256, &num_midi_out);
+    if (dev->chain) {
+        // Process through plugin chain
+        if (num_midi_events > 0) {
+            mh_chain_process_midi_io(dev->chain,
+                              (const float* const*)dev->input_buffers,
+                              dev->output_buffers,
+                              frames,
+                              midi_events, num_midi_events,
+                              midi_out, 256, &num_midi_out);
+        } else {
+            mh_chain_process(dev->chain,
+                       (const float* const*)dev->input_buffers,
+                       dev->output_buffers,
+                       frames);
+        }
     } else {
-        mh_process(dev->plugin,
-                   (const float* const*)dev->input_buffers,
-                   dev->output_buffers,
-                   frames);
+        // Process through single plugin
+        if (num_midi_events > 0) {
+            mh_process_midi_io(dev->plugin,
+                              (const float* const*)dev->input_buffers,
+                              dev->output_buffers,
+                              frames,
+                              midi_events, num_midi_events,
+                              midi_out, 256, &num_midi_out);
+        } else {
+            mh_process(dev->plugin,
+                       (const float* const*)dev->input_buffers,
+                       dev->output_buffers,
+                       frames);
+        }
     }
 
     // Send MIDI output
@@ -298,6 +318,156 @@ MH_AudioDevice* mh_audio_open(MH_Plugin* plugin, const MH_AudioConfig* config,
                 dev->midi_in_port = config->midi_input_port;
             }
             // Don't fail if MIDI connection fails - audio still works
+        }
+        if (config->midi_output_port >= 0) {
+            char midi_err[256];
+            dev->midi_out = mh_midi_out_open(config->midi_output_port,
+                                             midi_err, sizeof(midi_err));
+            if (dev->midi_out) {
+                dev->midi_out_port = config->midi_output_port;
+            }
+        }
+    }
+
+    return dev;
+}
+
+MH_AudioDevice* mh_audio_open_chain(MH_PluginChain* chain, const MH_AudioConfig* config,
+                                     char* err_buf, size_t err_buf_size) {
+    if (!chain) {
+        if (err_buf && err_buf_size > 0) {
+            snprintf(err_buf, err_buf_size, "Plugin chain is NULL");
+        }
+        return NULL;
+    }
+
+    int num_plugins = mh_chain_get_num_plugins(chain);
+    if (num_plugins == 0) {
+        if (err_buf && err_buf_size > 0) {
+            snprintf(err_buf, err_buf_size, "Plugin chain is empty");
+        }
+        return NULL;
+    }
+
+    MH_AudioDevice* dev = (MH_AudioDevice*)calloc(1, sizeof(MH_AudioDevice));
+    if (!dev) {
+        if (err_buf && err_buf_size > 0) {
+            snprintf(err_buf, err_buf_size, "Failed to allocate audio device");
+        }
+        return NULL;
+    }
+
+    dev->chain = chain;
+    dev->plugin = NULL;  // Explicitly NULL since we're using a chain
+
+    // Get chain info
+    int num_in_ch = mh_chain_get_num_input_channels(chain);
+    int num_out_ch = mh_chain_get_num_output_channels(chain);
+
+    // Determine configuration
+    double requested_sample_rate = (config && config->sample_rate > 0) ? config->sample_rate : 0;
+    int requested_buffer_frames = (config && config->buffer_frames > 0) ? config->buffer_frames : 512;
+    int requested_channels = (config && config->output_channels > 0) ? config->output_channels : num_out_ch;
+
+    // Initialize miniaudio context
+    ma_result result = ma_context_init(NULL, 0, NULL, &dev->context);
+    if (result != MA_SUCCESS) {
+        if (err_buf && err_buf_size > 0) {
+            snprintf(err_buf, err_buf_size, "Failed to initialize audio context: %d", result);
+        }
+        free(dev);
+        return NULL;
+    }
+
+    // Configure device
+    ma_device_config device_config = ma_device_config_init(ma_device_type_playback);
+    device_config.playback.format = ma_format_f32;
+    device_config.playback.channels = requested_channels;
+    device_config.sampleRate = (ma_uint32)requested_sample_rate; // 0 = device default
+    device_config.periodSizeInFrames = requested_buffer_frames;
+    device_config.dataCallback = audio_callback;
+    device_config.pUserData = dev;
+
+    // Initialize device
+    result = ma_device_init(&dev->context, &device_config, &dev->device);
+    if (result != MA_SUCCESS) {
+        if (err_buf && err_buf_size > 0) {
+            snprintf(err_buf, err_buf_size, "Failed to initialize audio device: %d", result);
+        }
+        ma_context_uninit(&dev->context);
+        free(dev);
+        return NULL;
+    }
+
+    // Store actual configuration
+    dev->sample_rate = dev->device.sampleRate;
+    dev->channels = dev->device.playback.channels;
+    dev->buffer_frames = dev->device.playback.internalPeriodSizeInFrames;
+    if (dev->buffer_frames == 0) {
+        dev->buffer_frames = requested_buffer_frames;
+    }
+
+    // Note: For chains, we don't adjust sample rate of individual plugins here.
+    // The chain was already created with all plugins at the same sample rate.
+    // If the device sample rate differs, the caller should recreate the chain.
+    double chain_sample_rate = mh_chain_get_sample_rate(chain);
+    if (chain_sample_rate != dev->sample_rate) {
+        if (err_buf && err_buf_size > 0) {
+            snprintf(err_buf, err_buf_size,
+                     "Chain sample rate (%.0f Hz) differs from device (%.0f Hz). "
+                     "Recreate chain with matching sample rate.",
+                     chain_sample_rate, dev->sample_rate);
+        }
+        ma_device_uninit(&dev->device);
+        ma_context_uninit(&dev->context);
+        free(dev);
+        return NULL;
+    }
+
+    // Allocate conversion buffers with extra headroom
+    dev->buffer_capacity = dev->buffer_frames * 2; // 2x headroom for safety
+
+    dev->input_buffers = alloc_channel_buffers(dev->channels, dev->buffer_capacity);
+    if (!dev->input_buffers) {
+        if (err_buf && err_buf_size > 0) {
+            snprintf(err_buf, err_buf_size, "Failed to allocate input buffers");
+        }
+        ma_device_uninit(&dev->device);
+        ma_context_uninit(&dev->context);
+        free(dev);
+        return NULL;
+    }
+
+    dev->output_buffers = alloc_channel_buffers(dev->channels, dev->buffer_capacity);
+    if (!dev->output_buffers) {
+        if (err_buf && err_buf_size > 0) {
+            snprintf(err_buf, err_buf_size, "Failed to allocate output buffers");
+        }
+        free_channel_buffers(dev->input_buffers, dev->channels);
+        ma_device_uninit(&dev->device);
+        ma_context_uninit(&dev->context);
+        free(dev);
+        return NULL;
+    }
+
+    // Initialize MIDI
+    dev->midi_in_port = -1;
+    dev->midi_out_port = -1;
+
+    // Create MIDI ring buffers
+    dev->midi_in_buffer = mh_midi_ringbuffer_create(256);
+    dev->midi_out_buffer = mh_midi_ringbuffer_create(256);
+
+    // Connect MIDI ports if specified in config
+    if (config) {
+        if (config->midi_input_port >= 0) {
+            char midi_err[256];
+            dev->midi_in = mh_midi_in_open(config->midi_input_port,
+                                           midi_input_callback, dev,
+                                           midi_err, sizeof(midi_err));
+            if (dev->midi_in) {
+                dev->midi_in_port = config->midi_input_port;
+            }
         }
         if (config->midi_output_port >= 0) {
             char midi_err[256];

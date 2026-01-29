@@ -6,6 +6,7 @@ A minimal audio plugin host library for loading and processing VST3 and AudioUni
 
 - Load VST3 plugins (macOS, Windows, Linux)
 - Load AudioUnit plugins (macOS only)
+- **Plugin chaining** - connect multiple plugins in series (synth -> reverb -> limiter)
 - **Real-time audio playback** via miniaudio (cross-platform)
 - **Real-time MIDI I/O** via libremidi (cross-platform)
 - **Virtual MIDI ports** - create named ports that DAWs can connect to (macOS, Linux)
@@ -152,6 +153,49 @@ mh_audio_create_virtual_midi_input(audio, "minihost Input");
 mh_audio_create_virtual_midi_output(audio, "minihost Output");
 ```
 
+### Plugin Chaining
+
+Chain multiple plugins together for processing (e.g., synth -> reverb -> limiter):
+
+```c
+#include "minihost_chain.h"
+
+// Load plugins
+MH_Plugin* synth = mh_open("/path/to/synth.vst3", 48000, 512, 0, 2, err, sizeof(err));
+MH_Plugin* reverb = mh_open("/path/to/reverb.vst3", 48000, 512, 2, 2, err, sizeof(err));
+MH_Plugin* limiter = mh_open("/path/to/limiter.vst3", 48000, 512, 2, 2, err, sizeof(err));
+
+// Create chain (all plugins must have same sample rate)
+MH_Plugin* plugins[] = { synth, reverb, limiter };
+MH_PluginChain* chain = mh_chain_create(plugins, 3, err, sizeof(err));
+
+// Get combined latency
+int latency = mh_chain_get_latency_samples(chain);
+
+// Process audio through chain
+float* inputs[2] = { in_left, in_right };
+float* outputs[2] = { out_left, out_right };
+mh_chain_process(chain, inputs, outputs, 512);
+
+// Process with MIDI (MIDI goes to first plugin only)
+MH_MidiEvent midi[] = { { 0, 0x90, 60, 100 } };
+mh_chain_process_midi_io(chain, inputs, outputs, 512, midi, 1, NULL, 0, NULL);
+
+// Real-time playback through chain
+MH_AudioConfig config = { .sample_rate = 48000, .buffer_frames = 512 };
+MH_AudioDevice* audio = mh_audio_open_chain(chain, &config, err, sizeof(err));
+mh_audio_start(audio);
+// ...
+mh_audio_stop(audio);
+mh_audio_close(audio);
+
+// Cleanup
+mh_chain_close(chain);  // Does not close individual plugins
+mh_close(synth);
+mh_close(reverb);
+mh_close(limiter);
+```
+
 ## Python Bindings
 
 ```bash
@@ -284,6 +328,51 @@ print(f"Duration: {renderer.duration_seconds:.2f}s")
 while not renderer.is_finished:
     block = renderer.render_block()
     print(f"Progress: {renderer.progress:.1%}")
+```
+
+### Plugin Chaining
+
+Chain multiple plugins together for serial processing:
+
+```python
+import minihost
+import time
+
+# Load plugins (all must have same sample rate)
+synth = minihost.Plugin("/path/to/synth.vst3", sample_rate=48000)
+reverb = minihost.Plugin("/path/to/reverb.vst3", sample_rate=48000)
+limiter = minihost.Plugin("/path/to/limiter.vst3", sample_rate=48000)
+
+# Create chain
+chain = minihost.PluginChain([synth, reverb, limiter])
+print(f"Total latency: {chain.latency_samples} samples")
+print(f"Tail length: {chain.tail_seconds:.2f} seconds")
+
+# Real-time playback through chain
+with minihost.AudioDevice(chain) as audio:
+    audio.send_midi(0x90, 60, 100)  # Note on to synth
+    time.sleep(2)
+    audio.send_midi(0x80, 60, 0)    # Note off
+    time.sleep(1)  # Let reverb tail fade
+
+# Offline processing
+import numpy as np
+input_audio = np.zeros((2, 512), dtype=np.float32)
+output_audio = np.zeros((2, 512), dtype=np.float32)
+chain.process(input_audio, output_audio)
+
+# Process with MIDI (MIDI goes to first plugin)
+midi_events = [(0, 0x90, 60, 100)]
+chain.process_midi(input_audio, output_audio, midi_events)
+
+# Render MIDI file through chain
+audio = minihost.render_midi(chain, "song.mid")
+minihost.render_midi_to_file(chain, "song.mid", "output.wav")
+
+# Access individual plugins in chain
+for i in range(chain.num_plugins):
+    plugin = chain.get_plugin(i)
+    print(f"Plugin {i}: {plugin.num_params} params")
 ```
 
 ## Command Line Interface
@@ -426,6 +515,26 @@ minihost process /path/to/effect.vst3 input.raw output.raw --double
 | `mh_audio_is_midi_input_virtual` | Check if MIDI input is virtual |
 | `mh_audio_is_midi_output_virtual` | Check if MIDI output is virtual |
 | `mh_audio_send_midi` | Send MIDI event programmatically |
+| `mh_audio_open_chain` | Open audio device for chain playback |
+
+### Plugin Chain Functions (minihost_chain.h)
+
+| Function | Description |
+|----------|-------------|
+| `mh_chain_create` | Create chain from array of plugins |
+| `mh_chain_close` | Close chain (does not close plugins) |
+| `mh_chain_process` | Process audio through chain |
+| `mh_chain_process_midi_io` | Process with MIDI (to first plugin) |
+| `mh_chain_get_latency_samples` | Get total chain latency |
+| `mh_chain_get_num_plugins` | Get number of plugins in chain |
+| `mh_chain_get_plugin` | Get plugin by index |
+| `mh_chain_get_num_input_channels` | Get input channels (first plugin) |
+| `mh_chain_get_num_output_channels` | Get output channels (last plugin) |
+| `mh_chain_get_sample_rate` | Get sample rate |
+| `mh_chain_get_max_block_size` | Get maximum block size |
+| `mh_chain_reset` | Reset all plugins in chain |
+| `mh_chain_set_non_realtime` | Set non-realtime mode for all plugins |
+| `mh_chain_get_tail_seconds` | Get max tail length |
 
 ### MIDI Functions (minihost_midi.h)
 
@@ -489,6 +598,23 @@ minihost process /path/to/effect.vst3 input.raw output.raw --double
 | `render_block()` | Render next block, returns numpy array |
 | `render_all()` | Render all remaining audio |
 | `reset()` | Reset to beginning |
+
+### PluginChain Class (Python)
+
+| Method/Property | Description |
+|-----------------|-------------|
+| `PluginChain(plugins)` | Create chain from list of plugins |
+| `process(input, output)` | Process audio through chain |
+| `process_midi(input, output, midi_events)` | Process with MIDI (to first plugin) |
+| `reset()` | Reset all plugins in chain |
+| `set_non_realtime(enabled)` | Set non-realtime mode for all plugins |
+| `get_plugin(index)` | Get plugin by index |
+| `num_plugins` | Number of plugins (read-only) |
+| `latency_samples` | Total latency in samples (read-only) |
+| `num_input_channels` | Input channel count (read-only) |
+| `num_output_channels` | Output channel count (read-only) |
+| `sample_rate` | Sample rate (read-only) |
+| `tail_seconds` | Max tail length in seconds (read-only) |
 
 ## License
 

@@ -4,6 +4,29 @@
 
 ### Added
 
+#### Plugin Chaining
+
+- `MH_PluginChain` opaque struct for managing chains of plugins
+- `mh_chain_create()` - Create a chain from an array of plugins (all must have same sample rate)
+- `mh_chain_close()` - Close chain and free resources (does not close individual plugins)
+- `mh_chain_process()` - Process audio through the chain
+- `mh_chain_process_midi_io()` - Process audio with MIDI I/O (MIDI goes to first plugin only)
+- `mh_chain_get_latency_samples()` - Get total chain latency (sum of all plugin latencies)
+- `mh_chain_get_num_plugins()` - Get number of plugins in the chain
+- `mh_chain_get_plugin()` - Get plugin from chain by index
+- `mh_chain_get_num_input_channels()` - Get input channel count (from first plugin)
+- `mh_chain_get_num_output_channels()` - Get output channel count (from last plugin)
+- `mh_chain_get_sample_rate()` - Get sample rate (all plugins share same rate)
+- `mh_chain_get_max_block_size()` - Get maximum block size
+- `mh_chain_reset()` - Reset all plugins in the chain
+- `mh_chain_set_non_realtime()` - Set non-realtime mode for all plugins
+- `mh_chain_get_tail_seconds()` - Get maximum tail length (max of all plugin tails)
+- `mh_audio_open_chain()` - Open audio device for real-time playback through a plugin chain
+- Python `PluginChain` class with `process()`, `process_midi()`, `reset()`, `set_non_realtime()`, `get_plugin()` methods
+- Python `PluginChain` properties: `num_plugins`, `latency_samples`, `num_input_channels`, `num_output_channels`, `sample_rate`, `tail_seconds`
+- `AudioDevice` now accepts either `Plugin` or `PluginChain`
+- `render_midi()`, `render_midi_stream()`, `render_midi_to_file()`, and `MidiRenderer` now accept either `Plugin` or `PluginChain`
+
 #### Real-time Audio Playback (miniaudio integration)
 
 - `MH_AudioDevice` opaque struct for audio device management

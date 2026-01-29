@@ -15,8 +15,9 @@
 extern "C" {
 #endif
 
-// Forward declaration - requires minihost.h for actual use
+// Forward declarations - require minihost.h/minihost_chain.h for actual use
 typedef struct MH_Plugin MH_Plugin;
+typedef struct MH_PluginChain MH_PluginChain;
 
 typedef struct MH_AudioDevice MH_AudioDevice;
 
@@ -43,6 +44,15 @@ typedef void (*MH_AudioInputCallback)(float* const* buffer, int nframes, void* u
 // Returns NULL on failure
 MH_AudioDevice* mh_audio_open(MH_Plugin* plugin, const MH_AudioConfig* config,
                                char* err_buf, size_t err_buf_size);
+
+// Open an audio device for real-time playback through a plugin chain
+// chain: the plugin chain to process audio (must remain valid while device is open)
+// config: optional configuration (NULL for defaults)
+// err_buf: buffer to receive error message on failure
+// err_buf_size: size of error buffer
+// Returns NULL on failure
+MH_AudioDevice* mh_audio_open_chain(MH_PluginChain* chain, const MH_AudioConfig* config,
+                                     char* err_buf, size_t err_buf_size);
 
 // Close the audio device
 // Automatically stops playback if running

@@ -13,7 +13,10 @@ if TYPE_CHECKING:
     import numpy as np
     from numpy.typing import NDArray
 
-from minihost._core import Plugin, MidiFile
+from minihost._core import Plugin, PluginChain, MidiFile
+
+# Type alias for plugin or chain
+PluginOrChain = Union[Plugin, PluginChain]
 
 
 def _build_tempo_map(midi_file: MidiFile) -> list[tuple[int, float]]:
@@ -131,19 +134,19 @@ def _event_to_midi_tuple(event: dict, sample_offset: int) -> tuple[int, int, int
 
 
 def render_midi_stream(
-    plugin: Plugin,
+    plugin: PluginOrChain,
     midi_file: Union[MidiFile, str],
     block_size: int = 512,
     tail_seconds: Optional[float] = None,
 ) -> "Iterator[np.ndarray]":
-    """Render MIDI file through plugin as a generator of audio blocks.
+    """Render MIDI file through plugin or chain as a generator of audio blocks.
 
     Args:
-        plugin: Plugin instance to render through (should be a synth/instrument)
+        plugin: Plugin or PluginChain instance to render through
         midi_file: MidiFile object or path to MIDI file
         block_size: Audio block size in samples
         tail_seconds: Extra time to render after MIDI ends for reverb/delay tails.
-                     None = use plugin.tail_seconds, 0 = no tail
+                     None = use plugin/chain tail_seconds, 0 = no tail
 
     Yields:
         numpy arrays of shape (channels, block_size) containing rendered audio
@@ -153,6 +156,12 @@ def render_midi_stream(
         >>> for block in minihost.render_midi_stream(plugin, "song.mid"):
         ...     # Process or write each block
         ...     pass
+
+        >>> # With a plugin chain
+        >>> synth = minihost.Plugin("synth.vst3", sample_rate=48000)
+        >>> reverb = minihost.Plugin("reverb.vst3", sample_rate=48000)
+        >>> chain = minihost.PluginChain([synth, reverb])
+        >>> audio = minihost.render_midi(chain, "song.mid")
     """
     import numpy as np
 
@@ -246,16 +255,16 @@ def render_midi_stream(
 
 
 def render_midi(
-    plugin: Plugin,
+    plugin: PluginOrChain,
     midi_file: Union[MidiFile, str],
     block_size: int = 512,
     tail_seconds: Optional[float] = None,
     dtype: Optional[type] = None,
 ) -> "np.ndarray":
-    """Render MIDI file through plugin to a numpy array.
+    """Render MIDI file through plugin or chain to a numpy array.
 
     Args:
-        plugin: Plugin instance to render through
+        plugin: Plugin or PluginChain instance to render through
         midi_file: MidiFile object or path to MIDI file
         block_size: Audio block size in samples
         tail_seconds: Extra time to render after MIDI ends for reverb/delay tails
@@ -323,17 +332,17 @@ def _write_wav_header(f, channels: int, sample_rate: int, bits_per_sample: int, 
 
 
 def render_midi_to_file(
-    plugin: Plugin,
+    plugin: PluginOrChain,
     midi_file: Union[MidiFile, str],
     output_path: str,
     block_size: int = 512,
     tail_seconds: Optional[float] = None,
     bit_depth: int = 24,
 ) -> int:
-    """Render MIDI file through plugin and write to audio file.
+    """Render MIDI file through plugin or chain and write to audio file.
 
     Args:
-        plugin: Plugin instance to render through
+        plugin: Plugin or PluginChain instance to render through
         midi_file: MidiFile object or path to MIDI file
         output_path: Output file path (currently only .wav supported)
         block_size: Audio block size in samples
@@ -426,7 +435,7 @@ class MidiRenderer:
 
     def __init__(
         self,
-        plugin: Plugin,
+        plugin: PluginOrChain,
         midi_file: Union[MidiFile, str],
         block_size: int = 512,
         tail_seconds: Optional[float] = None,
@@ -434,7 +443,7 @@ class MidiRenderer:
         """Initialize renderer.
 
         Args:
-            plugin: Plugin instance to render through
+            plugin: Plugin or PluginChain instance to render through
             midi_file: MidiFile object or path to MIDI file
             block_size: Audio block size in samples
             tail_seconds: Extra time after MIDI ends for tails

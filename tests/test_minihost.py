@@ -9,6 +9,11 @@ def test_module_has_plugin_class():
     assert hasattr(minihost, 'Plugin')
 
 
+def test_module_has_plugin_chain_class():
+    """Test that PluginChain class is exported."""
+    assert hasattr(minihost, 'PluginChain')
+
+
 def test_module_has_audio_device_class():
     """Test that AudioDevice class is exported."""
     assert hasattr(minihost, 'AudioDevice')
@@ -144,6 +149,33 @@ def test_plugin_class_has_expected_methods():
     ]
     for method in expected_methods:
         assert hasattr(minihost.Plugin, method), f"Plugin missing method: {method}"
+
+
+def test_plugin_chain_class_has_expected_methods():
+    """Test that PluginChain class has expected methods."""
+    expected_methods = [
+        'get_plugin',
+        'process',
+        'process_midi',
+        'reset',
+        'set_non_realtime',
+    ]
+    for method in expected_methods:
+        assert hasattr(minihost.PluginChain, method), f"PluginChain missing method: {method}"
+
+
+def test_plugin_chain_class_has_expected_properties():
+    """Test that PluginChain class has expected properties."""
+    expected_props = [
+        'num_plugins',
+        'latency_samples',
+        'num_input_channels',
+        'num_output_channels',
+        'sample_rate',
+        'tail_seconds',
+    ]
+    for prop in expected_props:
+        assert hasattr(minihost.PluginChain, prop), f"PluginChain missing property: {prop}"
 
 
 def test_plugin_invalid_path_raises():
@@ -999,3 +1031,161 @@ class TestMidiRendering:
         finally:
             if os.path.exists(midi_path):
                 os.unlink(midi_path)
+
+
+class TestPluginChain:
+    """Tests for PluginChain class (require a plugin)."""
+
+    @pytest.fixture
+    def plugin_path(self):
+        """Get a test plugin path from environment or skip."""
+        import os
+        path = os.environ.get('MINIHOST_TEST_PLUGIN')
+        if not path:
+            pytest.skip("Set MINIHOST_TEST_PLUGIN env var to run PluginChain tests")
+        return path
+
+    @pytest.fixture
+    def plugin(self, plugin_path):
+        """Create a plugin instance for testing."""
+        return minihost.Plugin(plugin_path, sample_rate=48000, max_block_size=512)
+
+    @pytest.fixture
+    def plugin2(self, plugin_path):
+        """Create a second plugin instance for testing chains."""
+        return minihost.Plugin(plugin_path, sample_rate=48000, max_block_size=512)
+
+    def test_chain_creation_single_plugin(self, plugin):
+        """Test creating chain with single plugin."""
+        chain = minihost.PluginChain([plugin])
+        assert chain.num_plugins == 1
+        assert chain.sample_rate == 48000
+
+    def test_chain_creation_multiple_plugins(self, plugin, plugin2):
+        """Test creating chain with multiple plugins."""
+        chain = minihost.PluginChain([plugin, plugin2])
+        assert chain.num_plugins == 2
+
+    def test_chain_latency_is_sum(self, plugin, plugin2):
+        """Test that chain latency is sum of plugin latencies."""
+        latency1 = plugin.latency_samples
+        latency2 = plugin2.latency_samples
+        chain = minihost.PluginChain([plugin, plugin2])
+        assert chain.latency_samples == latency1 + latency2
+
+    def test_chain_channels(self, plugin):
+        """Test chain channel properties."""
+        chain = minihost.PluginChain([plugin])
+        assert chain.num_input_channels == plugin.num_input_channels
+        assert chain.num_output_channels == plugin.num_output_channels
+
+    def test_chain_get_plugin(self, plugin, plugin2):
+        """Test getting plugin from chain by index."""
+        chain = minihost.PluginChain([plugin, plugin2])
+        assert chain.get_plugin(0) is plugin
+        assert chain.get_plugin(1) is plugin2
+
+    def test_chain_get_plugin_out_of_range(self, plugin):
+        """Test that out of range index raises error."""
+        chain = minihost.PluginChain([plugin])
+        with pytest.raises(RuntimeError, match="index out of range"):
+            chain.get_plugin(5)
+
+    def test_chain_process(self, plugin):
+        """Test processing audio through chain."""
+        import numpy as np
+
+        chain = minihost.PluginChain([plugin])
+
+        in_ch = max(chain.num_input_channels, 2)
+        out_ch = max(chain.num_output_channels, 2)
+
+        input_audio = np.zeros((in_ch, 512), dtype=np.float32)
+        output_audio = np.zeros((out_ch, 512), dtype=np.float32)
+
+        chain.process(input_audio, output_audio)
+
+    def test_chain_process_midi(self, plugin):
+        """Test processing audio with MIDI through chain."""
+        import numpy as np
+
+        chain = minihost.PluginChain([plugin])
+
+        in_ch = max(chain.num_input_channels, 2)
+        out_ch = max(chain.num_output_channels, 2)
+
+        input_audio = np.zeros((in_ch, 512), dtype=np.float32)
+        output_audio = np.zeros((out_ch, 512), dtype=np.float32)
+
+        # Note on, note off
+        midi_in = [(0, 0x90, 60, 100), (256, 0x80, 60, 0)]
+        midi_out = chain.process_midi(input_audio, output_audio, midi_in)
+
+        assert isinstance(midi_out, list)
+
+    def test_chain_reset(self, plugin):
+        """Test resetting chain."""
+        chain = minihost.PluginChain([plugin])
+        chain.reset()  # Should not raise
+
+    def test_chain_tail_seconds(self, plugin, plugin2):
+        """Test chain tail_seconds property."""
+        chain = minihost.PluginChain([plugin, plugin2])
+        # Tail is max of all plugin tails
+        assert chain.tail_seconds >= 0.0
+
+    def test_chain_audio_device(self, plugin, plugin2):
+        """Test AudioDevice with plugin chain."""
+        chain = minihost.PluginChain([plugin, plugin2])
+        audio = minihost.AudioDevice(chain)
+
+        assert audio.sample_rate > 0
+        assert audio.buffer_frames > 0
+        assert audio.is_playing is False
+
+    def test_chain_audio_device_start_stop(self, plugin):
+        """Test AudioDevice start/stop with chain."""
+        chain = minihost.PluginChain([plugin])
+        audio = minihost.AudioDevice(chain)
+
+        audio.start()
+        assert audio.is_playing is True
+
+        audio.stop()
+        assert audio.is_playing is False
+
+    def test_chain_audio_device_context_manager(self, plugin):
+        """Test AudioDevice as context manager with chain."""
+        chain = minihost.PluginChain([plugin])
+        with minihost.AudioDevice(chain) as audio:
+            assert audio.is_playing is True
+
+    def test_chain_render_midi(self, plugin):
+        """Test render_midi with plugin chain."""
+        import numpy as np
+
+        chain = minihost.PluginChain([plugin])
+
+        mf = minihost.MidiFile()
+        mf.add_tempo(0, 0, 120.0)
+        mf.add_note_on(0, 0, 0, 60, 100)
+        mf.add_note_off(0, 480, 0, 60, 0)
+
+        audio = minihost.render_midi(chain, mf, tail_seconds=0.5)
+
+        assert isinstance(audio, np.ndarray)
+        assert audio.ndim == 2
+        assert audio.shape[1] > 0
+
+    def test_empty_chain_raises_error(self):
+        """Test that empty plugin list raises error."""
+        with pytest.raises(RuntimeError, match="at least one plugin"):
+            minihost.PluginChain([])
+
+    def test_chain_sample_rate_mismatch_raises(self, plugin_path):
+        """Test that mismatched sample rates raise error."""
+        plugin1 = minihost.Plugin(plugin_path, sample_rate=44100, max_block_size=512)
+        plugin2 = minihost.Plugin(plugin_path, sample_rate=48000, max_block_size=512)
+
+        with pytest.raises(RuntimeError, match="[Ss]ample rate"):
+            minihost.PluginChain([plugin1, plugin2])

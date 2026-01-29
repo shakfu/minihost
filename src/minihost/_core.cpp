@@ -9,6 +9,7 @@
 #include <cstring>
 
 #include "minihost.h"
+#include "minihost_chain.h"
 #include "minihost_audio.h"
 #include "minihost_midi.h"
 #include "MidiFile.h"
@@ -536,7 +537,200 @@ private:
     int max_block_size_;
     bool non_realtime_ = false;
 
-    // Allow AudioDevice to access raw plugin pointer
+    // Allow AudioDevice and PluginChain to access raw plugin pointer
+    friend class AudioDevice;
+    friend class PluginChain;
+};
+
+
+// Python wrapper class for MH_PluginChain
+class PluginChain {
+public:
+    PluginChain(nb::list plugins)
+    {
+        if (nb::len(plugins) == 0) {
+            throw std::runtime_error("Plugin chain must contain at least one plugin");
+        }
+
+        // Extract raw plugin pointers and keep references to prevent GC
+        std::vector<MH_Plugin*> raw_ptrs;
+        for (size_t i = 0; i < nb::len(plugins); ++i) {
+            Plugin& p = nb::cast<Plugin&>(plugins[i]);
+            raw_ptrs.push_back(p.plugin_);
+            plugin_refs_.push_back(&p);
+        }
+
+        char err[1024] = {0};
+        chain_ = mh_chain_create(raw_ptrs.data(), static_cast<int>(raw_ptrs.size()),
+                                  err, sizeof(err));
+        if (!chain_) {
+            throw std::runtime_error(std::string("Failed to create plugin chain: ") + err);
+        }
+    }
+
+    ~PluginChain() {
+        if (chain_) {
+            mh_chain_close(chain_);
+            chain_ = nullptr;
+        }
+    }
+
+    // Disable copy
+    PluginChain(const PluginChain&) = delete;
+    PluginChain& operator=(const PluginChain&) = delete;
+
+    // Enable move
+    PluginChain(PluginChain&& other) noexcept
+        : chain_(other.chain_), plugin_refs_(std::move(other.plugin_refs_))
+    {
+        other.chain_ = nullptr;
+    }
+
+    PluginChain& operator=(PluginChain&& other) noexcept {
+        if (this != &other) {
+            if (chain_) mh_chain_close(chain_);
+            chain_ = other.chain_;
+            plugin_refs_ = std::move(other.plugin_refs_);
+            other.chain_ = nullptr;
+        }
+        return *this;
+    }
+
+    // Properties
+    int num_plugins() const {
+        return mh_chain_get_num_plugins(chain_);
+    }
+
+    int latency_samples() const {
+        return mh_chain_get_latency_samples(chain_);
+    }
+
+    int num_input_channels() const {
+        return mh_chain_get_num_input_channels(chain_);
+    }
+
+    int num_output_channels() const {
+        return mh_chain_get_num_output_channels(chain_);
+    }
+
+    double get_sample_rate() const {
+        return mh_chain_get_sample_rate(chain_);
+    }
+
+    double tail_seconds() const {
+        return mh_chain_get_tail_seconds(chain_);
+    }
+
+    // Reset all plugins
+    void reset() {
+        if (!mh_chain_reset(chain_)) {
+            throw std::runtime_error("Failed to reset plugin chain");
+        }
+    }
+
+    // Non-realtime mode
+    void set_non_realtime(bool non_realtime) {
+        if (!mh_chain_set_non_realtime(chain_, non_realtime ? 1 : 0)) {
+            throw std::runtime_error("Failed to set non-realtime mode");
+        }
+    }
+
+    // Get a plugin from the chain by index
+    Plugin* get_plugin(int index) {
+        if (index < 0 || index >= static_cast<int>(plugin_refs_.size())) {
+            throw std::runtime_error("Plugin index out of range");
+        }
+        return plugin_refs_[index];
+    }
+
+    // Process audio (no MIDI)
+    void process(AudioArray input, AudioArray output) {
+        int in_channels = static_cast<int>(input.shape(0));
+        int out_channels = static_cast<int>(output.shape(0));
+        int in_frames = static_cast<int>(input.shape(1));
+        int out_frames = static_cast<int>(output.shape(1));
+
+        if (in_frames != out_frames) {
+            throw std::runtime_error("Input and output frame counts must match");
+        }
+
+        std::vector<const float*> in_ptrs(in_channels);
+        std::vector<float*> out_ptrs(out_channels);
+
+        for (int ch = 0; ch < in_channels; ++ch) {
+            in_ptrs[ch] = input.data() + ch * in_frames;
+        }
+        for (int ch = 0; ch < out_channels; ++ch) {
+            out_ptrs[ch] = output.data() + ch * out_frames;
+        }
+
+        if (!mh_chain_process(chain_, in_ptrs.data(), out_ptrs.data(), in_frames)) {
+            throw std::runtime_error("Chain process failed");
+        }
+    }
+
+    // Process with MIDI
+    nb::list process_midi(AudioArray input, AudioArray output, nb::list midi_in)
+    {
+        int in_channels = static_cast<int>(input.shape(0));
+        int out_channels = static_cast<int>(output.shape(0));
+        int in_frames = static_cast<int>(input.shape(1));
+        int out_frames = static_cast<int>(output.shape(1));
+
+        if (in_frames != out_frames) {
+            throw std::runtime_error("Input and output frame counts must match");
+        }
+
+        // Convert MIDI input
+        std::vector<MH_MidiEvent> midi_events;
+        for (size_t i = 0; i < nb::len(midi_in); ++i) {
+            nb::tuple ev = nb::cast<nb::tuple>(midi_in[i]);
+            MH_MidiEvent e;
+            e.sample_offset = nb::cast<int>(ev[0]);
+            e.status = nb::cast<unsigned char>(ev[1]);
+            e.data1 = nb::cast<unsigned char>(ev[2]);
+            e.data2 = nb::cast<unsigned char>(ev[3]);
+            midi_events.push_back(e);
+        }
+
+        std::vector<const float*> in_ptrs(in_channels);
+        std::vector<float*> out_ptrs(out_channels);
+
+        for (int ch = 0; ch < in_channels; ++ch) {
+            in_ptrs[ch] = input.data() + ch * in_frames;
+        }
+        for (int ch = 0; ch < out_channels; ++ch) {
+            out_ptrs[ch] = output.data() + ch * out_frames;
+        }
+
+        // Output MIDI buffer
+        std::vector<MH_MidiEvent> midi_out(256);
+        int num_midi_out = 0;
+
+        if (!mh_chain_process_midi_io(chain_, in_ptrs.data(), out_ptrs.data(), in_frames,
+                                       midi_events.data(), static_cast<int>(midi_events.size()),
+                                       midi_out.data(), 256, &num_midi_out)) {
+            throw std::runtime_error("Chain process failed");
+        }
+
+        // Convert MIDI output to Python list
+        nb::list result;
+        for (int i = 0; i < num_midi_out; ++i) {
+            result.append(nb::make_tuple(
+                midi_out[i].sample_offset,
+                midi_out[i].status,
+                midi_out[i].data1,
+                midi_out[i].data2
+            ));
+        }
+        return result;
+    }
+
+private:
+    MH_PluginChain* chain_ = nullptr;
+    std::vector<Plugin*> plugin_refs_;  // Keep references to prevent plugins from being GC'd
+
+    // Allow AudioDevice to access raw chain pointer
     friend class AudioDevice;
 };
 
@@ -544,9 +738,10 @@ private:
 // Python wrapper class for MH_AudioDevice
 class AudioDevice {
 public:
+    // Constructor for single plugin
     AudioDevice(Plugin& plugin, double sample_rate = 0, int buffer_frames = 0,
                 int output_channels = 0, int midi_input_port = -1, int midi_output_port = -1)
-        : plugin_ref_(&plugin)
+        : plugin_ref_(&plugin), chain_ref_(nullptr)
     {
         MH_AudioConfig config;
         config.sample_rate = sample_rate;
@@ -559,6 +754,25 @@ public:
         device_ = mh_audio_open(plugin.plugin_, &config, err, sizeof(err));
         if (!device_) {
             throw std::runtime_error(std::string("Failed to open audio device: ") + err);
+        }
+    }
+
+    // Constructor for plugin chain
+    AudioDevice(PluginChain& chain, double sample_rate = 0, int buffer_frames = 0,
+                int output_channels = 0, int midi_input_port = -1, int midi_output_port = -1)
+        : plugin_ref_(nullptr), chain_ref_(&chain)
+    {
+        MH_AudioConfig config;
+        config.sample_rate = sample_rate;
+        config.buffer_frames = buffer_frames;
+        config.output_channels = output_channels;
+        config.midi_input_port = midi_input_port;
+        config.midi_output_port = midi_output_port;
+
+        char err[1024] = {0};
+        device_ = mh_audio_open_chain(chain.chain_, &config, err, sizeof(err));
+        if (!device_) {
+            throw std::runtime_error(std::string("Failed to open audio device with chain: ") + err);
         }
     }
 
@@ -575,10 +789,11 @@ public:
 
     // Enable move
     AudioDevice(AudioDevice&& other) noexcept
-        : device_(other.device_), plugin_ref_(other.plugin_ref_)
+        : device_(other.device_), plugin_ref_(other.plugin_ref_), chain_ref_(other.chain_ref_)
     {
         other.device_ = nullptr;
         other.plugin_ref_ = nullptr;
+        other.chain_ref_ = nullptr;
     }
 
     AudioDevice& operator=(AudioDevice&& other) noexcept {
@@ -586,8 +801,10 @@ public:
             if (device_) mh_audio_close(device_);
             device_ = other.device_;
             plugin_ref_ = other.plugin_ref_;
+            chain_ref_ = other.chain_ref_;
             other.device_ = nullptr;
             other.plugin_ref_ = nullptr;
+            other.chain_ref_ = nullptr;
         }
         return *this;
     }
@@ -692,7 +909,8 @@ public:
 
 private:
     MH_AudioDevice* device_ = nullptr;
-    Plugin* plugin_ref_ = nullptr;  // Keep reference to prevent plugin from being GC'd
+    Plugin* plugin_ref_ = nullptr;        // Keep reference to prevent plugin from being GC'd
+    PluginChain* chain_ref_ = nullptr;    // Keep reference to prevent chain from being GC'd
 };
 
 
@@ -1110,6 +1328,52 @@ NB_MODULE(_core, m) {
              nb::arg("input"), nb::arg("output"),
              "Process audio with double precision (float64). Shape: [channels, frames]");
 
+    // PluginChain class for chaining multiple plugins
+    nb::class_<PluginChain>(m, "PluginChain")
+        .def(nb::init<nb::list>(),
+             nb::arg("plugins"),
+             "Create a plugin chain from a list of Plugin instances. "
+             "Audio flows sequentially through plugins (e.g., synth -> reverb -> limiter). "
+             "All plugins must have the same sample rate. "
+             "MIDI is sent to the first plugin only.")
+
+        // Properties
+        .def_prop_ro("num_plugins", &PluginChain::num_plugins,
+                     "Number of plugins in the chain")
+        .def_prop_ro("latency_samples", &PluginChain::latency_samples,
+                     "Total latency in samples (sum of all plugin latencies)")
+        .def_prop_ro("num_input_channels", &PluginChain::num_input_channels,
+                     "Number of input channels (from first plugin)")
+        .def_prop_ro("num_output_channels", &PluginChain::num_output_channels,
+                     "Number of output channels (from last plugin)")
+        .def_prop_ro("sample_rate", &PluginChain::get_sample_rate,
+                     "Sample rate (all plugins have the same rate)")
+        .def_prop_ro("tail_seconds", &PluginChain::tail_seconds,
+                     "Maximum tail length in seconds (for reverbs, delays)")
+
+        // Get plugin by index
+        .def("get_plugin", &PluginChain::get_plugin,
+             nb::arg("index"),
+             nb::rv_policy::reference_internal,
+             "Get a plugin from the chain by index")
+
+        // Reset
+        .def("reset", &PluginChain::reset,
+             "Reset all plugins (clears delay lines, reverb tails, etc.)")
+
+        // Non-realtime mode
+        .def("set_non_realtime", &PluginChain::set_non_realtime,
+             nb::arg("non_realtime"),
+             "Set non-realtime mode for all plugins in the chain")
+
+        // Process
+        .def("process", &PluginChain::process,
+             nb::arg("input"), nb::arg("output"),
+             "Process audio through the chain (shape: [channels, frames])")
+        .def("process_midi", &PluginChain::process_midi,
+             nb::arg("input"), nb::arg("output"), nb::arg("midi_in"),
+             "Process audio with MIDI (to first plugin). midi_in: list of (sample_offset, status, data1, data2)");
+
     // AudioDevice class for real-time playback
     nb::class_<AudioDevice>(m, "AudioDevice")
         .def(nb::init<Plugin&, double, int, int, int, int>(),
@@ -1119,10 +1383,23 @@ NB_MODULE(_core, m) {
              nb::arg("output_channels") = 0,
              nb::arg("midi_input_port") = -1,
              nb::arg("midi_output_port") = -1,
-             "Open an audio device for real-time playback. "
+             "Open an audio device for real-time playback with a single plugin. "
              "sample_rate=0 uses device default. "
              "buffer_frames=0 uses auto (~256-512). "
              "output_channels=0 uses plugin's output channels. "
+             "midi_input_port=-1 means no MIDI input. "
+             "midi_output_port=-1 means no MIDI output.")
+        .def(nb::init<PluginChain&, double, int, int, int, int>(),
+             nb::arg("chain"),
+             nb::arg("sample_rate") = 0.0,
+             nb::arg("buffer_frames") = 0,
+             nb::arg("output_channels") = 0,
+             nb::arg("midi_input_port") = -1,
+             nb::arg("midi_output_port") = -1,
+             "Open an audio device for real-time playback with a plugin chain. "
+             "sample_rate=0 uses device default. "
+             "buffer_frames=0 uses auto (~256-512). "
+             "output_channels=0 uses chain's output channels. "
              "midi_input_port=-1 means no MIDI input. "
              "midi_output_port=-1 means no MIDI output.")
 

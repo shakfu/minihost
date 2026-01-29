@@ -33,6 +33,7 @@ Example usage:
 
 from minihost._core import (
     Plugin,
+    PluginChain,
     AudioDevice,
     MidiFile,
     probe,
@@ -51,6 +52,7 @@ from minihost.render import (
 __all__ = [
     # Core classes
     "Plugin",
+    "PluginChain",
     "AudioDevice",
     "MidiFile",
     # Plugin discovery

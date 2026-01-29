@@ -2,6 +2,7 @@
 
 add_library(minihost STATIC
     minihost.cpp
+    minihost_chain.cpp
 )
 
 # Required for linking into shared libraries (e.g., Python module)
