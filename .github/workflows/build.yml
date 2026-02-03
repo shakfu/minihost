@@ -43,9 +43,12 @@ jobs:
             libcurl4-openssl-dev \
             pkg-config
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Download JUCE
-        shell: bash
-        run: ./scripts/download_juce.sh
+        run: python scripts/download_juce.py
 
       - name: Configure CMake
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmake-args }}
@@ -112,10 +115,10 @@ jobs:
           CIBW_BEFORE_ALL_LINUX: >
             yum install -y curl alsa-lib-devel freetype-devel fontconfig-devel
             gtk3-devel mesa-libGL-devel libcurl-devel webkit2gtk3-devel pkgconfig &&
-            bash {project}/scripts/download_juce.sh
-          CIBW_BEFORE_ALL_MACOS: bash {project}/scripts/download_juce.sh
+            python3 {project}/scripts/download_juce.py
+          CIBW_BEFORE_ALL_MACOS: python3 {project}/scripts/download_juce.py
           CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET=11.0
-          CIBW_BEFORE_ALL_WINDOWS: bash {project}/scripts/download_juce.sh
+          CIBW_BEFORE_ALL_WINDOWS: python {project}/scripts/download_juce.py
         run: cibuildwheel --output-dir wheelhouse
 
       - uses: actions/upload-artifact@v4

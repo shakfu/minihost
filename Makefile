@@ -7,9 +7,9 @@
 # Default target - build Python bindings
 all: build
 
-# Download JUCE if needed
+# Download JUCE if needed (prefer Python for cross-platform compatibility)
 juce:
-	@./scripts/download_juce.sh
+	@python3 scripts/download_juce.py 2>/dev/null || python scripts/download_juce.py 2>/dev/null || ./scripts/download_juce.sh
 
 # Build C/C++ CLI tools only
 cli: juce

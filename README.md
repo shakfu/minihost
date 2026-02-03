@@ -35,6 +35,8 @@ A minimal audio plugin host library for loading and processing VST3 and AudioUni
 
 ## Building
 
+### macOS / Linux
+
 ```bash
 # Clone the repository
 git clone https://github.com/user/minihost.git
@@ -48,13 +50,41 @@ cmake -B build -DJUCE_PATH=/path/to/JUCE
 cmake --build build
 ```
 
+### Windows
+
+```powershell
+# Clone the repository
+git clone https://github.com/user/minihost.git
+cd minihost
+
+# Download JUCE
+python scripts/download_juce.py
+
+# Configure and build
+cmake -B build
+cmake --build build --config Release
+```
+
 ### JUCE Setup
 
-JUCE is downloaded automatically by `make` or `./scripts/download_juce.sh`. To use a different version or existing installation:
+JUCE is downloaded automatically by `make` (macOS/Linux). You can also download it manually:
 
 ```bash
-# Download specific version
-JUCE_VERSION=8.0.6 ./scripts/download_juce.sh
+# Cross-platform (recommended) - works on Windows, macOS, Linux
+python scripts/download_juce.py
+
+# Unix only (bash)
+./scripts/download_juce.sh
+```
+
+To use a different version or existing installation:
+
+```bash
+# Download specific version (macOS/Linux)
+JUCE_VERSION=8.0.6 python scripts/download_juce.py
+
+# Download specific version (Windows PowerShell)
+$env:JUCE_VERSION="8.0.6"; python scripts/download_juce.py
 
 # Or point to existing JUCE
 cmake -B build -DJUCE_PATH=/path/to/your/JUCE

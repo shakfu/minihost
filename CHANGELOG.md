@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Added cross-platform Python script (`scripts/download_juce.py`) for downloading JUCE
+  - Works on Windows, macOS, and Linux without requiring bash
+  - Uses only Python standard library (no external dependencies)
+  - Handles Python 3.14+ tarfile deprecation warning
+- Updated CI workflow to use Python script instead of bash for JUCE download
+- Updated Makefile to prefer Python script with bash fallback
+
 ## [0.1.0]
 
 ### Added
