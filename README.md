@@ -13,10 +13,15 @@ A minimal audio plugin host library for loading and processing VST3, AudioUnit, 
 - **Real-time MIDI I/O** via libremidi (cross-platform)
 - **Virtual MIDI ports** - create named ports that DAWs can connect to (macOS, Linux)
 - Process audio with sample-accurate parameter automation
+- Single and double precision processing
 - MIDI input/output support
 - Transport info for tempo-synced plugins
-- State save/restore for presets
+- State save/restore for presets and per-program state
 - Thread-safe parameter access
+- Change notifications (latency, parameter info, program, non-parameter state)
+- Parameter gestures for automation bracketing
+- Bus layout validation and sidechain support
+- Track name/color metadata forwarding to plugins
 - Latency and tail time reporting
 
 ## Requirements
@@ -510,7 +515,7 @@ minihost process /path/to/effect.vst3 input.raw output.raw --double
 |----------|-------------|
 | `mh_open` | Load a plugin |
 | `mh_close` | Unload a plugin |
-| `mh_get_info` | Get plugin info (channels, params, latency) |
+| `mh_get_info` | Get plugin info (channels, params, latency, MIDI capabilities) |
 | `mh_process` | Process audio |
 | `mh_process_midi` | Process audio with MIDI input |
 | `mh_process_midi_io` | Process audio with MIDI input/output |
@@ -527,6 +532,18 @@ minihost process /path/to/effect.vst3 input.raw output.raw --double
 | `mh_get_bypass` | Get bypass state |
 | `mh_set_bypass` | Set bypass state |
 | `mh_get_latency_samples` | Get plugin latency |
+| `mh_check_buses_layout` | Check if a bus layout is supported |
+| `mh_set_change_callback` | Register processor-level change callback |
+| `mh_set_param_value_callback` | Register parameter value change callback |
+| `mh_set_param_gesture_callback` | Register parameter gesture callback |
+| `mh_begin_param_gesture` | Signal start of parameter change gesture |
+| `mh_end_param_gesture` | Signal end of parameter change gesture |
+| `mh_get_program_state_size` | Get current program state size |
+| `mh_get_program_state` | Save current program state |
+| `mh_set_program_state` | Restore current program state |
+| `mh_get_processing_precision` | Get current processing precision (single/double) |
+| `mh_set_processing_precision` | Set processing precision (single/double) |
+| `mh_set_track_properties` | Set track name and/or color for plugin |
 
 ### Audio Device Functions (minihost_audio.h)
 

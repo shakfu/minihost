@@ -154,6 +154,15 @@ def test_plugin_class_has_expected_methods():
         "reset",
         "get_program_name",
         "get_bus_info",
+        "check_buses_layout",
+        "begin_param_gesture",
+        "end_param_gesture",
+        "get_program_state",
+        "set_program_state",
+        "set_change_callback",
+        "set_param_value_callback",
+        "set_param_gesture_callback",
+        "set_track_properties",
     ]
     for method in expected_methods:
         assert hasattr(minihost.Plugin, method), f"Plugin missing method: {method}"
@@ -224,7 +233,12 @@ def test_plugin_class_has_expected_properties():
         "num_input_buses",
         "num_output_buses",
         "supports_double",
+        "processing_precision",
         "sample_rate",
+        "accepts_midi",
+        "produces_midi",
+        "is_midi_effect",
+        "supports_mpe",
     ]
     for prop in expected_props:
         assert hasattr(minihost.Plugin, prop), f"Plugin missing property: {prop}"
@@ -260,6 +274,27 @@ def test_plugin_wrong_extension_raises():
             minihost.Plugin(temp_path)
     finally:
         os.unlink(temp_path)
+
+
+def test_module_has_change_constants():
+    """Test that change notification constants are exported."""
+    assert hasattr(minihost, "MH_CHANGE_LATENCY")
+    assert hasattr(minihost, "MH_CHANGE_PARAM_INFO")
+    assert hasattr(minihost, "MH_CHANGE_PROGRAM")
+    assert hasattr(minihost, "MH_CHANGE_NON_PARAM_STATE")
+    # Verify they are distinct bitmask values
+    assert minihost.MH_CHANGE_LATENCY == 0x01
+    assert minihost.MH_CHANGE_PARAM_INFO == 0x02
+    assert minihost.MH_CHANGE_PROGRAM == 0x04
+    assert minihost.MH_CHANGE_NON_PARAM_STATE == 0x08
+
+
+def test_module_has_precision_constants():
+    """Test that processing precision constants are exported."""
+    assert hasattr(minihost, "MH_PRECISION_SINGLE")
+    assert hasattr(minihost, "MH_PRECISION_DOUBLE")
+    assert minihost.MH_PRECISION_SINGLE == 0
+    assert minihost.MH_PRECISION_DOUBLE == 1
 
 
 def test_module_docstring():
@@ -363,6 +398,13 @@ class TestPluginIntegration:
         assert plugin.latency_samples >= 0
         assert plugin.tail_seconds >= 0.0
 
+    def test_midi_capabilities(self, plugin):
+        """Test MIDI capability query properties."""
+        assert isinstance(plugin.accepts_midi, bool)
+        assert isinstance(plugin.produces_midi, bool)
+        assert isinstance(plugin.is_midi_effect, bool)
+        assert isinstance(plugin.supports_mpe, bool)
+
     def test_param_access(self, plugin):
         """Test parameter get/set."""
         if plugin.num_params > 0:
@@ -380,9 +422,14 @@ class TestPluginIntegration:
         if plugin.num_params > 0:
             info = plugin.get_param_info(0)
             assert "name" in info
+            assert "id" in info
             assert "label" in info
             assert "default_value" in info
             assert "is_automatable" in info
+            assert "category" in info
+            assert isinstance(info["id"], str)
+            assert isinstance(info["category"], int)
+            assert info["category"] >= 0
 
     def test_state_save_restore(self, plugin):
         """Test state save and restore."""
@@ -766,6 +813,144 @@ class TestPluginIntegration:
         # Should not be connected to any MIDI port by default
         assert audio.midi_input_port == -1
         assert audio.midi_output_port == -1
+
+    def test_check_buses_layout(self, plugin):
+        """Test bus layout validation."""
+        # Build channel count arrays matching current bus layout
+        in_buses = []
+        for i in range(plugin.num_input_buses):
+            info = plugin.get_bus_info(True, i)
+            in_buses.append(info["num_channels"])
+
+        out_buses = []
+        for i in range(plugin.num_output_buses):
+            info = plugin.get_bus_info(False, i)
+            out_buses.append(info["num_channels"])
+
+        # Current layout should be supported
+        assert plugin.check_buses_layout(in_buses, out_buses) is True
+
+        # Absurd layout (many buses) -- just verify it returns a bool
+        result = plugin.check_buses_layout([2] * 20, [2] * 20)
+        assert isinstance(result, bool)
+
+    def test_param_gestures(self, plugin):
+        """Test parameter gesture begin/end around set_param."""
+        if plugin.num_params > 0:
+            plugin.begin_param_gesture(0)
+            plugin.set_param(0, 0.5)
+            plugin.set_param(0, 0.7)
+            plugin.end_param_gesture(0)
+
+    def test_program_state_save_restore(self, plugin):
+        """Test per-program state save and restore."""
+        state = plugin.get_program_state()
+        assert isinstance(state, bytes)
+        if len(state) > 0:
+            plugin.set_program_state(state)
+
+    def test_change_notifications(self, plugin):
+        """Test change notification callbacks."""
+        import threading
+
+        received = {"flags": None}
+        event = threading.Event()
+
+        def on_change(flags):
+            received["flags"] = flags
+            event.set()
+
+        plugin.set_change_callback(on_change)
+
+        # Trigger a change by loading state (should fire non-param state change)
+        state = plugin.get_state()
+        if len(state) > 0:
+            plugin.set_state(state)
+            # Give callback a moment to fire (it may come from another thread)
+            event.wait(timeout=1.0)
+
+        # Clear callback (should not crash)
+        plugin.set_change_callback(None)
+
+    def test_param_value_callback(self, plugin):
+        """Test parameter value change notification."""
+        if plugin.num_params == 0:
+            return
+
+        received = []
+
+        def on_param_change(idx, val):
+            received.append((idx, val))
+
+        plugin.set_param_value_callback(on_param_change)
+
+        # setValueNotifyingHost should trigger the listener
+        plugin.set_param(0, 0.42)
+
+        # Clear callback
+        plugin.set_param_value_callback(None)
+
+    def test_param_gesture_callback(self, plugin):
+        """Test parameter gesture notification from plugin side."""
+        if plugin.num_params == 0:
+            return
+
+        received = []
+
+        def on_gesture(idx, starting):
+            received.append((idx, starting))
+
+        plugin.set_param_gesture_callback(on_gesture)
+
+        # Trigger gesture from host side -- the listener won't fire for
+        # host-initiated gestures (those are plugin->host), but ensure
+        # no crash and callback clears cleanly
+        plugin.begin_param_gesture(0)
+        plugin.end_param_gesture(0)
+
+        plugin.set_param_gesture_callback(None)
+
+    def test_processing_precision(self, plugin):
+        """Test processing precision get/set."""
+        import numpy as np
+
+        # Default should be single precision
+        assert plugin.processing_precision == minihost.MH_PRECISION_SINGLE
+
+        # If plugin supports double, switch to double and back
+        if plugin.supports_double:
+            plugin.processing_precision = minihost.MH_PRECISION_DOUBLE
+            assert plugin.processing_precision == minihost.MH_PRECISION_DOUBLE
+
+            # Process should still work
+            in_ch = max(plugin.num_input_channels, 2)
+            out_ch = max(plugin.num_output_channels, 2)
+            input_audio = np.zeros((in_ch, 512), dtype=np.float64)
+            output_audio = np.zeros((out_ch, 512), dtype=np.float64)
+            plugin.process_double(input_audio, output_audio)
+
+            # Switch back
+            plugin.processing_precision = minihost.MH_PRECISION_SINGLE
+            assert plugin.processing_precision == minihost.MH_PRECISION_SINGLE
+
+    def test_processing_precision_single_always_works(self, plugin):
+        """Test that setting single precision always succeeds."""
+        plugin.processing_precision = minihost.MH_PRECISION_SINGLE
+        assert plugin.processing_precision == minihost.MH_PRECISION_SINGLE
+
+    def test_track_properties(self, plugin):
+        """Test setting track properties."""
+        # Set name only
+        plugin.set_track_properties(name="Lead Synth")
+
+        # Set name and colour
+        plugin.set_track_properties(name="Bass", colour=0xFF0000FF)
+
+        # Set colour only
+        plugin.set_track_properties(colour=0xFFFF0000)
+
+        # Clear both
+        plugin.set_track_properties()
 
     def test_audio_device_midi_connection(self, plugin):
         """Test AudioDevice MIDI connection (if ports available)."""

@@ -1,8 +1,34 @@
 # Changelog
 
+## [Unreleased]
+
 ## [0.1.1]
 
 ### Added
+
+- MIDI capability queries on live plugin instances via `MH_Info` fields: `accepts_midi`, `produces_midi`, `is_midi_effect`, `supports_mpe`
+  - Python: `Plugin.accepts_midi`, `Plugin.produces_midi`, `Plugin.is_midi_effect`, `Plugin.supports_mpe` read-only properties
+- Stable parameter IDs via `MH_ParamInfo.id` field (uses `getParameterID()` for version-safe state management)
+  - Python: `get_param_info()` dict now includes `"id"` key
+- Parameter categories via `MH_ParamInfo.category` field with `MH_PARAM_CATEGORY_*` constants
+  - Python: `get_param_info()` dict now includes `"category"` key
+- Bus layout validation via `mh_check_buses_layout()` -- query whether a bus layout is supported before attempting to apply it
+  - Python: `Plugin.check_buses_layout(input_channels, output_channels) -> bool`
+- Change notifications via `AudioProcessorListener` integration
+  - `mh_set_change_callback()` -- processor-level changes (latency, param info, program, non-param state) with `MH_CHANGE_*` bitmask flags
+  - `mh_set_param_value_callback()` -- plugin-initiated parameter value changes
+  - `mh_set_param_gesture_callback()` -- parameter gesture begin/end from plugin UI
+  - Python: `Plugin.set_change_callback()`, `Plugin.set_param_value_callback()`, `Plugin.set_param_gesture_callback()`
+  - Python: module-level constants `MH_CHANGE_LATENCY`, `MH_CHANGE_PARAM_INFO`, `MH_CHANGE_PROGRAM`, `MH_CHANGE_NON_PARAM_STATE`
+- Parameter gesture bracketing via `mh_begin_param_gesture()` / `mh_end_param_gesture()` -- signal start/end of automation drags to plugins
+  - Python: `Plugin.begin_param_gesture(index)`, `Plugin.end_param_gesture(index)`
+- Current program state save/restore via `mh_get_program_state_size()` / `mh_get_program_state()` / `mh_set_program_state()` -- lighter-weight per-program state
+  - Python: `Plugin.get_program_state() -> bytes`, `Plugin.set_program_state(data)`
+- Processing precision selection via `mh_get_processing_precision()` / `mh_set_processing_precision()` -- explicitly select float vs double processing mode
+  - Python: `Plugin.processing_precision` read/write property
+  - Module-level constants `MH_PRECISION_SINGLE`, `MH_PRECISION_DOUBLE`
+- Track properties via `mh_set_track_properties()` -- pass track name/color metadata to plugins
+  - Python: `Plugin.set_track_properties(name=None, colour=None)`
 
 - LV2 plugin format support (`JUCE_PLUGINHOST_LV2=1`)
   - Load and process LV2 plugins on all platforms

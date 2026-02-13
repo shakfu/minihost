@@ -25,6 +25,26 @@
 - [x] **Double precision processing** - 64-bit audio processing via `mh_process_double()`
 - [x] **Async plugin loading** - Background thread loading via `mh_open_async()`
 
+## Planned
+
+### High priority
+
+- [x] **MIDI capability queries** - Expose `acceptsMidi()`, `producesMidi()`, `isMidiEffect()`, `supportsMPE()` on live plugin instances (currently only partial info via `MH_PluginDesc` at probe time)
+- [x] **Parameter IDs** - Expose stable string IDs via `getParameterID()` for version-safe state management (integer indices can break if plugin reorders parameters)
+- [x] **Parameter categories** - Expose `getCategory()` on parameters (frequency, dynamics, spatial, etc.) for organized display and programmatic filtering
+
+### Medium priority
+
+- [x] **Bus layout validation** - Expose `isBusesLayoutSupported()` / `canApplyBusesLayout()` to query valid configurations before attempting them
+- [x] **Change notifications** - Expose `AudioProcessorListener` with `ChangeDetails` flags (latency changed, parameter info changed, program changed, bus layout changed) for reactive hosts
+- [x] **Parameter gestures** - Expose `beginChangeGesture()` / `endChangeGesture()` so plugins can optimize behavior during automation drags
+- [x] **Current program state** - Expose `getCurrentProgramStateInformation()` / `setCurrentProgramStateInformation()` for lighter-weight per-program state save/restore
+
+### Lower priority
+
+- [x] **Processing precision selection** - Expose `setProcessingPrecision()` to explicitly select float vs double mode
+- [x] **Track properties** - Expose `updateTrackProperties()` to pass track name/color metadata to plugins
+
 ## Non-goals
 
 Intentionally omitted for headless/server use:
@@ -32,6 +52,5 @@ Intentionally omitted for headless/server use:
 - Editor window management
 - GUI hosting
 - Preset browser UI
-- Parameter change notifications (callbacks)
 - MIDI learn
 - Plugin shell/multi-instrument handling

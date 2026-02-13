@@ -36,6 +36,10 @@ typedef struct MH_Info {
     int num_input_ch;
     int num_output_ch;
     int latency_samples;
+    int accepts_midi;    // 1 if plugin accepts MIDI input
+    int produces_midi;   // 1 if plugin produces MIDI output
+    int is_midi_effect;  // 1 if pure MIDI effect (no audio)
+    int supports_mpe;    // 1 if supports MIDI Polyphonic Expression
 } MH_Info;
 
 typedef struct MH_MidiEvent {
@@ -47,8 +51,20 @@ typedef struct MH_MidiEvent {
 
 #define MH_PARAM_NAME_LEN 128
 
+// Parameter category constants (matches JUCE AudioProcessorParameter::Category)
+#define MH_PARAM_CATEGORY_GENERIC          0
+#define MH_PARAM_CATEGORY_INPUT_GAIN       0x10000
+#define MH_PARAM_CATEGORY_OUTPUT_GAIN      0x10001
+#define MH_PARAM_CATEGORY_INPUT_METER      0x20000
+#define MH_PARAM_CATEGORY_OUTPUT_METER     0x20001
+#define MH_PARAM_CATEGORY_COMPRESSOR_METER 0x20002
+#define MH_PARAM_CATEGORY_EXPANDER_METER   0x20003
+#define MH_PARAM_CATEGORY_ANALYSIS_METER   0x20004
+#define MH_PARAM_CATEGORY_OTHER_METER      0x20005
+
 typedef struct MH_ParamInfo {
     char name[MH_PARAM_NAME_LEN];          // parameter name
+    char id[MH_PARAM_NAME_LEN];            // stable unique parameter ID string
     char label[MH_PARAM_NAME_LEN];         // unit label (e.g., "dB", "Hz", "%")
     char current_value_str[MH_PARAM_NAME_LEN]; // current value as display string
     float min_value;                       // minimum normalized value (usually 0.0)
@@ -57,6 +73,7 @@ typedef struct MH_ParamInfo {
     int num_steps;                         // number of discrete steps (0 = continuous)
     int is_automatable;                    // 1 if parameter can be automated
     int is_boolean;                        // 1 if parameter is a toggle/switch
+    int category;                          // parameter category (MH_PARAM_CATEGORY_*)
 } MH_ParamInfo;
 
 typedef struct MH_TransportInfo {
@@ -268,6 +285,52 @@ int mh_process_sidechain(MH_Plugin* p,
 // Returns 0 if no sidechain or plugin opened with mh_open() instead of mh_open_ex()
 int mh_get_sidechain_channels(MH_Plugin* p);
 
+// Check if a bus layout is supported before attempting to apply it
+// input_channels/output_channels: array of channel counts, one per bus
+// Returns 1 if supported, 0 if not supported or on error
+int mh_check_buses_layout(MH_Plugin* p,
+                          const int* input_channels, int num_input_buses,
+                          const int* output_channels, int num_output_buses);
+
+// Change notifications
+// Flags for MH_ChangeCallback
+#define MH_CHANGE_LATENCY         0x01
+#define MH_CHANGE_PARAM_INFO      0x02
+#define MH_CHANGE_PROGRAM         0x04
+#define MH_CHANGE_NON_PARAM_STATE 0x08
+
+// Callback: processor-level changes (latency, param info, program, non-param state)
+// flags: bitmask of MH_CHANGE_* values
+typedef void (*MH_ChangeCallback)(MH_Plugin* plugin, int flags, void* user_data);
+
+// Callback: parameter value changed (plugin-initiated, e.g. preset load, internal modulation)
+typedef void (*MH_ParamValueCallback)(MH_Plugin* plugin, int param_index, float new_value, void* user_data);
+
+// Callback: parameter gesture began (gesture_starting=1) or ended (gesture_starting=0) from plugin UI
+typedef void (*MH_ParamGestureCallback)(MH_Plugin* plugin, int param_index, int gesture_starting, void* user_data);
+
+// Register notification callbacks (pass NULL callback to clear)
+// Returns 1 on success, 0 on failure
+int mh_set_change_callback(MH_Plugin* p, MH_ChangeCallback cb, void* user_data);
+int mh_set_param_value_callback(MH_Plugin* p, MH_ParamValueCallback cb, void* user_data);
+int mh_set_param_gesture_callback(MH_Plugin* p, MH_ParamGestureCallback cb, void* user_data);
+
+// Signal start of a parameter change gesture (call before a sequence of mh_set_param calls)
+int mh_begin_param_gesture(MH_Plugin* p, int index);
+
+// Signal end of a parameter change gesture
+int mh_end_param_gesture(MH_Plugin* p, int index);
+
+// Current program state save/load (lighter-weight per-program state)
+// Returns size in bytes, or 0 on error
+int mh_get_program_state_size(MH_Plugin* p);
+
+// Copy current program state into buffer. Returns 1 on success, 0 on failure.
+int mh_get_program_state(MH_Plugin* p, void* buffer, int buffer_size);
+
+// Restore current program state from buffer. Returns 1 on success, 0 on failure.
+int mh_set_program_state(MH_Plugin* p, const void* data, int data_size);
+
 // Change sample rate without reloading the plugin
 // Preserves parameter state across the change
 // Returns 1 on success, 0 on failure
@@ -302,6 +365,27 @@ int mh_process_double(MH_Plugin* p,
 // Check if plugin supports double precision processing natively
 // Returns 1 if plugin supports double precision, 0 otherwise
 int mh_supports_double(MH_Plugin* p);
+
+// Processing precision selection
+#define MH_PRECISION_SINGLE 0
+#define MH_PRECISION_DOUBLE 1
+
+// Get current processing precision (MH_PRECISION_SINGLE or MH_PRECISION_DOUBLE)
+int mh_get_processing_precision(MH_Plugin* p);
+
+// Set processing precision. Re-prepares the plugin with the new precision.
+// Only MH_PRECISION_DOUBLE is valid if mh_supports_double() returns 1.
+// Returns 1 on success, 0 on failure (e.g., plugin doesn't support double)
+int mh_set_processing_precision(MH_Plugin* p, int precision);
+
+// Track properties
+// Pass track name and/or color metadata to the plugin
+// name: track name string (NULL to clear)
+// has_colour: 1 to set colour, 0 to clear
+// colour_argb: track colour as 0xAARRGGBB (only used if has_colour=1)
+// Returns 1 on success, 0 on failure
+int mh_set_track_properties(MH_Plugin* p, const char* name,
+                            int has_colour, unsigned int colour_argb);
 
 // Async plugin loading callback
 // Called when plugin loading completes (on success or failure)

@@ -40,6 +40,12 @@ from minihost._core import (
     scan_directory,
     midi_get_input_ports,
     midi_get_output_ports,
+    MH_CHANGE_LATENCY,
+    MH_CHANGE_PARAM_INFO,
+    MH_CHANGE_PROGRAM,
+    MH_CHANGE_NON_PARAM_STATE,
+    MH_PRECISION_SINGLE,
+    MH_PRECISION_DOUBLE,
 )
 
 from minihost.render import (
@@ -66,5 +72,13 @@ __all__ = [
     "render_midi_stream",
     "render_midi_to_file",
     "MidiRenderer",
+    # Change notification constants
+    "MH_CHANGE_LATENCY",
+    "MH_CHANGE_PARAM_INFO",
+    "MH_CHANGE_PROGRAM",
+    "MH_CHANGE_NON_PARAM_STATE",
+    # Processing precision constants
+    "MH_PRECISION_SINGLE",
+    "MH_PRECISION_DOUBLE",
 ]
 __version__ = "0.1.1"

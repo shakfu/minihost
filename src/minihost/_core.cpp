@@ -44,6 +44,10 @@ public:
 
     ~Plugin() {
         if (plugin_) {
+            // Clear callbacks before closing to avoid dangling pointers
+            mh_set_change_callback(plugin_, nullptr, nullptr);
+            mh_set_param_value_callback(plugin_, nullptr, nullptr);
+            mh_set_param_gesture_callback(plugin_, nullptr, nullptr);
             mh_close(plugin_);
             plugin_ = nullptr;
         }
@@ -103,6 +107,34 @@ public:
         return mh_get_sidechain_channels(plugin_);
     }
 
+    bool accepts_midi() const {
+        MH_Info info;
+        if (mh_get_info(plugin_, &info))
+            return info.accepts_midi != 0;
+        return false;
+    }
+
+    bool produces_midi() const {
+        MH_Info info;
+        if (mh_get_info(plugin_, &info))
+            return info.produces_midi != 0;
+        return false;
+    }
+
+    bool is_midi_effect() const {
+        MH_Info info;
+        if (mh_get_info(plugin_, &info))
+            return info.is_midi_effect != 0;
+        return false;
+    }
+
+    bool supports_mpe() const {
+        MH_Info info;
+        if (mh_get_info(plugin_, &info))
+            return info.supports_mpe != 0;
+        return false;
+    }
+
     // Sample rate
     double get_sample_rate() const {
         return mh_get_sample_rate(plugin_);
@@ -157,6 +189,7 @@ public:
 
         nb::dict d;
         d["name"] = std::string(info.name);
+        d["id"] = std::string(info.id);
         d["label"] = std::string(info.label);
         d["current_value_str"] = std::string(info.current_value_str);
         d["min_value"] = info.min_value;
@@ -165,6 +198,7 @@ public:
         d["num_steps"] = info.num_steps;
         d["is_automatable"] = info.is_automatable != 0;
         d["is_boolean"] = info.is_boolean != 0;
+        d["category"] = info.category;
         return d;
     }
 
@@ -531,11 +565,135 @@ public:
         }
     }
 
+    // Processing precision
+    int get_processing_precision() const {
+        return mh_get_processing_precision(plugin_);
+    }
+
+    void set_processing_precision(int precision) {
+        if (!mh_set_processing_precision(plugin_, precision)) {
+            if (precision == MH_PRECISION_DOUBLE)
+                throw std::runtime_error("Failed to set double precision (plugin may not support it)");
+            else
+                throw std::runtime_error("Failed to set processing precision");
+        }
+    }
+
+    // Track properties
+    void set_track_properties(std::optional<std::string> name, std::optional<unsigned int> colour) {
+        const char* name_ptr = name.has_value() ? name->c_str() : nullptr;
+        int has_colour = colour.has_value() ? 1 : 0;
+        unsigned int colour_val = colour.value_or(0);
+        if (!mh_set_track_properties(plugin_, name_ptr, has_colour, colour_val)) {
+            throw std::runtime_error("Failed to set track properties");
+        }
+    }
+
+    // Bus layout validation
+    bool check_buses_layout(std::vector<int> input_channels, std::vector<int> output_channels) const {
+        return mh_check_buses_layout(
+            plugin_,
+            input_channels.data(), static_cast<int>(input_channels.size()),
+            output_channels.data(), static_cast<int>(output_channels.size())) != 0;
+    }
+
+    // Parameter gestures (host -> plugin)
+    void begin_param_gesture(int index) {
+        if (!mh_begin_param_gesture(plugin_, index)) {
+            throw std::runtime_error("Failed to begin parameter gesture");
+        }
+    }
+
+    void end_param_gesture(int index) {
+        if (!mh_end_param_gesture(plugin_, index)) {
+            throw std::runtime_error("Failed to end parameter gesture");
+        }
+    }
+
+    // Current program state (lighter-weight per-program state)
+    nb::bytes get_program_state() const {
+        int size = mh_get_program_state_size(plugin_);
+        if (size <= 0) {
+            return nb::bytes(nullptr, 0);
+        }
+
+        std::vector<char> buffer(size);
+        if (!mh_get_program_state(plugin_, buffer.data(), size)) {
+            throw std::runtime_error("Failed to get program state");
+        }
+
+        return nb::bytes(buffer.data(), size);
+    }
+
+    void set_program_state(nb::bytes data) {
+        if (!mh_set_program_state(plugin_, data.c_str(), static_cast<int>(data.size()))) {
+            throw std::runtime_error("Failed to set program state");
+        }
+    }
+
+    // Change notification callbacks
+    void set_change_callback(nb::handle cb) {
+        if (cb.is_none()) {
+            change_callback_ = nb::object();
+            mh_set_change_callback(plugin_, nullptr, nullptr);
+        } else {
+            change_callback_ = nb::borrow<nb::object>(cb);
+            mh_set_change_callback(plugin_, &Plugin::change_callback_trampoline, this);
+        }
+    }
+
+    void set_param_value_callback(nb::handle cb) {
+        if (cb.is_none()) {
+            param_value_callback_ = nb::object();
+            mh_set_param_value_callback(plugin_, nullptr, nullptr);
+        } else {
+            param_value_callback_ = nb::borrow<nb::object>(cb);
+            mh_set_param_value_callback(plugin_, &Plugin::param_value_callback_trampoline, this);
+        }
+    }
+
+    void set_param_gesture_callback(nb::handle cb) {
+        if (cb.is_none()) {
+            param_gesture_callback_ = nb::object();
+            mh_set_param_gesture_callback(plugin_, nullptr, nullptr);
+        } else {
+            param_gesture_callback_ = nb::borrow<nb::object>(cb);
+            mh_set_param_gesture_callback(plugin_, &Plugin::param_gesture_callback_trampoline, this);
+        }
+    }
+
 private:
     MH_Plugin* plugin_ = nullptr;
     double sample_rate_;
     int max_block_size_;
     bool non_realtime_ = false;
+
+    // Python callback holders (prevent GC)
+    nb::object change_callback_;
+    nb::object param_value_callback_;
+    nb::object param_gesture_callback_;
+
+    // Static trampoline functions for C callbacks
+    static void change_callback_trampoline(MH_Plugin*, int flags, void* user_data) {
+        auto* self = static_cast<Plugin*>(user_data);
+        nb::gil_scoped_acquire gil;
+        if (self->change_callback_.is_valid() && !self->change_callback_.is_none())
+            self->change_callback_(flags);
+    }
+
+    static void param_value_callback_trampoline(MH_Plugin*, int param_index, float new_value, void* user_data) {
+        auto* self = static_cast<Plugin*>(user_data);
+        nb::gil_scoped_acquire gil;
+        if (self->param_value_callback_.is_valid() && !self->param_value_callback_.is_none())
+            self->param_value_callback_(param_index, new_value);
+    }
+
+    static void param_gesture_callback_trampoline(MH_Plugin*, int param_index, int gesture_starting, void* user_data) {
+        auto* self = static_cast<Plugin*>(user_data);
+        nb::gil_scoped_acquire gil;
+        if (self->param_gesture_callback_.is_valid() && !self->param_gesture_callback_.is_none())
+            self->param_gesture_callback_(param_index, gesture_starting != 0);
+    }
 
     // Allow AudioDevice and PluginChain to access raw plugin pointer
     friend class AudioDevice;
@@ -1211,6 +1369,16 @@ NB_MODULE(_core, m) {
     m.def("midi_get_output_ports", &midi_get_output_ports,
           "Get list of available MIDI output ports. Returns list of dicts with 'name' and 'index'.");
 
+    // Change notification flag constants
+    m.attr("MH_CHANGE_LATENCY")         = MH_CHANGE_LATENCY;
+    m.attr("MH_CHANGE_PARAM_INFO")      = MH_CHANGE_PARAM_INFO;
+    m.attr("MH_CHANGE_PROGRAM")         = MH_CHANGE_PROGRAM;
+    m.attr("MH_CHANGE_NON_PARAM_STATE") = MH_CHANGE_NON_PARAM_STATE;
+
+    // Processing precision constants
+    m.attr("MH_PRECISION_SINGLE") = MH_PRECISION_SINGLE;
+    m.attr("MH_PRECISION_DOUBLE") = MH_PRECISION_DOUBLE;
+
     nb::class_<Plugin>(m, "Plugin")
         .def(nb::init<const std::string&, double, int, int, int, int>(),
              nb::arg("path"),
@@ -1234,6 +1402,14 @@ NB_MODULE(_core, m) {
                      "Plugin tail length in seconds")
         .def_prop_ro("sidechain_channels", &Plugin::sidechain_channels,
                      "Number of sidechain input channels (0 if none)")
+        .def_prop_ro("accepts_midi", &Plugin::accepts_midi,
+                     "True if plugin accepts MIDI input")
+        .def_prop_ro("produces_midi", &Plugin::produces_midi,
+                     "True if plugin produces MIDI output")
+        .def_prop_ro("is_midi_effect", &Plugin::is_midi_effect,
+                     "True if plugin is a pure MIDI effect (no audio)")
+        .def_prop_ro("supports_mpe", &Plugin::supports_mpe,
+                     "True if plugin supports MIDI Polyphonic Expression")
         .def_prop_ro("num_input_buses", &Plugin::num_input_buses,
                      "Number of input buses")
         .def_prop_ro("num_output_buses", &Plugin::num_output_buses,
@@ -1326,7 +1502,52 @@ NB_MODULE(_core, m) {
                      "True if plugin supports native double precision processing")
         .def("process_double", &Plugin::process_double,
              nb::arg("input"), nb::arg("output"),
-             "Process audio with double precision (float64). Shape: [channels, frames]");
+             "Process audio with double precision (float64). Shape: [channels, frames]")
+
+        // Processing precision
+        .def_prop_rw("processing_precision",
+                     &Plugin::get_processing_precision, &Plugin::set_processing_precision,
+                     "Processing precision (MH_PRECISION_SINGLE=0 or MH_PRECISION_DOUBLE=1)")
+
+        // Track properties
+        .def("set_track_properties", &Plugin::set_track_properties,
+             nb::arg("name") = nb::none(),
+             nb::arg("colour") = nb::none(),
+             "Set track name and/or colour (ARGB as int). Pass None to clear.")
+
+        // Bus layout validation
+        .def("check_buses_layout", &Plugin::check_buses_layout,
+             nb::arg("input_channels"), nb::arg("output_channels"),
+             "Check if a bus layout is supported. Takes lists of channel counts per bus.")
+
+        // Parameter gestures (host -> plugin)
+        .def("begin_param_gesture", &Plugin::begin_param_gesture,
+             nb::arg("index"),
+             "Signal start of a parameter change gesture")
+        .def("end_param_gesture", &Plugin::end_param_gesture,
+             nb::arg("index"),
+             "Signal end of a parameter change gesture")
+
+        // Current program state
+        .def("get_program_state", &Plugin::get_program_state,
+             "Get current program state as bytes (lighter than get_state)")
+        .def("set_program_state", &Plugin::set_program_state,
+             nb::arg("data"),
+             "Restore current program state from bytes")
+
+        // Change notification callbacks
+        .def("set_change_callback", &Plugin::set_change_callback,
+             nb::arg("callback").none(),
+             "Register callback for processor-level changes (latency, param info, program). "
+             "Callback receives (flags: int). Pass None to clear.")
+        .def("set_param_value_callback", &Plugin::set_param_value_callback,
+             nb::arg("callback").none(),
+             "Register callback for plugin-initiated parameter changes. "
+             "Callback receives (param_index: int, new_value: float). Pass None to clear.")
+        .def("set_param_gesture_callback", &Plugin::set_param_gesture_callback,
+             nb::arg("callback").none(),
+             "Register callback for parameter gesture begin/end from plugin UI. "
+             "Callback receives (param_index: int, gesture_starting: bool). Pass None to clear.");
 
     // PluginChain class for chaining multiple plugins
     nb::class_<PluginChain>(m, "PluginChain")

@@ -22,6 +22,7 @@
   using LV2Format = juce::LV2PluginFormat;
  #endif
 #endif
+#include <atomic>
 #include <mutex>
 #include <thread>
 
@@ -68,11 +69,62 @@ public:
     }
 };
 
+struct MH_Plugin;
+
+struct MH_Listener : public AudioProcessorListener
+{
+    MH_Plugin* owner = nullptr;
+
+    std::atomic<MH_ChangeCallback> changeCb{nullptr};
+    std::atomic<void*> changeUserData{nullptr};
+    std::atomic<MH_ParamValueCallback> paramValueCb{nullptr};
+    std::atomic<void*> paramValueUserData{nullptr};
+    std::atomic<MH_ParamGestureCallback> paramGestureCb{nullptr};
+    std::atomic<void*> paramGestureUserData{nullptr};
+
+    void audioProcessorParameterChanged(AudioProcessor*, int paramIndex, float newValue) override
+    {
+        auto cb = paramValueCb.load(std::memory_order_acquire);
+        if (cb)
+            cb(owner, paramIndex, newValue, paramValueUserData.load(std::memory_order_relaxed));
+    }
+
+    void audioProcessorChanged(AudioProcessor*, const ChangeDetails& details) override
+    {
+        auto cb = changeCb.load(std::memory_order_acquire);
+        if (!cb) return;
+
+        int flags = 0;
+        if (details.latencyChanged)            flags |= MH_CHANGE_LATENCY;
+        if (details.parameterInfoChanged)      flags |= MH_CHANGE_PARAM_INFO;
+        if (details.programChanged)            flags |= MH_CHANGE_PROGRAM;
+        if (details.nonParameterStateChanged)  flags |= MH_CHANGE_NON_PARAM_STATE;
+
+        if (flags != 0)
+            cb(owner, flags, changeUserData.load(std::memory_order_relaxed));
+    }
+
+    void audioProcessorParameterChangeGestureBegin(AudioProcessor*, int paramIndex) override
+    {
+        auto cb = paramGestureCb.load(std::memory_order_acquire);
+        if (cb)
+            cb(owner, paramIndex, 1, paramGestureUserData.load(std::memory_order_relaxed));
+    }
+
+    void audioProcessorParameterChangeGestureEnd(AudioProcessor*, int paramIndex) override
+    {
+        auto cb = paramGestureCb.load(std::memory_order_acquire);
+        if (cb)
+            cb(owner, paramIndex, 0, paramGestureUserData.load(std::memory_order_relaxed));
+    }
+};
+
 struct MH_Plugin
 {
     AudioPluginFormatManager fm;
     std::unique_ptr<AudioPluginInstance> inst;
     MH_PlayHead playHead;
+    MH_Listener listener;
 
     double sampleRate = 0.0;
     int maxBlockSize = 0;
@@ -92,6 +144,7 @@ struct MH_Plugin
 
     MH_Plugin()
     {
+        listener.owner = this;
         fm.addFormat(std::make_unique<VST3Format>());
        #if JUCE_MAC
         fm.addFormat(std::make_unique<AUFormat>());
@@ -257,13 +310,18 @@ extern "C" MH_Plugin* mh_open(const char* plugin_path,
     inst->setPlayHead(&p->playHead);
 
     p->inst = std::move(inst);
+    p->inst->addListener(&p->listener);
     return p.release();
 }
 
 extern "C" void mh_close(MH_Plugin* p)
 {
     if (! p) return;
-    if (p->inst) p->inst->releaseResources();
+    if (p->inst)
+    {
+        p->inst->removeListener(&p->listener);
+        p->inst->releaseResources();
+    }
     delete p;
 }
 
@@ -275,6 +333,10 @@ extern "C" int mh_get_info(MH_Plugin* p, MH_Info* out_info)
     out_info->num_input_ch    = p->inst->getTotalNumInputChannels();
     out_info->num_output_ch   = p->inst->getTotalNumOutputChannels();
     out_info->latency_samples = p->inst->getLatencySamples();
+    out_info->accepts_midi    = p->inst->acceptsMidi() ? 1 : 0;
+    out_info->produces_midi   = p->inst->producesMidi() ? 1 : 0;
+    out_info->is_midi_effect  = p->inst->isMidiEffect() ? 1 : 0;
+    out_info->supports_mpe    = p->inst->supportsMPE() ? 1 : 0;
     return 1;
 }
 
@@ -433,6 +495,13 @@ extern "C" int mh_get_param_info(MH_Plugin* p, int index, MH_ParamInfo* out_info
     auto name = param->getName(MH_PARAM_NAME_LEN - 1);
     std::snprintf(out_info->name, MH_PARAM_NAME_LEN, "%s", name.toRawUTF8());
 
+    // Stable parameter ID (via HostedAudioProcessorParameter)
+    auto* hosted = p->inst->getHostedParameter(index);
+    if (hosted)
+        std::snprintf(out_info->id, MH_PARAM_NAME_LEN, "%s", hosted->getParameterID().toRawUTF8());
+    else
+        out_info->id[0] = '\0';
+
     // Label (unit)
     auto label = param->getLabel();
     std::snprintf(out_info->label, MH_PARAM_NAME_LEN, "%s", label.toRawUTF8());
@@ -450,6 +519,7 @@ extern "C" int mh_get_param_info(MH_Plugin* p, int index, MH_ParamInfo* out_info
     out_info->num_steps = param->isDiscrete() ? param->getNumSteps() : 0;
     out_info->is_automatable = param->isAutomatable() ? 1 : 0;
     out_info->is_boolean = param->isBoolean() ? 1 : 0;
+    out_info->category = static_cast<int>(param->getCategory());
 
     return 1;
 }
@@ -987,6 +1057,7 @@ extern "C" MH_Plugin* mh_open_ex(const char* plugin_path,
     inst->setPlayHead(&p->playHead);
 
     p->inst = std::move(inst);
+    p->inst->addListener(&p->listener);
     return p.release();
 }
 
@@ -1055,6 +1126,108 @@ extern "C" int mh_get_sidechain_channels(MH_Plugin* p)
 {
     if (!p) return 0;
     return p->sidechainCh;
+}
+
+extern "C" int mh_check_buses_layout(MH_Plugin* p,
+                                     const int* input_channels, int num_input_buses,
+                                     const int* output_channels, int num_output_buses)
+{
+    if (!p || !p->inst) return 0;
+    std::lock_guard<std::mutex> lock(p->stateMutex);
+
+    AudioProcessor::BusesLayout layout;
+
+    for (int i = 0; i < num_input_buses; ++i)
+    {
+        int ch = (input_channels && i < num_input_buses) ? input_channels[i] : 0;
+        layout.inputBuses.add(AudioChannelSet::canonicalChannelSet(ch));
+    }
+
+    for (int i = 0; i < num_output_buses; ++i)
+    {
+        int ch = (output_channels && i < num_output_buses) ? output_channels[i] : 0;
+        layout.outputBuses.add(AudioChannelSet::canonicalChannelSet(ch));
+    }
+
+    return p->inst->checkBusesLayoutSupported(layout) ? 1 : 0;
+}
+
+extern "C" int mh_set_change_callback(MH_Plugin* p, MH_ChangeCallback cb, void* user_data)
+{
+    if (!p) return 0;
+    p->listener.changeUserData.store(user_data, std::memory_order_relaxed);
+    p->listener.changeCb.store(cb, std::memory_order_release);
+    return 1;
+}
+
+extern "C" int mh_set_param_value_callback(MH_Plugin* p, MH_ParamValueCallback cb, void* user_data)
+{
+    if (!p) return 0;
+    p->listener.paramValueUserData.store(user_data, std::memory_order_relaxed);
+    p->listener.paramValueCb.store(cb, std::memory_order_release);
+    return 1;
+}
+
+extern "C" int mh_set_param_gesture_callback(MH_Plugin* p, MH_ParamGestureCallback cb, void* user_data)
+{
+    if (!p) return 0;
+    p->listener.paramGestureUserData.store(user_data, std::memory_order_relaxed);
+    p->listener.paramGestureCb.store(cb, std::memory_order_release);
+    return 1;
+}
+
+extern "C" int mh_begin_param_gesture(MH_Plugin* p, int index)
+{
+    if (!p || !p->inst) return 0;
+    std::lock_guard<std::mutex> lock(p->stateMutex);
+    auto& params = p->inst->getParameters();
+    if (index < 0 || index >= params.size()) return 0;
+    params.getUnchecked(index)->beginChangeGesture();
+    return 1;
+}
+
+extern "C" int mh_end_param_gesture(MH_Plugin* p, int index)
+{
+    if (!p || !p->inst) return 0;
+    std::lock_guard<std::mutex> lock(p->stateMutex);
+    auto& params = p->inst->getParameters();
+    if (index < 0 || index >= params.size()) return 0;
+    params.getUnchecked(index)->endChangeGesture();
+    return 1;
+}
+
+extern "C" int mh_get_program_state_size(MH_Plugin* p)
+{
+    if (!p || !p->inst) return 0;
+    std::lock_guard<std::mutex> lock(p->stateMutex);
+
+    MemoryBlock mb;
+    p->inst->getCurrentProgramStateInformation(mb);
+    return (int) mb.getSize();
+}
+
+extern "C" int mh_get_program_state(MH_Plugin* p, void* buffer, int buffer_size)
+{
+    if (!p || !p->inst || !buffer || buffer_size <= 0) return 0;
+    std::lock_guard<std::mutex> lock(p->stateMutex);
+
+    MemoryBlock mb;
+    p->inst->getCurrentProgramStateInformation(mb);
+
+    if ((int) mb.getSize() > buffer_size)
+        return 0;
+
+    std::memcpy(buffer, mb.getData(), mb.getSize());
+    return 1;
+}
+
+extern "C" int mh_set_program_state(MH_Plugin* p, const void* data, int data_size)
+{
+    if (!p || !p->inst || !data || data_size <= 0) return 0;
+    std::lock_guard<std::mutex> lock(p->stateMutex);
+
+    p->inst->setCurrentProgramStateInformation(data, data_size);
+    return 1;
 }
 
 extern "C" int mh_set_sample_rate(MH_Plugin* p, double new_sample_rate)
@@ -1150,6 +1323,67 @@ extern "C" int mh_supports_double(MH_Plugin* p)
 {
     if (!p || !p->inst) return 0;
     return p->inst->supportsDoublePrecisionProcessing() ? 1 : 0;
+}
+
+extern "C" int mh_get_processing_precision(MH_Plugin* p)
+{
+    if (!p || !p->inst) return MH_PRECISION_SINGLE;
+    return p->inst->getProcessingPrecision() == AudioProcessor::doublePrecision
+        ? MH_PRECISION_DOUBLE : MH_PRECISION_SINGLE;
+}
+
+extern "C" int mh_set_processing_precision(MH_Plugin* p, int precision)
+{
+    if (!p || !p->inst) return 0;
+    if (precision != MH_PRECISION_SINGLE && precision != MH_PRECISION_DOUBLE) return 0;
+
+    // Double precision requires plugin support
+    if (precision == MH_PRECISION_DOUBLE && !p->inst->supportsDoublePrecisionProcessing())
+        return 0;
+
+    std::lock_guard<std::mutex> lock(p->stateMutex);
+
+    auto newPrecision = (precision == MH_PRECISION_DOUBLE)
+        ? AudioProcessor::doublePrecision
+        : AudioProcessor::singlePrecision;
+
+    // Skip if already at the requested precision
+    if (p->inst->getProcessingPrecision() == newPrecision)
+        return 1;
+
+    // Save state, release, set precision, re-prepare, restore state
+    MemoryBlock stateData;
+    p->inst->getStateInformation(stateData);
+
+    p->inst->releaseResources();
+    p->inst->setProcessingPrecision(newPrecision);
+    p->inst->setRateAndBufferSizeDetails(p->sampleRate, p->maxBlockSize);
+    p->inst->prepareToPlay(p->sampleRate, p->maxBlockSize);
+
+    if (stateData.getSize() > 0)
+        p->inst->setStateInformation(stateData.getData(), static_cast<int>(stateData.getSize()));
+
+    return 1;
+}
+
+extern "C" int mh_set_track_properties(MH_Plugin* p, const char* name,
+                                       int has_colour, unsigned int colour_argb)
+{
+    if (!p || !p->inst) return 0;
+    std::lock_guard<std::mutex> lock(p->stateMutex);
+
+    AudioProcessor::TrackProperties props;
+
+    if (name)
+        props.name = String::fromUTF8(name);
+    // else props.name stays as nullopt (cleared)
+
+    if (has_colour)
+        props.colourARGB = colour_argb;
+    // else props.colourARGB stays as nullopt (cleared)
+
+    p->inst->updateTrackProperties(props);
+    return 1;
 }
 
 extern "C" int mh_process_double(MH_Plugin* p,
