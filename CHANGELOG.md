@@ -1,9 +1,22 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.1]
+
+### Added
+
+- LV2 plugin format support (`JUCE_PLUGINHOST_LV2=1`)
+  - Load and process LV2 plugins on all platforms
+  - `mh_scan_directory()` now finds `.lv2` bundles
+  - CLI updated with LV2 examples for `probe`, `info`, and `scan` commands
+- Headless build mode (`MINIHOST_HEADLESS`, default ON)
+  - Builds without GUI dependencies using custom `juce_audio_processors_headless` JUCE module
+  - Uses headless format classes (`VST3PluginFormatHeadless`, `AudioUnitPluginFormatHeadless`, `LV2PluginFormatHeadless`)
+  - Disable with `cmake -DMINIHOST_HEADLESS=OFF`
 
 ### Changed
 
+- `addFormat()` calls now use `std::make_unique` instead of raw `new`
+- Removed unused `KnownPluginList` variable from `findFirstTypeForFile`
 - Added cross-platform Python script (`scripts/download_juce.py`) for downloading JUCE
   - Works on Windows, macOS, and Linux without requiring bash
   - Uses only Python standard library (no external dependencies)
@@ -105,7 +118,7 @@
 - `mh_set_sample_rate()` - Change sample rate without reloading plugin (preserves parameter state)
 - `mh_get_sample_rate()` - Query current sample rate
 - `MH_ScanCallback` typedef for plugin scanning callback
-- `mh_scan_directory()` - Recursively scan directory for VST3/AudioUnit plugins
+- `mh_scan_directory()` - Recursively scan directory for VST3/AudioUnit/LV2 plugins
 - `MH_PluginDesc.path` field added for scan results
 - `mh_process_double()` - Process audio with 64-bit double precision
 - `mh_supports_double()` - Check if plugin supports native double precision
@@ -140,7 +153,7 @@
 
 - `minihost` CLI tool with subcommands for common operations:
   - `probe` - Get plugin metadata without full instantiation
-  - `scan` - Recursively scan directory for VST3/AudioUnit plugins
+  - `scan` - Recursively scan directory for VST3/AudioUnit/LV2 plugins
   - `info` - Show detailed plugin info (buses, presets, latency)
   - `params` - List plugin parameters with current values
   - `midi-ports` - List available MIDI input/output ports
@@ -167,7 +180,7 @@ All C API additions are exposed in the Python `minihost` module:
   - Methods: `load()`, `save()`, `add_track()`, `add_tempo()`, `add_note_on()`, `add_note_off()`, `add_control_change()`, `add_program_change()`, `add_pitch_bend()`, `get_events()`, `join_tracks()`, `split_tracks()`
   - Properties: `num_tracks`, `ticks_per_quarter`, `duration_seconds`
 - `minihost.probe(path)` - Module-level function for plugin metadata
-- `minihost.scan_directory(path)` - Scan directory for plugins, returns list of metadata dicts
+- `minihost.scan_directory(path)` - Scan directory for VST3/AudioUnit/LV2 plugins, returns list of metadata dicts
 - `Plugin` constructor now accepts `sidechain_channels` parameter
 - New properties: `non_realtime`, `num_programs`, `program`, `sidechain_channels`, `num_input_buses`, `num_output_buses`, `sample_rate` (read/write), `supports_double`
 - New methods: `reset()`, `param_to_text()`, `param_from_text()`, `get_program_name()`, `get_bus_info()`, `process_sidechain()`, `process_double()`

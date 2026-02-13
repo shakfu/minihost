@@ -3,7 +3,7 @@
 minihost - Audio plugin hosting CLI.
 
 A command-line interface for loading, inspecting, and rendering audio through
-VST3 and AudioUnit plugins.
+VST3, AudioUnit, and LV2 plugins.
 
 Usage:
     minihost probe /path/to/plugin.vst3
@@ -437,8 +437,10 @@ def main():
         epilog="""
 Examples:
   minihost probe /path/to/plugin.vst3
+  minihost probe /path/to/plugin.lv2
   minihost scan /Library/Audio/Plug-Ins/VST3/
   minihost info /path/to/plugin.vst3
+  minihost info /path/to/plugin.lv2
   minihost params /path/to/plugin.vst3
   minihost midi-ports
   minihost play /path/to/synth.vst3 --midi 0

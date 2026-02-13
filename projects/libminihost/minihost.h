@@ -22,7 +22,7 @@ typedef struct MH_PluginDesc {
     char name[256];
     char vendor[256];
     char version[64];
-    char format[16];            // "VST3" or "AU"
+    char format[16];            // "VST3", "AU", or "LV2"
     char unique_id[64];         // for state compatibility checking
     char path[1024];            // full path to plugin file (populated by mh_scan_directory)
     int accepts_midi;

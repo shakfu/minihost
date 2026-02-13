@@ -3,7 +3,25 @@
 
 #include <juce_core/juce_core.h>
 #include <juce_audio_basics/juce_audio_basics.h>
-#include <juce_audio_processors/juce_audio_processors.h>
+#ifdef MINIHOST_HEADLESS
+ #include <juce_audio_processors_headless/juce_audio_processors_headless.h>
+ using VST3Format = juce::VST3PluginFormatHeadless;
+ #if JUCE_MAC
+  using AUFormat = juce::AudioUnitPluginFormatHeadless;
+ #endif
+ #if JUCE_PLUGINHOST_LV2
+  using LV2Format = juce::LV2PluginFormatHeadless;
+ #endif
+#else
+ #include <juce_audio_processors/juce_audio_processors.h>
+ using VST3Format = juce::VST3PluginFormat;
+ #if JUCE_MAC
+  using AUFormat = juce::AudioUnitPluginFormat;
+ #endif
+ #if JUCE_PLUGINHOST_LV2
+  using LV2Format = juce::LV2PluginFormat;
+ #endif
+#endif
 #include <mutex>
 #include <thread>
 
@@ -74,9 +92,12 @@ struct MH_Plugin
 
     MH_Plugin()
     {
-        fm.addFormat(new VST3PluginFormat());
+        fm.addFormat(std::make_unique<VST3Format>());
        #if JUCE_MAC
-        fm.addFormat(new AudioUnitPluginFormat());
+        fm.addFormat(std::make_unique<AUFormat>());
+       #endif
+       #if JUCE_PLUGINHOST_LV2
+        fm.addFormat(std::make_unique<LV2Format>());
        #endif
     }
 };
@@ -93,7 +114,6 @@ static bool findFirstTypeForFile(AudioPluginFormatManager& fm,
                                  PluginDescription& outDesc,
                                  String& err)
 {
-    KnownPluginList tempList;
     bool foundAny = false;
 
     for (int i = 0; i < fm.getNumFormats(); ++i)
@@ -720,9 +740,12 @@ extern "C" int mh_probe(const char* plugin_path,
 
     // Create a temporary format manager to scan the plugin
     AudioPluginFormatManager fm;
-    fm.addFormat(new VST3PluginFormat());
+    fm.addFormat(std::make_unique<VST3Format>());
    #if JUCE_MAC
-    fm.addFormat(new AudioUnitPluginFormat());
+    fm.addFormat(std::make_unique<AUFormat>());
+   #endif
+   #if JUCE_PLUGINHOST_LV2
+    fm.addFormat(std::make_unique<LV2Format>());
    #endif
 
     // Find plugin description without instantiating
@@ -1093,6 +1116,11 @@ extern "C" int mh_scan_directory(const char* directory_path,
     // AudioUnit plugins (.component bundles) - macOS only
    #if JUCE_MAC
     dir.findChildFiles(pluginFiles, File::findDirectories, true, "*.component");
+   #endif
+
+    // LV2 plugins (.lv2 bundles)
+   #if JUCE_PLUGINHOST_LV2
+    dir.findChildFiles(pluginFiles, File::findDirectories, true, "*.lv2");
    #endif
 
     // Process each plugin file

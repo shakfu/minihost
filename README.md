@@ -1,11 +1,13 @@
 # minihost
 
-A minimal audio plugin host library for loading and processing VST3 and AudioUnit plugins. Provides a simple C API suitable for embedding in audio applications, and also Python bindings.
+A minimal audio plugin host library for loading and processing VST3, AudioUnit, and LV2 plugins. Provides a simple C API suitable for embedding in audio applications, and also Python bindings. Builds in headless mode by default (no GUI dependencies).
 
 ## Features
 
 - Load VST3 plugins (macOS, Windows, Linux)
 - Load AudioUnit plugins (macOS only)
+- Load LV2 plugins (macOS, Windows, Linux)
+- **Headless mode** (default) - no GUI dependencies, uses custom JUCE module
 - **Plugin chaining** - connect multiple plugins in series (synth -> reverb -> limiter)
 - **Real-time audio playback** via miniaudio (cross-platform)
 - **Real-time MIDI I/O** via libremidi (cross-platform)
@@ -47,6 +49,10 @@ make
 
 # Or with a custom JUCE path
 cmake -B build -DJUCE_PATH=/path/to/JUCE
+cmake --build build
+
+# Disable headless mode (enables GUI support)
+cmake -B build -DMINIHOST_HEADLESS=OFF
 cmake --build build
 ```
 
@@ -422,6 +428,7 @@ minihost --help
 #### `minihost probe` - Get plugin metadata
 ```bash
 minihost probe /path/to/plugin.vst3
+minihost probe /path/to/plugin.lv2
 minihost probe /path/to/plugin.vst3 --json
 ```
 

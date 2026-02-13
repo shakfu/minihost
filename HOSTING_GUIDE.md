@@ -1,6 +1,6 @@
 # Plugin Hosting Guide
 
-This guide covers how to host VST3 and AudioUnit plugins using minihost as an embedded library.
+This guide covers how to host VST3, AudioUnit, and LV2 plugins using minihost as an embedded library.
 
 ## Table of Contents
 
@@ -25,12 +25,14 @@ This guide covers how to host VST3 and AudioUnit plugins using minihost as an em
 
 ## Overview
 
-minihost is a C library for hosting VST3 and AudioUnit plugins without GUI support. It's designed for:
+minihost is a C library for hosting VST3, AudioUnit, and LV2 plugins. It builds in headless mode by default (no GUI dependencies), using a custom `juce_audio_processors_headless` JUCE module. It's designed for:
 
 - Headless audio servers
 - Batch processing tools
 - Embedded applications
 - Any scenario where plugin UI is not needed
+
+Headless mode can be disabled with `cmake -DMINIHOST_HEADLESS=OFF` if GUI support is needed.
 
 The API is pure C for maximum compatibility, though the implementation uses C++ and JUCE internally.
 
@@ -70,7 +72,7 @@ target_link_libraries(your_app PRIVATE
 ```c
 char err[1024];
 MH_Plugin* plugin = mh_open(
-    "/path/to/plugin.vst3",  // or .component for AU
+    "/path/to/plugin.vst3",  // or .component for AU, .lv2 for LV2
     48000.0,                  // sample rate
     512,                      // max block size
     2,                        // input channels
@@ -541,6 +543,8 @@ printf("Found %d plugins\n", count);
 **Linux:**
 - `/usr/lib/vst3/`
 - `~/.vst3/`
+- `/usr/lib/lv2/` (LV2 system)
+- `~/.lv2/` (LV2 user)
 
 ---
 

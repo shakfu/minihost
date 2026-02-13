@@ -67,4 +67,4 @@ __all__ = [
     "render_midi_to_file",
     "MidiRenderer",
 ]
-__version__ = "0.1.0"
+__version__ = "0.1.1"
