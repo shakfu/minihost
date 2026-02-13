@@ -7,7 +7,7 @@ A minimal audio plugin host library for loading and processing VST3, AudioUnit, 
 - Load VST3 plugins (macOS, Windows, Linux)
 - Load AudioUnit plugins (macOS only)
 - Load LV2 plugins (macOS, Windows, Linux)
-- **Headless mode** (default) - no GUI dependencies, uses custom JUCE module
+- **Headless mode** (default) - no GUI dependencies, uses JUCE's `juce_audio_processors_headless` module
 - **Plugin chaining** - connect multiple plugins in series (synth -> reverb -> limiter)
 - **Real-time audio playback** via miniaudio (cross-platform)
 - **Real-time MIDI I/O** via libremidi (cross-platform)

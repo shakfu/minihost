@@ -9,7 +9,7 @@
   - `mh_scan_directory()` now finds `.lv2` bundles
   - CLI updated with LV2 examples for `probe`, `info`, and `scan` commands
 - Headless build mode (`MINIHOST_HEADLESS`, default ON)
-  - Builds without GUI dependencies using custom `juce_audio_processors_headless` JUCE module
+  - Builds without GUI dependencies using JUCE's `juce_audio_processors_headless` module (requires JUCE 8.0.11+)
   - Uses headless format classes (`VST3PluginFormatHeadless`, `AudioUnitPluginFormatHeadless`, `LV2PluginFormatHeadless`)
   - Disable with `cmake -DMINIHOST_HEADLESS=OFF`
 
@@ -21,6 +21,7 @@
   - Works on Windows, macOS, and Linux without requiring bash
   - Uses only Python standard library (no external dependencies)
   - Handles Python 3.14+ tarfile deprecation warning
+- Bumped default JUCE version from 8.0.6 to 8.0.12 (required for `juce_audio_processors_headless`)
 - Updated CI workflow to use Python script instead of bash for JUCE download
 - Updated Makefile to prefer Python script with bash fallback
 

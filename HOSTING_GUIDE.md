@@ -25,7 +25,7 @@ This guide covers how to host VST3, AudioUnit, and LV2 plugins using minihost as
 
 ## Overview
 
-minihost is a C library for hosting VST3, AudioUnit, and LV2 plugins. It builds in headless mode by default (no GUI dependencies), using a custom `juce_audio_processors_headless` JUCE module. It's designed for:
+minihost is a C library for hosting VST3, AudioUnit, and LV2 plugins. It builds in headless mode by default (no GUI dependencies), using JUCE's `juce_audio_processors_headless` module (available since JUCE 8.0.11). It's designed for:
 
 - Headless audio servers
 - Batch processing tools

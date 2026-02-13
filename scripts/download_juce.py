@@ -14,7 +14,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-JUCE_VERSION = os.environ.get("JUCE_VERSION", "8.0.6")
+JUCE_VERSION = os.environ.get("JUCE_VERSION", "8.0.12")
 SCRIPT_DIR = Path(__file__).parent.resolve()
 PROJECT_ROOT = SCRIPT_DIR.parent
 JUCE_DIR = Path(os.environ.get("JUCE_DIR", PROJECT_ROOT / "JUCE"))
