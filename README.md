@@ -9,9 +9,11 @@ A minimal audio plugin host library for loading and processing VST3, AudioUnit, 
 - Load LV2 plugins (macOS, Windows, Linux)
 - **Headless mode** (default) - no GUI dependencies, uses JUCE's `juce_audio_processors_headless` module
 - **Plugin chaining** - connect multiple plugins in series (synth -> reverb -> limiter)
+- **Audio file I/O** via miniaudio -- read WAV/FLAC/MP3/Vorbis, write WAV (16/24/32-bit)
 - **Real-time audio playback** via miniaudio (cross-platform)
 - **Real-time MIDI I/O** via libremidi (cross-platform)
 - **Virtual MIDI ports** - create named ports that DAWs can connect to (macOS, Linux)
+- **Standalone MIDI input** - monitor raw MIDI messages without a plugin (`MidiIn` class)
 - Process audio with sample-accurate parameter automation
 - Single and double precision processing
 - MIDI input/output support
@@ -237,6 +239,33 @@ mh_close(reverb);
 mh_close(limiter);
 ```
 
+### Audio File I/O
+
+Read and write audio files without external dependencies:
+
+```c
+#include "minihost_audiofile.h"
+
+// Read any supported format (WAV, FLAC, MP3, Vorbis)
+char err[1024];
+MH_AudioData* audio = mh_audio_read("input.flac", err, sizeof(err));
+if (audio) {
+    printf("Channels: %u, Frames: %u, Rate: %u\n",
+           audio->channels, audio->frames, audio->sample_rate);
+    // audio->data is interleaved float32
+    mh_audio_data_free(audio);
+}
+
+// Write WAV file (16, 24, or 32-bit)
+mh_audio_write("output.wav", interleaved_data,
+               2, num_frames, 48000, 24, err, sizeof(err));
+
+// Get file info without decoding
+MH_AudioFileInfo info;
+mh_audio_get_file_info("song.wav", &info, err, sizeof(err));
+printf("Duration: %.2f seconds\n", info.duration);
+```
+
 ## Python Bindings
 
 ```bash
@@ -311,6 +340,44 @@ audio.create_virtual_midi_output("minihost Output")
 audio.start()
 # Other apps can now send MIDI to "minihost Input"
 # and receive MIDI from "minihost Output"
+```
+
+### Standalone MIDI Input
+
+Monitor MIDI messages without loading a plugin:
+
+```python
+import minihost
+
+def on_midi(data: bytes):
+    status = data[0]
+    if status & 0xF0 == 0x90 and data[2] > 0:
+        print(f"Note On: {data[1]} vel={data[2]}")
+
+# Open hardware MIDI port
+with minihost.MidiIn.open(0, on_midi) as midi_in:
+    input("Press Enter to stop...\n")
+
+# Or create a virtual MIDI port
+with minihost.MidiIn.open_virtual("My Monitor", on_midi) as midi_in:
+    input("Press Enter to stop...\n")
+```
+
+### Audio File I/O
+
+```python
+import minihost
+
+# Read audio files (WAV, FLAC, MP3, Vorbis)
+data, sample_rate = minihost.read_audio("input.wav")
+# data shape: (channels, samples), dtype: float32
+
+# Write WAV files (16, 24, or 32-bit)
+minihost.write_audio("output.wav", data, sample_rate, bit_depth=24)
+
+# Get file info without decoding
+info = minihost.get_audio_info("song.wav")
+print(f"{info['channels']}ch, {info['sample_rate']}Hz, {info['duration']:.2f}s")
 ```
 
 ### MIDI File Read/Write
@@ -430,12 +497,14 @@ minihost --help
 
 ### Commands
 
-#### `minihost probe` - Get plugin metadata
+#### `minihost info` - Show plugin info
 ```bash
-minihost probe /path/to/plugin.vst3
-minihost probe /path/to/plugin.lv2
-minihost probe /path/to/plugin.vst3 --json
+minihost info /path/to/plugin.vst3          # full info (loads plugin)
+minihost info /path/to/plugin.vst3 --probe  # lightweight metadata only
+minihost info /path/to/plugin.vst3 --json   # JSON output
 ```
+By default shows full runtime details (sample rate, channels, latency, buses, presets).
+Use `--probe` for fast metadata-only mode without fully loading the plugin.
 
 #### `minihost scan` - Scan directory for plugins
 ```bash
@@ -443,22 +512,18 @@ minihost scan /Library/Audio/Plug-Ins/VST3/
 minihost scan ~/Music/Plugins --json
 ```
 
-#### `minihost info` - Show detailed plugin info
-```bash
-minihost info /path/to/plugin.vst3
-```
-Shows runtime information including sample rate, channels, latency, buses, and factory presets.
-
 #### `minihost params` - List plugin parameters
 ```bash
 minihost params /path/to/plugin.vst3
 minihost params /path/to/plugin.vst3 --json
 ```
 
-#### `minihost midi-ports` - List available MIDI ports
+#### `minihost midi` - List or monitor MIDI ports
 ```bash
-minihost midi-ports
-minihost midi-ports --json
+minihost midi                          # list all MIDI ports
+minihost midi --json                   # list as JSON
+minihost midi -m 0                     # monitor MIDI input port 0
+minihost midi --virtual-midi "Monitor" # create virtual port and monitor
 ```
 
 #### `minihost play` - Play plugin with real-time audio/MIDI
@@ -470,28 +535,22 @@ minihost play /path/to/synth.vst3 --midi 0
 minihost play /path/to/synth.vst3 --virtual-midi "My Synth"
 ```
 
-#### `minihost render` - Render MIDI file through plugin
+#### `minihost process` - Process audio/MIDI offline
 ```bash
-# Basic render to WAV
-minihost render /path/to/synth.vst3 song.mid output.wav
+# Process audio through effect
+minihost process /path/to/effect.vst3 -i input.wav -o output.wav
 
-# With preset and tail length
-minihost render /path/to/synth.vst3 song.mid output.wav --preset 5 --tail 3.0
+# With parameter control
+minihost process /path/to/effect.vst3 -i input.wav -o output.wav --param "Mix:0.5"
 
-# With custom bit depth
-minihost render /path/to/synth.vst3 song.mid output.wav --bit-depth 16
+# Render MIDI through synth
+minihost process /path/to/synth.vst3 -m song.mid -o output.wav --tail 3.0
 
-# Load plugin state
-minihost render /path/to/synth.vst3 song.mid output.wav --state preset.fxp
-```
+# With preset and bit depth
+minihost process /path/to/synth.vst3 -m song.mid -o output.wav --preset 5 --bit-depth 16
 
-#### `minihost process` - Process audio file offline
-```bash
-# Process raw float32 audio through effect
-minihost process /path/to/effect.vst3 input.raw output.raw
-
-# Use double precision
-minihost process /path/to/effect.vst3 input.raw output.raw --double
+# Sidechain processing (second -i is sidechain)
+minihost process /path/to/compressor.vst3 -i main.wav -i sidechain.wav -o output.wav
 ```
 
 ### Global Options
@@ -571,6 +630,15 @@ minihost process /path/to/effect.vst3 input.raw output.raw --double
 | `mh_audio_send_midi` | Send MIDI event programmatically |
 | `mh_audio_open_chain` | Open audio device for chain playback |
 
+### Audio File I/O Functions (minihost_audiofile.h)
+
+| Function | Description |
+|----------|-------------|
+| `mh_audio_read` | Read audio file to interleaved float32 (WAV, FLAC, MP3, Vorbis) |
+| `mh_audio_data_free` | Free decoded audio data |
+| `mh_audio_write` | Write interleaved float32 to WAV (16/24/32-bit) |
+| `mh_audio_get_file_info` | Get audio file metadata without decoding |
+
 ### Plugin Chain Functions (minihost_chain.h)
 
 | Function | Description |
@@ -600,8 +668,23 @@ minihost process /path/to/effect.vst3 input.raw output.raw --double
 | `mh_midi_get_num_outputs` | Get number of MIDI output ports |
 | `mh_midi_get_input_name` | Get MIDI input port name by index |
 | `mh_midi_get_output_name` | Get MIDI output port name by index |
-| `mh_midi_in_open_virtual` | Create virtual MIDI input port |
+| `mh_midi_in_open` | Open MIDI input port with callback |
+| `mh_midi_in_open_virtual` | Create virtual MIDI input port with callback |
+| `mh_midi_in_close` | Close MIDI input |
+| `mh_midi_out_open` | Open MIDI output port |
 | `mh_midi_out_open_virtual` | Create virtual MIDI output port |
+| `mh_midi_out_close` | Close MIDI output |
+| `mh_midi_out_send` | Send MIDI message on output port |
+
+### Audio File I/O (Python)
+
+| Function | Description |
+|----------|-------------|
+| `read_audio(path)` | Read audio file, returns `(ndarray, sample_rate)`. Array shape: `(channels, samples)` |
+| `write_audio(path, data, sample_rate, bit_depth=24)` | Write WAV file (16/24/32-bit). Data shape: `(channels, samples)` |
+| `get_audio_info(path)` | Get metadata dict: `channels`, `sample_rate`, `frames`, `duration` |
+
+Supported read formats: WAV, FLAC, MP3, Vorbis. Write format: WAV only.
 
 ### MidiFile Class (Python)
 
@@ -623,6 +706,15 @@ minihost process /path/to/effect.vst3 input.raw output.raw --double
 | `get_events(track)` | Get all events from track as list of dicts |
 | `join_tracks()` | Merge all tracks into track 0 |
 | `split_tracks()` | Split by channel into separate tracks |
+
+### MidiIn Class (Python)
+
+| Method/Property | Description |
+|-----------------|-------------|
+| `MidiIn.open(port_index, callback)` | Open MIDI input port, callback receives `bytes` |
+| `MidiIn.open_virtual(name, callback)` | Create virtual MIDI input, callback receives `bytes` |
+| `close()` | Close the MIDI input |
+| Context manager | `with MidiIn.open(...) as m:` auto-closes on exit |
 
 ### MIDI Rendering (Python)
 

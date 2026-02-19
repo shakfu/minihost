@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+### Added
+
+- Audio file I/O via miniaudio (C layer): `mh_audio_read()`, `mh_audio_write()`, `mh_audio_get_file_info()`
+  - Python: `minihost.read_audio()`, `minihost.write_audio()`, `minihost.get_audio_info()` now backed by miniaudio
+  - Read support: WAV, FLAC, MP3, Vorbis
+  - Write support: WAV only (16-bit PCM, 24-bit PCM, 32-bit float)
+- `MidiIn` class for standalone MIDI input monitoring (no plugin required)
+  - `MidiIn.open(port_index, callback)` -- open a hardware MIDI input port with raw bytes callback
+  - `MidiIn.open_virtual(name, callback)` -- create a virtual MIDI input port with raw bytes callback
+  - `close()` method and context manager (`with`) support
+  - Python: `minihost.MidiIn`
+- MIDI monitor mode in `minihost midi` CLI subcommand
+  - `minihost midi -m N` -- monitor incoming MIDI on hardware port N
+  - `minihost midi --virtual-midi NAME` -- create a virtual MIDI port and monitor it
+  - Human-readable output: Note On/Off (with note names), CC, Pitch Bend, Program Change, Channel Pressure, Poly Aftertouch, SysEx
+
+### Changed
+
+- Merged `probe` CLI subcommand into `info` -- use `minihost info <plugin> --probe` for lightweight metadata-only mode
+  - `minihost info` now shows full runtime details by default (was already doing this)
+  - `minihost info --probe` replaces the old `minihost probe` (no full plugin load)
+  - `minihost info --json` outputs combined probe + runtime data as JSON
+- Merged `render` CLI subcommand into `process` -- use `minihost process <plugin> -m song.mid -o output.wav` instead of `minihost render`
+- Added `-t, --tail` option to `process` subcommand (default: 2.0s) for configurable tail length in MIDI-only synth mode
+- Renamed `midi-ports` CLI subcommand to `midi`
+
+### Removed
+
+- `soundfile` runtime dependency -- audio file I/O now uses miniaudio (already vendored)
+  - AIFF and OGG write support removed (miniaudio encoder is WAV-only)
+  - `get_audio_info()` no longer returns `format` or `subtype` keys
+
 ## [0.1.1]
 
 ### Added
@@ -183,13 +215,12 @@
   - `scan` - Recursively scan directory for VST3/AudioUnit/LV2 plugins
   - `info` - Show detailed plugin info (buses, presets, latency)
   - `params` - List plugin parameters with current values
-  - `midi-ports` - List available MIDI input/output ports
+  - `midi` - List available MIDI input/output ports
   - `play` - Real-time audio playback with MIDI input
-  - `render` - Render MIDI file through plugin to WAV (16/24/32-bit)
-  - `process` - Offline audio file processing through effects
+  - `process` - Offline audio processing through effects, or MIDI-to-audio rendering for synths
 - Global options: `--sample-rate`, `--block-size`
-- JSON output support (`--json`) for probe, scan, params, midi-ports
-- Plugin state and preset loading for render command
+- JSON output support (`--json`) for probe, scan, params, midi
+- Plugin state and preset loading for process command
 - Virtual MIDI port creation for play command
 
 ### Python Bindings

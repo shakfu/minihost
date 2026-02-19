@@ -1,6 +1,6 @@
 """Type stubs for minihost._core native extension module."""
 
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -240,6 +240,17 @@ class MidiFile:
     def join_tracks(self) -> None: ...
     def split_tracks(self) -> None: ...
 
+class MidiIn:
+    """Standalone MIDI input for monitoring MIDI messages."""
+
+    @staticmethod
+    def open(port_index: int, callback: Callable[[bytes], None]) -> "MidiIn": ...
+    @staticmethod
+    def open_virtual(name: str, callback: Callable[[bytes], None]) -> "MidiIn": ...
+    def close(self) -> None: ...
+    def __enter__(self) -> "MidiIn": ...
+    def __exit__(self, *args: object) -> None: ...
+
 def probe(path: str) -> dict[str, Any]:
     """Get plugin metadata without full instantiation."""
     ...
@@ -262,3 +273,20 @@ MH_CHANGE_PROGRAM: int
 MH_CHANGE_NON_PARAM_STATE: int
 MH_PRECISION_SINGLE: int
 MH_PRECISION_DOUBLE: int
+
+def audio_read(path: str) -> tuple[NDArray[np.float32], int]:
+    """Read an audio file. Returns (data, sample_rate) where data has shape (channels, frames)."""
+    ...
+
+def audio_write(
+    path: str,
+    data: NDArray[np.float32],
+    sample_rate: int,
+    bit_depth: int = 24,
+) -> None:
+    """Write audio data to a WAV file. Data shape: (channels, frames)."""
+    ...
+
+def audio_get_file_info(path: str) -> dict[str, Any]:
+    """Get audio file metadata without decoding."""
+    ...

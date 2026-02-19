@@ -44,6 +44,14 @@ def test_module_has_midifile_class():
     assert hasattr(minihost, "MidiFile")
 
 
+def test_module_has_midiin_class():
+    """Test that MidiIn class is exported with expected methods."""
+    assert hasattr(minihost, "MidiIn")
+    assert hasattr(minihost.MidiIn, "open")
+    assert hasattr(minihost.MidiIn, "open_virtual")
+    assert hasattr(minihost.MidiIn, "close")
+
+
 def test_module_has_render_functions():
     """Test that render functions are exported."""
     assert hasattr(minihost, "render_midi")

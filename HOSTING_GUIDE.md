@@ -18,8 +18,9 @@ This guide covers how to host VST3, AudioUnit, and LV2 plugins using minihost as
 12. [Plugin Discovery](#plugin-discovery)
 13. [Real-time Audio I/O](#real-time-audio-io)
 14. [Real-time MIDI I/O](#real-time-midi-io)
-15. [Performance Guidelines](#performance-guidelines)
-16. [Common Pitfalls](#common-pitfalls)
+15. [Audio File I/O](#audio-file-io)
+16. [Performance Guidelines](#performance-guidelines)
+17. [Common Pitfalls](#common-pitfalls)
 
 ---
 
@@ -911,6 +912,114 @@ ring_buffer_push() --------> ring_buffer_pop_all()
 
 ---
 
+## Audio File I/O
+
+minihost includes audio file read/write capabilities via [miniaudio](https://miniaud.io/), with no external library dependencies.
+
+### Headers
+
+```c
+#include "minihost_audiofile.h"
+```
+
+### Linking
+
+```cmake
+target_link_libraries(your_app PRIVATE minihost_audio)
+```
+
+The audio file functions are part of `libminihost_audio`.
+
+### Reading Audio Files
+
+```c
+char err[1024];
+MH_AudioData* audio = mh_audio_read("input.flac", err, sizeof(err));
+if (!audio) {
+    fprintf(stderr, "Read failed: %s\n", err);
+    return;
+}
+
+printf("Channels: %u, Frames: %u, Rate: %u Hz\n",
+       audio->channels, audio->frames, audio->sample_rate);
+
+// audio->data is interleaved float32: [L0, R0, L1, R1, ...]
+// Total samples = channels * frames
+
+// Process the audio...
+process(audio->data, audio->channels, audio->frames);
+
+// Always free when done
+mh_audio_data_free(audio);
+```
+
+**Supported read formats**: WAV, FLAC, MP3, Vorbis/OGG.
+
+### Writing Audio Files
+
+```c
+// Write interleaved float32 data to WAV
+int ok = mh_audio_write("output.wav", interleaved_data,
+                         channels, num_frames, sample_rate,
+                         24,  // bit_depth: 16, 24, or 32
+                         err, sizeof(err));
+if (!ok) {
+    fprintf(stderr, "Write failed: %s\n", err);
+}
+```
+
+**Bit depth options**:
+- `16` -- 16-bit integer PCM (with triangle dithering from float32)
+- `24` -- 24-bit integer PCM (with triangle dithering from float32)
+- `32` -- 32-bit IEEE float (lossless from float32 source)
+
+**Write format**: WAV only. FLAC, AIFF, and OGG writing are not supported.
+
+### Getting File Info
+
+Query metadata without decoding the entire file:
+
+```c
+MH_AudioFileInfo info;
+if (mh_audio_get_file_info("song.wav", &info, err, sizeof(err))) {
+    printf("Channels: %u\n", info.channels);
+    printf("Sample rate: %u Hz\n", info.sample_rate);
+    printf("Frames: %llu\n", info.frames);
+    printf("Duration: %.2f seconds\n", info.duration);
+}
+```
+
+### Complete Example: Process Audio File Through Plugin
+
+```c
+#include "minihost.h"
+#include "minihost_audiofile.h"
+
+char err[1024];
+
+// Read input
+MH_AudioData* input = mh_audio_read("input.wav", err, sizeof(err));
+if (!input) { fprintf(stderr, "%s\n", err); return 1; }
+
+// Load plugin matching the file's sample rate
+MH_Plugin* plugin = mh_open("/path/to/effect.vst3",
+    (double)input->sample_rate, 512,
+    input->channels, input->channels, err, sizeof(err));
+
+// De-interleave, process, re-interleave (see Audio Processing section)
+// ...
+
+// Write output
+mh_audio_write("output.wav", output_interleaved,
+               input->channels, input->frames, input->sample_rate,
+               24, err, sizeof(err));
+
+mh_audio_data_free(input);
+mh_close(plugin);
+```
+
+---
+
 ## Performance Guidelines
 
 ### Do
@@ -1091,6 +1200,15 @@ process_silence_for(tail * sample_rate);
 | Connect MIDI output | `mh_audio_connect_midi_output()` |
 | Create virtual MIDI input | `mh_audio_create_virtual_midi_input()` |
 | Create virtual MIDI output | `mh_audio_create_virtual_midi_output()` |
+
+### Audio File I/O Functions (minihost_audiofile.h)
+
+| Task | Function |
+|------|----------|
+| Read audio file | `mh_audio_read()` |
+| Free decoded data | `mh_audio_data_free()` |
+| Write WAV file | `mh_audio_write()` |
+| Get file metadata | `mh_audio_get_file_info()` |
 
 ### MIDI Functions (minihost_midi.h)
 

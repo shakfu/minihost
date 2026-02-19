@@ -6,7 +6,6 @@ supporting output to numpy arrays, audio files, or streaming generators.
 
 from __future__ import annotations
 
-import struct
 from typing import TYPE_CHECKING, Iterator, Optional, Union
 
 if TYPE_CHECKING:
@@ -304,44 +303,6 @@ def render_midi(
     return result
 
 
-def _write_wav_header(
-    f, channels: int, sample_rate: int, bits_per_sample: int, data_size: int
-):
-    """Write WAV file header."""
-    byte_rate = sample_rate * channels * bits_per_sample // 8
-    block_align = channels * bits_per_sample // 8
-
-    # RIFF header
-    f.write(b"RIFF")
-    f.write(struct.pack("<I", 36 + data_size))  # File size - 8
-    f.write(b"WAVE")
-
-    # fmt chunk
-    f.write(b"fmt ")
-    f.write(struct.pack("<I", 16))  # Chunk size
-
-    if bits_per_sample == 32:
-        audio_format = 3  # IEEE float
-    else:
-        audio_format = 1  # PCM
-
-    f.write(
-        struct.pack(
-            "<HHIIHH",
-            audio_format,  # Audio format
-            channels,  # Number of channels
-            sample_rate,  # Sample rate
-            byte_rate,  # Byte rate
-            block_align,  # Block align
-            bits_per_sample,  # Bits per sample
-        )
-    )
-
-    # data chunk header
-    f.write(b"data")
-    f.write(struct.pack("<I", data_size))
-
-
 def render_midi_to_file(
     plugin: PluginOrChain,
     midi_file: Union[MidiFile, str],
@@ -355,7 +316,7 @@ def render_midi_to_file(
     Args:
         plugin: Plugin or PluginChain instance to render through
         midi_file: MidiFile object or path to MIDI file
-        output_path: Output file path (currently only .wav supported)
+        output_path: Output file path (WAV, FLAC, AIFF, OGG)
         block_size: Audio block size in samples
         tail_seconds: Extra time to render after MIDI ends
         bit_depth: Output bit depth (16, 24, or 32 for float)
@@ -370,61 +331,25 @@ def render_midi_to_file(
     """
     import numpy as np
 
-    if not output_path.lower().endswith(".wav"):
-        raise ValueError("Only .wav output is currently supported")
+    from minihost.audio_io import write_audio
 
     if bit_depth not in (16, 24, 32):
         raise ValueError("bit_depth must be 16, 24, or 32")
 
     sample_rate = int(plugin.sample_rate)
-    out_channels = max(plugin.num_output_channels, 2)
 
-    # Collect all audio first to know total size
-    # (Could also write header placeholder and seek back, but this is simpler)
     blocks = list(render_midi_stream(plugin, midi_file, block_size, tail_seconds))
 
     if not blocks:
-        # Write empty WAV file
-        with open(output_path, "wb") as f:
-            _write_wav_header(f, out_channels, sample_rate, bit_depth, 0)
+        out_channels = max(plugin.num_output_channels, 2)
+        empty = np.zeros((out_channels, 0), dtype=np.float32)
+        write_audio(output_path, empty, sample_rate, bit_depth=bit_depth)
         return 0
 
     audio = np.concatenate(blocks, axis=1)
     total_samples = audio.shape[1]
 
-    # Calculate data size
-    if bit_depth == 32:
-        bytes_per_sample = 4
-    elif bit_depth == 24:
-        bytes_per_sample = 3
-    else:
-        bytes_per_sample = 2
-
-    data_size = total_samples * out_channels * bytes_per_sample
-
-    with open(output_path, "wb") as f:
-        _write_wav_header(f, out_channels, sample_rate, bit_depth, data_size)
-
-        # Interleave channels and write
-        # audio is (channels, samples), need to interleave to (samples * channels)
-        interleaved = audio.T.flatten()  # Now (samples * channels,)
-
-        if bit_depth == 32:
-            # 32-bit float
-            f.write(interleaved.astype(np.float32).tobytes())
-        elif bit_depth == 24:
-            # 24-bit PCM
-            # Scale to 24-bit range and convert
-            scaled = np.clip(interleaved * 8388607.0, -8388608, 8388607).astype(
-                np.int32
-            )
-            # Write as 3 bytes per sample (little-endian)
-            for sample in scaled:
-                f.write(struct.pack("<i", sample)[:3])
-        else:
-            # 16-bit PCM
-            scaled = np.clip(interleaved * 32767.0, -32768, 32767).astype(np.int16)
-            f.write(scaled.tobytes())
+    write_audio(output_path, audio, sample_rate, bit_depth=bit_depth)
 
     return total_samples
 

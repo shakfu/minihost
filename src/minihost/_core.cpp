@@ -11,6 +11,7 @@
 #include "minihost.h"
 #include "minihost_chain.h"
 #include "minihost_audio.h"
+#include "minihost_audiofile.h"
 #include "minihost_midi.h"
 #include "MidiFile.h"
 
@@ -1333,6 +1334,92 @@ private:
 };
 
 
+// Python wrapper class for MH_MidiIn (standalone MIDI input without a plugin)
+class MidiIn {
+public:
+    // Private constructor - use static factory methods
+    MidiIn() : handle_(nullptr) {}
+
+    ~MidiIn() {
+        close();
+    }
+
+    // Disable copy
+    MidiIn(const MidiIn&) = delete;
+    MidiIn& operator=(const MidiIn&) = delete;
+
+    // Enable move
+    MidiIn(MidiIn&& other) noexcept
+        : handle_(other.handle_), callback_(std::move(other.callback_))
+    {
+        other.handle_ = nullptr;
+    }
+
+    MidiIn& operator=(MidiIn&& other) noexcept {
+        if (this != &other) {
+            close();
+            handle_ = other.handle_;
+            callback_ = std::move(other.callback_);
+            other.handle_ = nullptr;
+        }
+        return *this;
+    }
+
+    static MidiIn open(int port_index, nb::callable callback) {
+        MidiIn m;
+        m.callback_ = std::move(callback);
+
+        char err[1024] = {0};
+        m.handle_ = mh_midi_in_open(port_index, &MidiIn::midi_callback, &m,
+                                     err, sizeof(err));
+        if (!m.handle_) {
+            throw std::runtime_error(std::string("Failed to open MIDI input: ") + err);
+        }
+        return m;
+    }
+
+    static MidiIn open_virtual(const std::string& name, nb::callable callback) {
+        MidiIn m;
+        m.callback_ = std::move(callback);
+
+        char err[1024] = {0};
+        m.handle_ = mh_midi_in_open_virtual(name.c_str(), &MidiIn::midi_callback, &m,
+                                             err, sizeof(err));
+        if (!m.handle_) {
+            throw std::runtime_error(std::string("Failed to open virtual MIDI input: ") + err);
+        }
+        return m;
+    }
+
+    void close() {
+        if (handle_) {
+            mh_midi_in_close(handle_);
+            handle_ = nullptr;
+        }
+    }
+
+    MidiIn& enter() {
+        return *this;
+    }
+
+    void exit(nb::object, nb::object, nb::object) {
+        close();
+    }
+
+private:
+    MH_MidiIn* handle_;
+    nb::callable callback_;
+
+    static void midi_callback(const unsigned char* data, size_t len, void* user_data) {
+        nb::gil_scoped_acquire gil;
+        auto* self = static_cast<MidiIn*>(user_data);
+        if (self->callback_.is_valid() && !self->callback_.is_none()) {
+            self->callback_(nb::bytes(reinterpret_cast<const char*>(data), len));
+        }
+    }
+};
+
+
 // Note: Async plugin loading in Python is best done using Python's threading module:
 //
 //   import threading
@@ -1677,6 +1764,21 @@ NB_MODULE(_core, m) {
             self.stop();
         });
 
+    // MidiIn class for standalone MIDI input monitoring
+    nb::class_<MidiIn>(m, "MidiIn")
+        .def_static("open", &MidiIn::open,
+             nb::arg("port_index"), nb::arg("callback"),
+             "Open a MIDI input port. callback receives bytes for each message.")
+        .def_static("open_virtual", &MidiIn::open_virtual,
+             nb::arg("name"), nb::arg("callback"),
+             "Open a virtual MIDI input port. callback receives bytes for each message.")
+        .def("close", &MidiIn::close,
+             "Close the MIDI input")
+        .def("__enter__", &MidiIn::enter, nb::rv_policy::reference)
+        .def("__exit__", [](MidiIn& self, const nb::args&) {
+            self.close();
+        });
+
     // MidiFile class for MIDI file read/write
     nb::class_<MidiFile>(m, "MidiFile")
         .def(nb::init<>(),
@@ -1736,4 +1838,84 @@ NB_MODULE(_core, m) {
              "Merge all tracks into track 0 (Type 0 format)")
         .def("split_tracks", &MidiFile::split_tracks,
              "Split by channel into separate tracks (Type 1 format)");
+
+    // Audio file I/O functions
+    m.def("audio_read", [](const std::string& path) {
+        char err[1024] = {0};
+        MH_AudioData* data = mh_audio_read(path.c_str(), err, sizeof(err));
+        if (!data) {
+            throw std::runtime_error(std::string(err));
+        }
+
+        unsigned int channels = data->channels;
+        unsigned int frames = data->frames;
+        unsigned int sample_rate = data->sample_rate;
+
+        // Create numpy array shape (channels, frames) from interleaved data
+        size_t total_samples = (size_t)channels * frames;
+        float* buf = new float[total_samples];
+
+        // De-interleave: interleaved [L0,R0,L1,R1,...] -> planar [L0,L1,...,R0,R1,...]
+        for (unsigned int ch = 0; ch < channels; ch++) {
+            for (unsigned int f = 0; f < frames; f++) {
+                buf[ch * frames + f] = data->data[f * channels + ch];
+            }
+        }
+
+        mh_audio_data_free(data);
+
+        // Create numpy array with capsule for ownership
+        nb::capsule owner(buf, [](void* p) noexcept { delete[] static_cast<float*>(p); });
+        size_t shape[2] = {channels, frames};
+        auto array = nb::ndarray<float, nb::numpy, nb::shape<-1, -1>>(
+            buf, 2, shape, owner);
+
+        return nb::make_tuple(array, sample_rate);
+    }, nb::arg("path"),
+       "Read an audio file. Returns (data, sample_rate) where data has shape (channels, frames).");
+
+    m.def("audio_write", [](const std::string& path,
+                            nb::ndarray<const float, nb::shape<-1, -1>, nb::c_contig, nb::device::cpu> data,
+                            unsigned int sample_rate,
+                            int bit_depth) {
+        size_t channels = data.shape(0);
+        size_t frames = data.shape(1);
+
+        // Interleave: planar [L0,L1,...,R0,R1,...] -> interleaved [L0,R0,L1,R1,...]
+        size_t total_samples = channels * frames;
+        std::vector<float> interleaved(total_samples);
+        const float* src = data.data();
+
+        for (size_t f = 0; f < frames; f++) {
+            for (size_t ch = 0; ch < channels; ch++) {
+                interleaved[f * channels + ch] = src[ch * frames + f];
+            }
+        }
+
+        char err[1024] = {0};
+        int ok = mh_audio_write(path.c_str(), interleaved.data(),
+                                (unsigned int)channels, (unsigned int)frames,
+                                sample_rate, bit_depth, err, sizeof(err));
+        if (!ok) {
+            throw std::runtime_error(std::string(err));
+        }
+    }, nb::arg("path"), nb::arg("data"), nb::arg("sample_rate"), nb::arg("bit_depth") = 24,
+       "Write audio data to a WAV file. Data shape: (channels, frames).");
+
+    m.def("audio_get_file_info", [](const std::string& path) {
+        char err[1024] = {0};
+        MH_AudioFileInfo info;
+        int ok = mh_audio_get_file_info(path.c_str(), &info, err, sizeof(err));
+        if (!ok) {
+            throw std::runtime_error(std::string(err));
+        }
+
+        nb::dict result;
+        result["channels"] = info.channels;
+        result["sample_rate"] = info.sample_rate;
+        result["frames"] = info.frames;
+        result["duration"] = info.duration;
+        return result;
+    }, nb::arg("path"),
+       "Get audio file metadata without decoding.");
 }

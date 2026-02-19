@@ -36,6 +36,7 @@ from minihost._core import (
     PluginChain,
     AudioDevice,
     MidiFile,
+    MidiIn,
     probe,
     scan_directory,
     midi_get_input_ports,
@@ -55,12 +56,31 @@ from minihost.render import (
     MidiRenderer,
 )
 
+from minihost.audio_io import (
+    read_audio,
+    write_audio,
+    get_audio_info,
+)
+
+from minihost.automation import (
+    find_param_by_name,
+    parse_param_arg,
+    parse_automation_file,
+)
+
+from minihost.vstpreset import (
+    VstPreset,
+    read_vstpreset,
+    load_vstpreset,
+)
+
 __all__ = [
     # Core classes
     "Plugin",
     "PluginChain",
     "AudioDevice",
     "MidiFile",
+    "MidiIn",
     # Plugin discovery
     "probe",
     "scan_directory",
@@ -72,6 +92,18 @@ __all__ = [
     "render_midi_stream",
     "render_midi_to_file",
     "MidiRenderer",
+    # Audio I/O
+    "read_audio",
+    "write_audio",
+    "get_audio_info",
+    # Automation
+    "find_param_by_name",
+    "parse_param_arg",
+    "parse_automation_file",
+    # VST3 presets
+    "VstPreset",
+    "read_vstpreset",
+    "load_vstpreset",
     # Change notification constants
     "MH_CHANGE_LATENCY",
     "MH_CHANGE_PARAM_INFO",

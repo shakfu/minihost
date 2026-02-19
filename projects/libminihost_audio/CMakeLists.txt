@@ -2,6 +2,7 @@
 
 add_library(minihost_audio STATIC
     minihost_audio.c
+    minihost_audiofile.c
     midi_ringbuffer.cpp
     minihost_midi.cpp
 )

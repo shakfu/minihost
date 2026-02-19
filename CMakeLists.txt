@@ -46,6 +46,7 @@ if(DEFINED SKBUILD)
     target_include_directories(_core PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/projects/libminihost
         ${CMAKE_CURRENT_SOURCE_DIR}/projects/libminihost_audio
+        ${CMAKE_CURRENT_SOURCE_DIR}/projects/miniaudio
         ${CMAKE_CURRENT_SOURCE_DIR}/projects/midifile/include)
 
     install(TARGETS _core DESTINATION minihost)
