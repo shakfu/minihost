@@ -26,7 +26,7 @@ This guide covers how to host VST3, AudioUnit, and LV2 plugins using minihost as
 
 ## Overview
 
-minihost is a C library for hosting VST3, AudioUnit, and LV2 plugins. It builds in headless mode by default (no GUI dependencies), using JUCE's `juce_audio_processors_headless` module (available since JUCE 8.0.11). It's designed for:
+minihost is a C/Python library for hosting VST3, AudioUnit, and LV2 plugins. It builds in headless mode by default (no GUI dependencies), using JUCE's `juce_audio_processors_headless` module (available since JUCE 8.0.11). It's designed for:
 
 - Headless audio servers
 - Batch processing tools
@@ -35,7 +35,9 @@ minihost is a C library for hosting VST3, AudioUnit, and LV2 plugins. It builds 
 
 Headless mode can be disabled with `cmake -DMINIHOST_HEADLESS=OFF` if GUI support is needed.
 
-The API is pure C for maximum compatibility, though the implementation uses C++ and JUCE internally.
+The API is pure C for maximum compatibility, though the implementation uses C++ and JUCE internally. There is also a Python API based on nanobind.
+
+This guide deal exclusively with the C API.
 
 ---
 

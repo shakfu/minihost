@@ -1,6 +1,6 @@
 # minihost
 
-minihost is an audio plugin host / library for loading and processing VST3, AudioUnit, and LV2 plugins. It provides a simple C API suitable for embedding in audio applications, Python bindings and builds in headless mode by default (no GUI dependencies).
+*minihost* is a headless audio plugin host for VST3, AudioUnit, and LV2 plugins. Built on JUCE, it provides both a C API for embedding in audio applications and a Python API via nanobind.
 
 ## Features
 
@@ -103,170 +103,104 @@ $env:JUCE_VERSION="8.0.6"; python scripts/download_juce.py
 cmake -B build -DJUCE_PATH=/path/to/your/JUCE
 ```
 
-## C API Usage
+## Command Line Interface
 
-```c
-#include "minihost.h"
+The `minihost` command provides a CLI for common plugin operations:
 
-// Load a plugin
-char err[256];
-MH_Plugin* plugin = mh_open("/path/to/plugin.vst3",
-                            48000.0,  // sample rate
-                            512,      // max block size
-                            2, 2,     // in/out channels
-                            err, sizeof(err));
+```bash
+# Install (from source)
+uv sync
 
-// Process audio
-float* inputs[2] = { in_left, in_right };
-float* outputs[2] = { out_left, out_right };
-mh_process(plugin, inputs, outputs, 512);
+# Available commands
+minihost --help
+usage: minihost [-h] [-r SAMPLE_RATE] [-b BLOCK_SIZE]
+                {scan,info,params,midi,play,process} ...
 
-// Process with MIDI
-MH_MidiEvent midi[] = {
-    { 0, 0x90, 60, 100 },   // Note on at sample 0
-    { 256, 0x80, 60, 0 }    // Note off at sample 256
-};
-mh_process_midi(plugin, inputs, outputs, 512, midi, 2);
+Audio plugin hosting CLI
 
-// Parameter control
-int num_params = mh_get_num_params(plugin);
-float value = mh_get_param(plugin, 0);
-mh_set_param(plugin, 0, 0.5f);
+positional arguments:
+  {scan,info,params,midi,play,process}
+                        Commands
+    scan                Scan directory for plugins
+    info                Show plugin info
+    params              List plugin parameters
+    midi                List or monitor MIDI ports
+    play                Play plugin with real-time audio/MIDI
+    process             Process audio through plugin (offline)
 
-// State save/restore
-int size = mh_get_state_size(plugin);
-void* state = malloc(size);
-mh_get_state(plugin, state, size);
-mh_set_state(plugin, state, size);
-
-// Cleanup
-mh_close(plugin);
+options:
+  -h, --help            show this help message and exit
+  -r, --sample-rate SAMPLE_RATE
+                        Sample rate in Hz (default: 48000)
+  -b, --block-size BLOCK_SIZE
+                        Block size in samples (default: 512)
 ```
 
-### Real-time Audio Playback
+### Commands
 
-```c
-#include "minihost_audio.h"
+#### `minihost info` - Show plugin info
+```bash
+minihost info /path/to/plugin.vst3          # full info (loads plugin)
+minihost info /path/to/plugin.vst3 --probe  # lightweight metadata only
+minihost info /path/to/plugin.vst3 --json   # JSON output
+```
+By default shows full runtime details (sample rate, channels, latency, buses, presets). Use `--probe` for fast metadata-only mode without fully loading the plugin.
 
-// Open audio device for real-time playback
-MH_AudioConfig config = { .sample_rate = 48000, .buffer_frames = 512 };
-MH_AudioDevice* audio = mh_audio_open(plugin, &config, err, sizeof(err));
-
-// Start playback
-mh_audio_start(audio);
-
-// Plugin is now producing audio through speakers
-// Send MIDI, adjust parameters, etc.
-
-// Stop and cleanup
-mh_audio_stop(audio);
-mh_audio_close(audio);
-mh_close(plugin);
+#### `minihost scan` - Scan directory for plugins
+```bash
+minihost scan /Library/Audio/Plug-Ins/VST3/
+minihost scan ~/Music/Plugins --json
 ```
 
-### Real-time MIDI I/O
-
-```c
-#include "minihost_midi.h"
-
-// Enumerate available MIDI ports
-int num_inputs = mh_midi_get_num_inputs();
-int num_outputs = mh_midi_get_num_outputs();
-
-for (int i = 0; i < num_inputs; i++) {
-    char name[256];
-    mh_midi_get_input_name(i, name, sizeof(name));
-    printf("MIDI Input %d: %s\n", i, name);
-}
-
-// Connect MIDI to audio device
-MH_AudioConfig config = {
-    .sample_rate = 48000,
-    .midi_input_port = 0,   // Connect to first MIDI input
-    .midi_output_port = -1  // No MIDI output
-};
-MH_AudioDevice* audio = mh_audio_open(plugin, &config, err, sizeof(err));
-
-// Or connect/disconnect dynamically
-mh_audio_connect_midi_input(audio, 1);
-mh_audio_disconnect_midi_input(audio);
-
-// Create virtual MIDI ports (appear in system MIDI, DAWs can connect)
-mh_audio_create_virtual_midi_input(audio, "minihost Input");
-mh_audio_create_virtual_midi_output(audio, "minihost Output");
+#### `minihost params` - List plugin parameters
+```bash
+minihost params /path/to/plugin.vst3
+minihost params /path/to/plugin.vst3 --json
 ```
 
-### Plugin Chaining
-
-Chain multiple plugins together for processing (e.g., synth -> reverb -> limiter):
-
-```c
-#include "minihost_chain.h"
-
-// Load plugins
-MH_Plugin* synth = mh_open("/path/to/synth.vst3", 48000, 512, 0, 2, err, sizeof(err));
-MH_Plugin* reverb = mh_open("/path/to/reverb.vst3", 48000, 512, 2, 2, err, sizeof(err));
-MH_Plugin* limiter = mh_open("/path/to/limiter.vst3", 48000, 512, 2, 2, err, sizeof(err));
-
-// Create chain (all plugins must have same sample rate)
-MH_Plugin* plugins[] = { synth, reverb, limiter };
-MH_PluginChain* chain = mh_chain_create(plugins, 3, err, sizeof(err));
-
-// Get combined latency
-int latency = mh_chain_get_latency_samples(chain);
-
-// Process audio through chain
-float* inputs[2] = { in_left, in_right };
-float* outputs[2] = { out_left, out_right };
-mh_chain_process(chain, inputs, outputs, 512);
-
-// Process with MIDI (MIDI goes to first plugin only)
-MH_MidiEvent midi[] = { { 0, 0x90, 60, 100 } };
-mh_chain_process_midi_io(chain, inputs, outputs, 512, midi, 1, NULL, 0, NULL);
-
-// Real-time playback through chain
-MH_AudioConfig config = { .sample_rate = 48000, .buffer_frames = 512 };
-MH_AudioDevice* audio = mh_audio_open_chain(chain, &config, err, sizeof(err));
-mh_audio_start(audio);
-// ...
-mh_audio_stop(audio);
-mh_audio_close(audio);
-
-// Cleanup
-mh_chain_close(chain);  // Does not close individual plugins
-mh_close(synth);
-mh_close(reverb);
-mh_close(limiter);
+#### `minihost midi` - List or monitor MIDI ports
+```bash
+minihost midi                          # list all MIDI ports
+minihost midi --json                   # list as JSON
+minihost midi -m 0                     # monitor MIDI input port 0
+minihost midi --virtual-midi "Monitor" # create virtual port and monitor
 ```
 
-### Audio File I/O
+#### `minihost play` - Play plugin with real-time audio/MIDI
+```bash
+# Connect to MIDI input port 0
+minihost play /path/to/synth.vst3 --midi 0
 
-Read and write audio files without external dependencies:
-
-```c
-#include "minihost_audiofile.h"
-
-// Read any supported format (WAV, FLAC, MP3, Vorbis)
-char err[1024];
-MH_AudioData* audio = mh_audio_read("input.flac", err, sizeof(err));
-if (audio) {
-    printf("Channels: %u, Frames: %u, Rate: %u\n",
-           audio->channels, audio->frames, audio->sample_rate);
-    // audio->data is interleaved float32
-    mh_audio_data_free(audio);
-}
-
-// Write WAV file (16, 24, or 32-bit)
-mh_audio_write("output.wav", interleaved_data,
-               2, num_frames, 48000, 24, err, sizeof(err));
-
-// Get file info without decoding
-MH_AudioFileInfo info;
-mh_audio_get_file_info("song.wav", &info, err, sizeof(err));
-printf("Duration: %.2f seconds\n", info.duration);
+# Create a virtual MIDI port (macOS/Linux)
+minihost play /path/to/synth.vst3 --virtual-midi "My Synth"
 ```
 
-## Python Bindings
+#### `minihost process` - Process audio/MIDI offline
+```bash
+# Process audio through effect
+minihost process /path/to/effect.vst3 -i input.wav -o output.wav
+
+# With parameter control
+minihost process /path/to/effect.vst3 -i input.wav -o output.wav --param "Mix:0.5"
+
+# Render MIDI through synth
+minihost process /path/to/synth.vst3 -m song.mid -o output.wav --tail 3.0
+
+# With preset and bit depth
+minihost process /path/to/synth.vst3 -m song.mid -o output.wav --preset 5 --bit-depth 16
+
+# Sidechain processing (second -i is sidechain)
+minihost process /path/to/compressor.vst3 -i main.wav -i sidechain.wav -o output.wav
+```
+
+### Global Options
+
+| Option | Description |
+|--------|-------------|
+| `-r, --sample-rate` | Sample rate in Hz (default: 48000) |
+| `-b, --block-size` | Block size in samples (default: 512) |
+
+## Python API
 
 ```bash
 uv sync
@@ -483,82 +417,168 @@ for i in range(chain.num_plugins):
     print(f"Plugin {i}: {plugin.num_params} params")
 ```
 
-## Command Line Interface
+## C API Usage
 
-The `minihost` command provides a CLI for common plugin operations:
+```c
+#include "minihost.h"
 
-```bash
-# Install (from source)
-uv sync
+// Load a plugin
+char err[256];
+MH_Plugin* plugin = mh_open("/path/to/plugin.vst3",
+                            48000.0,  // sample rate
+                            512,      // max block size
+                            2, 2,     // in/out channels
+                            err, sizeof(err));
 
-# Available commands
-minihost --help
+// Process audio
+float* inputs[2] = { in_left, in_right };
+float* outputs[2] = { out_left, out_right };
+mh_process(plugin, inputs, outputs, 512);
+
+// Process with MIDI
+MH_MidiEvent midi[] = {
+    { 0, 0x90, 60, 100 },   // Note on at sample 0
+    { 256, 0x80, 60, 0 }    // Note off at sample 256
+};
+mh_process_midi(plugin, inputs, outputs, 512, midi, 2);
+
+// Parameter control
+int num_params = mh_get_num_params(plugin);
+float value = mh_get_param(plugin, 0);
+mh_set_param(plugin, 0, 0.5f);
+
+// State save/restore
+int size = mh_get_state_size(plugin);
+void* state = malloc(size);
+mh_get_state(plugin, state, size);
+mh_set_state(plugin, state, size);
+
+// Cleanup
+mh_close(plugin);
 ```
 
-### Commands
+### Real-time Audio Playback
 
-#### `minihost info` - Show plugin info
-```bash
-minihost info /path/to/plugin.vst3          # full info (loads plugin)
-minihost info /path/to/plugin.vst3 --probe  # lightweight metadata only
-minihost info /path/to/plugin.vst3 --json   # JSON output
-```
-By default shows full runtime details (sample rate, channels, latency, buses, presets).
-Use `--probe` for fast metadata-only mode without fully loading the plugin.
+```c
+#include "minihost_audio.h"
 
-#### `minihost scan` - Scan directory for plugins
-```bash
-minihost scan /Library/Audio/Plug-Ins/VST3/
-minihost scan ~/Music/Plugins --json
-```
+// Open audio device for real-time playback
+MH_AudioConfig config = { .sample_rate = 48000, .buffer_frames = 512 };
+MH_AudioDevice* audio = mh_audio_open(plugin, &config, err, sizeof(err));
 
-#### `minihost params` - List plugin parameters
-```bash
-minihost params /path/to/plugin.vst3
-minihost params /path/to/plugin.vst3 --json
+// Start playback
+mh_audio_start(audio);
+
+// Plugin is now producing audio through speakers
+// Send MIDI, adjust parameters, etc.
+
+// Stop and cleanup
+mh_audio_stop(audio);
+mh_audio_close(audio);
+mh_close(plugin);
 ```
 
-#### `minihost midi` - List or monitor MIDI ports
-```bash
-minihost midi                          # list all MIDI ports
-minihost midi --json                   # list as JSON
-minihost midi -m 0                     # monitor MIDI input port 0
-minihost midi --virtual-midi "Monitor" # create virtual port and monitor
+### Real-time MIDI I/O
+
+```c
+#include "minihost_midi.h"
+
+// Enumerate available MIDI ports
+int num_inputs = mh_midi_get_num_inputs();
+int num_outputs = mh_midi_get_num_outputs();
+
+for (int i = 0; i < num_inputs; i++) {
+    char name[256];
+    mh_midi_get_input_name(i, name, sizeof(name));
+    printf("MIDI Input %d: %s\n", i, name);
+}
+
+// Connect MIDI to audio device
+MH_AudioConfig config = {
+    .sample_rate = 48000,
+    .midi_input_port = 0,   // Connect to first MIDI input
+    .midi_output_port = -1  // No MIDI output
+};
+MH_AudioDevice* audio = mh_audio_open(plugin, &config, err, sizeof(err));
+
+// Or connect/disconnect dynamically
+mh_audio_connect_midi_input(audio, 1);
+mh_audio_disconnect_midi_input(audio);
+
+// Create virtual MIDI ports (appear in system MIDI, DAWs can connect)
+mh_audio_create_virtual_midi_input(audio, "minihost Input");
+mh_audio_create_virtual_midi_output(audio, "minihost Output");
 ```
 
-#### `minihost play` - Play plugin with real-time audio/MIDI
-```bash
-# Connect to MIDI input port 0
-minihost play /path/to/synth.vst3 --midi 0
+### Plugin Chaining
 
-# Create a virtual MIDI port (macOS/Linux)
-minihost play /path/to/synth.vst3 --virtual-midi "My Synth"
+Chain multiple plugins together for processing (e.g., synth -> reverb -> limiter):
+
+```c
+#include "minihost_chain.h"
+
+// Load plugins
+MH_Plugin* synth = mh_open("/path/to/synth.vst3", 48000, 512, 0, 2, err, sizeof(err));
+MH_Plugin* reverb = mh_open("/path/to/reverb.vst3", 48000, 512, 2, 2, err, sizeof(err));
+MH_Plugin* limiter = mh_open("/path/to/limiter.vst3", 48000, 512, 2, 2, err, sizeof(err));
+
+// Create chain (all plugins must have same sample rate)
+MH_Plugin* plugins[] = { synth, reverb, limiter };
+MH_PluginChain* chain = mh_chain_create(plugins, 3, err, sizeof(err));
+
+// Get combined latency
+int latency = mh_chain_get_latency_samples(chain);
+
+// Process audio through chain
+float* inputs[2] = { in_left, in_right };
+float* outputs[2] = { out_left, out_right };
+mh_chain_process(chain, inputs, outputs, 512);
+
+// Process with MIDI (MIDI goes to first plugin only)
+MH_MidiEvent midi[] = { { 0, 0x90, 60, 100 } };
+mh_chain_process_midi_io(chain, inputs, outputs, 512, midi, 1, NULL, 0, NULL);
+
+// Real-time playback through chain
+MH_AudioConfig config = { .sample_rate = 48000, .buffer_frames = 512 };
+MH_AudioDevice* audio = mh_audio_open_chain(chain, &config, err, sizeof(err));
+mh_audio_start(audio);
+// ...
+mh_audio_stop(audio);
+mh_audio_close(audio);
+
+// Cleanup
+mh_chain_close(chain);  // Does not close individual plugins
+mh_close(synth);
+mh_close(reverb);
+mh_close(limiter);
 ```
 
-#### `minihost process` - Process audio/MIDI offline
-```bash
-# Process audio through effect
-minihost process /path/to/effect.vst3 -i input.wav -o output.wav
+### Audio File I/O
 
-# With parameter control
-minihost process /path/to/effect.vst3 -i input.wav -o output.wav --param "Mix:0.5"
+Read and write audio files without external dependencies:
 
-# Render MIDI through synth
-minihost process /path/to/synth.vst3 -m song.mid -o output.wav --tail 3.0
+```c
+#include "minihost_audiofile.h"
 
-# With preset and bit depth
-minihost process /path/to/synth.vst3 -m song.mid -o output.wav --preset 5 --bit-depth 16
+// Read any supported format (WAV, FLAC, MP3, Vorbis)
+char err[1024];
+MH_AudioData* audio = mh_audio_read("input.flac", err, sizeof(err));
+if (audio) {
+    printf("Channels: %u, Frames: %u, Rate: %u\n",
+           audio->channels, audio->frames, audio->sample_rate);
+    // audio->data is interleaved float32
+    mh_audio_data_free(audio);
+}
 
-# Sidechain processing (second -i is sidechain)
-minihost process /path/to/compressor.vst3 -i main.wav -i sidechain.wav -o output.wav
+// Write WAV file (16, 24, or 32-bit)
+mh_audio_write("output.wav", interleaved_data,
+               2, num_frames, 48000, 24, err, sizeof(err));
+
+// Get file info without decoding
+MH_AudioFileInfo info;
+mh_audio_get_file_info("song.wav", &info, err, sizeof(err));
+printf("Duration: %.2f seconds\n", info.duration);
 ```
-
-### Global Options
-
-| Option | Description |
-|--------|-------------|
-| `-r, --sample-rate` | Sample rate in Hz (default: 48000) |
-| `-b, --block-size` | Block size in samples (default: 512) |
 
 ## Thread Safety
 
