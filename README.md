@@ -1,6 +1,6 @@
 # minihost
 
-*minihost* is a headless audio plugin host for VST3, AudioUnit, and LV2 plugins. Built on JUCE, it provides both a C API for embedding in audio applications and a Python API via nanobind.
+Minihost is a headless, JUCE-based audio plugin host that supports VST3, AudioUnit, and LV2 plugins. It provides a C/C++ API for integration and a Python API powered by nanobind.
 
 ## Features
 
