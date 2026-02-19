@@ -1,6 +1,6 @@
 # minihost
 
-A minimal audio plugin host library for loading and processing VST3, AudioUnit, and LV2 plugins. Provides a simple C API suitable for embedding in audio applications, and also Python bindings. Builds in headless mode by default (no GUI dependencies).
+minihost is an audio plugin host / library for loading and processing VST3, AudioUnit, and LV2 plugins. It provides a simple C API suitable for embedding in audio applications, Python bindings and builds in headless mode by default (no GUI dependencies).
 
 ## Features
 
@@ -48,7 +48,7 @@ A minimal audio plugin host library for loading and processing VST3, AudioUnit, 
 
 ```bash
 # Clone the repository
-git clone https://github.com/user/minihost.git
+git clone https://github.com/shakfu/minihost.git
 cd minihost
 
 # Build (JUCE will be downloaded automatically)
@@ -67,7 +67,7 @@ cmake --build build
 
 ```powershell
 # Clone the repository
-git clone https://github.com/user/minihost.git
+git clone https://github.com/shakfu/minihost.git
 cd minihost
 
 # Download JUCE
@@ -568,199 +568,11 @@ minihost process /path/to/compressor.vst3 -i main.wav -i sidechain.wav -o output
 
 ## API Reference
 
-### Plugin Functions
+Detailed API documentation:
 
-| Function | Description |
-|----------|-------------|
-| `mh_open` | Load a plugin |
-| `mh_close` | Unload a plugin |
-| `mh_get_info` | Get plugin info (channels, params, latency, MIDI capabilities) |
-| `mh_process` | Process audio |
-| `mh_process_midi` | Process audio with MIDI input |
-| `mh_process_midi_io` | Process audio with MIDI input/output |
-| `mh_process_auto` | Process with sample-accurate automation |
-| `mh_get_num_params` | Get parameter count |
-| `mh_get_param` | Get parameter value (0-1) |
-| `mh_set_param` | Set parameter value (0-1) |
-| `mh_get_param_info` | Get parameter metadata |
-| `mh_get_state_size` | Get state size for save |
-| `mh_get_state` | Save plugin state |
-| `mh_set_state` | Restore plugin state |
-| `mh_set_transport` | Set transport info (tempo, position) |
-| `mh_get_tail_seconds` | Get reverb/delay tail length |
-| `mh_get_bypass` | Get bypass state |
-| `mh_set_bypass` | Set bypass state |
-| `mh_get_latency_samples` | Get plugin latency |
-| `mh_check_buses_layout` | Check if a bus layout is supported |
-| `mh_set_change_callback` | Register processor-level change callback |
-| `mh_set_param_value_callback` | Register parameter value change callback |
-| `mh_set_param_gesture_callback` | Register parameter gesture callback |
-| `mh_begin_param_gesture` | Signal start of parameter change gesture |
-| `mh_end_param_gesture` | Signal end of parameter change gesture |
-| `mh_get_program_state_size` | Get current program state size |
-| `mh_get_program_state` | Save current program state |
-| `mh_set_program_state` | Restore current program state |
-| `mh_get_processing_precision` | Get current processing precision (single/double) |
-| `mh_set_processing_precision` | Set processing precision (single/double) |
-| `mh_set_track_properties` | Set track name and/or color for plugin |
-
-### Audio Device Functions (minihost_audio.h)
-
-| Function | Description |
-|----------|-------------|
-| `mh_audio_open` | Open audio device for real-time playback |
-| `mh_audio_close` | Close audio device |
-| `mh_audio_start` | Start audio playback |
-| `mh_audio_stop` | Stop audio playback |
-| `mh_audio_is_playing` | Check if audio is playing |
-| `mh_audio_set_input_callback` | Set input callback for effects |
-| `mh_audio_get_sample_rate` | Get actual sample rate |
-| `mh_audio_get_buffer_frames` | Get actual buffer size |
-| `mh_audio_get_channels` | Get number of output channels |
-| `mh_audio_connect_midi_input` | Connect MIDI input port to device |
-| `mh_audio_connect_midi_output` | Connect MIDI output port to device |
-| `mh_audio_disconnect_midi_input` | Disconnect MIDI input |
-| `mh_audio_disconnect_midi_output` | Disconnect MIDI output |
-| `mh_audio_get_midi_input_port` | Get connected MIDI input port index |
-| `mh_audio_get_midi_output_port` | Get connected MIDI output port index |
-| `mh_audio_create_virtual_midi_input` | Create virtual MIDI input port |
-| `mh_audio_create_virtual_midi_output` | Create virtual MIDI output port |
-| `mh_audio_is_midi_input_virtual` | Check if MIDI input is virtual |
-| `mh_audio_is_midi_output_virtual` | Check if MIDI output is virtual |
-| `mh_audio_send_midi` | Send MIDI event programmatically |
-| `mh_audio_open_chain` | Open audio device for chain playback |
-
-### Audio File I/O Functions (minihost_audiofile.h)
-
-| Function | Description |
-|----------|-------------|
-| `mh_audio_read` | Read audio file to interleaved float32 (WAV, FLAC, MP3, Vorbis) |
-| `mh_audio_data_free` | Free decoded audio data |
-| `mh_audio_write` | Write interleaved float32 to WAV (16/24/32-bit) |
-| `mh_audio_get_file_info` | Get audio file metadata without decoding |
-
-### Plugin Chain Functions (minihost_chain.h)
-
-| Function | Description |
-|----------|-------------|
-| `mh_chain_create` | Create chain from array of plugins |
-| `mh_chain_close` | Close chain (does not close plugins) |
-| `mh_chain_process` | Process audio through chain |
-| `mh_chain_process_midi_io` | Process with MIDI (to first plugin) |
-| `mh_chain_get_latency_samples` | Get total chain latency |
-| `mh_chain_get_num_plugins` | Get number of plugins in chain |
-| `mh_chain_get_plugin` | Get plugin by index |
-| `mh_chain_get_num_input_channels` | Get input channels (first plugin) |
-| `mh_chain_get_num_output_channels` | Get output channels (last plugin) |
-| `mh_chain_get_sample_rate` | Get sample rate |
-| `mh_chain_get_max_block_size` | Get maximum block size |
-| `mh_chain_reset` | Reset all plugins in chain |
-| `mh_chain_set_non_realtime` | Set non-realtime mode for all plugins |
-| `mh_chain_get_tail_seconds` | Get max tail length |
-
-### MIDI Functions (minihost_midi.h)
-
-| Function | Description |
-|----------|-------------|
-| `mh_midi_enumerate_inputs` | Enumerate MIDI input ports via callback |
-| `mh_midi_enumerate_outputs` | Enumerate MIDI output ports via callback |
-| `mh_midi_get_num_inputs` | Get number of MIDI input ports |
-| `mh_midi_get_num_outputs` | Get number of MIDI output ports |
-| `mh_midi_get_input_name` | Get MIDI input port name by index |
-| `mh_midi_get_output_name` | Get MIDI output port name by index |
-| `mh_midi_in_open` | Open MIDI input port with callback |
-| `mh_midi_in_open_virtual` | Create virtual MIDI input port with callback |
-| `mh_midi_in_close` | Close MIDI input |
-| `mh_midi_out_open` | Open MIDI output port |
-| `mh_midi_out_open_virtual` | Create virtual MIDI output port |
-| `mh_midi_out_close` | Close MIDI output |
-| `mh_midi_out_send` | Send MIDI message on output port |
-
-### Audio File I/O (Python)
-
-| Function | Description |
-|----------|-------------|
-| `read_audio(path)` | Read audio file, returns `(ndarray, sample_rate)`. Array shape: `(channels, samples)` |
-| `write_audio(path, data, sample_rate, bit_depth=24)` | Write WAV file (16/24/32-bit). Data shape: `(channels, samples)` |
-| `get_audio_info(path)` | Get metadata dict: `channels`, `sample_rate`, `frames`, `duration` |
-
-Supported read formats: WAV, FLAC, MP3, Vorbis. Write format: WAV only.
-
-### MidiFile Class (Python)
-
-| Method/Property | Description |
-|-----------------|-------------|
-| `MidiFile()` | Create new MIDI file |
-| `load(path)` | Load MIDI file from path |
-| `save(path)` | Save MIDI file to path |
-| `num_tracks` | Number of tracks (read-only) |
-| `ticks_per_quarter` | Ticks per quarter note (resolution) |
-| `duration_seconds` | Total duration in seconds |
-| `add_track()` | Add a new track |
-| `add_tempo(track, tick, bpm)` | Add tempo event |
-| `add_note_on(track, tick, channel, pitch, velocity)` | Add note on event |
-| `add_note_off(track, tick, channel, pitch, velocity)` | Add note off event |
-| `add_control_change(track, tick, channel, controller, value)` | Add CC event |
-| `add_program_change(track, tick, channel, program)` | Add program change |
-| `add_pitch_bend(track, tick, channel, value)` | Add pitch bend event |
-| `get_events(track)` | Get all events from track as list of dicts |
-| `join_tracks()` | Merge all tracks into track 0 |
-| `split_tracks()` | Split by channel into separate tracks |
-
-### MidiIn Class (Python)
-
-| Method/Property | Description |
-|-----------------|-------------|
-| `MidiIn.open(port_index, callback)` | Open MIDI input port, callback receives `bytes` |
-| `MidiIn.open_virtual(name, callback)` | Create virtual MIDI input, callback receives `bytes` |
-| `close()` | Close the MIDI input |
-| Context manager | `with MidiIn.open(...) as m:` auto-closes on exit |
-
-### MIDI Rendering (Python)
-
-| Function/Class | Description |
-|----------------|-------------|
-| `render_midi(plugin, midi_file, ...)` | Render MIDI to numpy array |
-| `render_midi_stream(plugin, midi_file, ...)` | Generator yielding audio blocks |
-| `render_midi_to_file(plugin, midi_file, output_path, ...)` | Render MIDI to WAV file |
-| `MidiRenderer(plugin, midi_file, ...)` | Stateful renderer for fine-grained control |
-
-**MidiRenderer properties:**
-
-| Property | Description |
-|----------|-------------|
-| `duration_seconds` | Total duration including tail |
-| `midi_duration_seconds` | MIDI content duration (no tail) |
-| `total_samples` | Total samples to render |
-| `current_sample` | Current position |
-| `current_time` | Current time in seconds |
-| `progress` | Progress as fraction (0.0-1.0) |
-| `is_finished` | True when rendering complete |
-
-**MidiRenderer methods:**
-
-| Method | Description |
-|--------|-------------|
-| `render_block()` | Render next block, returns numpy array |
-| `render_all()` | Render all remaining audio |
-| `reset()` | Reset to beginning |
-
-### PluginChain Class (Python)
-
-| Method/Property | Description |
-|-----------------|-------------|
-| `PluginChain(plugins)` | Create chain from list of plugins |
-| `process(input, output)` | Process audio through chain |
-| `process_midi(input, output, midi_events)` | Process with MIDI (to first plugin) |
-| `reset()` | Reset all plugins in chain |
-| `set_non_realtime(enabled)` | Set non-realtime mode for all plugins |
-| `get_plugin(index)` | Get plugin by index |
-| `num_plugins` | Number of plugins (read-only) |
-| `latency_samples` | Total latency in samples (read-only) |
-| `num_input_channels` | Input channel count (read-only) |
-| `num_output_channels` | Output channel count (read-only) |
-| `sample_rate` | Sample rate (read-only) |
-| `tail_seconds` | Max tail length in seconds (read-only) |
+- [C API Reference](docs/api_c.md) -- `minihost.h`, `minihost_audio.h`, `minihost_audiofile.h`, `minihost_chain.h`, `minihost_midi.h`
+- [Python API Reference](docs/api_python.md) -- `Plugin`, `PluginChain`, `AudioDevice`, `MidiFile`, `MidiIn`, audio I/O, MIDI rendering, automation, VST3 presets
+- [Hosting Guide](docs/hosting_guide.md) -- practical guide with extended examples
 
 ## License
 

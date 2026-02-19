@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.2]
+
 ### Added
 
 - Audio file I/O via miniaudio (C layer): `mh_audio_read()`, `mh_audio_write()`, `mh_audio_get_file_info()`
