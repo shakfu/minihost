@@ -407,6 +407,15 @@ chain.process(input_audio, output_audio)
 midi_events = [(0, 0x90, 60, 100)]
 chain.process_midi(input_audio, output_audio, midi_events)
 
+# Sample-accurate automation across chain
+# param_changes: (sample_offset, plugin_index, param_index, value)
+param_changes = [
+    (0, 1, 0, 0.3),    # Set reverb param 0 at sample 0
+    (256, 1, 0, 0.6),  # Change reverb param 0 at sample 256
+    (0, 2, 0, 0.8),    # Set limiter param 0 at sample 0
+]
+chain.process_auto(input_audio, output_audio, midi_events, param_changes)
+
 # Render MIDI file through chain
 audio = minihost.render_midi(chain, "song.mid")
 minihost.render_midi_to_file(chain, "song.mid", "output.wav")
@@ -537,6 +546,14 @@ mh_chain_process(chain, inputs, outputs, 512);
 // Process with MIDI (MIDI goes to first plugin only)
 MH_MidiEvent midi[] = { { 0, 0x90, 60, 100 } };
 mh_chain_process_midi_io(chain, inputs, outputs, 512, midi, 1, NULL, 0, NULL);
+
+// Sample-accurate automation across chain
+MH_ChainParamChange changes[] = {
+    { .sample_offset = 0,   .plugin_index = 1, .param_index = 0, .value = 0.3f },
+    { .sample_offset = 256, .plugin_index = 1, .param_index = 0, .value = 0.6f },
+};
+mh_chain_process_auto(chain, inputs, outputs, 512,
+                       NULL, 0, NULL, 0, NULL, changes, 2);
 
 // Real-time playback through chain
 MH_AudioConfig config = { .sample_rate = 48000, .buffer_frames = 512 };

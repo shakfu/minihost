@@ -175,6 +175,7 @@ Constants: `MH_CHANGE_LATENCY`, `MH_CHANGE_PARAM_INFO`, `MH_CHANGE_PROGRAM`, `MH
 | `mh_chain_close` | Close chain (does not close individual plugins) |
 | `mh_chain_process` | Process audio through chain |
 | `mh_chain_process_midi_io` | Process with MIDI I/O (MIDI goes to first plugin) |
+| `mh_chain_process_auto` | Process with sample-accurate parameter automation and MIDI |
 | `mh_chain_get_latency_samples` | Get total chain latency (sum of all plugins) |
 | `mh_chain_get_num_plugins` | Get number of plugins in chain |
 | `mh_chain_get_plugin` | Get plugin by index |

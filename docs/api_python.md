@@ -138,9 +138,13 @@ All plugins must share the same sample rate.
 |--------|-------------|
 | `process(input, output)` | Process audio through chain |
 | `process_midi(input, output, midi_events)` | Process with MIDI (MIDI goes to first plugin). Returns output MIDI events |
+| `process_auto(input, output, midi_in, param_changes)` | Process with sample-accurate automation and MIDI |
 | `get_plugin(index)` | Get plugin by index |
 | `reset()` | Reset all plugins |
 | `set_non_realtime(enabled)` | Set non-realtime mode for all plugins |
+
+MIDI events are tuples of `(sample_offset, status, data1, data2)`.
+Chain parameter changes are tuples of `(sample_offset, plugin_index, param_index, value)` -- the extra `plugin_index` field (0-based) targets a specific plugin in the chain.
 
 ---
 

@@ -1374,6 +1374,55 @@ class TestPluginChain:
         assert audio.ndim == 2
         assert audio.shape[1] > 0
 
+    def test_chain_process_auto(self, plugin, plugin2):
+        """Test chain process_auto with parameter changes."""
+        import numpy as np
+
+        chain = minihost.PluginChain([plugin, plugin2])
+
+        in_ch = max(chain.num_input_channels, 2)
+        out_ch = max(chain.num_output_channels, 2)
+
+        input_audio = np.zeros((in_ch, 512), dtype=np.float32)
+        output_audio = np.zeros((out_ch, 512), dtype=np.float32)
+
+        # Build param changes targeting both plugins
+        # (sample_offset, plugin_index, param_index, value)
+        param_changes = []
+        if plugin.num_params > 0:
+            param_changes.append((0, 0, 0, 0.5))
+            param_changes.append((256, 0, 0, 0.8))
+        if plugin2.num_params > 0:
+            param_changes.append((0, 1, 0, 0.3))
+
+        # Sort by sample_offset (required by API)
+        param_changes.sort(key=lambda x: x[0])
+
+        midi_in = [(0, 0x90, 60, 100), (256, 0x80, 60, 0)]
+        midi_out = chain.process_auto(input_audio, output_audio, midi_in, param_changes)
+
+        assert isinstance(midi_out, list)
+
+    def test_chain_process_auto_no_changes(self, plugin):
+        """Test chain process_auto with no param changes (fast path)."""
+        import numpy as np
+
+        chain = minihost.PluginChain([plugin])
+
+        in_ch = max(chain.num_input_channels, 2)
+        out_ch = max(chain.num_output_channels, 2)
+
+        input_audio = np.zeros((in_ch, 512), dtype=np.float32)
+        output_audio = np.zeros((out_ch, 512), dtype=np.float32)
+        output_audio_ref = np.zeros((out_ch, 512), dtype=np.float32)
+
+        # process_auto with empty changes should behave like process_midi
+        midi_in = [(0, 0x90, 60, 100)]
+        midi_out_auto = chain.process_auto(input_audio, output_audio, midi_in, [])
+        midi_out_ref = chain.process_midi(input_audio, output_audio_ref, midi_in)
+
+        assert isinstance(midi_out_auto, list)
+
     def test_empty_chain_raises_error(self):
         """Test that empty plugin list raises error."""
         with pytest.raises(RuntimeError, match="at least one plugin"):

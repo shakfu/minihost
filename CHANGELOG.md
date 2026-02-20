@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- `mh_chain_process_auto()` for sample-accurate parameter automation across plugin chains
+  - New `MH_ChainParamChange` struct with `plugin_index` field to target specific plugins in the chain
+  - Python: `PluginChain.process_auto(input, output, midi_in, param_changes)` with 4-tuple param changes `(sample_offset, plugin_index, param_index, value)`
+
 ### Fixed
 
 - Fixed stale version assertion in `test_minihost.py` (`"0.1.1"` -> `"0.1.2"`)

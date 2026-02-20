@@ -18,6 +18,14 @@ typedef struct MH_Plugin MH_Plugin;
 typedef struct MH_MidiEvent MH_MidiEvent;
 typedef struct MH_PluginChain MH_PluginChain;
 
+// Sample-accurate parameter automation for plugin chains
+typedef struct MH_ChainParamChange {
+    int sample_offset;   // sample position within block (0 to nframes-1)
+    int plugin_index;    // which plugin in the chain (0-based)
+    int param_index;     // parameter index on that plugin
+    float value;         // normalized value (0.0 to 1.0)
+} MH_ChainParamChange;
+
 // Create a plugin chain from an array of plugins.
 // All plugins must have the same sample rate.
 // The chain takes ownership references to the plugins - they must remain valid
@@ -103,6 +111,25 @@ int mh_chain_reset(MH_PluginChain* chain);
 // Set non-realtime mode for all plugins in the chain.
 // Returns 1 on success, 0 on failure
 int mh_chain_set_non_realtime(MH_PluginChain* chain, int non_realtime);
+
+// Process audio through the chain with sample-accurate parameter automation.
+// param_changes: array of parameter changes sorted by sample_offset
+// num_param_changes: number of parameter changes
+// Splits processing at change points for sample-accurate automation.
+// MIDI is sent to the first plugin only. Audio flows sequentially.
+//
+// Returns 1 on success, 0 on failure
+int mh_chain_process_auto(MH_PluginChain* chain,
+                           const float* const* inputs,
+                           float* const* outputs,
+                           int nframes,
+                           const MH_MidiEvent* midi_in,
+                           int num_midi_in,
+                           MH_MidiEvent* midi_out,
+                           int midi_out_capacity,
+                           int* num_midi_out,
+                           const MH_ChainParamChange* param_changes,
+                           int num_param_changes);
 
 // Get total tail length of the chain in seconds (maximum of all plugin tails).
 // Note: This is the max, not sum, since tails overlap temporally.

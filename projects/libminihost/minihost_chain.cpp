@@ -320,6 +320,132 @@ int mh_chain_set_non_realtime(MH_PluginChain* chain, int non_realtime)
     return 1;
 }
 
+int mh_chain_process_auto(MH_PluginChain* chain,
+                           const float* const* inputs,
+                           float* const* outputs,
+                           int nframes,
+                           const MH_MidiEvent* midi_in,
+                           int num_midi_in,
+                           MH_MidiEvent* midi_out,
+                           int midi_out_capacity,
+                           int* num_midi_out,
+                           const MH_ChainParamChange* param_changes,
+                           int num_param_changes)
+{
+    if (chain == nullptr) return 0;
+    if (nframes <= 0 || nframes > chain->max_block_size) return 0;
+
+    // Initialize MIDI output count
+    if (num_midi_out)
+        *num_midi_out = 0;
+
+    // Fast path: no param changes, delegate directly
+    if (!param_changes || num_param_changes <= 0)
+    {
+        return mh_chain_process_midi_io(chain, inputs, outputs, nframes,
+                                         midi_in, num_midi_in,
+                                         midi_out, midi_out_capacity, num_midi_out);
+    }
+
+    int midi_out_idx = 0;
+    int current_sample = 0;
+    int midi_idx = 0;
+    int param_idx = 0;
+
+    int in_ch = chain->num_input_channels;
+    int out_ch = chain->num_output_channels;
+
+    while (current_sample < nframes)
+    {
+        // Find next chunk boundary (next unique sample_offset or end of buffer)
+        int chunk_end = nframes;
+        if (param_idx < num_param_changes)
+        {
+            int next_change = param_changes[param_idx].sample_offset;
+            if (next_change > current_sample && next_change < chunk_end)
+                chunk_end = next_change;
+        }
+
+        // Apply all parameter changes at or before current_sample
+        while (param_idx < num_param_changes &&
+               param_changes[param_idx].sample_offset <= current_sample)
+        {
+            const auto& pc = param_changes[param_idx];
+            MH_Plugin* plugin = mh_chain_get_plugin(chain, pc.plugin_index);
+            if (plugin)
+            {
+                mh_set_param(plugin, pc.param_index, pc.value);
+            }
+            ++param_idx;
+        }
+
+        int chunk_size = chunk_end - current_sample;
+        if (chunk_size <= 0)
+            break;
+
+        // Prepare offset input/output pointers for this chunk
+        std::vector<const float*> chunk_inputs(in_ch);
+        std::vector<float*> chunk_outputs(out_ch);
+        for (int ch = 0; ch < in_ch; ++ch)
+            chunk_inputs[ch] = inputs ? inputs[ch] + current_sample : nullptr;
+        for (int ch = 0; ch < out_ch; ++ch)
+            chunk_outputs[ch] = outputs ? outputs[ch] + current_sample : nullptr;
+
+        // Collect MIDI events for this chunk (adjust offsets to chunk-local)
+        std::vector<MH_MidiEvent> chunk_midi;
+        while (midi_idx < num_midi_in)
+        {
+            const auto& ev = midi_in[midi_idx];
+            if (ev.sample_offset >= chunk_end)
+                break;
+            if (ev.sample_offset >= current_sample)
+            {
+                MH_MidiEvent local_ev = ev;
+                local_ev.sample_offset = ev.sample_offset - current_sample;
+                chunk_midi.push_back(local_ev);
+            }
+            ++midi_idx;
+        }
+
+        // Process chunk through the chain
+        std::vector<MH_MidiEvent> chunk_midi_out(256);
+        int chunk_num_midi_out = 0;
+
+        int result = mh_chain_process_midi_io(
+            chain,
+            chunk_inputs.empty() ? inputs : chunk_inputs.data(),
+            chunk_outputs.empty() ? outputs : chunk_outputs.data(),
+            chunk_size,
+            chunk_midi.empty() ? nullptr : chunk_midi.data(),
+            static_cast<int>(chunk_midi.size()),
+            midi_out ? chunk_midi_out.data() : nullptr,
+            midi_out ? 256 : 0,
+            midi_out ? &chunk_num_midi_out : nullptr);
+
+        if (!result) return 0;
+
+        // Collect MIDI output with globally-adjusted offsets
+        if (midi_out && midi_out_capacity > 0)
+        {
+            for (int i = 0; i < chunk_num_midi_out; ++i)
+            {
+                if (midi_out_idx >= midi_out_capacity)
+                    break;
+                midi_out[midi_out_idx] = chunk_midi_out[i];
+                midi_out[midi_out_idx].sample_offset += current_sample;
+                ++midi_out_idx;
+            }
+        }
+
+        current_sample = chunk_end;
+    }
+
+    if (num_midi_out)
+        *num_midi_out = midi_out_idx;
+
+    return 1;
+}
+
 double mh_chain_get_tail_seconds(MH_PluginChain* chain)
 {
     if (chain == nullptr) return 0.0;

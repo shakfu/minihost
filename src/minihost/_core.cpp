@@ -885,6 +885,78 @@ public:
         return result;
     }
 
+    // Process with sample-accurate automation
+    nb::list process_auto(AudioArray input, AudioArray output,
+                          nb::list midi_in, nb::list param_changes)
+    {
+        int in_channels = static_cast<int>(input.shape(0));
+        int out_channels = static_cast<int>(output.shape(0));
+        int in_frames = static_cast<int>(input.shape(1));
+        int out_frames = static_cast<int>(output.shape(1));
+
+        if (in_frames != out_frames) {
+            throw std::runtime_error("Input and output frame counts must match");
+        }
+
+        // Convert MIDI input
+        std::vector<MH_MidiEvent> midi_events;
+        for (size_t i = 0; i < nb::len(midi_in); ++i) {
+            nb::tuple ev = nb::cast<nb::tuple>(midi_in[i]);
+            MH_MidiEvent e;
+            e.sample_offset = nb::cast<int>(ev[0]);
+            e.status = nb::cast<unsigned char>(ev[1]);
+            e.data1 = nb::cast<unsigned char>(ev[2]);
+            e.data2 = nb::cast<unsigned char>(ev[3]);
+            midi_events.push_back(e);
+        }
+
+        // Convert param changes (4-tuples: sample_offset, plugin_index, param_index, value)
+        std::vector<MH_ChainParamChange> changes;
+        for (size_t i = 0; i < nb::len(param_changes); ++i) {
+            nb::tuple pc = nb::cast<nb::tuple>(param_changes[i]);
+            MH_ChainParamChange c;
+            c.sample_offset = nb::cast<int>(pc[0]);
+            c.plugin_index = nb::cast<int>(pc[1]);
+            c.param_index = nb::cast<int>(pc[2]);
+            c.value = nb::cast<float>(pc[3]);
+            changes.push_back(c);
+        }
+
+        // Set up channel pointers
+        std::vector<const float*> in_ptrs(in_channels);
+        std::vector<float*> out_ptrs(out_channels);
+
+        for (int ch = 0; ch < in_channels; ++ch) {
+            in_ptrs[ch] = input.data() + ch * in_frames;
+        }
+        for (int ch = 0; ch < out_channels; ++ch) {
+            out_ptrs[ch] = output.data() + ch * out_frames;
+        }
+
+        // Output MIDI buffer
+        std::vector<MH_MidiEvent> midi_out(256);
+        int num_midi_out = 0;
+
+        if (!mh_chain_process_auto(chain_, in_ptrs.data(), out_ptrs.data(), in_frames,
+                                    midi_events.data(), static_cast<int>(midi_events.size()),
+                                    midi_out.data(), 256, &num_midi_out,
+                                    changes.data(), static_cast<int>(changes.size()))) {
+            throw std::runtime_error("Chain process_auto failed");
+        }
+
+        // Convert MIDI output to Python list
+        nb::list result;
+        for (int i = 0; i < num_midi_out; ++i) {
+            result.append(nb::make_tuple(
+                midi_out[i].sample_offset,
+                midi_out[i].status,
+                midi_out[i].data1,
+                midi_out[i].data2
+            ));
+        }
+        return result;
+    }
+
 private:
     MH_PluginChain* chain_ = nullptr;
     std::vector<Plugin*> plugin_refs_;  // Keep references to prevent plugins from being GC'd
@@ -1680,7 +1752,10 @@ NB_MODULE(_core, m) {
              "Process audio through the chain (shape: [channels, frames])")
         .def("process_midi", &PluginChain::process_midi,
              nb::arg("input"), nb::arg("output"), nb::arg("midi_in"),
-             "Process audio with MIDI (to first plugin). midi_in: list of (sample_offset, status, data1, data2)");
+             "Process audio with MIDI (to first plugin). midi_in: list of (sample_offset, status, data1, data2)")
+        .def("process_auto", &PluginChain::process_auto,
+             nb::arg("input"), nb::arg("output"), nb::arg("midi_in"), nb::arg("param_changes"),
+             "Process with sample-accurate automation. param_changes: list of (sample_offset, plugin_index, param_index, value)");
 
     // AudioDevice class for real-time playback
     nb::class_<AudioDevice>(m, "AudioDevice")

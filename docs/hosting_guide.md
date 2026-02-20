@@ -126,6 +126,7 @@ These functions are designed for realtime audio callbacks and do NOT acquire loc
 - `mh_process_auto()`
 - `mh_process_sidechain()`
 - `mh_process_double()`
+- `mh_chain_process()`, `mh_chain_process_midi_io()`, `mh_chain_process_auto()`
 
 **Call these from ONE thread only** (your audio callback thread).
 
@@ -332,6 +333,25 @@ mh_process_auto(plugin, in, out, 512,
 ```
 
 **Important**: Parameter changes must be sorted by `sample_offset`.
+
+### Chain Automation
+
+For sample-accurate automation across plugin chains, use `mh_chain_process_auto()` with `MH_ChainParamChange` (which adds a `plugin_index` field):
+
+```c
+MH_ChainParamChange changes[3];
+
+// Automate reverb mix (plugin 1) and limiter threshold (plugin 2)
+changes[0] = (MH_ChainParamChange){.sample_offset = 0,   .plugin_index = 1, .param_index = 0, .value = 0.3f};
+changes[1] = (MH_ChainParamChange){.sample_offset = 128, .plugin_index = 1, .param_index = 0, .value = 0.6f};
+changes[2] = (MH_ChainParamChange){.sample_offset = 0,   .plugin_index = 2, .param_index = 0, .value = 0.8f};
+
+mh_chain_process_auto(chain, in, out, 512,
+                       NULL, 0, NULL, 0, NULL,  // No MIDI
+                       changes, 3);
+```
+
+**Important**: Parameter changes must be sorted by `sample_offset`. The `plugin_index` is 0-based (0 = first plugin in the chain).
 
 ---
 
@@ -1177,7 +1197,7 @@ process_silence_for(tail * sample_rate);
 | Close plugin | `mh_close()` |
 | Process audio | `mh_process()` |
 | Process with MIDI | `mh_process_midi()` or `mh_process_midi_io()` |
-| Process with automation | `mh_process_auto()` |
+| Process with automation | `mh_process_auto()` / `mh_chain_process_auto()` |
 | Get/set parameter | `mh_get_param()` / `mh_set_param()` |
 | Save/load state | `mh_get_state()` / `mh_set_state()` |
 | Set tempo | `mh_set_transport()` |

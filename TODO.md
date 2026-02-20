@@ -55,7 +55,7 @@
 
 ### High priority
 
-- [ ] **Plugin chain automation** - Add `mh_chain_process_auto()` for sample-accurate automation across plugin chains (currently only single plugins support `mh_process_auto()`)
+- [x] **Plugin chain automation** - Add `mh_chain_process_auto()` for sample-accurate automation across plugin chains (currently only single plugins support `mh_process_auto()`)
 - [ ] **FLAC/OGG write support** - `mh_audio_write()` is WAV-only; lossless compressed output (especially FLAC) is commonly needed for offline render workflows. Requires a vendored encoder since miniaudio's encoder is WAV-only
 - [ ] **Expose audio input callback in Python** - Bind `mh_audio_set_input_callback` in `_core.cpp` to enable real-time effect processing from Python (e.g., guitar amp sims, live vocal processing)
 - [ ] **MIDI output in CLI play command** - `cmd_play` doesn't wire up MIDI output; instrument plugins that produce MIDI (arpeggiators, sequencers) silently drop it. Add a `--midi-out` flag
