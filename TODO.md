@@ -45,6 +45,32 @@
 - [x] **Processing precision selection** - Expose `setProcessingPrecision()` to explicitly select float vs double mode
 - [x] **Track properties** - Expose `updateTrackProperties()` to pass track name/color metadata to plugins
 
+## Bugs
+
+- [x] **Stale version assertion** - `test_minihost.py:225` asserts `__version__ == "0.1.1"` but package is at `"0.1.2"`
+- [x] **Dead bit-depth detection in CLI** - `cli.py:820-824` tries `in_info.get("subtype", "")` but `get_audio_info()` no longer returns `subtype` (removed when miniaudio replaced soundfile in 0.1.2); always falls through to `bit_depth = 24`
+- [x] **Incorrect docstring in render_midi_to_file** - `render.py:320` lists "FLAC, AIFF, OGG" as supported output formats but only WAV is supported
+
+## Planned
+
+### High priority
+
+- [ ] **Plugin chain automation** - Add `mh_chain_process_auto()` for sample-accurate automation across plugin chains (currently only single plugins support `mh_process_auto()`)
+- [ ] **FLAC/OGG write support** - `mh_audio_write()` is WAV-only; lossless compressed output (especially FLAC) is commonly needed for offline render workflows. Requires a vendored encoder since miniaudio's encoder is WAV-only
+- [ ] **Expose audio input callback in Python** - Bind `mh_audio_set_input_callback` in `_core.cpp` to enable real-time effect processing from Python (e.g., guitar amp sims, live vocal processing)
+- [ ] **MIDI output in CLI play command** - `cmd_play` doesn't wire up MIDI output; instrument plugins that produce MIDI (arpeggiators, sequencers) silently drop it. Add a `--midi-out` flag
+
+### Medium priority
+
+- [ ] **CLI unit tests** - `cli.py` has six subcommands (`scan`, `info`, `params`, `midi`, `play`, `process`) with zero test coverage. At minimum test argument parsing and error paths
+- [ ] **Render internals unit tests** - `_build_tempo_map`, `_tick_to_seconds`, `_collect_midi_events` in `render.py` are non-trivial pure-Python functions with no unit tests; edge cases (tempo changes mid-song, empty tracks, zero-duration notes) can silently produce wrong output
+- [ ] **Offline bounce with tail detection** - `mh_get_tail_time()` exists but the render pipeline doesn't use it. Add auto-tail mode that keeps rendering until the plugin's tail decays below a threshold (useful for reverb/delay tails)
+
+### Lower priority
+
+- [ ] **Parameter preset morphing** - Higher-level Python utility for interpolating between two parameter snapshots (A/B morph) using `get_state`/`set_state` and per-parameter access
+- [ ] **Async plugin loading in Python** - `mh_open_async()` exists in C but isn't bound in Python. An async/awaitable `Plugin.open_async()` would help with large sample-library plugins that take seconds to load
+
 ## Non-goals
 
 Intentionally omitted for headless/server use:

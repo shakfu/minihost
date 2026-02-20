@@ -813,21 +813,7 @@ def cmd_process(args: argparse.Namespace) -> int:
     # --- Determine bit depth ---
     bit_depth = args.bit_depth
     if bit_depth is None:
-        # Try to match input bit depth
-        if has_audio_input:
-            try:
-                in_info = get_audio_info(input_files[0])
-                subtype = in_info.get("subtype", "")
-                if "16" in subtype:
-                    bit_depth = 16
-                elif "32" in subtype or "FLOAT" in subtype:
-                    bit_depth = 32
-                else:
-                    bit_depth = 24
-            except Exception:
-                bit_depth = 24
-        else:
-            bit_depth = 24
+        bit_depth = 24
 
     # --- Write output ---
     try:

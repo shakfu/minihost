@@ -316,7 +316,7 @@ def render_midi_to_file(
     Args:
         plugin: Plugin or PluginChain instance to render through
         midi_file: MidiFile object or path to MIDI file
-        output_path: Output file path (WAV, FLAC, AIFF, OGG)
+        output_path: Output WAV file path
         block_size: Audio block size in samples
         tail_seconds: Extra time to render after MIDI ends
         bit_depth: Output bit depth (16, 24, or 32 for float)
