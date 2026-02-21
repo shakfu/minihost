@@ -113,4 +113,4 @@ __all__ = [
     "MH_PRECISION_SINGLE",
     "MH_PRECISION_DOUBLE",
 ]
-__version__ = "0.1.2"
+__version__ = "0.1.3"

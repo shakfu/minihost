@@ -27,7 +27,7 @@ MH_AudioData* mh_audio_read(const char* path, char* err, size_t err_size);
 // Free decoded audio data.
 void mh_audio_data_free(MH_AudioData* data);
 
-// Write interleaved float32 data to a WAV file.
+// Write interleaved float32 data to an audio file (WAV or FLAC).
 // bit_depth: 16, 24, or 32 (32 = IEEE float).
 // Returns 1 on success, 0 on error.
 int mh_audio_write(const char* path, const float* data,

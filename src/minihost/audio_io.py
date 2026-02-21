@@ -1,8 +1,8 @@
 """Audio file I/O utilities for minihost.
 
 Uses miniaudio (via C bindings) for reading and writing audio files.
-Supports reading WAV, FLAC, MP3, and Vorbis. Writing is WAV-only
-(16-bit, 24-bit, or 32-bit float).
+Supports reading WAV, FLAC, MP3, and Vorbis. Writing supports WAV
+(16/24/32-bit) and FLAC (16/24-bit).
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ from minihost._core import audio_write as _write
 # Extensions supported for reading
 _READ_EXTENSIONS = {".wav", ".flac", ".mp3", ".ogg"}
 
-# Extensions supported for writing (WAV only)
-_WRITE_EXTENSIONS = {".wav"}
+# Extensions supported for writing
+_WRITE_EXTENSIONS = {".wav", ".flac"}
 
 _VALID_BIT_DEPTHS = {16, 24, 32}
 
@@ -56,14 +56,15 @@ def write_audio(
     sample_rate: int,
     bit_depth: int = 24,
 ) -> None:
-    """Write audio data to a WAV file.
+    """Write audio data to an audio file (WAV or FLAC).
 
     Args:
-        path: Output file path. Only .wav is supported.
+        path: Output file path (.wav or .flac).
         data: Audio data of shape (channels, samples).
         sample_rate: Sample rate in Hz.
         bit_depth: Bit depth (16, 24, or 32). Default 24.
-            16 and 24 write integer PCM; 32 writes IEEE float.
+            16 and 24 write integer PCM; 32 writes IEEE float (WAV only).
+            FLAC supports 16 and 24 only.
 
     Raises:
         ValueError: If bit_depth is invalid or extension is unsupported.
@@ -74,7 +75,13 @@ def write_audio(
     if ext not in _WRITE_EXTENSIONS:
         raise ValueError(
             f"Unsupported audio format for writing: '{ext}'. "
-            f"Only WAV (.wav) is supported."
+            f"Supported: WAV (.wav), FLAC (.flac)."
+        )
+
+    if ext == ".flac" and bit_depth == 32:
+        raise ValueError(
+            "FLAC does not support 32-bit float. Use 16 or 24-bit, "
+            "or use WAV for 32-bit float."
         )
 
     if bit_depth not in _VALID_BIT_DEPTHS:

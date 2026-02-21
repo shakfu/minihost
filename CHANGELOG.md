@@ -2,11 +2,18 @@
 
 ## [Unreleased]
 
+## [0.1.3]
+
 ### Added
 
 - `mh_chain_process_auto()` for sample-accurate parameter automation across plugin chains
   - New `MH_ChainParamChange` struct with `plugin_index` field to target specific plugins in the chain
   - Python: `PluginChain.process_auto(input, output, midi_in, param_changes)` with 4-tuple param changes `(sample_offset, plugin_index, param_index, value)`
+
+- FLAC write support in `mh_audio_write()` via vendored [tflac](https://github.com/jprjr/tflac) encoder (BSD-0, single-header C89)
+  - Supports 16-bit and 24-bit FLAC output; 32-bit raises an error (FLAC max is 24-bit)
+  - Format selected by file extension: `.wav` for WAV, `.flac` for FLAC
+  - Python: `write_audio("out.flac", data, sr, bit_depth=24)` works without any API changes
 
 ### Fixed
 

@@ -56,6 +56,30 @@ class TestWriteAndReadRoundTrip:
         assert result.shape == data.shape
         np.testing.assert_array_almost_equal(result, data, decimal=6)
 
+    def test_flac_16bit_round_trip(self, tmp_path):
+        data, sr = self._make_test_signal()
+        path = tmp_path / "test.flac"
+
+        write_audio(path, data, sr, bit_depth=16)
+        result, result_sr = read_audio(path)
+
+        assert result_sr == sr
+        assert result.shape == data.shape
+        # 16-bit has ~1/32768 quantization error; triangle dither adds up to 2 LSBs
+        np.testing.assert_allclose(result, data, atol=3.0 / 32768)
+
+    def test_flac_24bit_round_trip(self, tmp_path):
+        data, sr = self._make_test_signal()
+        path = tmp_path / "test.flac"
+
+        write_audio(path, data, sr, bit_depth=24)
+        result, result_sr = read_audio(path)
+
+        assert result_sr == sr
+        assert result.shape == data.shape
+        # 24-bit has ~1/8388608 quantization error
+        np.testing.assert_allclose(result, data, atol=1.0 / 8388608 + 1e-6)
+
 
 class TestMultiChannel:
     """Test multi-channel audio I/O."""
@@ -90,6 +114,33 @@ class TestMultiChannel:
         assert result.shape == (6, 500)
         np.testing.assert_array_almost_equal(result, data, decimal=6)
 
+    def test_flac_stereo(self, tmp_path):
+        # Use sine waves to stay within [-1, 1]
+        t = np.linspace(0, 1, 1000, dtype=np.float32)
+        data = np.stack(
+            [0.5 * np.sin(2 * np.pi * 440 * t), 0.5 * np.sin(2 * np.pi * 880 * t)]
+        )
+        path = tmp_path / "stereo.flac"
+
+        write_audio(path, data, 48000, bit_depth=24)
+        result, sr = read_audio(path)
+
+        assert sr == 48000
+        assert result.shape == (2, 1000)
+        np.testing.assert_allclose(result, data, atol=1.0 / 8388608 + 1e-6)
+
+    def test_flac_mono(self, tmp_path):
+        t = np.linspace(0, 1, 1000, dtype=np.float32)
+        data = (0.5 * np.sin(2 * np.pi * 440 * t)).reshape(1, -1)
+        path = tmp_path / "mono.flac"
+
+        write_audio(path, data, 44100, bit_depth=24)
+        result, sr = read_audio(path)
+
+        assert sr == 44100
+        assert result.shape == (1, 1000)
+        np.testing.assert_allclose(result, data, atol=1.0 / 8388608 + 1e-6)
+
 
 class TestGetAudioInfo:
     """Test get_audio_info metadata extraction."""
@@ -121,7 +172,12 @@ class TestErrors:
     def test_write_unsupported_format(self, tmp_path):
         data = np.zeros((2, 100), dtype=np.float32)
         with pytest.raises(ValueError, match="Unsupported"):
-            write_audio(tmp_path / "test.flac", data, 48000)
+            write_audio(tmp_path / "test.mp3", data, 48000)
+
+    def test_flac_32bit_raises(self, tmp_path):
+        data = np.zeros((2, 100), dtype=np.float32)
+        with pytest.raises(ValueError, match="32-bit"):
+            write_audio(tmp_path / "test.flac", data, 48000, bit_depth=32)
 
     def test_write_invalid_bit_depth(self, tmp_path):
         data = np.zeros((2, 100), dtype=np.float32)

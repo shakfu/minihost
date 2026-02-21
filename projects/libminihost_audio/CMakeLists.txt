@@ -5,6 +5,7 @@ add_library(minihost_audio STATIC
     minihost_audiofile.c
     midi_ringbuffer.cpp
     minihost_midi.cpp
+    ${CMAKE_SOURCE_DIR}/projects/tflac/tflac.c
 )
 
 # Required for linking into shared libraries (e.g., Python module)
@@ -23,6 +24,7 @@ target_include_directories(minihost_audio PRIVATE
     ${CMAKE_SOURCE_DIR}/projects/miniaudio
     ${CMAKE_SOURCE_DIR}/projects/libminihost
     ${CMAKE_SOURCE_DIR}/projects/libremidi/include
+    ${CMAKE_SOURCE_DIR}/projects/tflac
 )
 
 target_link_libraries(minihost_audio PRIVATE minihost)

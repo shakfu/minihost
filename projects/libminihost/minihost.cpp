@@ -25,6 +25,7 @@
 #include <atomic>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 using namespace juce;
 
@@ -198,14 +199,12 @@ static void tryConfigureBuses(AudioPluginInstance& inst, int reqIn, int reqOut)
     // Main buses (bus 0)
     if (inst.getBusCount(true) > 0)
     {
-        auto inLayout = inst.getChannelLayoutOfBus(true, 0);
         if (reqIn > 0)
             inst.setChannelLayoutOfBus(true, 0, AudioChannelSet::canonicalChannelSet(reqIn));
     }
 
     if (inst.getBusCount(false) > 0)
     {
-        auto outLayout = inst.getChannelLayoutOfBus(false, 0);
         if (reqOut > 0)
             inst.setChannelLayoutOfBus(false, 0, AudioChannelSet::canonicalChannelSet(reqOut));
     }
@@ -296,11 +295,13 @@ extern "C" MH_Plugin* mh_open(const char* plugin_path,
     // Best-effort channel/bus layout
     tryConfigureBuses(*inst, requested_in_ch, requested_out_ch);
 
-    p->inCh  = jmax(1, requested_in_ch  > 0 ? requested_in_ch  : inst->getTotalNumInputChannels());
-    p->outCh = jmax(1, requested_out_ch > 0 ? requested_out_ch : inst->getTotalNumOutputChannels());
-
     inst->setRateAndBufferSizeDetails(sample_rate, max_block_size);
     inst->prepareToPlay(sample_rate, max_block_size);
+
+    // Use actual channel counts after bus config and prepareToPlay.
+    // This ensures p->inCh/outCh match what the plugin expects in processBlock.
+    p->inCh  = jmax(1, inst->getTotalNumInputChannels());
+    p->outCh = jmax(1, inst->getTotalNumOutputChannels());
 
     p->inBuf.setSize(p->inCh, max_block_size, false, false, true);
     p->outBuf.setSize(p->outCh, max_block_size, false, false, true);
@@ -330,8 +331,8 @@ extern "C" int mh_get_info(MH_Plugin* p, MH_Info* out_info)
     if (!p || !out_info || !p->inst) return 0;
 
     out_info->num_params      = (int) p->inst->getParameters().size();
-    out_info->num_input_ch    = p->inst->getTotalNumInputChannels();
-    out_info->num_output_ch   = p->inst->getTotalNumOutputChannels();
+    out_info->num_input_ch    = p->inCh;
+    out_info->num_output_ch   = p->outCh;
     out_info->latency_samples = p->inst->getLatencySamples();
     out_info->accepts_midi    = p->inst->acceptsMidi() ? 1 : 0;
     out_info->produces_midi   = p->inst->producesMidi() ? 1 : 0;
@@ -402,6 +403,7 @@ extern "C" int mh_process_midi_io(MH_Plugin* p,
     }
 
     p->inst->processBlock(p->outBuf, p->midi);
+
 
     // Extract MIDI output events
     if (num_midi_out)
@@ -1028,9 +1030,6 @@ extern "C" MH_Plugin* mh_open_ex(const char* plugin_path,
     // Extended bus/channel layout with sidechain
     tryConfigureBusesEx(*inst, main_in_ch, main_out_ch, sidechain_in_ch);
 
-    p->inCh  = jmax(1, main_in_ch  > 0 ? main_in_ch  : inst->getTotalNumInputChannels());
-    p->outCh = jmax(1, main_out_ch > 0 ? main_out_ch : inst->getTotalNumOutputChannels());
-
     // Determine actual sidechain channels
     p->sidechainCh = 0;
     if (sidechain_in_ch > 0 && inst->getBusCount(true) > 1)
@@ -1044,6 +1043,10 @@ extern "C" MH_Plugin* mh_open_ex(const char* plugin_path,
 
     inst->setRateAndBufferSizeDetails(sample_rate, max_block_size);
     inst->prepareToPlay(sample_rate, max_block_size);
+
+    // Use actual channel counts after bus config and prepareToPlay
+    p->inCh  = jmax(1, inst->getTotalNumInputChannels());
+    p->outCh = jmax(1, inst->getTotalNumOutputChannels());
 
     p->inBuf.setSize(p->inCh, max_block_size, false, false, true);
     p->outBuf.setSize(p->outCh, max_block_size, false, false, true);
@@ -1237,9 +1240,14 @@ extern "C" int mh_set_sample_rate(MH_Plugin* p, double new_sample_rate)
 
     std::lock_guard<std::mutex> lock(p->stateMutex);
 
-    // Save current state
+    // Save current state (both blob and individual param values as fallback)
     MemoryBlock stateData;
     p->inst->getStateInformation(stateData);
+
+    auto& params = p->inst->getParameters();
+    std::vector<float> paramValues(params.size());
+    for (int i = 0; i < (int)params.size(); ++i)
+        paramValues[i] = params[i]->getValue();
 
     // Release current resources
     p->inst->releaseResources();
@@ -1252,10 +1260,19 @@ extern "C" int mh_set_sample_rate(MH_Plugin* p, double new_sample_rate)
     p->inst->setRateAndBufferSizeDetails(new_sample_rate, p->maxBlockSize);
     p->inst->prepareToPlay(new_sample_rate, p->maxBlockSize);
 
-    // Restore state
+    // Restore state from blob
     if (stateData.getSize() > 0)
     {
         p->inst->setStateInformation(stateData.getData(), static_cast<int>(stateData.getSize()));
+    }
+
+    // Fix up any parameters that the state blob didn't restore correctly
+    for (int i = 0; i < (int)params.size(); ++i)
+    {
+        float current = params[i]->getValue();
+        float diff = current - paramValues[i];
+        if (diff > 1e-6f || diff < -1e-6f)
+            params[i]->setValueNotifyingHost(paramValues[i]);
     }
 
     return 1;

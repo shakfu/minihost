@@ -416,6 +416,19 @@ def cmd_play(args: argparse.Namespace) -> int:
             return 1
         print(f"  MIDI Input: [{midi_port}] {inputs[midi_port]['name']}")
 
+    # Determine MIDI output configuration
+    midi_out_port = -1
+    if args.midi_out is not None:
+        midi_out_port = args.midi_out
+        outputs = minihost.midi_get_output_ports()
+        if midi_out_port >= len(outputs):
+            print(
+                f"Error: MIDI output port {midi_out_port} not found. Use 'minihost midi' to list.",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"  MIDI Output: [{midi_out_port}] {outputs[midi_out_port]['name']}")
+
     # Open audio device
     try:
         audio = minihost.AudioDevice(
@@ -423,6 +436,7 @@ def cmd_play(args: argparse.Namespace) -> int:
             sample_rate=args.sample_rate,
             buffer_frames=args.block_size,
             midi_input_port=midi_port,
+            midi_output_port=midi_out_port,
         )
     except RuntimeError as e:
         print(f"Error opening audio device: {e}", file=sys.stderr)
@@ -441,6 +455,17 @@ def cmd_play(args: argparse.Namespace) -> int:
         except RuntimeError as e:
             print(f"Warning: Could not create virtual MIDI port: {e}", file=sys.stderr)
 
+    # Create virtual MIDI output port if requested
+    if args.virtual_midi_out:
+        try:
+            audio.create_virtual_midi_output(args.virtual_midi_out)
+            print(f"  Virtual MIDI Output: '{args.virtual_midi_out}'")
+        except RuntimeError as e:
+            print(
+                f"Warning: Could not create virtual MIDI output port: {e}",
+                file=sys.stderr,
+            )
+
     # Setup signal handler
     running = True
 
@@ -456,8 +481,15 @@ def cmd_play(args: argparse.Namespace) -> int:
     audio.start()
     print("\nPlaying. Press Ctrl+C to stop.")
 
-    if args.midi is None and not args.virtual_midi:
-        print("(No MIDI input. Use --midi N or --virtual-midi NAME)")
+    no_midi_in = args.midi is None and not args.virtual_midi
+    no_midi_out = args.midi_out is None and not args.virtual_midi_out
+    if no_midi_in or no_midi_out:
+        hints = []
+        if no_midi_in:
+            hints.append("input (--midi N / --virtual-midi NAME)")
+        if no_midi_out:
+            hints.append("output (--midi-out N / --virtual-midi-out NAME)")
+        print(f"(No MIDI {' or '.join(hints)})")
 
     try:
         while running:
@@ -929,6 +961,15 @@ Examples:
         type=str,
         metavar="NAME",
         help="Create virtual MIDI input with NAME",
+    )
+    play_p.add_argument(
+        "--midi-out", type=int, metavar="N", help="Connect to MIDI output port N"
+    )
+    play_p.add_argument(
+        "--virtual-midi-out",
+        type=str,
+        metavar="NAME",
+        help="Create virtual MIDI output with NAME",
     )
     play_p.set_defaults(func=cmd_play)
 

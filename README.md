@@ -9,7 +9,7 @@ Minihost is a headless, JUCE-based audio plugin host that supports VST3, AudioUn
 - Load LV2 plugins (macOS, Windows, Linux)
 - **Headless mode** (default) - no GUI dependencies, uses JUCE's `juce_audio_processors_headless` module
 - **Plugin chaining** - connect multiple plugins in series (synth -> reverb -> limiter)
-- **Audio file I/O** via miniaudio -- read WAV/FLAC/MP3/Vorbis, write WAV (16/24/32-bit)
+- **Audio file I/O** via miniaudio + tflac -- read WAV/FLAC/MP3/Vorbis, write WAV (16/24/32-bit) and FLAC (16/24-bit)
 - **Real-time audio playback** via miniaudio (cross-platform)
 - **Real-time MIDI I/O** via libremidi (cross-platform)
 - **Virtual MIDI ports** - create named ports that DAWs can connect to (macOS, Linux)
@@ -306,8 +306,9 @@ import minihost
 data, sample_rate = minihost.read_audio("input.wav")
 # data shape: (channels, samples), dtype: float32
 
-# Write WAV files (16, 24, or 32-bit)
-minihost.write_audio("output.wav", data, sample_rate, bit_depth=24)
+# Write audio files
+minihost.write_audio("output.wav", data, sample_rate, bit_depth=24)   # WAV (16/24/32-bit)
+minihost.write_audio("output.flac", data, sample_rate, bit_depth=24)  # FLAC (16/24-bit)
 
 # Get file info without decoding
 info = minihost.get_audio_info("song.wav")
@@ -587,9 +588,11 @@ if (audio) {
     mh_audio_data_free(audio);
 }
 
-// Write WAV file (16, 24, or 32-bit)
+// Write audio file (format selected by extension)
 mh_audio_write("output.wav", interleaved_data,
-               2, num_frames, 48000, 24, err, sizeof(err));
+               2, num_frames, 48000, 24, err, sizeof(err));   // WAV
+mh_audio_write("output.flac", interleaved_data,
+               2, num_frames, 48000, 24, err, sizeof(err));   // FLAC
 
 // Get file info without decoding
 MH_AudioFileInfo info;
