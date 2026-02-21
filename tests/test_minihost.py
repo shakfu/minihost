@@ -222,7 +222,7 @@ def test_plugin_empty_path_raises():
 def test_version():
     """Test that version is defined."""
     assert hasattr(minihost, "__version__")
-    assert minihost.__version__ == "0.1.2"
+    assert minihost.__version__ == "0.1.3"
 
 
 def test_plugin_class_has_expected_properties():
