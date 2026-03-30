@@ -19,6 +19,7 @@ from minihost.cli import (
     cmd_params,
     cmd_play,
     cmd_process,
+    cmd_resample,
     cmd_scan,
     main,
 )
@@ -89,6 +90,14 @@ def _parse(argv):
         process_p.add_argument("--out-channels", type=int)
         process_p.add_argument("--non-realtime", action="store_true")
         process_p.add_argument("--bpm", type=float)
+        process_p.add_argument("--no-resample", action="store_true")
+
+        resample_p = subparsers.add_parser("resample")
+        resample_p.add_argument("input")
+        resample_p.add_argument("-o", "--output", required=True)
+        resample_p.add_argument("-r", "--target-rate", type=int, required=True)
+        resample_p.add_argument("--bit-depth", type=int, choices=[16, 24, 32])
+        resample_p.add_argument("-y", "--overwrite", action="store_true")
 
         return parser.parse_args(argv)
     finally:
@@ -787,3 +796,119 @@ class TestBatchProcessErrors:
             ret = cmd_process(args)
         assert ret == 1
         assert "bad plugin" in capsys.readouterr().err
+
+
+class TestArgParsingNoResample:
+    def test_no_resample_flag(self):
+        args = _parse(
+            ["process", "e.vst3", "-o", "o.wav", "-i", "i.wav", "--no-resample"]
+        )
+        assert args.no_resample is True
+
+    def test_no_resample_default_false(self):
+        args = _parse(["process", "e.vst3", "-o", "o.wav", "-i", "i.wav"])
+        assert args.no_resample is False
+
+
+# ---------------------------------------------------------------------------
+# Resample subcommand
+# ---------------------------------------------------------------------------
+
+
+class TestArgParsingResample:
+    def test_basic(self):
+        args = _parse(["resample", "in.wav", "-o", "out.wav", "-r", "48000"])
+        assert args.command == "resample"
+        assert args.input == "in.wav"
+        assert args.output == "out.wav"
+        assert args.target_rate == 48000
+
+    def test_bit_depth(self):
+        args = _parse(
+            ["resample", "in.wav", "-o", "out.wav", "-r", "48000", "--bit-depth", "16"]
+        )
+        assert args.bit_depth == 16
+
+    def test_overwrite(self):
+        args = _parse(["resample", "in.wav", "-o", "out.wav", "-r", "48000", "-y"])
+        assert args.overwrite is True
+
+    def test_missing_output(self):
+        with pytest.raises(SystemExit):
+            _parse(["resample", "in.wav", "-r", "48000"])
+
+    def test_missing_target_rate(self):
+        with pytest.raises(SystemExit):
+            _parse(["resample", "in.wav", "-o", "out.wav"])
+
+
+class TestCmdResample:
+    def test_file_not_found(self, capsys):
+        args = argparse.Namespace(
+            input="/nonexistent.wav",
+            output="out.wav",
+            target_rate=48000,
+            bit_depth=None,
+            overwrite=False,
+        )
+        ret = cmd_resample(args)
+        assert ret == 1
+        assert "not found" in capsys.readouterr().err.lower()
+
+    def test_output_exists_no_overwrite(self, capsys, tmp_path):
+        src = tmp_path / "in.wav"
+        dst = tmp_path / "out.wav"
+        src.touch()
+        dst.touch()
+        args = argparse.Namespace(
+            input=str(src),
+            output=str(dst),
+            target_rate=48000,
+            bit_depth=None,
+            overwrite=False,
+        )
+        ret = cmd_resample(args)
+        assert ret == 1
+        assert "already exists" in capsys.readouterr().err
+
+    def test_same_rate_errors(self, capsys, tmp_path):
+        import numpy as np
+        from minihost.audio_io import write_audio
+
+        src = tmp_path / "in.wav"
+        write_audio(src, np.zeros((1, 100), dtype=np.float32), 48000)
+        args = argparse.Namespace(
+            input=str(src),
+            output=str(tmp_path / "out.wav"),
+            target_rate=48000,
+            bit_depth=None,
+            overwrite=False,
+        )
+        ret = cmd_resample(args)
+        assert ret == 1
+        assert "already 48000" in capsys.readouterr().err
+
+    def test_successful_resample(self, capsys, tmp_path):
+        import numpy as np
+        from minihost.audio_io import get_audio_info, write_audio
+
+        src = tmp_path / "in.wav"
+        data = np.random.randn(2, 44100).astype(np.float32) * 0.3
+        write_audio(src, data, 44100)
+
+        dst = tmp_path / "out.wav"
+        args = argparse.Namespace(
+            input=str(src),
+            output=str(dst),
+            target_rate=48000,
+            bit_depth=None,
+            overwrite=False,
+        )
+        ret = cmd_resample(args)
+        assert ret == 0
+        assert dst.exists()
+        info = get_audio_info(dst)
+        assert info["sample_rate"] == 48000
+        assert info["channels"] == 2
+        assert info["frames"] == 48000
+        assert "48000" in capsys.readouterr().out

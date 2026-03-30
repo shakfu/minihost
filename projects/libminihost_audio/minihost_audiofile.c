@@ -357,3 +357,88 @@ int mh_audio_get_file_info(const char* path, MH_AudioFileInfo* info,
     ma_decoder_uninit(&decoder);
     return 1;
 }
+
+MH_AudioData* mh_audio_resample(const float* data_in,
+                                unsigned int channels,
+                                unsigned int frames_in,
+                                unsigned int sample_rate_in,
+                                unsigned int sample_rate_out,
+                                char* err, size_t err_size) {
+    if (!data_in || channels == 0 || frames_in == 0) {
+        if (err && err_size > 0) snprintf(err, err_size, "Invalid input parameters");
+        return NULL;
+    }
+    if (sample_rate_in == 0 || sample_rate_out == 0) {
+        if (err && err_size > 0) snprintf(err, err_size, "Sample rates must be > 0");
+        return NULL;
+    }
+    if (sample_rate_in == sample_rate_out) {
+        // No conversion needed -- copy input
+        MH_AudioData* out = (MH_AudioData*)malloc(sizeof(MH_AudioData));
+        if (!out) {
+            if (err && err_size > 0) snprintf(err, err_size, "Out of memory");
+            return NULL;
+        }
+        size_t byte_size = (size_t)frames_in * channels * sizeof(float);
+        out->data = (float*)malloc(byte_size);
+        if (!out->data) {
+            free(out);
+            if (err && err_size > 0) snprintf(err, err_size, "Out of memory");
+            return NULL;
+        }
+        memcpy(out->data, data_in, byte_size);
+        out->channels = channels;
+        out->frames = frames_in;
+        out->sample_rate = sample_rate_out;
+        return out;
+    }
+
+    // Estimate output frame count
+    ma_uint64 expected_out = (ma_uint64)((double)frames_in * sample_rate_out / sample_rate_in) + 16;
+
+    // Allocate output buffer
+    float* out_buf = (float*)malloc((size_t)expected_out * channels * sizeof(float));
+    if (!out_buf) {
+        if (err && err_size > 0) snprintf(err, err_size, "Out of memory");
+        return NULL;
+    }
+
+    // Initialize resampler
+    ma_resampler_config config = ma_resampler_config_init(
+        ma_format_f32, channels, sample_rate_in, sample_rate_out,
+        ma_resample_algorithm_linear);
+    config.linear.lpfOrder = 4;  // Low-pass filter for anti-aliasing
+
+    ma_resampler resampler;
+    ma_result result = ma_resampler_init(&config, NULL, &resampler);
+    if (result != MA_SUCCESS) {
+        free(out_buf);
+        if (err && err_size > 0) snprintf(err, err_size, "Failed to init resampler: %d", result);
+        return NULL;
+    }
+
+    // Process
+    ma_uint64 in_count = frames_in;
+    ma_uint64 out_count = expected_out;
+    result = ma_resampler_process_pcm_frames(&resampler, data_in, &in_count, out_buf, &out_count);
+    ma_resampler_uninit(&resampler, NULL);
+
+    if (result != MA_SUCCESS) {
+        free(out_buf);
+        if (err && err_size > 0) snprintf(err, err_size, "Resampler failed: %d", result);
+        return NULL;
+    }
+
+    // Build result
+    MH_AudioData* out = (MH_AudioData*)malloc(sizeof(MH_AudioData));
+    if (!out) {
+        free(out_buf);
+        if (err && err_size > 0) snprintf(err, err_size, "Out of memory");
+        return NULL;
+    }
+    out->data = out_buf;
+    out->channels = channels;
+    out->frames = (unsigned int)out_count;
+    out->sample_rate = sample_rate_out;
+    return out;
+}

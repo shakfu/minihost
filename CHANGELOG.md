@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.4]
+
 ### Added
 
 - **Audio input for effect processing** -- lock-free ring buffer API for feeding audio through effect plugins in real time, without GIL contention on the audio thread
@@ -28,10 +30,18 @@
   - Skips existing output files unless `-y`/`--overwrite` is set
   - Example: `minihost process reverb.vst3 -i "drums/*.wav" -o processed/`
 
+- **Sample rate conversion / resampling** -- built-in resampling using miniaudio's `ma_resampler` (linear interpolation with 4th-order low-pass anti-aliasing filter)
+  - C API: `mh_audio_resample()` in `minihost_audiofile.h` -- resamples interleaved float32 audio between any two sample rates
+  - Python: `minihost.resample(data, sr_in, sr_out)` -- takes `(channels, frames)` numpy array, returns resampled array
+  - CLI: `minihost process` and batch mode automatically resample mismatched input files to match the plugin's sample rate; use `--no-resample` to error instead
+  - CLI: `minihost resample input.wav -o output.wav -r 48000` -- standalone resampling subcommand with `--bit-depth` and `-y`/`--overwrite` options
+  - No-op fast path when source and target rates are equal (memcpy, no resampler init)
+
 ### Tests
 
 - **Render internals unit tests** (`tests/test_render_internals.py`) -- 55 tests covering `_build_tempo_map`, `_tick_to_seconds`, `_collect_midi_events`, `_event_to_midi_tuple`, `_seconds_to_samples`, and end-to-end tempo map integration
-- **CLI unit tests** (`tests/test_cli.py`) -- 61 tests covering argument parsing for all 6 subcommands, global options, error paths, `--input` capture flag for `play`, glob expansion, batch output detection, and batch error paths
+- **CLI unit tests** (`tests/test_cli.py`) -- 84 tests covering argument parsing for all 7 subcommands, global options, error paths, `--input` capture flag for `play`, glob expansion, batch output detection, batch error paths, `--no-resample` flag, and `resample` subcommand (arg parsing + functional tests)
+- **Resampling tests** (`tests/test_audio_io.py`) -- 7 tests covering upsample, downsample, identity (same rate), stereo, silence preservation, large ratio (8k to 48k), and round-trip frame count
 
 ## [0.1.3]
 

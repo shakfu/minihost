@@ -2,7 +2,8 @@
 # Supports both C/C++ CLI tools and Python bindings
 
 .PHONY: all juce cli sync build rebuild test wheel sdist clean distclean help \
-		check publish-test publish lint format typecheck qa
+		check publish-test publish lint format typecheck qa \
+		docs docs-serve docs-deploy
 
 # Default target - build Python bindings
 all: build
@@ -68,10 +69,26 @@ publish: check
 	@echo "uploading to PyPI"
 	@uv run twine upload dist/*
 
+# Build documentation (mkdocs)
+docs:
+	@cp CHANGELOG.md docs/changelog.md
+	@uv run --group docs mkdocs build
+
+# Serve documentation locally (with live reload)
+docs-serve:
+	@cp CHANGELOG.md docs/changelog.md
+	@uv run --group docs mkdocs serve
+
+# Deploy documentation to GitHub Pages
+docs-deploy:
+	@cp CHANGELOG.md docs/changelog.md
+	@uv run --group docs mkdocs gh-deploy --force
+
 # Clean build artifacts
 clean:
 	@rm -rf build/
 	@rm -rf dist/
+	@rm -rf site/
 	@rm -rf *.egg-info/
 	@rm -rf src/*.egg-info/
 	@rm -rf .pytest_cache/
@@ -102,6 +119,9 @@ help:
 	@echo "  check        - Check distribution with twine"
 	@echo "  publish-test - Publish to TestPyPI"
 	@echo "  publish      - Publish to PyPI"
+	@echo "  docs         - Build documentation (mkdocs)"
+	@echo "  docs-serve   - Serve docs locally with live reload"
+	@echo "  docs-deploy  - Deploy docs to GitHub Pages"
 	@echo "  clean        - Remove build artifacts"
 	@echo "  distclean    - Remove all generated files"
 	@echo "  help         - Show this help message"

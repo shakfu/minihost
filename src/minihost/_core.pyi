@@ -293,6 +293,14 @@ def audio_write(
     """Write audio data to a WAV file. Data shape: (channels, frames)."""
     ...
 
+def audio_resample(
+    data: NDArray[np.float32],
+    sample_rate_in: int,
+    sample_rate_out: int,
+) -> NDArray[np.float32]:
+    """Resample audio data. Input/output shape: (channels, frames)."""
+    ...
+
 def audio_get_file_info(path: str) -> dict[str, Any]:
     """Get audio file metadata without decoding."""
     ...

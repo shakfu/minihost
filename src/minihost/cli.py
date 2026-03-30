@@ -562,16 +562,18 @@ def _process_single_file(
     reset=False,
     expected_sample_rate=None,
     expected_channels=None,
+    allow_resample=True,
 ):
     """Process a single audio file through a plugin. Returns 0 on success, 1 on error.
 
     The plugin should already be loaded and configured with state/presets.
     If reset=True, plugin.reset() is called before processing.
     expected_sample_rate/expected_channels: validate input matches (for batch mode).
+    allow_resample: if True, resample mismatched files instead of erroring.
     """
     import numpy as np
 
-    from minihost.audio_io import read_audio, write_audio
+    from minihost.audio_io import read_audio, resample, write_audio
 
     if reset:
         plugin.reset()
@@ -583,16 +585,21 @@ def _process_single_file(
         return 1
 
     in_ch = data.shape[0]
-    total_samples = data.shape[1]
     sample_rate = sr
 
     if expected_sample_rate is not None and sr != expected_sample_rate:
-        print(
-            f"Error: Sample rate mismatch in '{input_path}': "
-            f"{sr} Hz (expected {expected_sample_rate} Hz)",
-            file=sys.stderr,
-        )
-        return 1
+        if allow_resample:
+            data = resample(data, sr, expected_sample_rate)
+            sample_rate = expected_sample_rate
+        else:
+            print(
+                f"Error: Sample rate mismatch in '{input_path}': "
+                f"{sr} Hz (expected {expected_sample_rate} Hz)",
+                file=sys.stderr,
+            )
+            return 1
+
+    total_samples = data.shape[1]
 
     if expected_channels is not None and in_ch != expected_channels:
         print(
@@ -740,6 +747,7 @@ def _cmd_process_batch(args, input_files):
             reset=False,
             expected_sample_rate=sample_rate,
             expected_channels=in_channels,
+            allow_resample=not getattr(args, "no_resample", False),
         )
         if ret != 0:
             print(f"  [{i}/{len(input_files)}] FAILED: {basename}", file=sys.stderr)
@@ -850,6 +858,7 @@ def cmd_process(args: argparse.Namespace) -> int:
     sample_rate = int(detected_sample_rate)
 
     # Read all audio inputs
+    no_resample = getattr(args, "no_resample", False)
     audio_inputs = []
     if has_audio_input:
         for i, inp_path in enumerate(input_files):
@@ -859,12 +868,17 @@ def cmd_process(args: argparse.Namespace) -> int:
                 print(f"Error reading input '{inp_path}': {e}", file=sys.stderr)
                 return 1
             if sr != sample_rate:
-                print(
-                    f"Error: Sample rate mismatch: '{inp_path}' is {sr} Hz, "
-                    f"expected {sample_rate} Hz (from first input).",
-                    file=sys.stderr,
-                )
-                return 1
+                if no_resample:
+                    print(
+                        f"Error: Sample rate mismatch: '{inp_path}' is {sr} Hz, "
+                        f"expected {sample_rate} Hz (from first input).",
+                        file=sys.stderr,
+                    )
+                    return 1
+                from minihost.audio_io import resample
+
+                print(f"  Resampling '{inp_path}': {sr} Hz -> {sample_rate} Hz")
+                data = resample(data, sr, sample_rate)
             audio_inputs.append(data)
 
     # --- Load plugin ---
@@ -1120,6 +1134,50 @@ def cmd_process(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_resample(args: argparse.Namespace) -> int:
+    """Resample an audio file to a different sample rate."""
+    from minihost.audio_io import read_audio, resample, write_audio
+
+    if os.path.exists(args.output) and not args.overwrite:
+        print(
+            f"Error: Output file '{args.output}' already exists. "
+            f"Use -y/--overwrite to overwrite.",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        data, sr_in = read_audio(args.input)
+    except (FileNotFoundError, RuntimeError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    sr_out = args.target_rate
+    if sr_in == sr_out:
+        print(
+            f"Input is already {sr_in} Hz, nothing to do.",
+            file=sys.stderr,
+        )
+        return 1
+
+    data = resample(data, sr_in, sr_out)
+    bit_depth = args.bit_depth if args.bit_depth else 24
+
+    try:
+        write_audio(args.output, data, sr_out, bit_depth=bit_depth)
+    except Exception as e:
+        print(f"Error writing output: {e}", file=sys.stderr)
+        return 1
+
+    channels = data.shape[0]
+    frames = data.shape[1]
+    duration = frames / sr_out
+    print(
+        f"{sr_in} Hz -> {sr_out} Hz ({channels} ch, {duration:.2f}s) -> {args.output}"
+    )
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="minihost",
@@ -1339,7 +1397,41 @@ Examples:
         default=None,
         help="Set transport BPM (for tempo-synced plugins)",
     )
+    process_p.add_argument(
+        "--no-resample",
+        action="store_true",
+        help="Error on sample rate mismatch instead of resampling",
+    )
     process_p.set_defaults(func=cmd_process)
+
+    # resample
+    resample_p = subparsers.add_parser(
+        "resample",
+        help="Resample audio file to a different sample rate",
+    )
+    resample_p.add_argument("input", help="Input audio file")
+    resample_p.add_argument(
+        "-o", "--output", required=True, help="Output audio file path"
+    )
+    resample_p.add_argument(
+        "-r",
+        "--target-rate",
+        type=int,
+        required=True,
+        metavar="HZ",
+        help="Target sample rate in Hz",
+    )
+    resample_p.add_argument(
+        "--bit-depth",
+        type=int,
+        default=None,
+        choices=[16, 24, 32],
+        help="Output bit depth (default: 24)",
+    )
+    resample_p.add_argument(
+        "-y", "--overwrite", action="store_true", help="Overwrite output if it exists"
+    )
+    resample_p.set_defaults(func=cmd_resample)
 
     args = parser.parse_args()
 

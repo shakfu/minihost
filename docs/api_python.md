@@ -162,8 +162,11 @@ AudioDevice(
     output_channels: int = 0,      # 0 = use plugin channels
     midi_input_port: int = -1,     # -1 = no MIDI input
     midi_output_port: int = -1,    # -1 = no MIDI output
+    capture: bool = False,         # True = duplex mode (system audio input)
 )
 ```
+
+When `capture=True`, the audio device opens in duplex mode: system audio input is captured, processed through the plugin, and played back through speakers. Useful for guitar amp sims, vocal effects, and live processing.
 
 ### Properties
 
@@ -177,6 +180,7 @@ AudioDevice(
 | `midi_output_port` | `int` | Connected MIDI output port index (-1 if none) |
 | `is_midi_input_virtual` | `bool` | Whether MIDI input is a virtual port |
 | `is_midi_output_virtual` | `bool` | Whether MIDI output is a virtual port |
+| `input_available` | `int` | Frames available in input ring buffer (0 if not enabled) |
 
 ### Methods
 
@@ -191,6 +195,9 @@ AudioDevice(
 | `disconnect_midi_output()` | Disconnect MIDI output |
 | `create_virtual_midi_input(port_name)` | Create virtual MIDI input port |
 | `create_virtual_midi_output(port_name)` | Create virtual MIDI output port |
+| `enable_input(capacity_frames=0)` | Enable ring buffer audio input. `capacity_frames=0` uses ~0.5s default |
+| `disable_input()` | Disable ring buffer audio input (revert to silence) |
+| `write_input(data)` | Write numpy array `(channels, frames)` into input ring buffer. Returns frames written. Thread-safe |
 
 ---
 
@@ -282,8 +289,10 @@ render_midi(
     plugin: Plugin | PluginChain,
     midi_file: MidiFile | str,
     block_size: int = 512,
-    tail_seconds: float | None = None,
+    tail_seconds: float | str | None = None,
     dtype: type | None = None,
+    tail_threshold: float = 1e-4,
+    max_tail_seconds: float = 30.0,
 ) -> np.ndarray
 ```
 
@@ -294,7 +303,9 @@ render_midi_stream(
     plugin: Plugin | PluginChain,
     midi_file: MidiFile | str,
     block_size: int = 512,
-    tail_seconds: float | None = None,
+    tail_seconds: float | str | None = None,
+    tail_threshold: float = 1e-4,
+    max_tail_seconds: float = 30.0,
 ) -> Iterator[np.ndarray]
 ```
 
@@ -306,12 +317,27 @@ render_midi_to_file(
     midi_file: MidiFile | str,
     output_path: str,
     block_size: int = 512,
-    tail_seconds: float | None = None,
+    tail_seconds: float | str | None = None,
     bit_depth: int = 24,
+    tail_threshold: float = 1e-4,
+    max_tail_seconds: float = 30.0,
 ) -> int
 ```
 
 Render MIDI to WAV file. Returns number of samples written.
+
+#### Auto-tail Detection
+
+Pass `tail_seconds="auto"` to automatically detect when the plugin's output (reverb/delay tail) has decayed below a threshold, instead of using a fixed tail duration:
+
+```python
+audio = render_midi(plugin, "song.mid", tail_seconds="auto")
+audio = render_midi(plugin, "song.mid", tail_seconds="auto", tail_threshold=1e-2)  # -40 dB
+```
+
+- `tail_threshold`: peak amplitude threshold in linear (default: `1e-4`, ~-80 dB)
+- `max_tail_seconds`: safety cap (default: 30s)
+- Rendering stops after 4 consecutive blocks below threshold
 
 ### MidiRenderer Class
 
@@ -320,11 +346,13 @@ MidiRenderer(
     plugin: Plugin | PluginChain,
     midi_file: MidiFile | str,
     block_size: int = 512,
-    tail_seconds: float | None = None,
+    tail_seconds: float | str | None = None,
+    tail_threshold: float = 1e-4,
+    max_tail_seconds: float = 30.0,
 )
 ```
 
-Stateful renderer for fine-grained control.
+Stateful renderer for fine-grained control. Supports `tail_seconds="auto"`.
 
 | Property | Type | Description |
 |----------|------|-------------|
@@ -343,7 +371,7 @@ Stateful renderer for fine-grained control.
 | `render_all(dtype=None)` | Render all remaining audio. Returns `ndarray` |
 | `reset()` | Reset renderer to beginning |
 
-For all rendering functions, `tail_seconds=None` uses the plugin's reported tail length (clamped to 2s default if 0 or >30s).
+For all rendering functions: `tail_seconds=None` uses the plugin's reported tail length (clamped to 2s default if 0 or >30s). `tail_seconds="auto"` enables auto-detection. A numeric value uses that exact duration.
 
 ---
 
@@ -383,9 +411,21 @@ Get file metadata without decoding. Returns dict with keys: `channels`, `sample_
 | Format | Read | Write |
 |--------|------|-------|
 | WAV | Yes | Yes (16/24/32-bit) |
-| FLAC | Yes | No |
+| FLAC | Yes | Yes (16/24-bit) |
 | MP3 | Yes | No |
 | Vorbis | Yes | No |
+
+### Resampling
+
+```python
+resample(
+    data: np.ndarray,
+    sample_rate_in: int,
+    sample_rate_out: int,
+) -> np.ndarray
+```
+
+Resample audio data to a different sample rate. Input/output shape: `(channels, frames)`, dtype `float32`. Uses miniaudio's linear resampler with 4th-order low-pass anti-aliasing. Returns a copy when rates are equal.
 
 ---
 

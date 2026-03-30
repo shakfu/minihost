@@ -13,6 +13,7 @@ import numpy as np
 
 from minihost._core import audio_get_file_info as _get_info
 from minihost._core import audio_read as _read
+from minihost._core import audio_resample as _resample
 from minihost._core import audio_write as _write
 
 # Extensions supported for reading
@@ -95,6 +96,29 @@ def write_audio(
         write_data = write_data.reshape(1, -1)
 
     _write(str(path), write_data, int(sample_rate), bit_depth)
+
+
+def resample(
+    data: np.ndarray,
+    sample_rate_in: int,
+    sample_rate_out: int,
+) -> np.ndarray:
+    """Resample audio data to a different sample rate.
+
+    Args:
+        data: Audio data of shape (channels, samples), float32.
+        sample_rate_in: Source sample rate in Hz.
+        sample_rate_out: Target sample rate in Hz.
+
+    Returns:
+        Resampled float32 ndarray of shape (channels, new_samples).
+    """
+    data = np.ascontiguousarray(data, dtype=np.float32)
+    if data.ndim == 1:
+        data = data.reshape(1, -1)
+    return np.asarray(
+        _resample(data, int(sample_rate_in), int(sample_rate_out)), dtype=np.float32
+    )
 
 
 def get_audio_info(path: str | Path) -> dict:

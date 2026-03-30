@@ -10,10 +10,14 @@ Minihost is a headless, JUCE-based audio plugin host that supports VST3, AudioUn
 - **Headless mode** (default) - no GUI dependencies, uses JUCE's `juce_audio_processors_headless` module
 - **Plugin chaining** - connect multiple plugins in series (synth -> reverb -> limiter)
 - **Audio file I/O** via miniaudio + tflac -- read WAV/FLAC/MP3/Vorbis, write WAV (16/24/32-bit) and FLAC (16/24-bit)
-- **Real-time audio playback** via miniaudio (cross-platform)
+- **Sample rate conversion** via miniaudio resampler -- `minihost.resample()` API and `minihost resample` CLI subcommand
+- **Real-time audio playback** via miniaudio (cross-platform), with duplex capture mode for effect processing
+- **Real-time audio input** -- lock-free ring buffer API (`write_input()`) and duplex capture (`capture=True`) for routing system audio through effects
 - **Real-time MIDI I/O** via libremidi (cross-platform)
 - **Virtual MIDI ports** - create named ports that DAWs can connect to (macOS, Linux)
 - **Standalone MIDI input** - monitor raw MIDI messages without a plugin (`MidiIn` class)
+- **Batch processing** -- glob patterns and directory output for processing multiple files (`minihost process -i "*.wav" -o output/`)
+- **Auto-tail detection** -- `tail_seconds="auto"` monitors output amplitude and stops rendering when reverb/delay tails decay below threshold
 - Process audio with sample-accurate parameter automation
 - Single and double precision processing
 - MIDI input/output support
@@ -114,12 +118,12 @@ uv sync
 # Available commands
 minihost --help
 usage: minihost [-h] [-r SAMPLE_RATE] [-b BLOCK_SIZE]
-                {scan,info,params,midi,play,process} ...
+                {scan,info,params,midi,play,process,resample} ...
 
 Audio plugin hosting CLI
 
 positional arguments:
-  {scan,info,params,midi,play,process}
+  {scan,info,params,midi,play,process,resample}
                         Commands
     scan                Scan directory for plugins
     info                Show plugin info
@@ -127,6 +131,7 @@ positional arguments:
     midi                List or monitor MIDI ports
     play                Play plugin with real-time audio/MIDI
     process             Process audio through plugin (offline)
+    resample            Resample audio file to a different sample rate
 
 options:
   -h, --help            show this help message and exit
@@ -173,6 +178,10 @@ minihost play /path/to/synth.vst3 --midi 0
 
 # Create a virtual MIDI port (macOS/Linux)
 minihost play /path/to/synth.vst3 --virtual-midi "My Synth"
+
+# Enable audio input for effect processing (duplex mode)
+minihost play /path/to/reverb.vst3 --input
+minihost play /path/to/amp-sim.vst3 --input --midi 0  # with MIDI too
 ```
 
 #### `minihost process` - Process audio/MIDI offline
@@ -191,6 +200,20 @@ minihost process /path/to/synth.vst3 -m song.mid -o output.wav --preset 5 --bit-
 
 # Sidechain processing (second -i is sidechain)
 minihost process /path/to/compressor.vst3 -i main.wav -i sidechain.wav -o output.wav
+
+# Batch processing (glob input, directory output)
+minihost process /path/to/reverb.vst3 -i "drums/*.wav" -o processed/
+minihost process /path/to/effect.vst3 -i "*.wav" -o output/ -y  # overwrite existing
+
+# Mixed sample rates are automatically resampled (use --no-resample to error instead)
+minihost process /path/to/effect.vst3 -i 44100hz.wav -i 48000hz_sidechain.wav -o out.wav
+```
+
+#### `minihost resample` - Resample audio files
+```bash
+minihost resample input.wav -o output.wav -r 48000
+minihost resample input.wav -o output.wav -r 44100 --bit-depth 16
+minihost resample input.wav -o output.wav -r 96000 -y  # overwrite
 ```
 
 ### Global Options
@@ -241,6 +264,39 @@ audio.send_midi(0x90, 64, 80)  # E4 note on
 time.sleep(0.5)
 audio.send_midi(0x80, 64, 0)   # E4 note off
 audio.stop()
+```
+
+### Real-time Audio Input (Effect Processing)
+
+Route system audio through an effect plugin using duplex mode or the ring buffer API:
+
+```python
+import minihost
+import numpy as np
+import time
+
+plugin = minihost.Plugin("/path/to/reverb.vst3", sample_rate=48000)
+
+# Option 1: Duplex mode (system audio capture -> plugin -> speakers)
+with minihost.AudioDevice(plugin, capture=True) as audio:
+    print("Processing system audio through effect... Ctrl+C to stop")
+    time.sleep(10)
+
+# Option 2: Ring buffer (push audio from Python)
+audio = minihost.AudioDevice(plugin)
+audio.enable_input()  # ~0.5s ring buffer by default
+audio.start()
+
+# Write audio into the ring buffer (e.g., from a file or generator)
+data, sr = minihost.read_audio("guitar.wav")
+block_size = 512
+for i in range(0, data.shape[1], block_size):
+    chunk = data[:, i:i+block_size]
+    audio.write_input(chunk)
+    time.sleep(block_size / sr * 0.9)  # pace to real time
+
+audio.stop()
+audio.disable_input()
 ```
 
 ### Real-time MIDI I/O
@@ -315,6 +371,17 @@ info = minihost.get_audio_info("song.wav")
 print(f"{info['channels']}ch, {info['sample_rate']}Hz, {info['duration']:.2f}s")
 ```
 
+### Sample Rate Conversion
+
+```python
+import minihost
+
+# Resample a numpy array
+data, sr = minihost.read_audio("input_44100.wav")  # 44.1kHz
+resampled = minihost.resample(data, 44100, 48000)   # -> 48kHz
+minihost.write_audio("output_48000.wav", resampled, 48000)
+```
+
 ### MIDI File Read/Write
 
 ```python
@@ -363,6 +430,13 @@ samples = minihost.render_midi_to_file(plugin, "song.mid", "output.wav", bit_dep
 for block in minihost.render_midi_stream(plugin, "song.mid", block_size=512):
     # Process each block (shape: channels, block_size)
     pass
+
+# Auto-detect reverb/delay tail (stops when output decays below -80 dB)
+audio = minihost.render_midi(plugin, "song.mid", tail_seconds="auto")
+
+# Custom threshold (-40 dB) and max tail (10s safety cap)
+audio = minihost.render_midi(plugin, "song.mid",
+                             tail_seconds="auto", tail_threshold=1e-2, max_tail_seconds=10)
 
 # Fine-grained control with MidiRenderer class
 renderer = minihost.MidiRenderer(plugin, "song.mid")
@@ -598,6 +672,15 @@ mh_audio_write("output.flac", interleaved_data,
 MH_AudioFileInfo info;
 mh_audio_get_file_info("song.wav", &info, err, sizeof(err));
 printf("Duration: %.2f seconds\n", info.duration);
+
+// Resample audio (e.g., 44.1kHz -> 48kHz)
+MH_AudioData* resampled = mh_audio_resample(
+    audio->data, audio->channels, audio->frames,
+    44100, 48000, err, sizeof(err));
+if (resampled) {
+    printf("Resampled: %u frames at %u Hz\n", resampled->frames, resampled->sample_rate);
+    mh_audio_data_free(resampled);
+}
 ```
 
 ## Thread Safety

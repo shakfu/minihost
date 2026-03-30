@@ -3,6 +3,7 @@
 JUCE/
 build/
 dist/
+site/
 __pycache__
 .venv
 .*_cache

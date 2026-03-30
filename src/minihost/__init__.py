@@ -60,6 +60,7 @@ from minihost.audio_io import (
     read_audio,
     write_audio,
     get_audio_info,
+    resample,
 )
 
 from minihost.automation import (
@@ -96,6 +97,7 @@ __all__ = [
     "read_audio",
     "write_audio",
     "get_audio_info",
+    "resample",
     # Automation
     "find_param_by_name",
     "parse_param_arg",
@@ -113,4 +115,4 @@ __all__ = [
     "MH_PRECISION_SINGLE",
     "MH_PRECISION_DOUBLE",
 ]
-__version__ = "0.1.3"
+__version__ = "0.1.4"

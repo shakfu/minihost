@@ -11,7 +11,6 @@
 
 ### High impact
 
-- [ ] **Sample rate conversion / resampling** - Built-in resampler (e.g. libsamplerate or sinc interpolator) so users can seamlessly load files at a different sample rate than the plugin session (e.g. 44.1k file into 48k plugin)
 - [ ] **Preset management CLI commands** - Commands for listing, loading, and saving presets (`minihost presets plugin.vst3`, `--save out.vstpreset`, `--load my.vstpreset`); infrastructure already exists via `VstPreset` and `mh_get/set_program`
 - [ ] **AIFF and OGG/Vorbis write support** - Extend `mh_audio_write()` beyond WAV/FLAC to cover compressed output formats for web and game audio pipelines
 

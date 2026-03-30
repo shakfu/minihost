@@ -115,6 +115,17 @@ Constants: `MH_CHANGE_LATENCY`, `MH_CHANGE_PARAM_INFO`, `MH_CHANGE_PROGRAM`, `MH
 | `mh_audio_get_buffer_frames` | Get actual buffer size in frames |
 | `mh_audio_get_channels` | Get number of output channels |
 
+Set `MH_AudioConfig.capture = 1` to open the device in duplex mode (system audio input routed through the plugin). The audio callback de-interleaves captured audio directly into the plugin's input buffers.
+
+### Audio Input (Ring Buffer)
+
+| Function | Description |
+|----------|-------------|
+| `mh_audio_enable_input` | Enable ring buffer audio input with given capacity |
+| `mh_audio_disable_input` | Disable ring buffer input (revert to silence) |
+| `mh_audio_write_input` | Write interleaved float32 frames into input ring buffer (thread-safe) |
+| `mh_audio_input_available` | Get number of frames available for reading |
+
 ### MIDI Connections
 
 | Function | Description |
@@ -139,15 +150,16 @@ Constants: `MH_CHANGE_LATENCY`, `MH_CHANGE_PARAM_INFO`, `MH_CHANGE_PROGRAM`, `MH
 |----------|-------------|
 | `mh_audio_read` | Read audio file to interleaved float32 buffer |
 | `mh_audio_data_free` | Free decoded audio data returned by `mh_audio_read` |
-| `mh_audio_write` | Write interleaved float32 data to WAV file |
+| `mh_audio_write` | Write interleaved float32 data to WAV or FLAC file |
 | `mh_audio_get_file_info` | Get audio file metadata without decoding |
+| `mh_audio_resample` | Resample interleaved float32 audio between any two sample rates |
 
 ### Supported Formats
 
 | Format | Read | Write |
 |--------|------|-------|
 | WAV | Yes | Yes (16/24/32-bit) |
-| FLAC | Yes | No |
+| FLAC | Yes | Yes (16/24-bit) |
 | MP3 | Yes | No |
 | Vorbis | Yes | No |
 

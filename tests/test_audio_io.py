@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from minihost.audio_io import get_audio_info, read_audio, write_audio
+from minihost.audio_io import get_audio_info, read_audio, resample, write_audio
 
 
 class TestWriteAndReadRoundTrip:
@@ -193,3 +193,62 @@ class TestErrors:
         assert info["channels"] == 2
         assert info["sample_rate"] == 48000
         assert info["frames"] == 100
+
+
+class TestResample:
+    """Test sample rate conversion."""
+
+    def test_upsample_44100_to_48000(self):
+        """Upsample 1 second of sine from 44.1k to 48k."""
+        sr_in, sr_out = 44100, 48000
+        t = np.arange(sr_in, dtype=np.float32) / sr_in
+        data = (0.5 * np.sin(2 * np.pi * 440 * t)).reshape(1, -1).astype(np.float32)
+
+        out = resample(data, sr_in, sr_out)
+        assert out.shape[0] == 1
+        assert out.shape[1] == sr_out
+        assert out.dtype == np.float32
+        # Peak should be preserved approximately
+        assert abs(np.max(np.abs(out)) - 0.5) < 0.05
+
+    def test_downsample_48000_to_44100(self):
+        sr_in, sr_out = 48000, 44100
+        t = np.arange(sr_in, dtype=np.float32) / sr_in
+        data = (0.5 * np.sin(2 * np.pi * 440 * t)).reshape(1, -1).astype(np.float32)
+
+        out = resample(data, sr_in, sr_out)
+        assert out.shape[0] == 1
+        assert out.shape[1] == sr_out
+
+    def test_same_rate_is_identity(self):
+        data = np.random.randn(2, 1000).astype(np.float32) * 0.5
+        out = resample(data, 48000, 48000)
+        assert out.shape == data.shape
+        np.testing.assert_array_equal(out, data)
+
+    def test_stereo(self):
+        sr_in, sr_out = 44100, 48000
+        data = np.random.randn(2, sr_in).astype(np.float32) * 0.3
+        out = resample(data, sr_in, sr_out)
+        assert out.shape[0] == 2
+        assert out.shape[1] == sr_out
+
+    def test_preserves_silence(self):
+        data = np.zeros((1, 44100), dtype=np.float32)
+        out = resample(data, 44100, 48000)
+        assert np.max(np.abs(out)) == 0.0
+
+    def test_large_ratio(self):
+        """Resample from 8000 to 48000 (6x upsample)."""
+        data = np.random.randn(1, 8000).astype(np.float32) * 0.3
+        out = resample(data, 8000, 48000)
+        assert out.shape[0] == 1
+        assert out.shape[1] == 48000
+
+    def test_round_trip_preserves_length(self):
+        """44100 -> 48000 -> 44100 should produce approximately the same frame count."""
+        data = np.random.randn(1, 44100).astype(np.float32) * 0.3
+        up = resample(data, 44100, 48000)
+        down = resample(up, 48000, 44100)
+        # Allow small rounding differences
+        assert abs(down.shape[1] - 44100) <= 2

@@ -2039,6 +2039,56 @@ NB_MODULE(_core, m) {
     }, nb::arg("path"), nb::arg("data"), nb::arg("sample_rate"), nb::arg("bit_depth") = 24,
        "Write audio data to a WAV file. Data shape: (channels, frames).");
 
+    m.def("audio_resample", [](
+                nb::ndarray<const float, nb::shape<-1, -1>, nb::c_contig, nb::device::cpu> data,
+                unsigned int sample_rate_in,
+                unsigned int sample_rate_out) {
+        size_t channels = data.shape(0);
+        size_t frames_in = data.shape(1);
+
+        // Interleave: planar -> interleaved for C API
+        size_t total_in = channels * frames_in;
+        std::vector<float> interleaved(total_in);
+        const float* src = data.data();
+        for (size_t f = 0; f < frames_in; f++) {
+            for (size_t ch = 0; ch < channels; ch++) {
+                interleaved[f * channels + ch] = src[ch * frames_in + f];
+            }
+        }
+
+        char err[1024] = {0};
+        MH_AudioData* result = mh_audio_resample(
+            interleaved.data(),
+            static_cast<unsigned int>(channels),
+            static_cast<unsigned int>(frames_in),
+            sample_rate_in, sample_rate_out,
+            err, sizeof(err));
+        if (!result) {
+            throw std::runtime_error(std::string(err));
+        }
+
+        unsigned int out_ch = result->channels;
+        unsigned int out_frames = result->frames;
+
+        // De-interleave output: interleaved -> planar
+        size_t total_out = (size_t)out_ch * out_frames;
+        float* buf = new float[total_out];
+        for (unsigned int ch = 0; ch < out_ch; ch++) {
+            for (unsigned int f = 0; f < out_frames; f++) {
+                buf[ch * out_frames + f] = result->data[f * out_ch + ch];
+            }
+        }
+        mh_audio_data_free(result);
+
+        nb::capsule owner(buf, [](void* p) noexcept { delete[] static_cast<float*>(p); });
+        size_t shape[2] = {out_ch, out_frames};
+        auto array = nb::ndarray<float, nb::numpy, nb::shape<-1, -1>>(
+            buf, 2, shape, owner);
+
+        return array;
+    }, nb::arg("data"), nb::arg("sample_rate_in"), nb::arg("sample_rate_out"),
+       "Resample audio data. Input shape: (channels, frames). Returns resampled array at sample_rate_out.");
+
     m.def("audio_get_file_info", [](const std::string& path) {
         char err[1024] = {0};
         MH_AudioFileInfo info;
