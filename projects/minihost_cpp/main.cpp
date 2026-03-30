@@ -2,8 +2,13 @@
 // Provides command-line access to plugin hosting features
 
 #include "minihost.h"
+#include "minihost_audiofile.h"
+#include "MidiFile.h"
+#include "MidiEvent.h"
 #include "include/CLI11.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -53,6 +58,162 @@ static void print_bus_info(int index, bool is_input, const MH_BusInfo& info) {
                 info.num_channels,
                 info.is_main ? "[main]" : "",
                 info.is_enabled ? "" : " (disabled)");
+}
+
+// Detect audio file by extension
+static bool is_audio_file(const std::string& path) {
+    auto dot = path.rfind('.');
+    if (dot == std::string::npos) return false;
+    std::string ext = path.substr(dot);
+    for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return ext == ".wav" || ext == ".flac" || ext == ".mp3" || ext == ".ogg";
+}
+
+// Parse "Name:value" or "index:value" parameter specification
+// Returns true on success, sets out_index and out_value
+static bool parse_param_spec(MH_Plugin* p, const std::string& spec,
+                             int& out_index, float& out_value) {
+    auto colon_pos = spec.find(':');
+    if (colon_pos == std::string::npos) return false;
+
+    std::string name_part = spec.substr(0, colon_pos);
+    std::string value_part = spec.substr(colon_pos + 1);
+
+    try {
+        out_value = std::stof(value_part);
+    } catch (...) {
+        return false;
+    }
+
+    // Try as numeric index first
+    bool is_numeric = !name_part.empty();
+    for (char c : name_part) {
+        if (!std::isdigit(static_cast<unsigned char>(c))) {
+            is_numeric = false;
+            break;
+        }
+    }
+
+    if (is_numeric) {
+        out_index = std::stoi(name_part);
+        return out_index >= 0 && out_index < mh_get_num_params(p);
+    }
+
+    // Try as parameter name (case-insensitive substring match)
+    int num_params = mh_get_num_params(p);
+    for (int i = 0; i < num_params; i++) {
+        MH_ParamInfo info;
+        if (mh_get_param_info(p, i, &info)) {
+            if (name_part == info.name) {
+                out_index = i;
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+// Interleaved float32 buffer helper
+struct AudioBuffer {
+    std::vector<float> interleaved;  // interleaved samples
+    int channels = 0;
+    int frames = 0;
+    int sample_rate = 0;
+
+    // Deinterleave to per-channel pointers
+    void deinterleave(std::vector<std::vector<float>>& ch_data) const {
+        ch_data.resize(channels);
+        for (int c = 0; c < channels; c++) {
+            ch_data[c].resize(frames);
+            for (int f = 0; f < frames; f++) {
+                ch_data[c][f] = interleaved[f * channels + c];
+            }
+        }
+    }
+
+    // Interleave from per-channel data
+    static void interleave_from(const std::vector<float*>& ch_ptrs,
+                                int ch, int n_frames,
+                                std::vector<float>& out) {
+        out.resize(ch * n_frames);
+        for (int f = 0; f < n_frames; f++) {
+            for (int c = 0; c < ch; c++) {
+                out[f * ch + c] = ch_ptrs[c][f];
+            }
+        }
+    }
+};
+
+// Read an audio file into an AudioBuffer
+static bool read_audio_file(const std::string& path, AudioBuffer& buf) {
+    char err[1024] = {0};
+    MH_AudioData* data = mh_audio_read(path.c_str(), err, sizeof(err));
+    if (!data) {
+        print_error(err);
+        return false;
+    }
+    buf.channels = static_cast<int>(data->channels);
+    buf.frames = static_cast<int>(data->frames);
+    buf.sample_rate = static_cast<int>(data->sample_rate);
+    buf.interleaved.assign(data->data, data->data + (size_t)buf.channels * buf.frames);
+    mh_audio_data_free(data);
+    return true;
+}
+
+// MIDI event with absolute sample position (for sorting/dispatching)
+struct SampleMidiEvent {
+    int sample_pos;
+    unsigned char status;
+    unsigned char data1;
+    unsigned char data2;
+};
+
+// Load a MIDI file and convert events to sample-positioned MH_MidiEvents
+static bool load_midi_file(const std::string& path, double sample_rate,
+                           std::vector<SampleMidiEvent>& events,
+                           int& total_samples) {
+    smf::MidiFile midifile;
+    if (!midifile.read(path)) {
+        std::fprintf(stderr, "Error: Failed to read MIDI file: %s\n", path.c_str());
+        return false;
+    }
+
+    midifile.doTimeAnalysis();
+    midifile.joinTracks();
+    midifile.makeAbsoluteTicks();
+
+    events.clear();
+    total_samples = 0;
+
+    int num_events = midifile[0].getEventCount();
+    for (int i = 0; i < num_events; i++) {
+        smf::MidiEvent& ev = midifile[0][i];
+
+        // Skip meta events
+        if (ev.isMetaMessage()) continue;
+
+        double seconds = midifile.getTimeInSeconds(0, i);
+        int sample_pos = static_cast<int>(seconds * sample_rate);
+
+        SampleMidiEvent sev;
+        sev.sample_pos = sample_pos;
+        sev.status = ev[0];
+        sev.data1 = ev.getSize() > 1 ? ev[1] : 0;
+        sev.data2 = ev.getSize() > 2 ? ev[2] : 0;
+        events.push_back(sev);
+
+        if (sample_pos > total_samples) {
+            total_samples = sample_pos;
+        }
+    }
+
+    std::sort(events.begin(), events.end(),
+              [](const SampleMidiEvent& a, const SampleMidiEvent& b) {
+                  return a.sample_pos < b.sample_pos;
+              });
+
+    return true;
 }
 
 // ============================================================================
@@ -151,8 +312,15 @@ int cmd_scan(const std::string& directory, bool json_output) {
 
 int cmd_info(const std::string& plugin_path,
              double sample_rate,
-             int block_size) {
+             int block_size,
+             bool probe_only,
+             bool json_output) {
     char err[1024] = {0};
+
+    // Probe-only mode: lightweight metadata without full load
+    if (probe_only) {
+        return cmd_probe(plugin_path, json_output);
+    }
 
     MH_Plugin* p = mh_open(plugin_path.c_str(), sample_rate, block_size, 2, 2, err, sizeof(err));
     if (!p) {
@@ -165,7 +333,35 @@ int cmd_info(const std::string& plugin_path,
 
     // Get plugin metadata via probe
     MH_PluginDesc desc;
-    if (mh_probe(plugin_path.c_str(), &desc, err, sizeof(err))) {
+    bool have_desc = mh_probe(plugin_path.c_str(), &desc, err, sizeof(err));
+
+    if (json_output) {
+        std::printf("{\n");
+        if (have_desc) {
+            std::printf("  \"name\": \"%s\",\n", desc.name);
+            std::printf("  \"vendor\": \"%s\",\n", desc.vendor);
+            std::printf("  \"version\": \"%s\",\n", desc.version);
+            std::printf("  \"format\": \"%s\",\n", desc.format);
+            std::printf("  \"unique_id\": \"%s\",\n", desc.unique_id);
+            std::printf("  \"accepts_midi\": %s,\n", desc.accepts_midi ? "true" : "false");
+            std::printf("  \"produces_midi\": %s,\n", desc.produces_midi ? "true" : "false");
+            std::printf("  \"num_inputs\": %d,\n", desc.num_inputs);
+            std::printf("  \"num_outputs\": %d,\n", desc.num_outputs);
+        }
+        std::printf("  \"sample_rate\": %.0f,\n", mh_get_sample_rate(p));
+        std::printf("  \"num_params\": %d,\n", info.num_params);
+        std::printf("  \"num_input_channels\": %d,\n", info.num_input_ch);
+        std::printf("  \"num_output_channels\": %d,\n", info.num_output_ch);
+        std::printf("  \"latency_samples\": %d,\n", info.latency_samples);
+        std::printf("  \"tail_seconds\": %.3f,\n", mh_get_tail_seconds(p));
+        std::printf("  \"supports_double\": %s,\n", mh_supports_double(p) ? "true" : "false");
+        std::printf("  \"num_programs\": %d\n", mh_get_num_programs(p));
+        std::printf("}\n");
+        mh_close(p);
+        return 0;
+    }
+
+    if (have_desc) {
         print_plugin_desc(desc, true);
     }
 
@@ -228,7 +424,8 @@ int cmd_info(const std::string& plugin_path,
 int cmd_params(const std::string& plugin_path,
                double sample_rate,
                int block_size,
-               bool json_output) {
+               bool json_output,
+               bool verbose) {
     char err[1024] = {0};
 
     MH_Plugin* p = mh_open(plugin_path.c_str(), sample_rate, block_size, 2, 2, err, sizeof(err));
@@ -260,6 +457,42 @@ int cmd_params(const std::string& plugin_path,
             }
         }
         std::printf("\n]\n");
+    } else if (verbose) {
+        std::printf("Parameters (%d):\n", num_params);
+        for (int i = 0; i < num_params; i++) {
+            MH_ParamInfo info;
+            if (mh_get_param_info(p, i, &info)) {
+                float value = mh_get_param(p, i);
+
+                char min_text[128] = {0};
+                char max_text[128] = {0};
+                char default_text[128] = {0};
+                mh_param_to_text(p, i, 0.0f, min_text, sizeof(min_text));
+                mh_param_to_text(p, i, 1.0f, max_text, sizeof(max_text));
+                mh_param_to_text(p, i, info.default_value, default_text, sizeof(default_text));
+
+                std::printf("  [%3d] %s\n", i, info.name);
+                std::printf("         Value:   %.4f", value);
+                if (info.label[0] != '\0') std::printf(" %s", info.label);
+                std::printf(" (%s)\n", info.current_value_str);
+                std::printf("         Range:   %s .. %s\n", min_text, max_text);
+                std::printf("         Default: %.4f (%s)\n", info.default_value, default_text);
+
+                // Flags
+                std::string flags;
+                if (info.is_automatable) {
+                    if (!flags.empty()) flags += ", ";
+                    flags += "automatable";
+                }
+                if (info.num_steps > 0) {
+                    if (!flags.empty()) flags += ", ";
+                    flags += "discrete, " + std::to_string(info.num_steps) + " steps";
+                }
+                if (!flags.empty()) {
+                    std::printf("         Flags:   %s\n", flags.c_str());
+                }
+            }
+        }
     } else {
         std::printf("Parameters (%d):\n", num_params);
         for (int i = 0; i < num_params; i++) {
@@ -563,140 +796,345 @@ int cmd_load_state(const std::string& plugin_path,
 int cmd_process(const std::string& plugin_path,
                 const std::string& input_file,
                 const std::string& output_file,
+                const std::string& sidechain_file,
+                const std::string& midi_file,
                 double sample_rate,
                 int block_size,
                 const std::string& state_file,
-                bool use_double) {
+                int preset_index,
+                const std::vector<std::string>& param_specs,
+                bool use_double,
+                bool non_realtime,
+                double bpm,
+                int bit_depth,
+                double tail_seconds) {
     char err[1024] = {0};
 
-    // Open plugin
-    MH_Plugin* p = mh_open(plugin_path.c_str(), sample_rate, block_size, 2, 2, err, sizeof(err));
+    bool has_audio_input = !input_file.empty();
+    bool has_midi_input = !midi_file.empty();
+    bool has_sidechain = !sidechain_file.empty();
+
+    if (!has_audio_input && !has_midi_input) {
+        print_error("At least one of input file or MIDI file is required");
+        return 1;
+    }
+
+    // --- Read audio inputs ---
+    AudioBuffer audio_in;
+    if (has_audio_input) {
+        if (is_audio_file(input_file)) {
+            if (!read_audio_file(input_file, audio_in)) return 1;
+            // Use input file's sample rate
+            sample_rate = audio_in.sample_rate;
+        } else {
+            // Legacy raw float32 fallback
+            std::ifstream ifs(input_file, std::ios::binary);
+            if (!ifs) {
+                std::fprintf(stderr, "Error: Cannot open input file %s\n", input_file.c_str());
+                return 1;
+            }
+            ifs.seekg(0, std::ios::end);
+            size_t file_size = ifs.tellg();
+            ifs.seekg(0, std::ios::beg);
+            // Assume stereo for raw files
+            audio_in.channels = 2;
+            audio_in.frames = static_cast<int>(file_size / (sizeof(float) * audio_in.channels));
+            audio_in.sample_rate = static_cast<int>(sample_rate);
+            audio_in.interleaved.resize(file_size / sizeof(float));
+            ifs.read(reinterpret_cast<char*>(audio_in.interleaved.data()), file_size);
+        }
+    }
+
+    AudioBuffer sidechain_in;
+    if (has_sidechain) {
+        if (!read_audio_file(sidechain_file, sidechain_in)) return 1;
+    }
+
+    // --- Load MIDI ---
+    std::vector<SampleMidiEvent> midi_events;
+    int midi_total_samples = 0;
+    if (has_midi_input) {
+        if (!load_midi_file(midi_file, sample_rate, midi_events, midi_total_samples)) {
+            return 1;
+        }
+    }
+
+    // --- Determine channel counts ---
+    int in_ch = has_audio_input ? audio_in.channels : 2;
+    int sidechain_ch = has_sidechain ? sidechain_in.channels : 0;
+
+    // --- Open plugin ---
+    MH_Plugin* p = nullptr;
+    if (sidechain_ch > 0) {
+        p = mh_open_ex(plugin_path.c_str(), sample_rate, block_size,
+                       in_ch, 2, sidechain_ch, err, sizeof(err));
+    } else {
+        p = mh_open(plugin_path.c_str(), sample_rate, block_size, in_ch, 2, err, sizeof(err));
+    }
     if (!p) {
         print_error(err);
         return 1;
     }
 
-    // Load state if provided
+    // --- Load state ---
     if (!state_file.empty()) {
         std::ifstream ifs(state_file, std::ios::binary);
         if (ifs) {
             std::vector<char> data((std::istreambuf_iterator<char>(ifs)),
                                     std::istreambuf_iterator<char>());
-            if (!mh_set_state(p, data.data(), static_cast<int>(data.size()))) {
-                std::fprintf(stderr, "Warning: Failed to load state from %s\n", state_file.c_str());
-            } else {
+            if (mh_set_state(p, data.data(), static_cast<int>(data.size()))) {
                 std::fprintf(stderr, "Loaded state from %s\n", state_file.c_str());
+            } else {
+                std::fprintf(stderr, "Warning: Failed to load state from %s\n", state_file.c_str());
             }
         }
     }
 
-    MH_Info info;
-    mh_get_info(p, &info);
+    // --- Load preset ---
+    if (preset_index >= 0) {
+        int num_programs = mh_get_num_programs(p);
+        if (preset_index >= num_programs) {
+            std::fprintf(stderr, "Error: Preset index %d out of range (0-%d)\n",
+                         preset_index, num_programs - 1);
+            mh_close(p);
+            return 1;
+        }
+        mh_set_program(p, preset_index);
+        char name[256] = {0};
+        mh_get_program_name(p, preset_index, name, sizeof(name));
+        std::fprintf(stderr, "Loaded preset [%d]: %s\n", preset_index, name);
+    }
 
-    int in_ch = info.num_input_ch > 0 ? info.num_input_ch : 2;
-    int out_ch = info.num_output_ch > 0 ? info.num_output_ch : 2;
+    // --- Apply static parameter overrides ---
+    std::vector<MH_ParamChange> param_changes;
+    for (const auto& spec : param_specs) {
+        int idx;
+        float val;
+        if (!parse_param_spec(p, spec, idx, val)) {
+            std::fprintf(stderr, "Error: Invalid parameter spec '%s'\n", spec.c_str());
+            mh_close(p);
+            return 1;
+        }
+        // Apply as initial value and record for automation
+        mh_set_param(p, idx, val);
+        MH_ParamChange change;
+        change.sample_offset = 0;
+        change.param_index = idx;
+        change.value = val;
+        param_changes.push_back(change);
+    }
 
-    // Open input file (raw float32 interleaved)
-    std::ifstream ifs(input_file, std::ios::binary);
-    if (!ifs) {
-        std::fprintf(stderr, "Error: Cannot open input file %s\n", input_file.c_str());
+    // --- Non-realtime mode ---
+    if (non_realtime) {
+        mh_set_non_realtime(p, 1);
+    }
+
+    // --- Transport ---
+    if (bpm > 0) {
+        MH_TransportInfo transport = {};
+        transport.bpm = bpm;
+        transport.time_sig_numerator = 4;
+        transport.time_sig_denominator = 4;
+        transport.is_playing = 1;
+        mh_set_transport(p, &transport);
+    }
+
+    // --- Get plugin info ---
+    MH_Info pinfo;
+    mh_get_info(p, &pinfo);
+    int out_ch = pinfo.num_output_ch > 0 ? pinfo.num_output_ch : 2;
+    int latency = mh_get_latency_samples(p);
+
+    // --- Calculate total processing length ---
+    int total_samples = 0;
+    if (has_audio_input) {
+        total_samples = audio_in.frames;
+    }
+    if (has_midi_input) {
+        int midi_end = midi_total_samples + static_cast<int>(tail_seconds * sample_rate);
+        if (midi_end > total_samples) {
+            total_samples = midi_end;
+        }
+    }
+
+    if (total_samples == 0) {
+        print_error("No audio or MIDI input data to process");
         mh_close(p);
         return 1;
     }
 
-    // Get file size
-    ifs.seekg(0, std::ios::end);
-    size_t file_size = ifs.tellg();
-    ifs.seekg(0, std::ios::beg);
+    int output_total = total_samples + latency;
 
-    // Calculate number of frames (assuming interleaved float32)
-    size_t total_frames = file_size / (sizeof(float) * in_ch);
+    // --- Print summary ---
+    std::fprintf(stderr, "Plugin: %s\n", plugin_path.c_str());
+    std::fprintf(stderr, "  Sample rate: %.0f Hz\n", sample_rate);
+    std::fprintf(stderr, "  Block size:  %d\n", block_size);
+    std::fprintf(stderr, "  Latency:     %d samples\n", latency);
+    if (has_audio_input) {
+        std::fprintf(stderr, "  Input:       %d ch, %d samples\n", in_ch, audio_in.frames);
+    }
+    if (has_sidechain) {
+        std::fprintf(stderr, "  Sidechain:   %d ch\n", sidechain_ch);
+    }
+    if (has_midi_input) {
+        std::fprintf(stderr, "  MIDI events: %zu\n", midi_events.size());
+    }
+    if (!param_changes.empty()) {
+        std::fprintf(stderr, "  Params:      %zu override(s)\n", param_changes.size());
+    }
+    std::fprintf(stderr, "  Output:      %d ch -> %s\n", out_ch, output_file.c_str());
 
-    // Open output file
-    std::ofstream ofs(output_file, std::ios::binary);
-    if (!ofs) {
-        std::fprintf(stderr, "Error: Cannot open output file %s\n", output_file.c_str());
-        mh_close(p);
-        return 1;
+    // --- Deinterleave audio inputs ---
+    std::vector<std::vector<float>> in_channels;
+    if (has_audio_input) {
+        audio_in.deinterleave(in_channels);
+        // Pad to output_total
+        for (auto& ch : in_channels) {
+            ch.resize(output_total, 0.0f);
+        }
+    } else {
+        in_channels.resize(in_ch);
+        for (auto& ch : in_channels) {
+            ch.assign(output_total, 0.0f);
+        }
     }
 
-    // Allocate buffers
-    std::vector<float> in_interleaved(block_size * in_ch);
-    std::vector<float> out_interleaved(block_size * out_ch);
-    std::vector<std::vector<float>> in_channels(in_ch, std::vector<float>(block_size));
-    std::vector<std::vector<float>> out_channels(out_ch, std::vector<float>(block_size));
-    std::vector<const float*> in_ptrs(in_ch);
-    std::vector<float*> out_ptrs(out_ch);
+    std::vector<std::vector<float>> sc_channels;
+    if (has_sidechain) {
+        sidechain_in.deinterleave(sc_channels);
+        for (auto& ch : sc_channels) {
+            ch.resize(output_total, 0.0f);
+        }
+    }
 
-    for (int ch = 0; ch < in_ch; ch++) in_ptrs[ch] = in_channels[ch].data();
-    for (int ch = 0; ch < out_ch; ch++) out_ptrs[ch] = out_channels[ch].data();
+    // --- Allocate output ---
+    std::vector<std::vector<float>> out_channels(out_ch);
+    for (auto& ch : out_channels) {
+        ch.assign(output_total, 0.0f);
+    }
 
-    size_t frames_processed = 0;
+    // --- Process loop ---
+    size_t midi_idx = 0;
+    bool has_param_automation = !param_changes.empty();
 
-    while (frames_processed < total_frames) {
-        int frames_to_process = std::min((size_t)block_size, total_frames - frames_processed);
+    for (int start = 0; start < output_total; start += block_size) {
+        int end = std::min(start + block_size, output_total);
+        int bsize = end - start;
 
-        // Read interleaved input
-        ifs.read(reinterpret_cast<char*>(in_interleaved.data()),
-                 frames_to_process * in_ch * sizeof(float));
+        // Input pointers for this block
+        std::vector<const float*> in_ptrs(in_ch);
+        for (int c = 0; c < in_ch; c++) {
+            in_ptrs[c] = in_channels[c].data() + start;
+        }
 
-        // Deinterleave
-        for (int f = 0; f < frames_to_process; f++) {
-            for (int ch = 0; ch < in_ch; ch++) {
-                in_channels[ch][f] = in_interleaved[f * in_ch + ch];
+        // Output pointers
+        std::vector<float*> out_ptrs(out_ch);
+        for (int c = 0; c < out_ch; c++) {
+            out_ptrs[c] = out_channels[c].data() + start;
+        }
+
+        // Collect MIDI events for this block
+        std::vector<MH_MidiEvent> block_midi;
+        while (midi_idx < midi_events.size()) {
+            const auto& ev = midi_events[midi_idx];
+            if (ev.sample_pos >= end) break;
+            MH_MidiEvent mev;
+            mev.sample_offset = std::max(0, std::min(ev.sample_pos - start, bsize - 1));
+            mev.status = ev.status;
+            mev.data1 = ev.data1;
+            mev.data2 = ev.data2;
+            block_midi.push_back(mev);
+            midi_idx++;
+        }
+
+        // Choose processing path
+        if (has_sidechain) {
+            std::vector<const float*> sc_ptrs(sidechain_ch);
+            for (int c = 0; c < sidechain_ch; c++) {
+                sc_ptrs[c] = sc_channels[c].data() + start;
             }
-        }
-
-        // Clear output
-        for (int ch = 0; ch < out_ch; ch++) {
-            std::fill(out_channels[ch].begin(), out_channels[ch].end(), 0.0f);
-        }
-
-        // Process
-        if (use_double && mh_supports_double(p)) {
-            // Convert to double, process, convert back
-            std::vector<std::vector<double>> in_d(in_ch, std::vector<double>(block_size));
-            std::vector<std::vector<double>> out_d(out_ch, std::vector<double>(block_size));
+            mh_process_sidechain(p, in_ptrs.data(), out_ptrs.data(),
+                                 sc_ptrs.data(), bsize);
+        } else if (has_param_automation || !block_midi.empty()) {
+            // Use process_auto for combined MIDI + param automation
+            mh_process_auto(p,
+                            in_ptrs.data(), out_ptrs.data(), bsize,
+                            block_midi.empty() ? nullptr : block_midi.data(),
+                            static_cast<int>(block_midi.size()),
+                            nullptr, 0, nullptr,
+                            // Only send param changes in first block
+                            (start == 0 && has_param_automation) ? param_changes.data() : nullptr,
+                            (start == 0 && has_param_automation) ? static_cast<int>(param_changes.size()) : 0);
+        } else if (use_double && mh_supports_double(p)) {
+            // Double precision path
+            std::vector<std::vector<double>> in_d(in_ch, std::vector<double>(bsize));
+            std::vector<std::vector<double>> out_d(out_ch, std::vector<double>(bsize));
             std::vector<const double*> in_d_ptrs(in_ch);
             std::vector<double*> out_d_ptrs(out_ch);
-
-            for (int ch = 0; ch < in_ch; ch++) {
-                for (int f = 0; f < frames_to_process; f++) {
-                    in_d[ch][f] = in_channels[ch][f];
-                }
-                in_d_ptrs[ch] = in_d[ch].data();
+            for (int c = 0; c < in_ch; c++) {
+                for (int f = 0; f < bsize; f++) in_d[c][f] = in_ptrs[c][f];
+                in_d_ptrs[c] = in_d[c].data();
             }
-            for (int ch = 0; ch < out_ch; ch++) {
-                out_d_ptrs[ch] = out_d[ch].data();
+            for (int c = 0; c < out_ch; c++) {
+                out_d_ptrs[c] = out_d[c].data();
             }
-
-            mh_process_double(p, in_d_ptrs.data(), out_d_ptrs.data(), frames_to_process);
-
-            for (int ch = 0; ch < out_ch; ch++) {
-                for (int f = 0; f < frames_to_process; f++) {
-                    out_channels[ch][f] = static_cast<float>(out_d[ch][f]);
-                }
+            mh_process_double(p, in_d_ptrs.data(), out_d_ptrs.data(), bsize);
+            for (int c = 0; c < out_ch; c++) {
+                for (int f = 0; f < bsize; f++) out_ptrs[c][f] = static_cast<float>(out_d[c][f]);
             }
         } else {
-            mh_process(p, in_ptrs.data(), out_ptrs.data(), frames_to_process);
+            mh_process(p, in_ptrs.data(), out_ptrs.data(), bsize);
         }
+    }
 
-        // Interleave output
-        for (int f = 0; f < frames_to_process; f++) {
-            for (int ch = 0; ch < out_ch; ch++) {
-                out_interleaved[f * out_ch + ch] = out_channels[ch][f];
+    // --- Latency compensation: trim leading latency samples ---
+    int write_offset = latency;
+    int write_frames = total_samples;
+    if (write_offset + write_frames > output_total) {
+        write_frames = output_total - write_offset;
+    }
+
+    // --- Write output ---
+    if (is_audio_file(output_file)) {
+        // Interleave output for audio file write
+        std::vector<float> out_interleaved(static_cast<size_t>(out_ch) * write_frames);
+        for (int f = 0; f < write_frames; f++) {
+            for (int c = 0; c < out_ch; c++) {
+                out_interleaved[f * out_ch + c] = out_channels[c][write_offset + f];
             }
         }
 
-        // Write output
-        ofs.write(reinterpret_cast<char*>(out_interleaved.data()),
-                  frames_to_process * out_ch * sizeof(float));
+        if (bit_depth <= 0) bit_depth = 24;
 
-        frames_processed += frames_to_process;
+        if (!mh_audio_write(output_file.c_str(), out_interleaved.data(),
+                            static_cast<unsigned>(out_ch), static_cast<unsigned>(write_frames),
+                            static_cast<unsigned>(sample_rate), bit_depth,
+                            err, sizeof(err))) {
+            print_error(err);
+            mh_close(p);
+            return 1;
+        }
+    } else {
+        // Raw float32 output
+        std::ofstream ofs(output_file, std::ios::binary);
+        if (!ofs) {
+            std::fprintf(stderr, "Error: Cannot open output file %s\n", output_file.c_str());
+            mh_close(p);
+            return 1;
+        }
+        std::vector<float> out_interleaved(static_cast<size_t>(out_ch) * write_frames);
+        for (int f = 0; f < write_frames; f++) {
+            for (int c = 0; c < out_ch; c++) {
+                out_interleaved[f * out_ch + c] = out_channels[c][write_offset + f];
+            }
+        }
+        ofs.write(reinterpret_cast<char*>(out_interleaved.data()),
+                  static_cast<std::streamsize>(write_frames) * out_ch * sizeof(float));
     }
 
-    std::fprintf(stderr, "Processed %zu frames (%d in, %d out) @ %.0f Hz\n",
-                 frames_processed, in_ch, out_ch, sample_rate);
+    double duration = static_cast<double>(write_frames) / sample_rate;
+    std::fprintf(stderr, "Wrote %d samples (%.2fs) to %s\n",
+                 write_frames, duration, output_file.c_str());
 
     mh_close(p);
     return 0;
@@ -754,12 +1192,16 @@ int main(int argc, char** argv) {
     // ========================================================================
     auto* info_cmd = app.add_subcommand("info", "Show detailed plugin information");
     std::string info_path;
+    bool info_probe = false;
+    bool info_json = false;
 
     info_cmd->add_option("plugin", info_path, "Path to plugin")
         ->required();
+    info_cmd->add_flag("--probe", info_probe, "Lightweight mode: metadata only, no full load");
+    info_cmd->add_flag("-j,--json", info_json, "Output as JSON");
 
     info_cmd->callback([&]() {
-        std::exit(cmd_info(info_path, sample_rate, block_size));
+        std::exit(cmd_info(info_path, sample_rate, block_size, info_probe, info_json));
     });
 
     // ========================================================================
@@ -768,13 +1210,15 @@ int main(int argc, char** argv) {
     auto* params_cmd = app.add_subcommand("params", "List plugin parameters");
     std::string params_path;
     bool params_json = false;
+    bool params_verbose = false;
 
     params_cmd->add_option("plugin", params_path, "Path to plugin")
         ->required();
     params_cmd->add_flag("-j,--json", params_json, "Output as JSON");
+    params_cmd->add_flag("-V,--verbose", params_verbose, "Show extended info (ranges, defaults, flags)");
 
     params_cmd->callback([&]() {
-        std::exit(cmd_params(params_path, sample_rate, block_size, params_json));
+        std::exit(cmd_params(params_path, sample_rate, block_size, params_json, params_verbose));
     });
 
     // ========================================================================
@@ -885,25 +1329,46 @@ int main(int argc, char** argv) {
     // ========================================================================
     // Subcommand: process
     // ========================================================================
-    auto* process_cmd = app.add_subcommand("process", "Process raw audio file");
+    auto* process_cmd = app.add_subcommand("process", "Process audio through plugin");
     std::string process_plugin;
     std::string process_input;
     std::string process_output;
+    std::string process_sidechain;
+    std::string process_midi;
     std::string process_state;
+    int process_preset = -1;
+    std::vector<std::string> process_params;
     bool process_double = false;
+    bool process_nrt = false;
+    double process_bpm = 0.0;
+    int process_bit_depth = 0;
+    double process_tail = 2.0;
 
     process_cmd->add_option("plugin", process_plugin, "Path to plugin")
         ->required();
-    process_cmd->add_option("input", process_input, "Input file (raw float32 interleaved)")
+    process_cmd->add_option("-i,--input", process_input, "Input audio file");
+    process_cmd->add_option("-o,--output", process_output, "Output audio file")
         ->required();
-    process_cmd->add_option("output", process_output, "Output file (raw float32 interleaved)")
-        ->required();
-    process_cmd->add_option("-s,--state", process_state, "State file to load");
+    process_cmd->add_option("--sidechain", process_sidechain, "Sidechain input audio file");
+    process_cmd->add_option("-m,--midi-input", process_midi, "Input MIDI file");
+    process_cmd->add_option("-s,--state", process_state, "Load plugin state from file");
+    process_cmd->add_option("-p,--preset", process_preset, "Load factory preset N");
+    process_cmd->add_option("--param", process_params, "Set parameter: \"Name:value\" (repeatable)");
     process_cmd->add_flag("-d,--double", process_double, "Use double precision if supported");
+    process_cmd->add_flag("--non-realtime", process_nrt, "Enable non-realtime processing mode");
+    process_cmd->add_option("--bpm", process_bpm, "Set transport BPM");
+    process_cmd->add_option("--bit-depth", process_bit_depth, "Output bit depth (16, 24, or 32)")
+        ->check(CLI::IsMember({16, 24, 32}));
+    process_cmd->add_option("-t,--tail", process_tail, "Tail length in seconds after MIDI ends (default: 2.0)")
+        ->default_val(2.0);
 
     process_cmd->callback([&]() {
         std::exit(cmd_process(process_plugin, process_input, process_output,
-                              sample_rate, block_size, process_state, process_double));
+                              process_sidechain, process_midi,
+                              sample_rate, block_size, process_state,
+                              process_preset, process_params,
+                              process_double, process_nrt, process_bpm,
+                              process_bit_depth, process_tail));
     });
 
     // Parse and run

@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### Added
+
+- **C/C++ CLI feature parity with Python frontend** -- brought `minihost_c` and `minihost_cpp` up to date with features already available in libminihost and the Python CLI
+
+  #### Process command (both CLIs)
+  - Audio file I/O via `minihost_audiofile.h` -- process WAV, FLAC, MP3 input and write WAV/FLAC output (raw float32 retained as fallback for non-audio extensions)
+  - `-i`/`--input` and `-o`/`--output` named arguments for input/output files (C CLI retains legacy positional syntax)
+  - Latency compensation -- output automatically trimmed using `mh_get_latency_samples()`
+  - `-p`/`--preset N` -- load factory preset before processing via `mh_set_program()`
+  - `--param "Name:value"` -- set parameters by name or index (repeatable), dispatched via `mh_process_auto()` for sample-accurate application
+  - `--sidechain FILE` -- sidechain input via `mh_open_ex()` + `mh_process_sidechain()`
+  - `--non-realtime` -- enable higher-quality offline processing via `mh_set_non_realtime()`
+  - `--bpm BPM` -- set transport tempo for tempo-synced plugins via `mh_set_transport()`
+  - `--bit-depth 16|24|32` -- control output bit depth (default: 24)
+
+  #### Process command (C++ CLI only)
+  - `-m`/`--midi-input FILE` -- render MIDI files through synth/effect plugins via midifile library + `mh_process_midi()`
+  - `-t`/`--tail SECONDS` -- configurable tail length for MIDI-only rendering (default: 2.0s)
+
+  #### Params command (both CLIs)
+  - `-V`/`--verbose` -- extended parameter display with ranges, defaults, and flags using `mh_param_to_text()`
+
+  #### Info command (both CLIs)
+  - `--probe` -- lightweight metadata-only mode (no full plugin load)
+  - `-j`/`--json` -- JSON output with merged probe and runtime info
+
+### Changed
+
+- `minihost_cpp` now links against `minihost_audio` and `midifile` libraries
+- `minihost_c` now links against `minihost_audio` library
+
 ## [0.1.4]
 
 ### Added
