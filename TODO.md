@@ -2,17 +2,6 @@
 
 ## Planned
 
-### High priority
-
-- [ ] **OGG write support** - `mh_audio_write()` does not support OGG/Vorbis output; requires a vendored encoder
-- [ ] **Expose audio input callback in Python** - Bind `mh_audio_set_input_callback` in `_core.cpp` to enable real-time effect processing from Python (e.g., guitar amp sims, live vocal processing)
-
-### Medium priority
-
-- [ ] **CLI unit tests** - `cli.py` has six subcommands (`scan`, `info`, `params`, `midi`, `play`, `process`) with zero test coverage. At minimum test argument parsing and error paths
-- [ ] **Render internals unit tests** - `_build_tempo_map`, `_tick_to_seconds`, `_collect_midi_events` in `render.py` are non-trivial pure-Python functions with no unit tests; edge cases (tempo changes mid-song, empty tracks, zero-duration notes) can silently produce wrong output
-- [ ] **Offline bounce with tail detection** - `mh_get_tail_time()` exists but the render pipeline doesn't use it. Add auto-tail mode that keeps rendering until the plugin's tail decays below a threshold (useful for reverb/delay tails)
-
 ### Lower priority
 
 - [ ] **Parameter preset morphing** - Higher-level Python utility for interpolating between two parameter snapshots (A/B morph) using `get_state`/`set_state` and per-parameter access
@@ -23,7 +12,6 @@
 ### High impact
 
 - [ ] **Sample rate conversion / resampling** - Built-in resampler (e.g. libsamplerate or sinc interpolator) so users can seamlessly load files at a different sample rate than the plugin session (e.g. 44.1k file into 48k plugin)
-- [ ] **Batch / multi-file processing in CLI** - Glob support for `minihost process` (e.g. `minihost process effect.vst3 -i "*.wav" -o output/`) for batch sound design, mastering, or ML dataset preparation
 - [ ] **Preset management CLI commands** - Commands for listing, loading, and saving presets (`minihost presets plugin.vst3`, `--save out.vstpreset`, `--load my.vstpreset`); infrastructure already exists via `VstPreset` and `mh_get/set_program`
 - [ ] **AIFF and OGG/Vorbis write support** - Extend `mh_audio_write()` beyond WAV/FLAC to cover compressed output formats for web and game audio pipelines
 

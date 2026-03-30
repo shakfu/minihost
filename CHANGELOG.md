@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Audio input for effect processing** -- lock-free ring buffer API for feeding audio through effect plugins in real time, without GIL contention on the audio thread
+  - C API: `mh_audio_enable_input()`, `mh_audio_disable_input()`, `mh_audio_write_input()`, `mh_audio_input_available()`
+  - C internals: `MH_AudioRingBuffer` -- SPSC lock-free ring buffer (`audio_ringbuffer.h/.cpp`)
+  - Python: `AudioDevice.enable_input(capacity_frames=0)`, `disable_input()`, `write_input(data)`, `input_available` property
+  - Example: `examples/audio_input.py` -- sine wave and file-through-effect demos
+
+- **Offline bounce with automatic tail detection** -- `tail_seconds="auto"` in render functions monitors output amplitude after MIDI ends and stops when it decays below a threshold
+  - `render_midi_stream()`, `render_midi()`, `render_midi_to_file()`, `MidiRenderer` all accept `tail_seconds="auto"`
+  - Configurable `tail_threshold` (default: -80 dB / `1e-4` linear) and `max_tail_seconds` (default: 30s safety cap)
+  - Stops after 4 consecutive blocks below threshold to avoid cutting during brief silences
+  - Example: `examples/auto_tail.py` -- compares fixed vs auto tail at different thresholds
+
+- **Duplex audio (capture) for real-time effect processing** -- system audio input routed through plugin via miniaudio duplex mode
+  - C layer: `MH_AudioConfig.capture` field; when set, audio device opens in duplex mode and the audio callback de-interleaves capture input directly into the plugin's input buffers (zero additional latency)
+  - Python: `AudioDevice(plugin, capture=True)` -- new `capture` parameter on both `Plugin` and `PluginChain` constructors
+  - CLI: `minihost play /path/to/effect.vst3 --input` (`-i`) enables duplex mode for live effect processing (guitar through amp sim, vocal processing, etc.)
+
+- **Batch / multi-file processing in CLI** -- glob pattern expansion and directory output for `minihost process`
+  - `-i "*.wav"` expands glob patterns; `-o output/` writes each result to the output directory
+  - Batch mode detected when output path is a directory (exists or ends with `/`) and input contains audio files (no MIDI)
+  - Plugin loaded once, state saved and restored between files for consistent processing
+  - Skips existing output files unless `-y`/`--overwrite` is set
+  - Example: `minihost process reverb.vst3 -i "drums/*.wav" -o processed/`
+
+### Tests
+
+- **Render internals unit tests** (`tests/test_render_internals.py`) -- 55 tests covering `_build_tempo_map`, `_tick_to_seconds`, `_collect_midi_events`, `_event_to_midi_tuple`, `_seconds_to_samples`, and end-to-end tempo map integration
+- **CLI unit tests** (`tests/test_cli.py`) -- 61 tests covering argument parsing for all 6 subcommands, global options, error paths, `--input` capture flag for `play`, glob expansion, batch output detection, and batch error paths
+
 ## [0.1.3]
 
 ### Added

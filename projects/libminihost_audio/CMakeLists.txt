@@ -4,6 +4,7 @@ add_library(minihost_audio STATIC
     minihost_audio.c
     minihost_audiofile.c
     midi_ringbuffer.cpp
+    audio_ringbuffer.cpp
     minihost_midi.cpp
     ${CMAKE_SOURCE_DIR}/projects/tflac/tflac.c
 )

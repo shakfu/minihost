@@ -971,7 +971,8 @@ class AudioDevice {
 public:
     // Constructor for single plugin
     AudioDevice(Plugin& plugin, double sample_rate = 0, int buffer_frames = 0,
-                int output_channels = 0, int midi_input_port = -1, int midi_output_port = -1)
+                int output_channels = 0, int midi_input_port = -1, int midi_output_port = -1,
+                bool capture = false)
         : plugin_ref_(&plugin), chain_ref_(nullptr)
     {
         MH_AudioConfig config;
@@ -980,6 +981,7 @@ public:
         config.output_channels = output_channels;
         config.midi_input_port = midi_input_port;
         config.midi_output_port = midi_output_port;
+        config.capture = capture ? 1 : 0;
 
         char err[1024] = {0};
         device_ = mh_audio_open(plugin.plugin_, &config, err, sizeof(err));
@@ -990,7 +992,8 @@ public:
 
     // Constructor for plugin chain
     AudioDevice(PluginChain& chain, double sample_rate = 0, int buffer_frames = 0,
-                int output_channels = 0, int midi_input_port = -1, int midi_output_port = -1)
+                int output_channels = 0, int midi_input_port = -1, int midi_output_port = -1,
+                bool capture = false)
         : plugin_ref_(nullptr), chain_ref_(&chain)
     {
         MH_AudioConfig config;
@@ -999,6 +1002,7 @@ public:
         config.output_channels = output_channels;
         config.midi_input_port = midi_input_port;
         config.midi_output_port = midi_output_port;
+        config.capture = capture ? 1 : 0;
 
         char err[1024] = {0};
         device_ = mh_audio_open_chain(chain.chain_, &config, err, sizeof(err));
@@ -1126,6 +1130,44 @@ public:
                                 static_cast<unsigned char>(data2))) {
             throw std::runtime_error("Failed to send MIDI (queue may be full)");
         }
+    }
+
+    // Audio input via lock-free ring buffer (no GIL on audio thread)
+    void enable_input(int capacity_frames = 0) {
+        if (capacity_frames <= 0) {
+            // Default: ~0.5s at device sample rate
+            double sr = mh_audio_get_sample_rate(device_);
+            capacity_frames = static_cast<int>(sr > 0 ? sr * 0.5 : 24000);
+        }
+        if (!mh_audio_enable_input(device_, capacity_frames)) {
+            throw std::runtime_error("Failed to enable audio input ring buffer");
+        }
+    }
+
+    void disable_input() {
+        mh_audio_disable_input(device_);
+    }
+
+    int write_input(AudioArray data) {
+        int channels = static_cast<int>(data.shape(0));
+        int frames = static_cast<int>(data.shape(1));
+        int dev_channels = mh_audio_get_channels(device_);
+
+        // Interleave: numpy is [channels, frames] row-major, ring buffer wants interleaved
+        std::vector<float> interleaved(frames * dev_channels, 0.0f);
+        const float* src = data.data();
+        int copy_ch = std::min(channels, dev_channels);
+        for (int f = 0; f < frames; f++) {
+            for (int c = 0; c < copy_ch; c++) {
+                interleaved[f * dev_channels + c] = src[c * frames + f];
+            }
+        }
+
+        return mh_audio_write_input(device_, interleaved.data(), frames);
+    }
+
+    int input_available() const {
+        return mh_audio_input_available(device_);
     }
 
     // Context manager support
@@ -1759,32 +1801,36 @@ NB_MODULE(_core, m) {
 
     // AudioDevice class for real-time playback
     nb::class_<AudioDevice>(m, "AudioDevice")
-        .def(nb::init<Plugin&, double, int, int, int, int>(),
+        .def(nb::init<Plugin&, double, int, int, int, int, bool>(),
              nb::arg("plugin"),
              nb::arg("sample_rate") = 0.0,
              nb::arg("buffer_frames") = 0,
              nb::arg("output_channels") = 0,
              nb::arg("midi_input_port") = -1,
              nb::arg("midi_output_port") = -1,
+             nb::arg("capture") = false,
              "Open an audio device for real-time playback with a single plugin. "
              "sample_rate=0 uses device default. "
              "buffer_frames=0 uses auto (~256-512). "
              "output_channels=0 uses plugin's output channels. "
              "midi_input_port=-1 means no MIDI input. "
-             "midi_output_port=-1 means no MIDI output.")
-        .def(nb::init<PluginChain&, double, int, int, int, int>(),
+             "midi_output_port=-1 means no MIDI output. "
+             "capture=True enables duplex mode (system audio input through plugin).")
+        .def(nb::init<PluginChain&, double, int, int, int, int, bool>(),
              nb::arg("chain"),
              nb::arg("sample_rate") = 0.0,
              nb::arg("buffer_frames") = 0,
              nb::arg("output_channels") = 0,
              nb::arg("midi_input_port") = -1,
              nb::arg("midi_output_port") = -1,
+             nb::arg("capture") = false,
              "Open an audio device for real-time playback with a plugin chain. "
              "sample_rate=0 uses device default. "
              "buffer_frames=0 uses auto (~256-512). "
              "output_channels=0 uses chain's output channels. "
              "midi_input_port=-1 means no MIDI input. "
-             "midi_output_port=-1 means no MIDI output.")
+             "midi_output_port=-1 means no MIDI output. "
+             "capture=True enables duplex mode (system audio input through chain).")
 
         .def("start", &AudioDevice::start,
              "Start audio playback")
@@ -1832,6 +1878,22 @@ NB_MODULE(_core, m) {
         .def("send_midi", &AudioDevice::send_midi,
              nb::arg("status"), nb::arg("data1"), nb::arg("data2"),
              "Send a MIDI event to the plugin (e.g., send_midi(0x90, 60, 100) for note on)")
+
+        // Audio input for effect processing (lock-free ring buffer)
+        .def("enable_input", &AudioDevice::enable_input,
+             nb::arg("capacity_frames") = 0,
+             "Enable audio input for effect processing via a lock-free ring buffer. "
+             "Use write_input() to push audio data. capacity_frames=0 uses ~0.5s default.")
+        .def("disable_input", &AudioDevice::disable_input,
+             "Disable audio input and revert to silence")
+        .def("write_input", &AudioDevice::write_input,
+             nb::arg("data"),
+             "Write audio frames into the input ring buffer. "
+             "data: numpy array of shape (channels, frames), dtype float32. "
+             "Returns number of frames actually written (may be less if buffer is full). "
+             "Thread-safe, can be called while playing.")
+        .def_prop_ro("input_available", &AudioDevice::input_available,
+             "Number of audio frames available in the input ring buffer")
 
         // Context manager support
         .def("__enter__", &AudioDevice::enter, nb::rv_policy::reference)

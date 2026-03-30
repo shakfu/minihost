@@ -390,6 +390,8 @@ def _cmd_midi_monitor(args: argparse.Namespace) -> int:
 
 def cmd_play(args: argparse.Namespace) -> int:
     """Play plugin with real-time audio and MIDI."""
+    capture = getattr(args, "input", False) or False
+
     try:
         plugin = minihost.Plugin(
             args.plugin, sample_rate=args.sample_rate, max_block_size=args.block_size
@@ -429,7 +431,7 @@ def cmd_play(args: argparse.Namespace) -> int:
             return 1
         print(f"  MIDI Output: [{midi_out_port}] {outputs[midi_out_port]['name']}")
 
-    # Open audio device
+    # Open audio device (duplex mode if --input)
     try:
         audio = minihost.AudioDevice(
             plugin,
@@ -437,12 +439,14 @@ def cmd_play(args: argparse.Namespace) -> int:
             buffer_frames=args.block_size,
             midi_input_port=midi_port,
             midi_output_port=midi_out_port,
+            capture=capture,
         )
     except RuntimeError as e:
         print(f"Error opening audio device: {e}", file=sys.stderr)
         return 1
 
-    print("\nAudio Device:")
+    mode = "Duplex (capture + playback)" if capture else "Playback"
+    print(f"\nAudio Device ({mode}):")
     print(f"  Sample rate: {audio.sample_rate:.0f} Hz")
     print(f"  Buffer: {audio.buffer_frames} frames")
     print(f"  Channels: {audio.channels}")
@@ -483,13 +487,15 @@ def cmd_play(args: argparse.Namespace) -> int:
 
     no_midi_in = args.midi is None and not args.virtual_midi
     no_midi_out = args.midi_out is None and not args.virtual_midi_out
-    if no_midi_in or no_midi_out:
+    if no_midi_in or no_midi_out or not capture:
         hints = []
+        if not capture:
+            hints.append("audio input (--input / -i)")
         if no_midi_in:
-            hints.append("input (--midi N / --virtual-midi NAME)")
+            hints.append("MIDI input (--midi N / --virtual-midi NAME)")
         if no_midi_out:
-            hints.append("output (--midi-out N / --virtual-midi-out NAME)")
-        print(f"(No MIDI {' or '.join(hints)})")
+            hints.append("MIDI output (--midi-out N / --virtual-midi-out NAME)")
+        print(f"(No {', '.join(hints)})")
 
     try:
         while running:
@@ -547,6 +553,238 @@ def _load_midi_events(midi_path, sample_rate):
     return result, max_sample
 
 
+def _process_single_file(
+    plugin,
+    input_path,
+    output_path,
+    args,
+    *,
+    reset=False,
+    expected_sample_rate=None,
+    expected_channels=None,
+):
+    """Process a single audio file through a plugin. Returns 0 on success, 1 on error.
+
+    The plugin should already be loaded and configured with state/presets.
+    If reset=True, plugin.reset() is called before processing.
+    expected_sample_rate/expected_channels: validate input matches (for batch mode).
+    """
+    import numpy as np
+
+    from minihost.audio_io import read_audio, write_audio
+
+    if reset:
+        plugin.reset()
+
+    try:
+        data, sr = read_audio(input_path)
+    except Exception as e:
+        print(f"Error reading '{input_path}': {e}", file=sys.stderr)
+        return 1
+
+    in_ch = data.shape[0]
+    total_samples = data.shape[1]
+    sample_rate = sr
+
+    if expected_sample_rate is not None and sr != expected_sample_rate:
+        print(
+            f"Error: Sample rate mismatch in '{input_path}': "
+            f"{sr} Hz (expected {expected_sample_rate} Hz)",
+            file=sys.stderr,
+        )
+        return 1
+
+    if expected_channels is not None and in_ch != expected_channels:
+        print(
+            f"Error: Channel count mismatch in '{input_path}': "
+            f"{in_ch} ch (expected {expected_channels} ch)",
+            file=sys.stderr,
+        )
+        return 1
+
+    out_ch = (
+        args.out_channels if args.out_channels else max(plugin.num_output_channels, 2)
+    )
+    block_size = args.block_size
+    latency = plugin.latency_samples
+
+    # Pre-allocate output buffer
+    output_total = total_samples + latency
+    output_data = np.zeros((out_ch, output_total), dtype=np.float32)
+
+    # Pad input
+    main_input = data
+    if main_input.shape[1] < output_total:
+        padded = np.zeros((in_ch, output_total), dtype=np.float32)
+        padded[:, : main_input.shape[1]] = main_input
+        main_input = padded
+
+    # Process loop
+    for start in range(0, output_total, block_size):
+        end = min(start + block_size, output_total)
+        bsize = end - start
+        in_block = main_input[:, start:end].copy()
+        out_block = np.zeros((out_ch, bsize), dtype=np.float32)
+        plugin.process(in_block, out_block)
+        output_data[:, start:end] = out_block
+
+    # Latency compensation
+    if latency > 0:
+        output_data = output_data[:, latency:]
+    output_data = output_data[:, :total_samples]
+
+    # Write
+    bit_depth = args.bit_depth if args.bit_depth else 24
+    try:
+        write_audio(output_path, output_data, int(sample_rate), bit_depth=bit_depth)
+    except Exception as e:
+        print(f"Error writing '{output_path}': {e}", file=sys.stderr)
+        return 1
+
+    return 0
+
+
+def _cmd_process_batch(args, input_files):
+    """Batch-process multiple audio files through a plugin."""
+    from minihost.audio_io import get_audio_info
+
+    # Detect sample rate and channel count from first file
+    try:
+        first_info = get_audio_info(input_files[0])
+        sample_rate = int(first_info["sample_rate"])
+        in_channels = int(first_info["channels"])
+    except Exception as e:
+        print(f"Error reading '{input_files[0]}': {e}", file=sys.stderr)
+        return 1
+
+    # Load plugin once
+    try:
+        plugin = minihost.Plugin(
+            args.plugin,
+            sample_rate=sample_rate,
+            max_block_size=args.block_size,
+            in_channels=in_channels,
+        )
+    except RuntimeError as e:
+        print(f"Error loading plugin: {e}", file=sys.stderr)
+        return 1
+
+    # Load state / preset
+    if args.state:
+        try:
+            with open(args.state, "rb") as f:
+                plugin.set_state(f.read())
+        except Exception as e:
+            print(f"Warning: Could not load state: {e}", file=sys.stderr)
+
+    if args.vstpreset:
+        try:
+            _load_vstpreset(plugin, args.vstpreset)
+        except (FileNotFoundError, ValueError, RuntimeError) as e:
+            print(f"Error loading .vstpreset: {e}", file=sys.stderr)
+            return 1
+
+    if args.preset is not None:
+        if args.preset < 0 or args.preset >= plugin.num_programs:
+            print(
+                f"Error: Preset {args.preset} out of range (0-{plugin.num_programs - 1})",
+                file=sys.stderr,
+            )
+            return 1
+        plugin.program = args.preset
+
+    # Apply --param static overrides
+    if args.param:
+        from minihost.automation import parse_param_arg
+
+        for param_str in args.param:
+            try:
+                param_idx, value = parse_param_arg(param_str, plugin)
+                plugin.set_param(param_idx, value)
+            except ValueError as e:
+                print(f"Error parsing --param: {e}", file=sys.stderr)
+                return 1
+
+    if args.non_realtime:
+        plugin.non_realtime = True
+
+    if args.bpm:
+        plugin.set_transport(bpm=args.bpm, is_playing=True)
+
+    # Save initial state for reset between files
+    initial_state = plugin.get_state()
+
+    print(f"Batch processing {len(input_files)} file(s) through {args.plugin}")
+    print(f"  Output directory: {args.output}")
+
+    failed = 0
+    for i, inp_path in enumerate(input_files, 1):
+        basename = os.path.basename(inp_path)
+        out_path = os.path.join(args.output, basename)
+
+        if os.path.exists(out_path) and not args.overwrite:
+            print(
+                f"  [{i}/{len(input_files)}] Skipping {basename} (exists, use -y to overwrite)"
+            )
+            continue
+
+        # Reset plugin state between files
+        plugin.reset()
+        plugin.set_state(initial_state)
+
+        ret = _process_single_file(
+            plugin,
+            inp_path,
+            out_path,
+            args,
+            reset=False,
+            expected_sample_rate=sample_rate,
+            expected_channels=in_channels,
+        )
+        if ret != 0:
+            print(f"  [{i}/{len(input_files)}] FAILED: {basename}", file=sys.stderr)
+            failed += 1
+        else:
+            print(f"  [{i}/{len(input_files)}] {basename}")
+
+    if failed:
+        print(f"\n{failed} file(s) failed.", file=sys.stderr)
+        return 1
+
+    print(f"\nProcessed {len(input_files) - failed} file(s).")
+    return 0
+
+
+def _expand_globs(patterns):
+    """Expand glob patterns in a list of file paths. Returns sorted unique paths."""
+    import glob as globmod
+
+    result = []
+    seen = set()
+    for pattern in patterns:
+        # If pattern contains glob characters, expand it
+        if any(c in pattern for c in "*?["):
+            matches = sorted(globmod.glob(pattern, recursive=True))
+            for m in matches:
+                if m not in seen:
+                    seen.add(m)
+                    result.append(m)
+        else:
+            if pattern not in seen:
+                seen.add(pattern)
+                result.append(pattern)
+    return result
+
+
+def _is_batch_output(output_path):
+    """Check if output path indicates batch mode (directory)."""
+    return (
+        output_path.endswith(os.sep)
+        or output_path.endswith("/")
+        or os.path.isdir(output_path)
+    )
+
+
 def cmd_process(args: argparse.Namespace) -> int:
     """Process audio file through plugin (offline)."""
     import numpy as np
@@ -554,17 +792,9 @@ def cmd_process(args: argparse.Namespace) -> int:
     from minihost.audio_io import get_audio_info, read_audio, write_audio
     from minihost.automation import parse_automation_file, parse_param_arg
 
-    # Check output doesn't exist (unless --overwrite)
-    if os.path.exists(args.output) and not args.overwrite:
-        print(
-            f"Error: Output file '{args.output}' already exists. "
-            f"Use -y/--overwrite to overwrite.",
-            file=sys.stderr,
-        )
-        return 1
-
-    # --- Determine sample rate and read inputs ---
-    input_files = args.input or []
+    # --- Expand globs in input file list ---
+    raw_inputs = args.input or []
+    input_files = _expand_globs(raw_inputs) if raw_inputs else []
     midi_path = args.midi_input
     has_audio_input = len(input_files) > 0
     has_midi_input = midi_path is not None
@@ -572,6 +802,37 @@ def cmd_process(args: argparse.Namespace) -> int:
     if not has_audio_input and not has_midi_input:
         print(
             "Error: At least one of --input or --midi-input is required.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # --- Detect batch mode ---
+    # Batch mode: output is a directory, input has glob patterns, no MIDI.
+    # Multiple explicit -i args without globs are treated as main + sidechain (not batch).
+    has_globs = any(any(c in p for c in "*?[") for p in raw_inputs)
+    batch_mode = (
+        has_audio_input
+        and _is_batch_output(args.output)
+        and not has_midi_input
+        and (has_globs or len(raw_inputs) == 1)
+    )
+
+    if batch_mode:
+        if len(input_files) == 0:
+            print("Error: No files matched the input pattern(s).", file=sys.stderr)
+            return 1
+        os.makedirs(args.output, exist_ok=True)
+        return _cmd_process_batch(args, input_files)
+
+    # Check output doesn't exist (unless --overwrite)
+    if (
+        os.path.exists(args.output)
+        and not os.path.isdir(args.output)
+        and not args.overwrite
+    ):
+        print(
+            f"Error: Output file '{args.output}' already exists. "
+            f"Use -y/--overwrite to overwrite.",
             file=sys.stderr,
         )
         return 1
@@ -952,6 +1213,12 @@ Examples:
     # play
     play_p = subparsers.add_parser("play", help="Play plugin with real-time audio/MIDI")
     play_p.add_argument("plugin", help="Path to plugin")
+    play_p.add_argument(
+        "-i",
+        "--input",
+        action="store_true",
+        help="Enable audio input (duplex mode) for effect processing",
+    )
     play_p.add_argument(
         "-m", "--midi", type=int, metavar="N", help="Connect to MIDI input port N"
     )

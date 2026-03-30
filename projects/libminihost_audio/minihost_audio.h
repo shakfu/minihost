@@ -27,6 +27,7 @@ typedef struct MH_AudioConfig {
     int output_channels;     // 0 = use plugin's output channel count
     int midi_input_port;     // -1 = none, >= 0 = MIDI input port index
     int midi_output_port;    // -1 = none, >= 0 = MIDI output port index
+    int capture;             // 0 = playback only, 1 = duplex (capture + playback)
 } MH_AudioConfig;
 
 // Input callback for effects (called from audio thread)
@@ -135,6 +136,26 @@ int mh_audio_is_midi_output_virtual(MH_AudioDevice* dev);
 // data2: second data byte (e.g., velocity)
 // Returns 1 on success, 0 on failure (e.g., queue full)
 int mh_audio_send_midi(MH_AudioDevice* dev, unsigned char status, unsigned char data1, unsigned char data2);
+
+// Enable ring-buffer-based audio input for effect processing.
+// Creates an internal ring buffer and installs an input callback that reads from it.
+// Call mh_audio_write_input() from any thread to push audio data.
+// capacity_frames: ring buffer capacity in frames (rounded up to power of 2)
+// Returns 1 on success, 0 on failure.
+int mh_audio_enable_input(MH_AudioDevice* dev, int capacity_frames);
+
+// Disable ring-buffer-based audio input and revert to silence.
+void mh_audio_disable_input(MH_AudioDevice* dev);
+
+// Write interleaved audio frames into the input ring buffer (thread-safe).
+// data: interleaved float audio [frame0_ch0, frame0_ch1, ..., frame1_ch0, ...]
+// nframes: number of frames to write
+// Returns number of frames actually written (may be less if buffer is full).
+int mh_audio_write_input(MH_AudioDevice* dev, const float* data, int nframes);
+
+// Get number of frames available in the input ring buffer for reading.
+// Returns 0 if input ring buffer is not enabled.
+int mh_audio_input_available(MH_AudioDevice* dev);
 
 #ifdef __cplusplus
 }

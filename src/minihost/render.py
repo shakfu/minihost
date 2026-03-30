@@ -138,11 +138,26 @@ def _event_to_midi_tuple(
     return (sample_offset, status, data1, data2)
 
 
+def _is_auto_tail(tail_seconds: object) -> bool:
+    """Check if tail_seconds requests auto-detection."""
+    return tail_seconds == "auto"
+
+
+# Default threshold for auto-tail detection: -80 dB in linear amplitude
+_AUTO_TAIL_THRESHOLD = 1e-4
+# Number of consecutive silent blocks before stopping
+_AUTO_TAIL_SILENT_BLOCKS = 4
+# Maximum auto-tail duration in seconds (safety cap)
+_AUTO_TAIL_MAX_SECONDS = 30.0
+
+
 def render_midi_stream(
     plugin: PluginOrChain,
     midi_file: Union[MidiFile, str],
     block_size: int = 512,
-    tail_seconds: Optional[float] = None,
+    tail_seconds: Optional[Union[float, str]] = None,
+    tail_threshold: float = _AUTO_TAIL_THRESHOLD,
+    max_tail_seconds: float = _AUTO_TAIL_MAX_SECONDS,
 ) -> "Iterator[np.ndarray]":
     """Render MIDI file through plugin or chain as a generator of audio blocks.
 
@@ -151,7 +166,12 @@ def render_midi_stream(
         midi_file: MidiFile object or path to MIDI file
         block_size: Audio block size in samples
         tail_seconds: Extra time to render after MIDI ends for reverb/delay tails.
-                     None = use plugin/chain tail_seconds, 0 = no tail
+                     None = use plugin/chain tail_seconds, 0 = no tail,
+                     "auto" = detect tail by monitoring output level
+        tail_threshold: Peak amplitude threshold for auto-tail detection (linear).
+                       Default is 1e-4 (~-80 dB). Only used when tail_seconds="auto".
+        max_tail_seconds: Maximum tail duration for auto mode (safety cap).
+                         Default is 30.0 seconds.
 
     Yields:
         numpy arrays of shape (channels, block_size) containing rendered audio
@@ -162,6 +182,10 @@ def render_midi_stream(
         ...     # Process or write each block
         ...     pass
 
+        >>> # Auto-detect reverb tail
+        >>> for block in minihost.render_midi_stream(plugin, "song.mid", tail_seconds="auto"):
+        ...     pass
+
         >>> # With a plugin chain
         >>> synth = minihost.Plugin("synth.vst3", sample_rate=48000)
         >>> reverb = minihost.Plugin("reverb.vst3", sample_rate=48000)
@@ -169,6 +193,8 @@ def render_midi_stream(
         >>> audio = minihost.render_midi(chain, "song.mid")
     """
     import numpy as np
+
+    auto_tail = _is_auto_tail(tail_seconds)
 
     # Load MIDI file if path provided
     if isinstance(midi_file, str):
@@ -184,11 +210,17 @@ def render_midi_stream(
     out_channels = max(plugin.num_output_channels, 2)
 
     # Determine tail length
-    if tail_seconds is None:
-        tail_seconds = plugin.tail_seconds
+    if auto_tail:
+        # For auto mode, we use a large upper bound; the loop exits early
+        # when output decays below threshold.
+        effective_tail = max_tail_seconds
+    elif tail_seconds is None:
+        effective_tail = plugin.tail_seconds
         # Reasonable default if plugin reports 0 or very large
-        if tail_seconds <= 0 or tail_seconds > 30:
-            tail_seconds = 2.0
+        if effective_tail <= 0 or effective_tail > 30:
+            effective_tail = 2.0
+    else:
+        effective_tail = float(tail_seconds)
 
     # Build tempo map and collect events
     tempo_map = _build_tempo_map(midi_file)
@@ -201,7 +233,8 @@ def render_midi_stream(
     else:
         midi_duration = 0.0
 
-    total_duration = midi_duration + tail_seconds
+    midi_end_samples = _seconds_to_samples(midi_duration, sample_rate)
+    total_duration = midi_duration + effective_tail
     total_samples = _seconds_to_samples(total_duration, sample_rate)
 
     # Convert all events to sample positions
@@ -219,6 +252,7 @@ def render_midi_stream(
     # Render loop
     current_sample = 0
     event_idx = 0
+    consecutive_silent = 0
 
     while current_sample < total_samples:
         # Determine block size for this iteration
@@ -252,19 +286,34 @@ def render_midi_stream(
             out_slice = np.zeros((out_channels, this_block_size), dtype=np.float32)
             plugin.process_midi(in_slice, out_slice, block_events)
             yield out_slice
+            block_for_check = out_slice
         else:
             plugin.process_midi(input_buffer, output_buffer, block_events)
             yield output_buffer.copy()
+            block_for_check = output_buffer
 
         current_sample += this_block_size
+
+        # Auto-tail detection: after all MIDI events are done, check if output
+        # has decayed below threshold for several consecutive blocks.
+        if auto_tail and current_sample > midi_end_samples:
+            peak = float(np.max(np.abs(block_for_check)))
+            if peak < tail_threshold:
+                consecutive_silent += 1
+                if consecutive_silent >= _AUTO_TAIL_SILENT_BLOCKS:
+                    return  # Tail has decayed, stop rendering
+            else:
+                consecutive_silent = 0
 
 
 def render_midi(
     plugin: PluginOrChain,
     midi_file: Union[MidiFile, str],
     block_size: int = 512,
-    tail_seconds: Optional[float] = None,
+    tail_seconds: Optional[Union[float, str]] = None,
     dtype: Optional[type] = None,
+    tail_threshold: float = _AUTO_TAIL_THRESHOLD,
+    max_tail_seconds: float = _AUTO_TAIL_MAX_SECONDS,
 ) -> "np.ndarray":
     """Render MIDI file through plugin or chain to a numpy array.
 
@@ -272,8 +321,11 @@ def render_midi(
         plugin: Plugin or PluginChain instance to render through
         midi_file: MidiFile object or path to MIDI file
         block_size: Audio block size in samples
-        tail_seconds: Extra time to render after MIDI ends for reverb/delay tails
+        tail_seconds: Extra time to render after MIDI ends for reverb/delay tails.
+                     "auto" = detect tail by monitoring output level.
         dtype: Output dtype (np.float32 or np.float64). None = np.float32
+        tail_threshold: Peak amplitude threshold for auto-tail detection (linear).
+        max_tail_seconds: Maximum tail duration for auto mode (safety cap).
 
     Returns:
         numpy array of shape (channels, total_samples)
@@ -288,7 +340,16 @@ def render_midi(
     if dtype is None:
         dtype = np.float32
 
-    blocks = list(render_midi_stream(plugin, midi_file, block_size, tail_seconds))
+    blocks = list(
+        render_midi_stream(
+            plugin,
+            midi_file,
+            block_size,
+            tail_seconds,
+            tail_threshold=tail_threshold,
+            max_tail_seconds=max_tail_seconds,
+        )
+    )
 
     if not blocks:
         out_channels = max(plugin.num_output_channels, 2)
@@ -308,8 +369,10 @@ def render_midi_to_file(
     midi_file: Union[MidiFile, str],
     output_path: str,
     block_size: int = 512,
-    tail_seconds: Optional[float] = None,
+    tail_seconds: Optional[Union[float, str]] = None,
     bit_depth: int = 24,
+    tail_threshold: float = _AUTO_TAIL_THRESHOLD,
+    max_tail_seconds: float = _AUTO_TAIL_MAX_SECONDS,
 ) -> int:
     """Render MIDI file through plugin or chain and write to audio file.
 
@@ -318,8 +381,11 @@ def render_midi_to_file(
         midi_file: MidiFile object or path to MIDI file
         output_path: Output WAV file path
         block_size: Audio block size in samples
-        tail_seconds: Extra time to render after MIDI ends
+        tail_seconds: Extra time to render after MIDI ends.
+                     "auto" = detect tail by monitoring output level.
         bit_depth: Output bit depth (16, 24, or 32 for float)
+        tail_threshold: Peak amplitude threshold for auto-tail detection (linear).
+        max_tail_seconds: Maximum tail duration for auto mode (safety cap).
 
     Returns:
         Number of samples written
@@ -338,7 +404,16 @@ def render_midi_to_file(
 
     sample_rate = int(plugin.sample_rate)
 
-    blocks = list(render_midi_stream(plugin, midi_file, block_size, tail_seconds))
+    blocks = list(
+        render_midi_stream(
+            plugin,
+            midi_file,
+            block_size,
+            tail_seconds,
+            tail_threshold=tail_threshold,
+            max_tail_seconds=max_tail_seconds,
+        )
+    )
 
     if not blocks:
         out_channels = max(plugin.num_output_channels, 2)
@@ -376,7 +451,9 @@ class MidiRenderer:
         plugin: PluginOrChain,
         midi_file: Union[MidiFile, str],
         block_size: int = 512,
-        tail_seconds: Optional[float] = None,
+        tail_seconds: Optional[Union[float, str]] = None,
+        tail_threshold: float = _AUTO_TAIL_THRESHOLD,
+        max_tail_seconds: float = _AUTO_TAIL_MAX_SECONDS,
     ):
         """Initialize renderer.
 
@@ -384,7 +461,10 @@ class MidiRenderer:
             plugin: Plugin or PluginChain instance to render through
             midi_file: MidiFile object or path to MIDI file
             block_size: Audio block size in samples
-            tail_seconds: Extra time after MIDI ends for tails
+            tail_seconds: Extra time after MIDI ends for tails.
+                         "auto" = detect tail by monitoring output level.
+            tail_threshold: Peak amplitude threshold for auto-tail detection.
+            max_tail_seconds: Maximum tail duration for auto mode.
         """
         import numpy as np
 
@@ -392,6 +472,9 @@ class MidiRenderer:
 
         self.plugin = plugin
         self.block_size = block_size
+        self._auto_tail = _is_auto_tail(tail_seconds)
+        self._tail_threshold = tail_threshold
+        self._consecutive_silent = 0
 
         # Load MIDI file if path provided
         if isinstance(midi_file, str):
@@ -408,11 +491,15 @@ class MidiRenderer:
         self._out_channels = max(plugin.num_output_channels, 2)
 
         # Determine tail length
-        if tail_seconds is None:
-            tail_seconds = plugin.tail_seconds
-            if tail_seconds <= 0 or tail_seconds > 30:
-                tail_seconds = 2.0
-        self._tail_seconds = tail_seconds
+        if self._auto_tail:
+            effective_tail = max_tail_seconds
+        elif tail_seconds is None:
+            effective_tail = plugin.tail_seconds
+            if effective_tail <= 0 or effective_tail > 30:
+                effective_tail = 2.0
+        else:
+            effective_tail = float(tail_seconds)
+        self._tail_seconds = effective_tail
 
         # Build tempo map and collect events
         self._tempo_map = _build_tempo_map(self._midi_file)
@@ -427,6 +514,9 @@ class MidiRenderer:
         else:
             self._midi_duration = 0.0
 
+        self._midi_end_samples = _seconds_to_samples(
+            self._midi_duration, self.sample_rate
+        )
         self._total_duration = self._midi_duration + self._tail_seconds
         self._total_samples = _seconds_to_samples(
             self._total_duration, self.sample_rate
@@ -451,6 +541,7 @@ class MidiRenderer:
         # State
         self._current_sample = 0
         self._event_idx = 0
+        self._auto_tail_finished = False
 
     @property
     def duration_seconds(self) -> float:
@@ -487,6 +578,8 @@ class MidiRenderer:
     @property
     def is_finished(self) -> bool:
         """True if rendering is complete."""
+        if self._auto_tail_finished:
+            return True
         return self._current_sample >= self._total_samples
 
     @property
@@ -498,6 +591,8 @@ class MidiRenderer:
         """Reset renderer to beginning."""
         self._current_sample = 0
         self._event_idx = 0
+        self._consecutive_silent = 0
+        self._auto_tail_finished = False
         self.plugin.reset()
 
     def render_block(self) -> "Optional[np.ndarray]":
@@ -546,6 +641,17 @@ class MidiRenderer:
             result = self._output_buffer.copy()
 
         self._current_sample += this_block_size
+
+        # Auto-tail detection
+        if self._auto_tail and self._current_sample > self._midi_end_samples:
+            peak = float(self._np.max(self._np.abs(result)))
+            if peak < self._tail_threshold:
+                self._consecutive_silent += 1
+                if self._consecutive_silent >= _AUTO_TAIL_SILENT_BLOCKS:
+                    self._auto_tail_finished = True
+            else:
+                self._consecutive_silent = 0
+
         return result
 
     def render_all(self, dtype: Optional[type] = None) -> "np.ndarray":

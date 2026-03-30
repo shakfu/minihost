@@ -8,6 +8,7 @@
 #include "minihost_audio.h"
 #include "minihost_midi.h"
 #include "midi_ringbuffer.h"
+#include "audio_ringbuffer.h"
 #include "minihost.h"
 #include "minihost_chain.h"
 #include <stdlib.h>
@@ -24,6 +25,7 @@ struct MH_AudioDevice {
     double sample_rate;
     int buffer_frames;
     int channels;
+    int capture;             // 1 if duplex (capture enabled), 0 if playback only
 
     // Input callback for effects
     MH_AudioInputCallback input_callback;
@@ -43,6 +45,9 @@ struct MH_AudioDevice {
     int midi_out_port;  // -1 if not connected or virtual
     int midi_in_virtual;   // 1 if virtual port, 0 if physical
     int midi_out_virtual;  // 1 if virtual port, 0 if physical
+
+    // Audio input ring buffer (for write_input / effect processing)
+    MH_AudioRingBuffer* audio_in_buffer;
 
     // State
     int is_playing;
@@ -93,7 +98,6 @@ static void midi_input_callback(const unsigned char* data, size_t len, void* use
 // Audio callback - called from miniaudio's audio thread
 static void audio_callback(ma_device* device, void* output, const void* input, ma_uint32 frame_count) {
     MH_AudioDevice* dev = (MH_AudioDevice*)device->pUserData;
-    (void)input; // We don't use capture input
 
     float* interleaved_output = (float*)output;
     int channels = dev->channels;
@@ -104,8 +108,16 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
         frames = dev->buffer_capacity;
     }
 
-    // Get input audio (for effects) or zero the buffers (for synths)
-    if (dev->input_callback) {
+    // Get input audio: capture (duplex) > input callback > silence
+    if (dev->capture && input) {
+        // De-interleave capture input into per-channel buffers
+        const float* interleaved_input = (const float*)input;
+        for (int f = 0; f < frames; f++) {
+            for (int ch = 0; ch < channels; ch++) {
+                dev->input_buffers[ch][f] = interleaved_input[f * channels + ch];
+            }
+        }
+    } else if (dev->input_callback) {
         dev->input_callback(dev->input_buffers, frames, dev->input_callback_user_data);
     } else {
         // Zero input buffers for synth plugins
@@ -215,6 +227,9 @@ MH_AudioDevice* mh_audio_open(MH_Plugin* plugin, const MH_AudioConfig* config,
     double requested_sample_rate = (config && config->sample_rate > 0) ? config->sample_rate : 0;
     int requested_buffer_frames = (config && config->buffer_frames > 0) ? config->buffer_frames : 512;
     int requested_channels = (config && config->output_channels > 0) ? config->output_channels : info.num_output_ch;
+    int capture = (config && config->capture) ? 1 : 0;
+
+    dev->capture = capture;
 
     // Initialize miniaudio context
     ma_result result = ma_context_init(NULL, 0, NULL, &dev->context);
@@ -226,10 +241,15 @@ MH_AudioDevice* mh_audio_open(MH_Plugin* plugin, const MH_AudioConfig* config,
         return NULL;
     }
 
-    // Configure device
-    ma_device_config device_config = ma_device_config_init(ma_device_type_playback);
+    // Configure device (duplex if capture requested, playback-only otherwise)
+    ma_device_type dev_type = capture ? ma_device_type_duplex : ma_device_type_playback;
+    ma_device_config device_config = ma_device_config_init(dev_type);
     device_config.playback.format = ma_format_f32;
     device_config.playback.channels = requested_channels;
+    if (capture) {
+        device_config.capture.format = ma_format_f32;
+        device_config.capture.channels = requested_channels;
+    }
     device_config.sampleRate = (ma_uint32)requested_sample_rate; // 0 = device default
     device_config.periodSizeInFrames = requested_buffer_frames;
     device_config.dataCallback = audio_callback;
@@ -366,6 +386,9 @@ MH_AudioDevice* mh_audio_open_chain(MH_PluginChain* chain, const MH_AudioConfig*
     double requested_sample_rate = (config && config->sample_rate > 0) ? config->sample_rate : 0;
     int requested_buffer_frames = (config && config->buffer_frames > 0) ? config->buffer_frames : 512;
     int requested_channels = (config && config->output_channels > 0) ? config->output_channels : num_out_ch;
+    int capture = (config && config->capture) ? 1 : 0;
+
+    dev->capture = capture;
 
     // Initialize miniaudio context
     ma_result result = ma_context_init(NULL, 0, NULL, &dev->context);
@@ -377,10 +400,15 @@ MH_AudioDevice* mh_audio_open_chain(MH_PluginChain* chain, const MH_AudioConfig*
         return NULL;
     }
 
-    // Configure device
-    ma_device_config device_config = ma_device_config_init(ma_device_type_playback);
+    // Configure device (duplex if capture requested, playback-only otherwise)
+    ma_device_type dev_type = capture ? ma_device_type_duplex : ma_device_type_playback;
+    ma_device_config device_config = ma_device_config_init(dev_type);
     device_config.playback.format = ma_format_f32;
     device_config.playback.channels = requested_channels;
+    if (capture) {
+        device_config.capture.format = ma_format_f32;
+        device_config.capture.channels = requested_channels;
+    }
     device_config.sampleRate = (ma_uint32)requested_sample_rate; // 0 = device default
     device_config.periodSizeInFrames = requested_buffer_frames;
     device_config.dataCallback = audio_callback;
@@ -500,6 +528,11 @@ void mh_audio_close(MH_AudioDevice* dev) {
     }
     if (dev->midi_out_buffer) {
         mh_midi_ringbuffer_free(dev->midi_out_buffer);
+    }
+
+    // Cleanup audio input ring buffer
+    if (dev->audio_in_buffer) {
+        mh_audio_ringbuffer_free(dev->audio_in_buffer);
     }
 
     // Cleanup audio
@@ -696,4 +729,58 @@ int mh_audio_send_midi(MH_AudioDevice* dev, unsigned char status, unsigned char 
     event.data2 = data2;
 
     return mh_midi_ringbuffer_push(dev->midi_in_buffer, &event);
+}
+
+// Internal callback that reads from the audio ring buffer
+static void audio_ringbuffer_input_callback(float* const* buffer, int nframes, void* user_data) {
+    MH_AudioDevice* dev = (MH_AudioDevice*)user_data;
+    if (!dev || !dev->audio_in_buffer) {
+        // Silence fallback
+        int channels = dev ? dev->channels : 0;
+        for (int ch = 0; ch < channels; ch++) {
+            memset(buffer[ch], 0, nframes * sizeof(float));
+        }
+        return;
+    }
+    mh_audio_ringbuffer_read_into(dev->audio_in_buffer, buffer, nframes, dev->channels);
+}
+
+int mh_audio_enable_input(MH_AudioDevice* dev, int capacity_frames) {
+    if (!dev) return 0;
+
+    // Free existing buffer if any
+    if (dev->audio_in_buffer) {
+        mh_audio_ringbuffer_free(dev->audio_in_buffer);
+        dev->audio_in_buffer = NULL;
+    }
+
+    dev->audio_in_buffer = mh_audio_ringbuffer_create(dev->channels, capacity_frames);
+    if (!dev->audio_in_buffer) return 0;
+
+    // Install the ring buffer reader as the input callback
+    mh_audio_set_input_callback(dev, audio_ringbuffer_input_callback, dev);
+    return 1;
+}
+
+void mh_audio_disable_input(MH_AudioDevice* dev) {
+    if (!dev) return;
+
+    // Clear the input callback first (audio thread will see NULL and zero buffers)
+    mh_audio_set_input_callback(dev, NULL, NULL);
+
+    // Then free the ring buffer
+    if (dev->audio_in_buffer) {
+        mh_audio_ringbuffer_free(dev->audio_in_buffer);
+        dev->audio_in_buffer = NULL;
+    }
+}
+
+int mh_audio_write_input(MH_AudioDevice* dev, const float* data, int nframes) {
+    if (!dev || !dev->audio_in_buffer || !data || nframes <= 0) return 0;
+    return mh_audio_ringbuffer_push(dev->audio_in_buffer, data, nframes);
+}
+
+int mh_audio_input_available(MH_AudioDevice* dev) {
+    if (!dev || !dev->audio_in_buffer) return 0;
+    return mh_audio_ringbuffer_available(dev->audio_in_buffer);
 }
