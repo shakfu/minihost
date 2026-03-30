@@ -1,0 +1,2789 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Minimal headless audio plugin host for VST3, AudioUnit, and LV2">
+      
+      
+      
+        <link rel="canonical" href="https://shakfu.github.io/minihost/api_python/">
+      
+      
+        <link rel="prev" href="../cli/">
+      
+      
+        <link rel="next" href="../api_c/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Python API - minihost</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#python-api-reference" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="minihost" class="md-header__button md-logo" aria-label="minihost" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            minihost
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Python API
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/shakfu/minihost" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    shakfu/minihost
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="minihost" class="md-nav__button md-logo" aria-label="minihost" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    minihost
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/shakfu/minihost" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    shakfu/minihost
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting_started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python API
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#plugin" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plugin
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Plugin">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#constructor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Constructor
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#audio-processing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Audio Processing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#parameters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parameters
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#state-management" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        State Management
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#transport-and-playback" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Transport and Playback
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bus-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bus Layout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#change-notifications" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Change Notifications
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#miscellaneous" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Miscellaneous
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pluginchain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PluginChain
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="PluginChain">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#constructor_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Constructor
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#properties_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#methods" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Methods
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#audiodevice" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        AudioDevice
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="AudioDevice">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#constructor_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Constructor
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#properties_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#methods_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Methods
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#midifile" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MidiFile
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="MidiFile">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#constructor_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Constructor
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#properties_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#methods_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Methods
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#event-dict-keys" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Event Dict Keys
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#midiin" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MidiIn
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="MidiIn">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#static-methods" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Static Methods
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#methods_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Methods
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#midi-rendering" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MIDI Rendering
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="MIDI Rendering">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#functions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Functions
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Functions">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#auto-tail-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Auto-tail Detection
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#midirenderer-class" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MidiRenderer Class
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#audio-file-io" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Audio File I/O
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Audio File I/O">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#functions_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Functions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#supported-formats" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Supported Formats
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#resampling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resampling
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#automation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Automation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Automation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#functions_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Functions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#automation-file-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Automation File Format
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vst3-presets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        VST3 Presets
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="VST3 Presets">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#vstpreset-class" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        VstPreset Class
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#functions_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Functions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#plugin-discovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plugin Discovery
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Plugin Discovery">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#functions_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Functions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#midi-port-enumeration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MIDI Port Enumeration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="MIDI Port Enumeration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#functions_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Functions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#constants" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Constants
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api_c/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    C API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../hosting_guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hosting Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#plugin" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plugin
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Plugin">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#constructor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Constructor
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#properties" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#audio-processing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Audio Processing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#parameters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parameters
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#state-management" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        State Management
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#transport-and-playback" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Transport and Playback
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bus-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bus Layout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#change-notifications" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Change Notifications
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#miscellaneous" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Miscellaneous
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pluginchain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PluginChain
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="PluginChain">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#constructor_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Constructor
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#properties_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#methods" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Methods
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#audiodevice" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        AudioDevice
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="AudioDevice">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#constructor_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Constructor
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#properties_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#methods_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Methods
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#midifile" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MidiFile
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="MidiFile">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#constructor_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Constructor
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#properties_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Properties
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#methods_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Methods
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#event-dict-keys" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Event Dict Keys
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#midiin" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MidiIn
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="MidiIn">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#static-methods" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Static Methods
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#methods_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Methods
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#midi-rendering" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MIDI Rendering
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="MIDI Rendering">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#functions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Functions
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Functions">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#auto-tail-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Auto-tail Detection
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#midirenderer-class" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MidiRenderer Class
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#audio-file-io" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Audio File I/O
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Audio File I/O">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#functions_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Functions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#supported-formats" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Supported Formats
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#resampling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Resampling
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#automation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Automation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Automation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#functions_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Functions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#automation-file-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Automation File Format
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vst3-presets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        VST3 Presets
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="VST3 Presets">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#vstpreset-class" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        VstPreset Class
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#functions_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Functions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#plugin-discovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plugin Discovery
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Plugin Discovery">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#functions_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Functions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#midi-port-enumeration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MIDI Port Enumeration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="MIDI Port Enumeration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#functions_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Functions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#constants" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Constants
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="python-api-reference">Python API Reference<a class="headerlink" href="#python-api-reference" title="Permanent link">&para;</a></h1>
+<h2 id="plugin">Plugin<a class="headerlink" href="#plugin" title="Permanent link">&para;</a></h2>
+<p>Load and process audio through VST3, AudioUnit, or LV2 plugins.</p>
+<h3 id="constructor">Constructor<a class="headerlink" href="#constructor" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">Plugin</span><span class="p">(</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">sample_rate</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">48000.0</span><span class="p">,</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">max_block_size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">512</span><span class="p">,</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">in_channels</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">2</span><span class="p">,</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">out_channels</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">2</span><span class="p">,</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">sidechain_channels</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="p">)</span>
+</code></pre></div>
+<h3 id="properties">Properties<a class="headerlink" href="#properties" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Type</th>
+<th>Writable</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>num_params</code></td>
+<td><code>int</code></td>
+<td>No</td>
+<td>Number of parameters</td>
+</tr>
+<tr>
+<td><code>num_input_channels</code></td>
+<td><code>int</code></td>
+<td>No</td>
+<td>Number of input channels</td>
+</tr>
+<tr>
+<td><code>num_output_channels</code></td>
+<td><code>int</code></td>
+<td>No</td>
+<td>Number of output channels</td>
+</tr>
+<tr>
+<td><code>latency_samples</code></td>
+<td><code>int</code></td>
+<td>No</td>
+<td>Processing latency in samples</td>
+</tr>
+<tr>
+<td><code>tail_seconds</code></td>
+<td><code>float</code></td>
+<td>No</td>
+<td>Reverb/delay tail length in seconds</td>
+</tr>
+<tr>
+<td><code>sidechain_channels</code></td>
+<td><code>int</code></td>
+<td>No</td>
+<td>Configured sidechain channel count</td>
+</tr>
+<tr>
+<td><code>num_input_buses</code></td>
+<td><code>int</code></td>
+<td>No</td>
+<td>Number of input buses</td>
+</tr>
+<tr>
+<td><code>num_output_buses</code></td>
+<td><code>int</code></td>
+<td>No</td>
+<td>Number of output buses</td>
+</tr>
+<tr>
+<td><code>num_programs</code></td>
+<td><code>int</code></td>
+<td>No</td>
+<td>Number of factory presets</td>
+</tr>
+<tr>
+<td><code>accepts_midi</code></td>
+<td><code>bool</code></td>
+<td>No</td>
+<td>Whether plugin accepts MIDI input</td>
+</tr>
+<tr>
+<td><code>produces_midi</code></td>
+<td><code>bool</code></td>
+<td>No</td>
+<td>Whether plugin produces MIDI output</td>
+</tr>
+<tr>
+<td><code>is_midi_effect</code></td>
+<td><code>bool</code></td>
+<td>No</td>
+<td>Whether plugin is a MIDI effect</td>
+</tr>
+<tr>
+<td><code>supports_mpe</code></td>
+<td><code>bool</code></td>
+<td>No</td>
+<td>Whether plugin supports MPE</td>
+</tr>
+<tr>
+<td><code>supports_double</code></td>
+<td><code>bool</code></td>
+<td>No</td>
+<td>Whether plugin supports 64-bit processing</td>
+</tr>
+<tr>
+<td><code>sample_rate</code></td>
+<td><code>float</code></td>
+<td>Yes</td>
+<td>Current sample rate (preserves parameter state on change)</td>
+</tr>
+<tr>
+<td><code>program</code></td>
+<td><code>int</code></td>
+<td>Yes</td>
+<td>Current factory preset index</td>
+</tr>
+<tr>
+<td><code>bypass</code></td>
+<td><code>bool</code></td>
+<td>Yes</td>
+<td>Bypass state</td>
+</tr>
+<tr>
+<td><code>non_realtime</code></td>
+<td><code>bool</code></td>
+<td>Yes</td>
+<td>Non-realtime mode (higher-quality offline algorithms)</td>
+</tr>
+<tr>
+<td><code>processing_precision</code></td>
+<td><code>int</code></td>
+<td>Yes</td>
+<td><code>MH_PRECISION_SINGLE</code> or <code>MH_PRECISION_DOUBLE</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="audio-processing">Audio Processing<a class="headerlink" href="#audio-processing" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>process(input, output)</code></td>
+<td>Process audio. Arrays shape: <code>(channels, frames)</code>, dtype: <code>float32</code></td>
+</tr>
+<tr>
+<td><code>process_midi(input, output, midi_in)</code></td>
+<td>Process with MIDI. Returns list of output MIDI events</td>
+</tr>
+<tr>
+<td><code>process_auto(input, output, midi_in, param_changes)</code></td>
+<td>Process with sample-accurate automation and MIDI</td>
+</tr>
+<tr>
+<td><code>process_sidechain(main_in, main_out, sidechain_in)</code></td>
+<td>Process with sidechain input</td>
+</tr>
+<tr>
+<td><code>process_double(input, output)</code></td>
+<td>Process with 64-bit double precision. Arrays dtype: <code>float64</code></td>
+</tr>
+</tbody>
+</table>
+<p>MIDI events are tuples of <code>(sample_offset, status, data1, data2)</code>.
+Parameter changes are tuples of <code>(sample_offset, param_index, value)</code>.</p>
+<h3 id="parameters">Parameters<a class="headerlink" href="#parameters" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_param(index)</code></td>
+<td>Get normalized value (0.0--1.0)</td>
+</tr>
+<tr>
+<td><code>set_param(index, value)</code></td>
+<td>Set normalized value (0.0--1.0)</td>
+</tr>
+<tr>
+<td><code>get_param_info(index)</code></td>
+<td>Get metadata dict (<code>name</code>, <code>label</code>, <code>default</code>, <code>num_steps</code>, <code>id</code>, <code>category</code>)</td>
+</tr>
+<tr>
+<td><code>param_to_text(index, value)</code></td>
+<td>Convert normalized value to display string (e.g. <code>"2500 Hz"</code>)</td>
+</tr>
+<tr>
+<td><code>param_from_text(index, text)</code></td>
+<td>Convert display string to normalized value</td>
+</tr>
+<tr>
+<td><code>begin_param_gesture(index)</code></td>
+<td>Signal start of parameter change gesture</td>
+</tr>
+<tr>
+<td><code>end_param_gesture(index)</code></td>
+<td>Signal end of parameter change gesture</td>
+</tr>
+</tbody>
+</table>
+<h3 id="state-management">State Management<a class="headerlink" href="#state-management" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_state()</code></td>
+<td>Save full plugin state as <code>bytes</code></td>
+</tr>
+<tr>
+<td><code>set_state(data)</code></td>
+<td>Restore full plugin state from <code>bytes</code></td>
+</tr>
+<tr>
+<td><code>get_program_state()</code></td>
+<td>Save current program state as <code>bytes</code></td>
+</tr>
+<tr>
+<td><code>set_program_state(data)</code></td>
+<td>Restore current program state from <code>bytes</code></td>
+</tr>
+<tr>
+<td><code>get_program_name(index)</code></td>
+<td>Get factory preset name by index</td>
+</tr>
+</tbody>
+</table>
+<h3 id="transport-and-playback">Transport and Playback<a class="headerlink" href="#transport-and-playback" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>set_transport(bpm, time_sig_num=4, time_sig_denom=4, position_samples=0, position_beats=0.0, is_playing=True, is_recording=False, is_looping=False, loop_start=0, loop_end=0)</code></td>
+<td>Set transport info</td>
+</tr>
+<tr>
+<td><code>clear_transport()</code></td>
+<td>Clear transport info</td>
+</tr>
+<tr>
+<td><code>reset()</code></td>
+<td>Reset internal state (clears delay lines, filter states)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="bus-layout">Bus Layout<a class="headerlink" href="#bus-layout" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_bus_info(is_input, bus_index)</code></td>
+<td>Get bus info dict (<code>name</code>, <code>channels</code>, <code>is_main</code>, <code>is_enabled</code>)</td>
+</tr>
+<tr>
+<td><code>check_buses_layout(input_channels, output_channels)</code></td>
+<td>Check if a bus layout is supported</td>
+</tr>
+</tbody>
+</table>
+<h3 id="change-notifications">Change Notifications<a class="headerlink" href="#change-notifications" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>set_change_callback(callback)</code></td>
+<td>Register callback <code>(change_flags: int) -&gt; None</code> for processor-level changes</td>
+</tr>
+<tr>
+<td><code>set_param_value_callback(callback)</code></td>
+<td>Register callback <code>(index: int, value: float) -&gt; None</code> for plugin-initiated value changes</td>
+</tr>
+<tr>
+<td><code>set_param_gesture_callback(callback)</code></td>
+<td>Register callback <code>(index: int, is_begin: bool) -&gt; None</code> for gesture begin/end</td>
+</tr>
+</tbody>
+</table>
+<p>Change flag constants: <code>MH_CHANGE_LATENCY</code>, <code>MH_CHANGE_PARAM_INFO</code>, <code>MH_CHANGE_PROGRAM</code>, <code>MH_CHANGE_NON_PARAM_STATE</code>.</p>
+<h3 id="miscellaneous">Miscellaneous<a class="headerlink" href="#miscellaneous" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>set_track_properties(name=None, colour=None)</code></td>
+<td>Set track name and/or color metadata</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="pluginchain">PluginChain<a class="headerlink" href="#pluginchain" title="Permanent link">&para;</a></h2>
+<p>Chain multiple plugins for sequential processing.</p>
+<h3 id="constructor_1">Constructor<a class="headerlink" href="#constructor_1" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">PluginChain</span><span class="p">(</span><span class="n">plugins</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Plugin</span><span class="p">])</span>
+</code></pre></div>
+<p>All plugins must share the same sample rate.</p>
+<h3 id="properties_1">Properties<a class="headerlink" href="#properties_1" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>num_plugins</code></td>
+<td><code>int</code></td>
+<td>Number of plugins in chain</td>
+</tr>
+<tr>
+<td><code>latency_samples</code></td>
+<td><code>int</code></td>
+<td>Total chain latency (sum of all plugins)</td>
+</tr>
+<tr>
+<td><code>num_input_channels</code></td>
+<td><code>int</code></td>
+<td>Input channels (from first plugin)</td>
+</tr>
+<tr>
+<td><code>num_output_channels</code></td>
+<td><code>int</code></td>
+<td>Output channels (from last plugin)</td>
+</tr>
+<tr>
+<td><code>sample_rate</code></td>
+<td><code>float</code></td>
+<td>Shared sample rate</td>
+</tr>
+<tr>
+<td><code>tail_seconds</code></td>
+<td><code>float</code></td>
+<td>Maximum tail length (max of all plugins)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="methods">Methods<a class="headerlink" href="#methods" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>process(input, output)</code></td>
+<td>Process audio through chain</td>
+</tr>
+<tr>
+<td><code>process_midi(input, output, midi_events)</code></td>
+<td>Process with MIDI (MIDI goes to first plugin). Returns output MIDI events</td>
+</tr>
+<tr>
+<td><code>process_auto(input, output, midi_in, param_changes)</code></td>
+<td>Process with sample-accurate automation and MIDI</td>
+</tr>
+<tr>
+<td><code>get_plugin(index)</code></td>
+<td>Get plugin by index</td>
+</tr>
+<tr>
+<td><code>reset()</code></td>
+<td>Reset all plugins</td>
+</tr>
+<tr>
+<td><code>set_non_realtime(enabled)</code></td>
+<td>Set non-realtime mode for all plugins</td>
+</tr>
+</tbody>
+</table>
+<p>MIDI events are tuples of <code>(sample_offset, status, data1, data2)</code>.
+Chain parameter changes are tuples of <code>(sample_offset, plugin_index, param_index, value)</code> -- the extra <code>plugin_index</code> field (0-based) targets a specific plugin in the chain.</p>
+<hr />
+<h2 id="audiodevice">AudioDevice<a class="headerlink" href="#audiodevice" title="Permanent link">&para;</a></h2>
+<p>Real-time audio device for plugin playback. Supports context manager protocol.</p>
+<h3 id="constructor_2">Constructor<a class="headerlink" href="#constructor_2" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">AudioDevice</span><span class="p">(</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>    <span class="n">plugin</span><span class="p">:</span> <span class="n">Plugin</span> <span class="o">|</span> <span class="n">PluginChain</span><span class="p">,</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="n">sample_rate</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>      <span class="c1"># 0 = use system default</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="n">buffer_frames</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span><span class="p">,</span>        <span class="c1"># 0 = use system default</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="n">output_channels</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span><span class="p">,</span>      <span class="c1"># 0 = use plugin channels</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="n">midi_input_port</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span>     <span class="c1"># -1 = no MIDI input</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    <span class="n">midi_output_port</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span>    <span class="c1"># -1 = no MIDI output</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    <span class="n">capture</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>         <span class="c1"># True = duplex mode (system audio input)</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="p">)</span>
+</code></pre></div>
+<p>When <code>capture=True</code>, the audio device opens in duplex mode: system audio input is captured, processed through the plugin, and played back through speakers. Useful for guitar amp sims, vocal effects, and live processing.</p>
+<h3 id="properties_2">Properties<a class="headerlink" href="#properties_2" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>is_playing</code></td>
+<td><code>bool</code></td>
+<td>Whether audio is currently playing</td>
+</tr>
+<tr>
+<td><code>sample_rate</code></td>
+<td><code>float</code></td>
+<td>Actual device sample rate</td>
+</tr>
+<tr>
+<td><code>buffer_frames</code></td>
+<td><code>int</code></td>
+<td>Actual buffer size in frames</td>
+</tr>
+<tr>
+<td><code>channels</code></td>
+<td><code>int</code></td>
+<td>Number of output channels</td>
+</tr>
+<tr>
+<td><code>midi_input_port</code></td>
+<td><code>int</code></td>
+<td>Connected MIDI input port index (-1 if none)</td>
+</tr>
+<tr>
+<td><code>midi_output_port</code></td>
+<td><code>int</code></td>
+<td>Connected MIDI output port index (-1 if none)</td>
+</tr>
+<tr>
+<td><code>is_midi_input_virtual</code></td>
+<td><code>bool</code></td>
+<td>Whether MIDI input is a virtual port</td>
+</tr>
+<tr>
+<td><code>is_midi_output_virtual</code></td>
+<td><code>bool</code></td>
+<td>Whether MIDI output is a virtual port</td>
+</tr>
+<tr>
+<td><code>input_available</code></td>
+<td><code>int</code></td>
+<td>Frames available in input ring buffer (0 if not enabled)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="methods_1">Methods<a class="headerlink" href="#methods_1" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>start()</code></td>
+<td>Start audio playback</td>
+</tr>
+<tr>
+<td><code>stop()</code></td>
+<td>Stop audio playback</td>
+</tr>
+<tr>
+<td><code>send_midi(status, data1, data2)</code></td>
+<td>Send MIDI event programmatically</td>
+</tr>
+<tr>
+<td><code>connect_midi_input(port_index)</code></td>
+<td>Connect MIDI input port</td>
+</tr>
+<tr>
+<td><code>connect_midi_output(port_index)</code></td>
+<td>Connect MIDI output port</td>
+</tr>
+<tr>
+<td><code>disconnect_midi_input()</code></td>
+<td>Disconnect MIDI input</td>
+</tr>
+<tr>
+<td><code>disconnect_midi_output()</code></td>
+<td>Disconnect MIDI output</td>
+</tr>
+<tr>
+<td><code>create_virtual_midi_input(port_name)</code></td>
+<td>Create virtual MIDI input port</td>
+</tr>
+<tr>
+<td><code>create_virtual_midi_output(port_name)</code></td>
+<td>Create virtual MIDI output port</td>
+</tr>
+<tr>
+<td><code>enable_input(capacity_frames=0)</code></td>
+<td>Enable ring buffer audio input. <code>capacity_frames=0</code> uses ~0.5s default</td>
+</tr>
+<tr>
+<td><code>disable_input()</code></td>
+<td>Disable ring buffer audio input (revert to silence)</td>
+</tr>
+<tr>
+<td><code>write_input(data)</code></td>
+<td>Write numpy array <code>(channels, frames)</code> into input ring buffer. Returns frames written. Thread-safe</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="midifile">MidiFile<a class="headerlink" href="#midifile" title="Permanent link">&para;</a></h2>
+<p>MIDI file reader/writer.</p>
+<h3 id="constructor_3">Constructor<a class="headerlink" href="#constructor_3" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">MidiFile</span><span class="p">()</span>
+</code></pre></div>
+<h3 id="properties_3">Properties<a class="headerlink" href="#properties_3" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Type</th>
+<th>Writable</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>num_tracks</code></td>
+<td><code>int</code></td>
+<td>No</td>
+<td>Number of tracks</td>
+</tr>
+<tr>
+<td><code>ticks_per_quarter</code></td>
+<td><code>int</code></td>
+<td>Yes</td>
+<td>Ticks per quarter note (resolution)</td>
+</tr>
+<tr>
+<td><code>duration_seconds</code></td>
+<td><code>float</code></td>
+<td>No</td>
+<td>Total duration in seconds</td>
+</tr>
+</tbody>
+</table>
+<h3 id="methods_2">Methods<a class="headerlink" href="#methods_2" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>load(path)</code></td>
+<td>Load MIDI file. Returns <code>True</code> on success</td>
+</tr>
+<tr>
+<td><code>save(path)</code></td>
+<td>Save MIDI file. Returns <code>True</code> on success</td>
+</tr>
+<tr>
+<td><code>add_track()</code></td>
+<td>Add a new track. Returns track index</td>
+</tr>
+<tr>
+<td><code>add_tempo(track, tick, bpm)</code></td>
+<td>Add tempo event</td>
+</tr>
+<tr>
+<td><code>add_note_on(track, tick, channel, pitch, velocity)</code></td>
+<td>Add note on event</td>
+</tr>
+<tr>
+<td><code>add_note_off(track, tick, channel, pitch, velocity=0)</code></td>
+<td>Add note off event</td>
+</tr>
+<tr>
+<td><code>add_control_change(track, tick, channel, controller, value)</code></td>
+<td>Add CC event</td>
+</tr>
+<tr>
+<td><code>add_program_change(track, tick, channel, program)</code></td>
+<td>Add program change</td>
+</tr>
+<tr>
+<td><code>add_pitch_bend(track, tick, channel, value)</code></td>
+<td>Add pitch bend event</td>
+</tr>
+<tr>
+<td><code>get_events(track)</code></td>
+<td>Get all events from track as list of dicts</td>
+</tr>
+<tr>
+<td><code>make_absolute_ticks()</code></td>
+<td>Convert delta ticks to absolute</td>
+</tr>
+<tr>
+<td><code>make_delta_ticks()</code></td>
+<td>Convert absolute ticks to delta</td>
+</tr>
+<tr>
+<td><code>join_tracks()</code></td>
+<td>Merge all tracks into one</td>
+</tr>
+<tr>
+<td><code>split_tracks()</code></td>
+<td>Split tracks by MIDI channel</td>
+</tr>
+</tbody>
+</table>
+<h3 id="event-dict-keys">Event Dict Keys<a class="headerlink" href="#event-dict-keys" title="Permanent link">&para;</a></h3>
+<p>Events returned by <code>get_events()</code> have these keys depending on type:</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Types</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>type</code></td>
+<td>all</td>
+<td>Event type: <code>note_on</code>, <code>note_off</code>, <code>control_change</code>, <code>program_change</code>, <code>pitch_bend</code>, <code>tempo</code></td>
+</tr>
+<tr>
+<td><code>tick</code></td>
+<td>all</td>
+<td>Tick position</td>
+</tr>
+<tr>
+<td><code>seconds</code></td>
+<td>all</td>
+<td>Time in seconds</td>
+</tr>
+<tr>
+<td><code>channel</code></td>
+<td>note/CC/program/pitch_bend</td>
+<td>MIDI channel (0-15)</td>
+</tr>
+<tr>
+<td><code>pitch</code></td>
+<td>note_on, note_off</td>
+<td>MIDI note number (0-127)</td>
+</tr>
+<tr>
+<td><code>velocity</code></td>
+<td>note_on, note_off</td>
+<td>Velocity (0-127)</td>
+</tr>
+<tr>
+<td><code>controller</code></td>
+<td>control_change</td>
+<td>CC number (0-127)</td>
+</tr>
+<tr>
+<td><code>value</code></td>
+<td>control_change, pitch_bend</td>
+<td>Value</td>
+</tr>
+<tr>
+<td><code>program</code></td>
+<td>program_change</td>
+<td>Program number (0-127)</td>
+</tr>
+<tr>
+<td><code>bpm</code></td>
+<td>tempo</td>
+<td>Tempo in BPM</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="midiin">MidiIn<a class="headerlink" href="#midiin" title="Permanent link">&para;</a></h2>
+<p>Standalone MIDI input for monitoring raw MIDI messages without loading a plugin.</p>
+<h3 id="static-methods">Static Methods<a class="headerlink" href="#static-methods" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>MidiIn.open(port_index, callback)</code></td>
+<td>Open hardware MIDI input port. Callback receives <code>bytes</code></td>
+</tr>
+<tr>
+<td><code>MidiIn.open_virtual(name, callback)</code></td>
+<td>Create virtual MIDI input port. Callback receives <code>bytes</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="methods_3">Methods<a class="headerlink" href="#methods_3" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>close()</code></td>
+<td>Close the MIDI input</td>
+</tr>
+</tbody>
+</table>
+<p>Supports context manager: <code>with MidiIn.open(0, cb) as m: ...</code></p>
+<hr />
+<h2 id="midi-rendering">MIDI Rendering<a class="headerlink" href="#midi-rendering" title="Permanent link">&para;</a></h2>
+<p>Render MIDI files through plugins to produce audio.</p>
+<h3 id="functions">Functions<a class="headerlink" href="#functions" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">render_midi</span><span class="p">(</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    <span class="n">plugin</span><span class="p">:</span> <span class="n">Plugin</span> <span class="o">|</span> <span class="n">PluginChain</span><span class="p">,</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="n">midi_file</span><span class="p">:</span> <span class="n">MidiFile</span> <span class="o">|</span> <span class="nb">str</span><span class="p">,</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="n">block_size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">512</span><span class="p">,</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="n">tail_seconds</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>    <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>    <span class="n">tail_threshold</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1e-4</span><span class="p">,</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>    <span class="n">max_tail_seconds</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">30.0</span><span class="p">,</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span>
+</code></pre></div>
+<p>Render MIDI to numpy array. Returns shape <code>(channels, total_samples)</code>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">render_midi_stream</span><span class="p">(</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    <span class="n">plugin</span><span class="p">:</span> <span class="n">Plugin</span> <span class="o">|</span> <span class="n">PluginChain</span><span class="p">,</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="n">midi_file</span><span class="p">:</span> <span class="n">MidiFile</span> <span class="o">|</span> <span class="nb">str</span><span class="p">,</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">block_size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">512</span><span class="p">,</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="n">tail_seconds</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="n">tail_threshold</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1e-4</span><span class="p">,</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>    <span class="n">max_tail_seconds</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">30.0</span><span class="p">,</span>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Iterator</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span>
+</code></pre></div>
+<p>Generator yielding audio blocks of shape <code>(channels, block_size)</code>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">render_midi_to_file</span><span class="p">(</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>    <span class="n">plugin</span><span class="p">:</span> <span class="n">Plugin</span> <span class="o">|</span> <span class="n">PluginChain</span><span class="p">,</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    <span class="n">midi_file</span><span class="p">:</span> <span class="n">MidiFile</span> <span class="o">|</span> <span class="nb">str</span><span class="p">,</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    <span class="n">output_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>    <span class="n">block_size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">512</span><span class="p">,</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>    <span class="n">tail_seconds</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>    <span class="n">bit_depth</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">24</span><span class="p">,</span>
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>    <span class="n">tail_threshold</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1e-4</span><span class="p">,</span>
+<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>    <span class="n">max_tail_seconds</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">30.0</span><span class="p">,</span>
+<a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span>
+</code></pre></div>
+<p>Render MIDI to WAV file. Returns number of samples written.</p>
+<h4 id="auto-tail-detection">Auto-tail Detection<a class="headerlink" href="#auto-tail-detection" title="Permanent link">&para;</a></h4>
+<p>Pass <code>tail_seconds="auto"</code> to automatically detect when the plugin's output (reverb/delay tail) has decayed below a threshold, instead of using a fixed tail duration:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">audio</span> <span class="o">=</span> <span class="n">render_midi</span><span class="p">(</span><span class="n">plugin</span><span class="p">,</span> <span class="s2">&quot;song.mid&quot;</span><span class="p">,</span> <span class="n">tail_seconds</span><span class="o">=</span><span class="s2">&quot;auto&quot;</span><span class="p">)</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">audio</span> <span class="o">=</span> <span class="n">render_midi</span><span class="p">(</span><span class="n">plugin</span><span class="p">,</span> <span class="s2">&quot;song.mid&quot;</span><span class="p">,</span> <span class="n">tail_seconds</span><span class="o">=</span><span class="s2">&quot;auto&quot;</span><span class="p">,</span> <span class="n">tail_threshold</span><span class="o">=</span><span class="mf">1e-2</span><span class="p">)</span>  <span class="c1"># -40 dB</span>
+</code></pre></div>
+<ul>
+<li><code>tail_threshold</code>: peak amplitude threshold in linear (default: <code>1e-4</code>, ~-80 dB)</li>
+<li><code>max_tail_seconds</code>: safety cap (default: 30s)</li>
+<li>Rendering stops after 4 consecutive blocks below threshold</li>
+</ul>
+<h3 id="midirenderer-class">MidiRenderer Class<a class="headerlink" href="#midirenderer-class" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="n">MidiRenderer</span><span class="p">(</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>    <span class="n">plugin</span><span class="p">:</span> <span class="n">Plugin</span> <span class="o">|</span> <span class="n">PluginChain</span><span class="p">,</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>    <span class="n">midi_file</span><span class="p">:</span> <span class="n">MidiFile</span> <span class="o">|</span> <span class="nb">str</span><span class="p">,</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>    <span class="n">block_size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">512</span><span class="p">,</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>    <span class="n">tail_seconds</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>    <span class="n">tail_threshold</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1e-4</span><span class="p">,</span>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>    <span class="n">max_tail_seconds</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">30.0</span><span class="p">,</span>
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="p">)</span>
+</code></pre></div>
+<p>Stateful renderer for fine-grained control. Supports <code>tail_seconds="auto"</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>duration_seconds</code></td>
+<td><code>float</code></td>
+<td>Total duration including tail</td>
+</tr>
+<tr>
+<td><code>midi_duration_seconds</code></td>
+<td><code>float</code></td>
+<td>MIDI content duration (excluding tail)</td>
+</tr>
+<tr>
+<td><code>total_samples</code></td>
+<td><code>int</code></td>
+<td>Total samples to render</td>
+</tr>
+<tr>
+<td><code>current_sample</code></td>
+<td><code>int</code></td>
+<td>Current sample position</td>
+</tr>
+<tr>
+<td><code>current_time</code></td>
+<td><code>float</code></td>
+<td>Current time in seconds</td>
+</tr>
+<tr>
+<td><code>progress</code></td>
+<td><code>float</code></td>
+<td>Progress fraction (0.0--1.0)</td>
+</tr>
+<tr>
+<td><code>is_finished</code></td>
+<td><code>bool</code></td>
+<td>Whether rendering is complete</td>
+</tr>
+<tr>
+<td><code>channels</code></td>
+<td><code>int</code></td>
+<td>Number of output channels</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>render_block()</code></td>
+<td>Render next block. Returns <code>ndarray</code> or <code>None</code> if finished</td>
+</tr>
+<tr>
+<td><code>render_all(dtype=None)</code></td>
+<td>Render all remaining audio. Returns <code>ndarray</code></td>
+</tr>
+<tr>
+<td><code>reset()</code></td>
+<td>Reset renderer to beginning</td>
+</tr>
+</tbody>
+</table>
+<p>For all rendering functions: <code>tail_seconds=None</code> uses the plugin's reported tail length (clamped to 2s default if 0 or &gt;30s). <code>tail_seconds="auto"</code> enables auto-detection. A numeric value uses that exact duration.</p>
+<hr />
+<h2 id="audio-file-io">Audio File I/O<a class="headerlink" href="#audio-file-io" title="Permanent link">&para;</a></h2>
+<p>Read and write audio files via miniaudio.</p>
+<h3 id="functions_1">Functions<a class="headerlink" href="#functions_1" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="n">read_audio</span><span class="p">(</span><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span>
+</code></pre></div>
+<p>Read audio file. Returns <code>(data, sample_rate)</code> where data has shape <code>(channels, samples)</code>, dtype <code>float32</code>.</p>
+<p>Supported formats: WAV, FLAC, MP3, Vorbis.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="n">write_audio</span><span class="p">(</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>    <span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>    <span class="n">data</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>    <span class="n">sample_rate</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>    <span class="n">bit_depth</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">24</span><span class="p">,</span>
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span>
+</code></pre></div>
+<p>Write WAV file. Data shape: <code>(channels, samples)</code>. Bit depth 16 and 24 write integer PCM; 32 writes IEEE float.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="n">get_audio_info</span><span class="p">(</span><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span>
+</code></pre></div>
+<p>Get file metadata without decoding. Returns dict with keys: <code>channels</code>, <code>sample_rate</code>, <code>frames</code>, <code>duration</code>.</p>
+<h3 id="supported-formats">Supported Formats<a class="headerlink" href="#supported-formats" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Format</th>
+<th>Read</th>
+<th>Write</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>WAV</td>
+<td>Yes</td>
+<td>Yes (16/24/32-bit)</td>
+</tr>
+<tr>
+<td>FLAC</td>
+<td>Yes</td>
+<td>Yes (16/24-bit)</td>
+</tr>
+<tr>
+<td>MP3</td>
+<td>Yes</td>
+<td>No</td>
+</tr>
+<tr>
+<td>Vorbis</td>
+<td>Yes</td>
+<td>No</td>
+</tr>
+</tbody>
+</table>
+<h3 id="resampling">Resampling<a class="headerlink" href="#resampling" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="n">resample</span><span class="p">(</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>    <span class="n">data</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>    <span class="n">sample_rate_in</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>    <span class="n">sample_rate_out</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span>
+</code></pre></div>
+<p>Resample audio data to a different sample rate. Input/output shape: <code>(channels, frames)</code>, dtype <code>float32</code>. Uses miniaudio's linear resampler with 4th-order low-pass anti-aliasing. Returns a copy when rates are equal.</p>
+<hr />
+<h2 id="automation">Automation<a class="headerlink" href="#automation" title="Permanent link">&para;</a></h2>
+<p>Utilities for parameter automation and CLI parameter parsing.</p>
+<h3 id="functions_2">Functions<a class="headerlink" href="#functions_2" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="n">find_param_by_name</span><span class="p">(</span><span class="n">plugin</span><span class="p">:</span> <span class="n">Plugin</span><span class="p">,</span> <span class="n">name</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span>
+</code></pre></div>
+<p>Find parameter index by name (case-insensitive). Raises <code>ValueError</code> if not found.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="n">parse_param_arg</span><span class="p">(</span><span class="n">arg_str</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">plugin</span><span class="p">:</span> <span class="n">Plugin</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]</span>
+</code></pre></div>
+<p>Parse CLI <code>--param</code> argument string. Formats: <code>"Name:value"</code>, <code>"Name:value:n"</code> (normalized), <code>"Name:TextValue"</code>. Returns <code>(param_index, normalized_value)</code>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="n">parse_automation_file</span><span class="p">(</span>
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>    <span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span>
+<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>    <span class="n">plugin</span><span class="p">:</span> <span class="n">Plugin</span><span class="p">,</span>
+<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a>    <span class="n">sample_rate</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a>    <span class="n">total_length_samples</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+<a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a>    <span class="n">block_size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">512</span><span class="p">,</span>
+<a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]]</span>
+</code></pre></div>
+<p>Parse JSON automation file into parameter change events compatible with <code>Plugin.process_auto()</code>. Returns sorted list of <code>(sample_offset, param_index, value)</code> tuples.</p>
+<h3 id="automation-file-format">Automation File Format<a class="headerlink" href="#automation-file-format" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="p">{</span>
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="w">    </span><span class="nt">&quot;Param Name&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.5</span><span class="p">,</span>
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="w">    </span><span class="nt">&quot;Param Name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;TextValue&quot;</span><span class="p">,</span>
+<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a><span class="w">    </span><span class="nt">&quot;Param Name&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;0&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.5</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;1.5s&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.7</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;50%&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">1.0</span><span class="p">}</span>
+<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a><span class="p">}</span>
+</code></pre></div>
+<p>Keyframe time formats: <code>"1000"</code> (sample offset), <code>"1.5s"</code> (seconds), <code>"50%"</code> (percentage of total length). Linear interpolation between keyframes at block boundaries.</p>
+<hr />
+<h2 id="vst3-presets">VST3 Presets<a class="headerlink" href="#vst3-presets" title="Permanent link">&para;</a></h2>
+<p>Parse and load Steinberg <code>.vstpreset</code> files.</p>
+<h3 id="vstpreset-class">VstPreset Class<a class="headerlink" href="#vstpreset-class" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Attribute</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>class_id</code></td>
+<td><code>str</code></td>
+<td>Processor component FUID (32-char ASCII)</td>
+</tr>
+<tr>
+<td><code>component_state</code></td>
+<td><code>bytes | None</code></td>
+<td>Raw processor state (<code>Comp</code> chunk)</td>
+</tr>
+<tr>
+<td><code>controller_state</code></td>
+<td><code>bytes | None</code></td>
+<td>Raw controller state (<code>Cont</code> chunk)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="functions_3">Functions<a class="headerlink" href="#functions_3" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="n">read_vstpreset</span><span class="p">(</span><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">VstPreset</span>
+</code></pre></div>
+<p>Read and parse a <code>.vstpreset</code> file.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="n">load_vstpreset</span><span class="p">(</span><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span> <span class="n">plugin</span><span class="p">:</span> <span class="n">Plugin</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span>
+</code></pre></div>
+<p>Load a <code>.vstpreset</code> file into a plugin via <code>plugin.set_state()</code>.</p>
+<hr />
+<h2 id="plugin-discovery">Plugin Discovery<a class="headerlink" href="#plugin-discovery" title="Permanent link">&para;</a></h2>
+<h3 id="functions_4">Functions<a class="headerlink" href="#functions_4" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="n">probe</span><span class="p">(</span><span class="n">path</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span>
+</code></pre></div>
+<p>Get plugin metadata without full instantiation. Returns dict with plugin info.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="n">scan_directory</span><span class="p">(</span><span class="n">directory_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">]</span>
+</code></pre></div>
+<p>Recursively scan a directory for plugins (VST3, AudioUnit). Returns list of plugin info dicts.</p>
+<hr />
+<h2 id="midi-port-enumeration">MIDI Port Enumeration<a class="headerlink" href="#midi-port-enumeration" title="Permanent link">&para;</a></h2>
+<h3 id="functions_5">Functions<a class="headerlink" href="#functions_5" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="n">midi_get_input_ports</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">]</span>
+</code></pre></div>
+<p>Get list of available MIDI input ports. Each dict has <code>index</code> and <code>name</code>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a><span class="n">midi_get_output_ports</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">]</span>
+</code></pre></div>
+<p>Get list of available MIDI output ports. Each dict has <code>index</code> and <code>name</code>.</p>
+<hr />
+<h2 id="constants">Constants<a class="headerlink" href="#constants" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Constant</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>MH_CHANGE_LATENCY</code></td>
+<td>Change flag: plugin latency changed</td>
+</tr>
+<tr>
+<td><code>MH_CHANGE_PARAM_INFO</code></td>
+<td>Change flag: parameter info changed</td>
+</tr>
+<tr>
+<td><code>MH_CHANGE_PROGRAM</code></td>
+<td>Change flag: current program changed</td>
+</tr>
+<tr>
+<td><code>MH_CHANGE_NON_PARAM_STATE</code></td>
+<td>Change flag: non-parameter state changed</td>
+</tr>
+<tr>
+<td><code>MH_PRECISION_SINGLE</code></td>
+<td>32-bit float processing</td>
+</tr>
+<tr>
+<td><code>MH_PRECISION_DOUBLE</code></td>
+<td>64-bit double processing</td>
+</tr>
+</tbody>
+</table>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

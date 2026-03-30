@@ -1,0 +1,1637 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Minimal headless audio plugin host for VST3, AudioUnit, and LV2">
+      
+      
+      
+        <link rel="canonical" href="https://shakfu.github.io/minihost/changelog/">
+      
+      
+        <link rel="prev" href="../hosting_guide/">
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Changelog - minihost</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#changelog" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="minihost" class="md-header__button md-logo" aria-label="minihost" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            minihost
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Changelog
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/shakfu/minihost" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    shakfu/minihost
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="minihost" class="md-nav__button md-logo" aria-label="minihost" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    minihost
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/shakfu/minihost" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    shakfu/minihost
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting_started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api_python/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api_c/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    C API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../hosting_guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hosting Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [Unreleased]
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#014" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [0.1.4]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[0.1.4]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tests
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#013" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [0.1.3]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[0.1.3]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#012" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [0.1.2]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[0.1.2]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#changed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#removed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Removed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#011" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [0.1.1]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[0.1.1]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#changed_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#010" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [0.1.0]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[0.1.0]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Added">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#plugin-chaining" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plugin Chaining
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#real-time-audio-playback-miniaudio-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Real-time Audio Playback (miniaudio integration)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#real-time-midi-io-libremidi-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Real-time MIDI I/O (libremidi integration)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#virtual-midi-ports" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Virtual MIDI Ports
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#midi-file-readwrite-midifile-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MIDI File Read/Write (midifile integration)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#midi-file-rendering" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MIDI File Rendering
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#core-utilities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Core Utilities
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#parameter-preset-access" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parameter &amp; Preset Access
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bus-layout-sidechain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bus Layout &amp; Sidechain
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Fixed">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#linux-compilation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Linux Compilation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#command-line-interface" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Command Line Interface
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#python-bindings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Python Bindings
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [Unreleased]
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#014" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [0.1.4]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[0.1.4]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tests
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#013" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [0.1.3]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[0.1.3]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#012" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [0.1.2]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[0.1.2]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#changed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#removed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Removed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#011" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [0.1.1]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[0.1.1]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#changed_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Changed
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#010" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        [0.1.0]
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="[0.1.0]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#added_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Added
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Added">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#plugin-chaining" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plugin Chaining
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#real-time-audio-playback-miniaudio-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Real-time Audio Playback (miniaudio integration)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#real-time-midi-io-libremidi-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Real-time MIDI I/O (libremidi integration)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#virtual-midi-ports" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Virtual MIDI Ports
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#midi-file-readwrite-midifile-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MIDI File Read/Write (midifile integration)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#midi-file-rendering" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MIDI File Rendering
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#core-utilities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Core Utilities
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#parameter-preset-access" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parameter &amp; Preset Access
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bus-layout-sidechain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bus Layout &amp; Sidechain
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fixed
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Fixed">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#linux-compilation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Linux Compilation
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#command-line-interface" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Command Line Interface
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#python-bindings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Python Bindings
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="changelog">Changelog<a class="headerlink" href="#changelog" title="Permanent link">&para;</a></h1>
+<h2 id="unreleased">[Unreleased]<a class="headerlink" href="#unreleased" title="Permanent link">&para;</a></h2>
+<h2 id="014">[0.1.4]<a class="headerlink" href="#014" title="Permanent link">&para;</a></h2>
+<h3 id="added">Added<a class="headerlink" href="#added" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Audio input for effect processing</strong> -- lock-free ring buffer API for feeding audio through effect plugins in real time, without GIL contention on the audio thread</li>
+<li>C API: <code>mh_audio_enable_input()</code>, <code>mh_audio_disable_input()</code>, <code>mh_audio_write_input()</code>, <code>mh_audio_input_available()</code></li>
+<li>C internals: <code>MH_AudioRingBuffer</code> -- SPSC lock-free ring buffer (<code>audio_ringbuffer.h/.cpp</code>)</li>
+<li>Python: <code>AudioDevice.enable_input(capacity_frames=0)</code>, <code>disable_input()</code>, <code>write_input(data)</code>, <code>input_available</code> property</li>
+<li>
+<p>Example: <code>examples/audio_input.py</code> -- sine wave and file-through-effect demos</p>
+</li>
+<li>
+<p><strong>Offline bounce with automatic tail detection</strong> -- <code>tail_seconds="auto"</code> in render functions monitors output amplitude after MIDI ends and stops when it decays below a threshold</p>
+</li>
+<li><code>render_midi_stream()</code>, <code>render_midi()</code>, <code>render_midi_to_file()</code>, <code>MidiRenderer</code> all accept <code>tail_seconds="auto"</code></li>
+<li>Configurable <code>tail_threshold</code> (default: -80 dB / <code>1e-4</code> linear) and <code>max_tail_seconds</code> (default: 30s safety cap)</li>
+<li>Stops after 4 consecutive blocks below threshold to avoid cutting during brief silences</li>
+<li>
+<p>Example: <code>examples/auto_tail.py</code> -- compares fixed vs auto tail at different thresholds</p>
+</li>
+<li>
+<p><strong>Duplex audio (capture) for real-time effect processing</strong> -- system audio input routed through plugin via miniaudio duplex mode</p>
+</li>
+<li>C layer: <code>MH_AudioConfig.capture</code> field; when set, audio device opens in duplex mode and the audio callback de-interleaves capture input directly into the plugin's input buffers (zero additional latency)</li>
+<li>Python: <code>AudioDevice(plugin, capture=True)</code> -- new <code>capture</code> parameter on both <code>Plugin</code> and <code>PluginChain</code> constructors</li>
+<li>
+<p>CLI: <code>minihost play /path/to/effect.vst3 --input</code> (<code>-i</code>) enables duplex mode for live effect processing (guitar through amp sim, vocal processing, etc.)</p>
+</li>
+<li>
+<p><strong>Batch / multi-file processing in CLI</strong> -- glob pattern expansion and directory output for <code>minihost process</code></p>
+</li>
+<li><code>-i "*.wav"</code> expands glob patterns; <code>-o output/</code> writes each result to the output directory</li>
+<li>Batch mode detected when output path is a directory (exists or ends with <code>/</code>) and input contains audio files (no MIDI)</li>
+<li>Plugin loaded once, state saved and restored between files for consistent processing</li>
+<li>Skips existing output files unless <code>-y</code>/<code>--overwrite</code> is set</li>
+<li>
+<p>Example: <code>minihost process reverb.vst3 -i "drums/*.wav" -o processed/</code></p>
+</li>
+<li>
+<p><strong>Sample rate conversion / resampling</strong> -- built-in resampling using miniaudio's <code>ma_resampler</code> (linear interpolation with 4th-order low-pass anti-aliasing filter)</p>
+</li>
+<li>C API: <code>mh_audio_resample()</code> in <code>minihost_audiofile.h</code> -- resamples interleaved float32 audio between any two sample rates</li>
+<li>Python: <code>minihost.resample(data, sr_in, sr_out)</code> -- takes <code>(channels, frames)</code> numpy array, returns resampled array</li>
+<li>CLI: <code>minihost process</code> and batch mode automatically resample mismatched input files to match the plugin's sample rate; use <code>--no-resample</code> to error instead</li>
+<li>CLI: <code>minihost resample input.wav -o output.wav -r 48000</code> -- standalone resampling subcommand with <code>--bit-depth</code> and <code>-y</code>/<code>--overwrite</code> options</li>
+<li>No-op fast path when source and target rates are equal (memcpy, no resampler init)</li>
+</ul>
+<h3 id="tests">Tests<a class="headerlink" href="#tests" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Render internals unit tests</strong> (<code>tests/test_render_internals.py</code>) -- 55 tests covering <code>_build_tempo_map</code>, <code>_tick_to_seconds</code>, <code>_collect_midi_events</code>, <code>_event_to_midi_tuple</code>, <code>_seconds_to_samples</code>, and end-to-end tempo map integration</li>
+<li><strong>CLI unit tests</strong> (<code>tests/test_cli.py</code>) -- 84 tests covering argument parsing for all 7 subcommands, global options, error paths, <code>--input</code> capture flag for <code>play</code>, glob expansion, batch output detection, batch error paths, <code>--no-resample</code> flag, and <code>resample</code> subcommand (arg parsing + functional tests)</li>
+<li><strong>Resampling tests</strong> (<code>tests/test_audio_io.py</code>) -- 7 tests covering upsample, downsample, identity (same rate), stereo, silence preservation, large ratio (8k to 48k), and round-trip frame count</li>
+</ul>
+<h2 id="013">[0.1.3]<a class="headerlink" href="#013" title="Permanent link">&para;</a></h2>
+<h3 id="added_1">Added<a class="headerlink" href="#added_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>mh_chain_process_auto()</code> for sample-accurate parameter automation across plugin chains</li>
+<li>New <code>MH_ChainParamChange</code> struct with <code>plugin_index</code> field to target specific plugins in the chain</li>
+<li>
+<p>Python: <code>PluginChain.process_auto(input, output, midi_in, param_changes)</code> with 4-tuple param changes <code>(sample_offset, plugin_index, param_index, value)</code></p>
+</li>
+<li>
+<p>FLAC write support in <code>mh_audio_write()</code> via vendored <a href="https://github.com/jprjr/tflac">tflac</a> encoder (BSD-0, single-header C89)</p>
+</li>
+<li>Supports 16-bit and 24-bit FLAC output; 32-bit raises an error (FLAC max is 24-bit)</li>
+<li>Format selected by file extension: <code>.wav</code> for WAV, <code>.flac</code> for FLAC</li>
+<li>Python: <code>write_audio("out.flac", data, sr, bit_depth=24)</code> works without any API changes</li>
+</ul>
+<h3 id="fixed">Fixed<a class="headerlink" href="#fixed" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Fixed stale version assertion in <code>test_minihost.py</code> (<code>"0.1.1"</code> -&gt; <code>"0.1.2"</code>)</li>
+<li>Removed dead bit-depth auto-detection code in CLI <code>process</code> subcommand that relied on <code>get_audio_info()</code> returning a <code>subtype</code> key (removed in 0.1.2); now defaults to 24-bit when <code>--bit-depth</code> is not specified</li>
+<li>Fixed <code>render_midi_to_file()</code> docstring listing unsupported output formats (FLAC, AIFF, OGG); only WAV is supported</li>
+</ul>
+<h2 id="012">[0.1.2]<a class="headerlink" href="#012" title="Permanent link">&para;</a></h2>
+<h3 id="added_2">Added<a class="headerlink" href="#added_2" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Audio file I/O via miniaudio (C layer): <code>mh_audio_read()</code>, <code>mh_audio_write()</code>, <code>mh_audio_get_file_info()</code></li>
+<li>Python: <code>minihost.read_audio()</code>, <code>minihost.write_audio()</code>, <code>minihost.get_audio_info()</code> now backed by miniaudio</li>
+<li>Read support: WAV, FLAC, MP3, Vorbis</li>
+<li>Write support: WAV only (16-bit PCM, 24-bit PCM, 32-bit float)</li>
+<li><code>MidiIn</code> class for standalone MIDI input monitoring (no plugin required)</li>
+<li><code>MidiIn.open(port_index, callback)</code> -- open a hardware MIDI input port with raw bytes callback</li>
+<li><code>MidiIn.open_virtual(name, callback)</code> -- create a virtual MIDI input port with raw bytes callback</li>
+<li><code>close()</code> method and context manager (<code>with</code>) support</li>
+<li>Python: <code>minihost.MidiIn</code></li>
+<li>MIDI monitor mode in <code>minihost midi</code> CLI subcommand</li>
+<li><code>minihost midi -m N</code> -- monitor incoming MIDI on hardware port N</li>
+<li><code>minihost midi --virtual-midi NAME</code> -- create a virtual MIDI port and monitor it</li>
+<li>Human-readable output: Note On/Off (with note names), CC, Pitch Bend, Program Change, Channel Pressure, Poly Aftertouch, SysEx</li>
+</ul>
+<h3 id="changed">Changed<a class="headerlink" href="#changed" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Merged <code>probe</code> CLI subcommand into <code>info</code> -- use <code>minihost info &lt;plugin&gt; --probe</code> for lightweight metadata-only mode</li>
+<li><code>minihost info</code> now shows full runtime details by default (was already doing this)</li>
+<li><code>minihost info --probe</code> replaces the old <code>minihost probe</code> (no full plugin load)</li>
+<li><code>minihost info --json</code> outputs combined probe + runtime data as JSON</li>
+<li>Merged <code>render</code> CLI subcommand into <code>process</code> -- use <code>minihost process &lt;plugin&gt; -m song.mid -o output.wav</code> instead of <code>minihost render</code></li>
+<li>Added <code>-t, --tail</code> option to <code>process</code> subcommand (default: 2.0s) for configurable tail length in MIDI-only synth mode</li>
+<li>Renamed <code>midi-ports</code> CLI subcommand to <code>midi</code></li>
+</ul>
+<h3 id="removed">Removed<a class="headerlink" href="#removed" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>soundfile</code> runtime dependency -- audio file I/O now uses miniaudio (already vendored)</li>
+<li>AIFF and OGG write support removed (miniaudio encoder is WAV-only)</li>
+<li><code>get_audio_info()</code> no longer returns <code>format</code> or <code>subtype</code> keys</li>
+</ul>
+<h2 id="011">[0.1.1]<a class="headerlink" href="#011" title="Permanent link">&para;</a></h2>
+<h3 id="added_3">Added<a class="headerlink" href="#added_3" title="Permanent link">&para;</a></h3>
+<ul>
+<li>MIDI capability queries on live plugin instances via <code>MH_Info</code> fields: <code>accepts_midi</code>, <code>produces_midi</code>, <code>is_midi_effect</code>, <code>supports_mpe</code></li>
+<li>Python: <code>Plugin.accepts_midi</code>, <code>Plugin.produces_midi</code>, <code>Plugin.is_midi_effect</code>, <code>Plugin.supports_mpe</code> read-only properties</li>
+<li>Stable parameter IDs via <code>MH_ParamInfo.id</code> field (uses <code>getParameterID()</code> for version-safe state management)</li>
+<li>Python: <code>get_param_info()</code> dict now includes <code>"id"</code> key</li>
+<li>Parameter categories via <code>MH_ParamInfo.category</code> field with <code>MH_PARAM_CATEGORY_*</code> constants</li>
+<li>Python: <code>get_param_info()</code> dict now includes <code>"category"</code> key</li>
+<li>Bus layout validation via <code>mh_check_buses_layout()</code> -- query whether a bus layout is supported before attempting to apply it</li>
+<li>Python: <code>Plugin.check_buses_layout(input_channels, output_channels) -&gt; bool</code></li>
+<li>Change notifications via <code>AudioProcessorListener</code> integration</li>
+<li><code>mh_set_change_callback()</code> -- processor-level changes (latency, param info, program, non-param state) with <code>MH_CHANGE_*</code> bitmask flags</li>
+<li><code>mh_set_param_value_callback()</code> -- plugin-initiated parameter value changes</li>
+<li><code>mh_set_param_gesture_callback()</code> -- parameter gesture begin/end from plugin UI</li>
+<li>Python: <code>Plugin.set_change_callback()</code>, <code>Plugin.set_param_value_callback()</code>, <code>Plugin.set_param_gesture_callback()</code></li>
+<li>Python: module-level constants <code>MH_CHANGE_LATENCY</code>, <code>MH_CHANGE_PARAM_INFO</code>, <code>MH_CHANGE_PROGRAM</code>, <code>MH_CHANGE_NON_PARAM_STATE</code></li>
+<li>Parameter gesture bracketing via <code>mh_begin_param_gesture()</code> / <code>mh_end_param_gesture()</code> -- signal start/end of automation drags to plugins</li>
+<li>Python: <code>Plugin.begin_param_gesture(index)</code>, <code>Plugin.end_param_gesture(index)</code></li>
+<li>Current program state save/restore via <code>mh_get_program_state_size()</code> / <code>mh_get_program_state()</code> / <code>mh_set_program_state()</code> -- lighter-weight per-program state</li>
+<li>Python: <code>Plugin.get_program_state() -&gt; bytes</code>, <code>Plugin.set_program_state(data)</code></li>
+<li>Processing precision selection via <code>mh_get_processing_precision()</code> / <code>mh_set_processing_precision()</code> -- explicitly select float vs double processing mode</li>
+<li>Python: <code>Plugin.processing_precision</code> read/write property</li>
+<li>Module-level constants <code>MH_PRECISION_SINGLE</code>, <code>MH_PRECISION_DOUBLE</code></li>
+<li>Track properties via <code>mh_set_track_properties()</code> -- pass track name/color metadata to plugins</li>
+<li>
+<p>Python: <code>Plugin.set_track_properties(name=None, colour=None)</code></p>
+</li>
+<li>
+<p>LV2 plugin format support (<code>JUCE_PLUGINHOST_LV2=1</code>)</p>
+</li>
+<li>Load and process LV2 plugins on all platforms</li>
+<li><code>mh_scan_directory()</code> now finds <code>.lv2</code> bundles</li>
+<li>CLI updated with LV2 examples for <code>probe</code>, <code>info</code>, and <code>scan</code> commands</li>
+<li>Headless build mode (<code>MINIHOST_HEADLESS</code>, default ON)</li>
+<li>Builds without GUI dependencies using JUCE's <code>juce_audio_processors_headless</code> module (requires JUCE 8.0.11+)</li>
+<li>Uses headless format classes (<code>VST3PluginFormatHeadless</code>, <code>AudioUnitPluginFormatHeadless</code>, <code>LV2PluginFormatHeadless</code>)</li>
+<li>Disable with <code>cmake -DMINIHOST_HEADLESS=OFF</code></li>
+</ul>
+<h3 id="changed_1">Changed<a class="headerlink" href="#changed_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>addFormat()</code> calls now use <code>std::make_unique</code> instead of raw <code>new</code></li>
+<li>Removed unused <code>KnownPluginList</code> variable from <code>findFirstTypeForFile</code></li>
+<li>Added cross-platform Python script (<code>scripts/download_juce.py</code>) for downloading JUCE</li>
+<li>Works on Windows, macOS, and Linux without requiring bash</li>
+<li>Uses only Python standard library (no external dependencies)</li>
+<li>Handles Python 3.14+ tarfile deprecation warning</li>
+<li>Bumped default JUCE version from 8.0.6 to 8.0.12 (required for <code>juce_audio_processors_headless</code>)</li>
+<li>Updated CI workflow to use Python script instead of bash for JUCE download</li>
+<li>Updated Makefile to prefer Python script with bash fallback</li>
+</ul>
+<h2 id="010">[0.1.0]<a class="headerlink" href="#010" title="Permanent link">&para;</a></h2>
+<h3 id="added_4">Added<a class="headerlink" href="#added_4" title="Permanent link">&para;</a></h3>
+<h4 id="plugin-chaining">Plugin Chaining<a class="headerlink" href="#plugin-chaining" title="Permanent link">&para;</a></h4>
+<ul>
+<li><code>MH_PluginChain</code> opaque struct for managing chains of plugins</li>
+<li><code>mh_chain_create()</code> - Create a chain from an array of plugins (all must have same sample rate)</li>
+<li><code>mh_chain_close()</code> - Close chain and free resources (does not close individual plugins)</li>
+<li><code>mh_chain_process()</code> - Process audio through the chain</li>
+<li><code>mh_chain_process_midi_io()</code> - Process audio with MIDI I/O (MIDI goes to first plugin only)</li>
+<li><code>mh_chain_get_latency_samples()</code> - Get total chain latency (sum of all plugin latencies)</li>
+<li><code>mh_chain_get_num_plugins()</code> - Get number of plugins in the chain</li>
+<li><code>mh_chain_get_plugin()</code> - Get plugin from chain by index</li>
+<li><code>mh_chain_get_num_input_channels()</code> - Get input channel count (from first plugin)</li>
+<li><code>mh_chain_get_num_output_channels()</code> - Get output channel count (from last plugin)</li>
+<li><code>mh_chain_get_sample_rate()</code> - Get sample rate (all plugins share same rate)</li>
+<li><code>mh_chain_get_max_block_size()</code> - Get maximum block size</li>
+<li><code>mh_chain_reset()</code> - Reset all plugins in the chain</li>
+<li><code>mh_chain_set_non_realtime()</code> - Set non-realtime mode for all plugins</li>
+<li><code>mh_chain_get_tail_seconds()</code> - Get maximum tail length (max of all plugin tails)</li>
+<li><code>mh_audio_open_chain()</code> - Open audio device for real-time playback through a plugin chain</li>
+<li>Python <code>PluginChain</code> class with <code>process()</code>, <code>process_midi()</code>, <code>reset()</code>, <code>set_non_realtime()</code>, <code>get_plugin()</code> methods</li>
+<li>Python <code>PluginChain</code> properties: <code>num_plugins</code>, <code>latency_samples</code>, <code>num_input_channels</code>, <code>num_output_channels</code>, <code>sample_rate</code>, <code>tail_seconds</code></li>
+<li><code>AudioDevice</code> now accepts either <code>Plugin</code> or <code>PluginChain</code></li>
+<li><code>render_midi()</code>, <code>render_midi_stream()</code>, <code>render_midi_to_file()</code>, and <code>MidiRenderer</code> now accept either <code>Plugin</code> or <code>PluginChain</code></li>
+</ul>
+<h4 id="real-time-audio-playback-miniaudio-integration">Real-time Audio Playback (miniaudio integration)<a class="headerlink" href="#real-time-audio-playback-miniaudio-integration" title="Permanent link">&para;</a></h4>
+<ul>
+<li><code>MH_AudioDevice</code> opaque struct for audio device management</li>
+<li><code>MH_AudioConfig</code> struct for device configuration (sample_rate, buffer_frames, output_channels, midi_input_port, midi_output_port)</li>
+<li><code>MH_AudioInputCallback</code> typedef for effect plugin input audio</li>
+<li><code>mh_audio_open()</code> - Open audio device for real-time playback through a plugin</li>
+<li><code>mh_audio_close()</code> - Close audio device</li>
+<li><code>mh_audio_start()</code> / <code>mh_audio_stop()</code> - Start/stop audio playback</li>
+<li><code>mh_audio_is_playing()</code> - Check if audio is currently playing</li>
+<li><code>mh_audio_set_input_callback()</code> - Set input callback for effect plugins</li>
+<li><code>mh_audio_get_sample_rate()</code> - Get actual device sample rate</li>
+<li><code>mh_audio_get_buffer_frames()</code> - Get actual buffer size</li>
+<li><code>mh_audio_get_channels()</code> - Get number of output channels</li>
+<li>New <code>libminihost_audio</code> library using miniaudio for cross-platform audio I/O</li>
+</ul>
+<h4 id="real-time-midi-io-libremidi-integration">Real-time MIDI I/O (libremidi integration)<a class="headerlink" href="#real-time-midi-io-libremidi-integration" title="Permanent link">&para;</a></h4>
+<ul>
+<li><code>MH_MidiPortInfo</code> struct for MIDI port information</li>
+<li><code>MH_MidiPortCallback</code> typedef for port enumeration callbacks</li>
+<li><code>mh_midi_enumerate_inputs()</code> / <code>mh_midi_enumerate_outputs()</code> - Enumerate available MIDI ports</li>
+<li><code>mh_midi_get_num_inputs()</code> / <code>mh_midi_get_num_outputs()</code> - Get MIDI port count</li>
+<li><code>mh_midi_get_input_name()</code> / <code>mh_midi_get_output_name()</code> - Get MIDI port name by index</li>
+<li><code>mh_audio_connect_midi_input()</code> / <code>mh_audio_connect_midi_output()</code> - Connect MIDI ports to AudioDevice</li>
+<li><code>mh_audio_disconnect_midi_input()</code> / <code>mh_audio_disconnect_midi_output()</code> - Disconnect MIDI</li>
+<li><code>mh_audio_get_midi_input_port()</code> / <code>mh_audio_get_midi_output_port()</code> - Query connected MIDI ports</li>
+<li>Lock-free ring buffer for thread-safe MIDI transfer between MIDI and audio threads</li>
+</ul>
+<h4 id="virtual-midi-ports">Virtual MIDI Ports<a class="headerlink" href="#virtual-midi-ports" title="Permanent link">&para;</a></h4>
+<ul>
+<li><code>mh_midi_in_open_virtual()</code> - Create a virtual MIDI input port (other apps can send MIDI to it)</li>
+<li><code>mh_midi_out_open_virtual()</code> - Create a virtual MIDI output port (other apps can receive MIDI from it)</li>
+<li><code>mh_audio_create_virtual_midi_input()</code> - Create virtual MIDI input for AudioDevice</li>
+<li><code>mh_audio_create_virtual_midi_output()</code> - Create virtual MIDI output for AudioDevice</li>
+<li><code>mh_audio_is_midi_input_virtual()</code> / <code>mh_audio_is_midi_output_virtual()</code> - Check if MIDI port is virtual</li>
+<li><code>mh_audio_send_midi()</code> - Send MIDI events programmatically during real-time playback</li>
+<li>Virtual ports appear in system MIDI port lists, allowing DAWs and other apps to connect</li>
+<li>Platform support: macOS (CoreMIDI), Linux (ALSA); not supported on Windows</li>
+</ul>
+<h4 id="midi-file-readwrite-midifile-integration">MIDI File Read/Write (midifile integration)<a class="headerlink" href="#midi-file-readwrite-midifile-integration" title="Permanent link">&para;</a></h4>
+<ul>
+<li>Integrated <code>midifile</code> library for Standard MIDI File (SMF) read/write capability</li>
+<li>Python <code>MidiFile</code> class for creating, loading, and saving MIDI files</li>
+<li>Create MIDI files programmatically with note on/off, tempo, control change, program change, pitch bend events</li>
+<li>Load existing MIDI files and iterate through events</li>
+<li>Save MIDI files to disk</li>
+<li>Access event timing in both ticks and seconds</li>
+</ul>
+<h4 id="midi-file-rendering">MIDI File Rendering<a class="headerlink" href="#midi-file-rendering" title="Permanent link">&para;</a></h4>
+<ul>
+<li><code>render_midi()</code> - Render MIDI file through plugin to numpy array</li>
+<li><code>render_midi_stream()</code> - Generator yielding audio blocks for streaming/large files</li>
+<li><code>render_midi_to_file()</code> - Render MIDI file directly to WAV file (16/24/32-bit)</li>
+<li><code>MidiRenderer</code> class - Stateful renderer with progress tracking and fine-grained control</li>
+<li>Properties: <code>duration_seconds</code>, <code>progress</code>, <code>is_finished</code>, <code>current_time</code></li>
+<li>Methods: <code>render_block()</code>, <code>render_all()</code>, <code>reset()</code></li>
+<li>Automatic tempo map handling for correct timing</li>
+<li>Configurable tail length for reverb/delay tails</li>
+</ul>
+<h4 id="core-utilities">Core Utilities<a class="headerlink" href="#core-utilities" title="Permanent link">&para;</a></h4>
+<ul>
+<li><code>mh_reset()</code> - Reset plugin internal state (clears delay lines, reverb tails, filter states)</li>
+<li><code>mh_set_non_realtime()</code> - Enable higher-quality algorithms for offline/batch processing</li>
+<li><code>mh_probe()</code> - Get plugin metadata without full instantiation</li>
+<li><code>MH_PluginDesc</code> struct for plugin metadata (name, vendor, version, format, unique_id, MIDI flags, channel counts)</li>
+<li><code>mh_set_sample_rate()</code> - Change sample rate without reloading plugin (preserves parameter state)</li>
+<li><code>mh_get_sample_rate()</code> - Query current sample rate</li>
+<li><code>MH_ScanCallback</code> typedef for plugin scanning callback</li>
+<li><code>mh_scan_directory()</code> - Recursively scan directory for VST3/AudioUnit/LV2 plugins</li>
+<li><code>MH_PluginDesc.path</code> field added for scan results</li>
+<li><code>mh_process_double()</code> - Process audio with 64-bit double precision</li>
+<li><code>mh_supports_double()</code> - Check if plugin supports native double precision</li>
+<li><code>MH_LoadCallback</code> typedef for async loading callback</li>
+<li><code>mh_open_async()</code> - Load plugin in background thread</li>
+</ul>
+<h4 id="parameter-preset-access">Parameter &amp; Preset Access<a class="headerlink" href="#parameter-preset-access" title="Permanent link">&para;</a></h4>
+<ul>
+<li><code>mh_param_to_text()</code> - Convert normalized parameter value to display string (e.g., "2500 Hz")</li>
+<li><code>mh_param_from_text()</code> - Convert display string to normalized value</li>
+<li><code>mh_get_num_programs()</code> - Get number of factory presets</li>
+<li><code>mh_get_program_name()</code> - Get factory preset name by index</li>
+<li><code>mh_get_program()</code> / <code>mh_set_program()</code> - Get/set current factory preset</li>
+</ul>
+<h4 id="bus-layout-sidechain">Bus Layout &amp; Sidechain<a class="headerlink" href="#bus-layout-sidechain" title="Permanent link">&para;</a></h4>
+<ul>
+<li><code>MH_BusInfo</code> struct for bus information (name, channels, is_main, is_enabled)</li>
+<li><code>mh_get_num_buses()</code> - Query number of input/output buses</li>
+<li><code>mh_get_bus_info()</code> - Get detailed bus information</li>
+<li><code>mh_open_ex()</code> - Open plugin with sidechain channel configuration</li>
+<li><code>mh_process_sidechain()</code> - Process audio with sidechain input</li>
+<li><code>mh_get_sidechain_channels()</code> - Query configured sidechain channel count</li>
+</ul>
+<h3 id="fixed_1">Fixed<a class="headerlink" href="#fixed_1" title="Permanent link">&para;</a></h3>
+<h4 id="linux-compilation">Linux Compilation<a class="headerlink" href="#linux-compilation" title="Permanent link">&para;</a></h4>
+<ul>
+<li>Added Linux build dependencies to README.md (JUCE requires freetype, fontconfig, webkit2gtk, gtk3, etc.)</li>
+<li>Fixed <code>addFormat()</code> calls to use raw pointers instead of <code>std::make_unique&lt;&gt;()</code> (JUCE's API expects raw pointers)</li>
+<li>Added <code>POSITION_INDEPENDENT_CODE ON</code> to libminihost CMakeLists.txt for linking into shared libraries (e.g., Python module)</li>
+</ul>
+<h3 id="command-line-interface">Command Line Interface<a class="headerlink" href="#command-line-interface" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>minihost</code> CLI tool with subcommands for common operations:</li>
+<li><code>probe</code> - Get plugin metadata without full instantiation</li>
+<li><code>scan</code> - Recursively scan directory for VST3/AudioUnit/LV2 plugins</li>
+<li><code>info</code> - Show detailed plugin info (buses, presets, latency)</li>
+<li><code>params</code> - List plugin parameters with current values</li>
+<li><code>midi</code> - List available MIDI input/output ports</li>
+<li><code>play</code> - Real-time audio playback with MIDI input</li>
+<li><code>process</code> - Offline audio processing through effects, or MIDI-to-audio rendering for synths</li>
+<li>Global options: <code>--sample-rate</code>, <code>--block-size</code></li>
+<li>JSON output support (<code>--json</code>) for probe, scan, params, midi</li>
+<li>Plugin state and preset loading for process command</li>
+<li>Virtual MIDI port creation for play command</li>
+</ul>
+<h3 id="python-bindings">Python Bindings<a class="headerlink" href="#python-bindings" title="Permanent link">&para;</a></h3>
+<p>All C API additions are exposed in the Python <code>minihost</code> module:</p>
+<ul>
+<li><code>minihost.AudioDevice</code> class for real-time audio playback with MIDI</li>
+<li>Constructor: <code>AudioDevice(plugin, sample_rate=0, buffer_frames=0, output_channels=0, midi_input_port=-1, midi_output_port=-1)</code></li>
+<li>Methods: <code>start()</code>, <code>stop()</code>, <code>connect_midi_input()</code>, <code>connect_midi_output()</code>, <code>disconnect_midi_input()</code>, <code>disconnect_midi_output()</code>, <code>create_virtual_midi_input()</code>, <code>create_virtual_midi_output()</code>, <code>send_midi()</code></li>
+<li>Properties: <code>is_playing</code>, <code>sample_rate</code>, <code>buffer_frames</code>, <code>channels</code>, <code>midi_input_port</code>, <code>midi_output_port</code>, <code>is_midi_input_virtual</code>, <code>is_midi_output_virtual</code></li>
+<li>Context manager support (<code>with AudioDevice(plugin) as audio:</code>)</li>
+<li><code>minihost.midi_get_input_ports()</code> - Get list of available MIDI input ports</li>
+<li><code>minihost.midi_get_output_ports()</code> - Get list of available MIDI output ports</li>
+<li><code>minihost.MidiFile</code> class for MIDI file read/write</li>
+<li>Methods: <code>load()</code>, <code>save()</code>, <code>add_track()</code>, <code>add_tempo()</code>, <code>add_note_on()</code>, <code>add_note_off()</code>, <code>add_control_change()</code>, <code>add_program_change()</code>, <code>add_pitch_bend()</code>, <code>get_events()</code>, <code>join_tracks()</code>, <code>split_tracks()</code></li>
+<li>Properties: <code>num_tracks</code>, <code>ticks_per_quarter</code>, <code>duration_seconds</code></li>
+<li><code>minihost.probe(path)</code> - Module-level function for plugin metadata</li>
+<li><code>minihost.scan_directory(path)</code> - Scan directory for VST3/AudioUnit/LV2 plugins, returns list of metadata dicts</li>
+<li><code>Plugin</code> constructor now accepts <code>sidechain_channels</code> parameter</li>
+<li>New properties: <code>non_realtime</code>, <code>num_programs</code>, <code>program</code>, <code>sidechain_channels</code>, <code>num_input_buses</code>, <code>num_output_buses</code>, <code>sample_rate</code> (read/write), <code>supports_double</code></li>
+<li>New methods: <code>reset()</code>, <code>param_to_text()</code>, <code>param_from_text()</code>, <code>get_program_name()</code>, <code>get_bus_info()</code>, <code>process_sidechain()</code>, <code>process_double()</code></li>
+<li>Note: For async loading in Python, use Python's <code>threading</code> module with the regular <code>Plugin()</code> constructor</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
