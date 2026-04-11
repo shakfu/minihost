@@ -794,15 +794,22 @@ int cmd_presets(const std::string& plugin_path,
         }
 
         if (!have_class_id) {
-            MH_PluginDesc desc;
-            std::memset(&desc, 0, sizeof(desc));
-            char probe_err[256] = {0};
-            if (mh_probe(plugin_path.c_str(), &desc, probe_err, sizeof(probe_err))
-                && desc.unique_id[0]) {
-                class_id = desc.unique_id;
-            } else {
-                class_id = "minihost_unknown";
+            // Auto-detect from the plugin bundle's moduleinfo.json. There is
+            // no silent fallback -- if this fails we error out rather than
+            // write a .vstpreset with a bogus class_id.
+            char cid_buf[MH_VSTPRESET_CLASS_ID_LEN + 1] = {0};
+            char cid_err[512] = {0};
+            if (!mh_vstpreset_read_class_id_from_bundle(
+                    plugin_path.c_str(), cid_buf, cid_err, sizeof(cid_err))) {
+                std::fprintf(stderr,
+                             "Error: cannot determine VST3 class_id for '%s': %s\n"
+                             "Use --load-vstpreset to inherit a class_id from an "
+                             "existing .vstpreset file.\n",
+                             plugin_path.c_str(), cid_err);
+                mh_close(p);
+                return 1;
             }
+            class_id = cid_buf;
         }
 
         int state_size = mh_get_state_size(p);

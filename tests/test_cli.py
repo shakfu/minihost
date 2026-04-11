@@ -1254,6 +1254,10 @@ class TestCmdPresets:
         assert parsed["presets"][1]["is_current"] is False
         assert parsed["presets"][0]["name"] == "P0"
 
+    # A valid 32-char hex FUID used as the auto-detected class_id in tests.
+    # Stand-in for whatever a real moduleinfo.json would yield.
+    _FAKE_FUID = "ABCDEF0123456789ABCDEF0123456789"
+
     def test_save_basic(self, tmp_path):
         out_path = tmp_path / "out.vstpreset"
         args = self._make_args(save=str(out_path))
@@ -1262,7 +1266,10 @@ class TestCmdPresets:
         mock_plugin.get_state.return_value = b"saved_state_blob"
         with (
             patch("minihost.Plugin", return_value=mock_plugin),
-            patch("minihost.probe", return_value={"unique_id": "ABCDEF01"}),
+            patch(
+                "minihost.vstpreset.read_class_id_from_bundle",
+                return_value=self._FAKE_FUID,
+            ),
         ):
             ret = cmd_presets(args)
         assert ret == 0
@@ -1272,8 +1279,8 @@ class TestCmdPresets:
 
         preset = read_vstpreset(out_path)
         assert preset.component_state == b"saved_state_blob"
-        # class_id should include the probed unique_id
-        assert "ABCDEF01" in preset.class_id
+        # class_id should be the auto-detected FUID
+        assert preset.class_id == self._FAKE_FUID
 
     def test_save_with_program(self, tmp_path):
         out_path = tmp_path / "out.vstpreset"
@@ -1283,7 +1290,10 @@ class TestCmdPresets:
         mock_plugin.get_state.return_value = b"program3_state"
         with (
             patch("minihost.Plugin", return_value=mock_plugin),
-            patch("minihost.probe", return_value={"unique_id": "X"}),
+            patch(
+                "minihost.vstpreset.read_class_id_from_bundle",
+                return_value=self._FAKE_FUID,
+            ),
         ):
             ret = cmd_presets(args)
         assert ret == 0
@@ -1332,7 +1342,10 @@ class TestCmdPresets:
         mock_plugin.get_state.return_value = b"new_state"
         with (
             patch("minihost.Plugin", return_value=mock_plugin),
-            patch("minihost.probe", return_value={"unique_id": "1"}),
+            patch(
+                "minihost.vstpreset.read_class_id_from_bundle",
+                return_value=self._FAKE_FUID,
+            ),
         ):
             ret = cmd_presets(args)
         assert ret == 0
@@ -1353,7 +1366,10 @@ class TestCmdPresets:
         args = self._make_args(state=str(state_file), save=str(out_path))
         with (
             patch("minihost.Plugin", return_value=mock_plugin),
-            patch("minihost.probe", return_value={"unique_id": "1"}),
+            patch(
+                "minihost.vstpreset.read_class_id_from_bundle",
+                return_value=self._FAKE_FUID,
+            ),
         ):
             ret = cmd_presets(args)
         assert ret == 0
@@ -1402,3 +1418,25 @@ class TestCmdPresets:
             ret = cmd_presets(args)
         assert ret == 1
         assert "Error loading .vstpreset" in capsys.readouterr().err
+
+    def test_save_class_id_autodetect_failure(self, capsys, tmp_path):
+        """When moduleinfo.json is missing, the CLI must hard-error rather
+        than write a .vstpreset with a bogus class_id."""
+        out_path = tmp_path / "out.vstpreset"
+        args = self._make_args(save=str(out_path))
+        mock_plugin = MagicMock()
+        mock_plugin.num_programs = 0
+        mock_plugin.get_state.return_value = b"data"
+        with (
+            patch("minihost.Plugin", return_value=mock_plugin),
+            patch(
+                "minihost.vstpreset.read_class_id_from_bundle",
+                side_effect=ValueError("moduleinfo.json not found"),
+            ),
+        ):
+            ret = cmd_presets(args)
+        assert ret == 1
+        err = capsys.readouterr().err
+        assert "cannot determine VST3 class_id" in err
+        assert "--load-vstpreset" in err
+        assert not out_path.exists()

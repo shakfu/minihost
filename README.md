@@ -12,6 +12,7 @@ Minihost is a headless, JUCE-based audio plugin host that supports VST3, AudioUn
 - **Audio file I/O** via miniaudio + tflac -- read WAV/FLAC/MP3/Vorbis, write WAV (16/24/32-bit) and FLAC (16/24-bit)
 - **Sample rate conversion** via miniaudio resampler -- `minihost.resample()` API and `minihost resample` CLI subcommand
 - **Real-time audio playback** via miniaudio (cross-platform), with duplex capture mode for effect processing
+- **Audio device selection** -- enumerate and target specific playback/capture devices (`minihost devices` CLI, `audio_get_playback_devices()` / `audio_get_capture_devices()` API, `--playback-device` / `--capture-device` on `minihost play`)
 - **Real-time audio input** -- lock-free ring buffer API (`write_input()`) and duplex capture (`capture=True`) for routing system audio through effects
 - **Real-time MIDI I/O** via libremidi (cross-platform)
 - **Virtual MIDI ports** - create named ports that DAWs can connect to (macOS, Linux)
@@ -29,6 +30,7 @@ Minihost is a headless, JUCE-based audio plugin host that supports VST3, AudioUn
 - Bus layout validation and sidechain support
 - Track name/color metadata forwarding to plugins
 - Latency and tail time reporting
+- **VST3 preset I/O** -- read and write `.vstpreset` files from C (`minihost_vstpreset.h`), C++, and Python (`minihost.vstpreset`); `minihost presets` CLI subcommand exports the current plugin state, optionally after loading a program, state blob, or another `.vstpreset`
 
 ## Requirements
 
@@ -41,6 +43,7 @@ Minihost is a headless, JUCE-based audio plugin host that supports VST3, AudioUn
 - **macOS**: Xcode command line tools
 - **Windows**: Visual Studio 2019+ or MinGW
 - **Linux**: Install the following development libraries:
+
   ```bash
   sudo apt install libasound2-dev libfreetype-dev libfontconfig1-dev \
       libwebkit2gtk-4.1-dev libgtk-3-dev libgl-dev libcurl4-openssl-dev
@@ -118,17 +121,19 @@ uv sync
 # Available commands
 minihost --help
 usage: minihost [-h] [-r SAMPLE_RATE] [-b BLOCK_SIZE]
-                {scan,info,params,midi,play,process,resample} ...
+                {scan,info,params,midi,devices,presets,play,process,resample} ...
 
 Audio plugin hosting CLI
 
 positional arguments:
-  {scan,info,params,midi,play,process,resample}
+  {scan,info,params,midi,devices,presets,play,process,resample}
                         Commands
     scan                Scan directory for plugins
     info                Show plugin info
     params              List plugin parameters
     midi                List or monitor MIDI ports
+    devices             List audio playback/capture devices
+    presets             List factory presets or export .vstpreset files
     play                Play plugin with real-time audio/MIDI
     process             Process audio through plugin (offline)
     resample            Resample audio file to a different sample rate
@@ -144,26 +149,57 @@ options:
 ### Commands
 
 #### `minihost info` - Show plugin info
+
 ```bash
 minihost info /path/to/plugin.vst3          # full info (loads plugin)
 minihost info /path/to/plugin.vst3 --probe  # lightweight metadata only
 minihost info /path/to/plugin.vst3 --json   # JSON output
 ```
+
 By default shows full runtime details (sample rate, channels, latency, buses, presets). Use `--probe` for fast metadata-only mode without fully loading the plugin.
 
 #### `minihost scan` - Scan directory for plugins
+
 ```bash
 minihost scan /Library/Audio/Plug-Ins/VST3/
 minihost scan ~/Music/Plugins --json
 ```
 
 #### `minihost params` - List plugin parameters
+
 ```bash
 minihost params /path/to/plugin.vst3
 minihost params /path/to/plugin.vst3 --json
 ```
 
+#### `minihost devices` - List audio devices
+
+```bash
+minihost devices                    # list playback and capture devices
+minihost devices --json             # JSON output
+```
+
+Use an index or case-insensitive device-name substring with `minihost play --playback-device` / `--capture-device`.
+
+#### `minihost presets` - List or export factory presets
+
+```bash
+# List factory presets
+minihost presets /path/to/synth.vst3
+minihost presets /path/to/synth.vst3 --json
+
+# Export factory preset N as a .vstpreset
+minihost presets /path/to/synth.vst3 --program 5 --save preset5.vstpreset
+
+# Round-trip: load a .vstpreset and re-save (preserves class_id)
+minihost presets /path/to/synth.vst3 --load-vstpreset in.vstpreset --save out.vstpreset
+
+# Convert a raw state blob to .vstpreset
+minihost presets /path/to/synth.vst3 --state state.bin --save out.vstpreset
+```
+
 #### `minihost midi` - List or monitor MIDI ports
+
 ```bash
 minihost midi                          # list all MIDI ports
 minihost midi --json                   # list as JSON
@@ -172,6 +208,7 @@ minihost midi --virtual-midi "Monitor" # create virtual port and monitor
 ```
 
 #### `minihost play` - Play plugin with real-time audio/MIDI
+
 ```bash
 # Connect to MIDI input port 0
 minihost play /path/to/synth.vst3 --midi 0
@@ -182,9 +219,14 @@ minihost play /path/to/synth.vst3 --virtual-midi "My Synth"
 # Enable audio input for effect processing (duplex mode)
 minihost play /path/to/reverb.vst3 --input
 minihost play /path/to/amp-sim.vst3 --input --midi 0  # with MIDI too
+
+# Select specific audio devices (index from `minihost devices` or name substring)
+minihost play /path/to/synth.vst3 --playback-device "BlackHole"
+minihost play /path/to/effect.vst3 --input --playback-device 0 --capture-device 1
 ```
 
 #### `minihost process` - Process audio/MIDI offline
+
 ```bash
 # Process audio through effect
 minihost process /path/to/effect.vst3 -i input.wav -o output.wav
@@ -210,6 +252,7 @@ minihost process /path/to/effect.vst3 -i 44100hz.wav -i 48000hz_sidechain.wav -o
 ```
 
 #### `minihost resample` - Resample audio files
+
 ```bash
 minihost resample input.wav -o output.wav -r 48000
 minihost resample input.wav -o output.wav -r 44100 --bit-depth 16
@@ -239,6 +282,32 @@ input_audio = np.zeros((2, 512), dtype=np.float32)
 output_audio = np.zeros((2, 512), dtype=np.float32)
 plugin.process(input_audio, output_audio)
 ```
+
+### Audio Device Enumeration and Selection
+
+```python
+import minihost
+
+# List available audio devices
+for dev in minihost.audio_get_playback_devices():
+    print(f"[{dev['index']}] {dev['name']}{' *' if dev['is_default'] else ''}")
+
+for dev in minihost.audio_get_capture_devices():
+    print(f"[{dev['index']}] {dev['name']}{' *' if dev['is_default'] else ''}")
+
+# Target a specific playback device (e.g., for routing to a loopback driver)
+plugin = minihost.Plugin("/path/to/synth.vst3", sample_rate=48000)
+with minihost.AudioDevice(plugin, playback_device_index=2) as audio:
+    audio.send_midi(0x90, 60, 100)
+
+# Duplex mode with explicit capture + playback devices
+with minihost.AudioDevice(plugin, capture=True,
+                          capture_device_index=1,
+                          playback_device_index=0) as audio:
+    pass
+```
+
+Pass `-1` (the default) to use the system default device.
 
 ### Real-time Audio Playback
 
@@ -501,6 +570,42 @@ for i in range(chain.num_plugins):
     print(f"Plugin {i}: {plugin.num_params} params")
 ```
 
+### VST3 Presets
+
+Read, load, and write Steinberg `.vstpreset` files:
+
+```python
+import minihost
+from minihost import vstpreset
+
+plugin = minihost.Plugin("/path/to/synth.vst3")
+
+# Read a .vstpreset into raw chunks
+preset = vstpreset.read_vstpreset("patch.vstpreset")
+print(preset.class_id, len(preset.component_state or b""))
+
+# Load into a plugin (calls plugin.set_state under the hood)
+vstpreset.load_vstpreset("patch.vstpreset", plugin)
+
+# Save the plugin's current state to a .vstpreset.
+# class_id defaults to the FUID auto-detected from the plugin bundle's
+# moduleinfo.json (requires VST3 SDK 3.7.5+, which all modern plugins ship).
+vstpreset.save_vstpreset("out.vstpreset", plugin)
+
+# Or pass class_id explicitly (e.g., for legacy plugins without moduleinfo.json):
+vstpreset.save_vstpreset("out.vstpreset", plugin,
+                         class_id="ABCDEF0123456789ABCDEF0123456789")
+
+# Read just the class ID from a bundle without instantiating the plugin
+fuid = vstpreset.read_class_id_from_bundle("/path/to/synth.vst3")
+print(fuid)  # e.g., "ABCDEF0123456789ABCDEF0123456789"
+
+# Or write raw chunks you already have
+vstpreset.write_vstpreset("out.vstpreset",
+                          class_id=fuid,
+                          component_state=plugin.get_state())
+```
+
 ## C API Usage
 
 ```c
@@ -546,8 +651,20 @@ mh_close(plugin);
 ```c
 #include "minihost_audio.h"
 
+// Enumerate and select a playback device (optional)
+MH_AudioDeviceInfo devices[32];
+int n = mh_audio_enumerate_playback_devices(devices, 32);
+for (int i = 0; i < n; i++) {
+    printf("[%d]%s %s\n", i, devices[i].is_default ? "*" : " ", devices[i].name);
+}
+
 // Open audio device for real-time playback
-MH_AudioConfig config = { .sample_rate = 48000, .buffer_frames = 512 };
+MH_AudioConfig config = {
+    .sample_rate = 48000,
+    .buffer_frames = 512,
+    .playback_device_index = -1,  // -1 = system default
+    .capture_device_index = -1,
+};
 MH_AudioDevice* audio = mh_audio_open(plugin, &config, err, sizeof(err));
 
 // Start playback
@@ -683,6 +800,46 @@ if (resampled) {
 }
 ```
 
+### VST3 Preset I/O
+
+Portable `.vstpreset` reader/writer with no external dependencies:
+
+```c
+#include "minihost_vstpreset.h"
+
+char err[256];
+
+// Read a .vstpreset
+MH_VstPreset preset;
+if (mh_vstpreset_read("in.vstpreset", &preset, err, sizeof(err))) {
+    // Apply the processor chunk to a plugin
+    mh_set_state(plugin, preset.component_state, preset.component_size);
+    mh_vstpreset_free(&preset);
+}
+
+// Auto-detect the processor FUID from the plugin bundle's moduleinfo.json
+// (requires VST3 SDK 3.7.5+, which all modern plugins ship).
+char class_id[MH_VSTPRESET_CLASS_ID_LEN + 1];
+if (!mh_vstpreset_read_class_id_from_bundle(
+        "/path/to/synth.vst3", class_id, err, sizeof(err))) {
+    fprintf(stderr, "Cannot determine class_id: %s\n", err);
+    // For legacy plugins without moduleinfo.json, supply class_id another way
+    // (e.g., copy it from an existing .vstpreset).
+}
+
+// Write current plugin state to a .vstpreset
+int state_size = mh_get_state_size(plugin);
+void* state = malloc(state_size);
+mh_get_state(plugin, state, state_size);
+
+mh_vstpreset_write("out.vstpreset",
+                   class_id,
+                   state, state_size,
+                   NULL, 0,  // optional controller state
+                   err, sizeof(err));
+free(state);
+```
+
 ## Thread Safety
 
 - `mh_process`, `mh_process_midi`, `mh_process_midi_io`, `mh_process_auto`: Call from audio thread only (no locking)
@@ -693,7 +850,7 @@ if (resampled) {
 
 Detailed API documentation:
 
-- [C API Reference](docs/api_c.md) -- `minihost.h`, `minihost_audio.h`, `minihost_audiofile.h`, `minihost_chain.h`, `minihost_midi.h`
+- [C API Reference](docs/api_c.md) -- `minihost.h`, `minihost_audio.h`, `minihost_audiofile.h`, `minihost_chain.h`, `minihost_midi.h`, `minihost_vstpreset.h`
 - [Python API Reference](docs/api_python.md) -- `Plugin`, `PluginChain`, `AudioDevice`, `MidiFile`, `MidiIn`, audio I/O, MIDI rendering, automation, VST3 presets
 - [Hosting Guide](docs/hosting_guide.md) -- practical guide with extended examples
 

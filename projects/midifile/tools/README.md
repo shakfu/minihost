@@ -24,7 +24,7 @@
 | [mid2svg.cpp](https://github.com/craigsapp/midifile/blob/master/tools/mid2svg.cpp) | Convert a MIDI file into an SVG piano roll. |
 | [midi2base64.cpp](https://github.com/craigsapp/midifile/blob/master/tools/midi2base64.cpp) | Test of base64 export of Standard MIDI files. |
 | [midi2beep.cpp](https://github.com/craigsapp/midifile/blob/master/tools/midi2beep.cpp) | Linux-only: Play a monophonic midi file on the PC Speaker (i.e. the midifile contains only a single track on a single channel playing a single note at a time). |
-| [midi2binasc.cpp](https://github.com/craigsapp/midifile/blob/master/tools/midi2binasc.cpp) | Converts a MIDI file into an ASCII format which can be converted back into a MIDI file with the binasc program: https://github.com/craigsapp/binasc |
+| [midi2binasc.cpp](https://github.com/craigsapp/midifile/blob/master/tools/midi2binasc.cpp) | Converts a MIDI file into an ASCII format which can be converted back into a MIDI file with the binasc program: <https://github.com/craigsapp/binasc> |
 | [midi2chords.cpp](https://github.com/craigsapp/midifile/blob/master/tools/midi2chords.cpp) | Identify chord sequences in MIDI files.  Whenever there are three or more note attacks at a given time, a chord will be identified (currently notes must all attack all at the same tick time).  Additional chord identifications can be added to the Sonority::identifySonority() function. |
 | [midi2melody.cpp](https://github.com/craigsapp/midifile/blob/master/tools/midi2melody.cpp) | Converts a single melody MIDI file/track into an ASCII text format with starting time and pitch. |
 | [midi2notes.cpp](https://github.com/craigsapp/midifile/blob/master/tools/midi2notes.cpp) | Converts a MIDI file into a text based notelist. |

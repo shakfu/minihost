@@ -410,7 +410,9 @@ def cmd_presets(args: argparse.Namespace) -> int:
         return 1
 
     # Determine class_id for writing: either from an input .vstpreset (to
-    # preserve identity) or from the plugin's probed unique_id as a fallback.
+    # preserve identity) or auto-detected from the plugin bundle's
+    # moduleinfo.json. There is no silent fallback -- if neither path
+    # produces a real FUID we hard-error rather than write a broken file.
     class_id: str | None = None
 
     # Apply inputs, if any, before saving.
@@ -461,19 +463,29 @@ def cmd_presets(args: argparse.Namespace) -> int:
             )
             return 1
 
-        # Fall back to probed unique_id if we didn't come from a .vstpreset
+        # Auto-detect class_id from the plugin bundle if we didn't inherit
+        # one from --load-vstpreset.
         if class_id is None:
             try:
-                probe_info = minihost.probe(args.plugin)
-                class_id = probe_info.get("unique_id") or "minihost_unknown"
-            except RuntimeError:
-                class_id = "minihost_unknown"
+                from minihost.vstpreset import read_class_id_from_bundle
+
+                class_id = read_class_id_from_bundle(args.plugin)
+            except ValueError as e:
+                print(
+                    f"Error: cannot determine VST3 class_id for "
+                    f"'{args.plugin}': {e}\n"
+                    f"Use --load-vstpreset to inherit a class_id from an "
+                    f"existing .vstpreset, or pre-build the file in code "
+                    f"with an explicit class_id.",
+                    file=sys.stderr,
+                )
+                return 1
 
         try:
             from minihost.vstpreset import save_vstpreset
 
             save_vstpreset(args.save, plugin, class_id=class_id)
-        except (OSError, RuntimeError) as e:
+        except (OSError, ValueError, RuntimeError) as e:
             print(f"Error writing '{args.save}': {e}", file=sys.stderr)
             return 1
         print(f"Wrote {args.save}")

@@ -21,6 +21,7 @@ Plugin(
 
 | Property | Type | Writable | Description |
 |----------|------|----------|-------------|
+| `path` | `str` | No | Plugin file path passed to the constructor |
 | `num_params` | `int` | No | Number of parameters |
 | `num_input_channels` | `int` | No | Number of input channels |
 | `num_output_channels` | `int` | No | Number of output channels |
@@ -157,16 +158,20 @@ Real-time audio device for plugin playback. Supports context manager protocol.
 ```python
 AudioDevice(
     plugin: Plugin | PluginChain,
-    sample_rate: float = 0.0,      # 0 = use system default
-    buffer_frames: int = 0,        # 0 = use system default
-    output_channels: int = 0,      # 0 = use plugin channels
-    midi_input_port: int = -1,     # -1 = no MIDI input
-    midi_output_port: int = -1,    # -1 = no MIDI output
-    capture: bool = False,         # True = duplex mode (system audio input)
+    sample_rate: float = 0.0,          # 0 = use system default
+    buffer_frames: int = 0,            # 0 = use system default
+    output_channels: int = 0,          # 0 = use plugin channels
+    midi_input_port: int = -1,         # -1 = no MIDI input
+    midi_output_port: int = -1,        # -1 = no MIDI output
+    capture: bool = False,             # True = duplex mode (system audio input)
+    playback_device_index: int = -1,   # -1 = system default playback device
+    capture_device_index: int = -1,    # -1 = system default capture device
 )
 ```
 
 When `capture=True`, the audio device opens in duplex mode: system audio input is captured, processed through the plugin, and played back through speakers. Useful for guitar amp sims, vocal effects, and live processing.
+
+`playback_device_index` and `capture_device_index` accept 0-based indices into the lists returned by `audio_get_playback_devices()` / `audio_get_capture_devices()`. Use `-1` for the system default.
 
 ### Properties
 
@@ -475,7 +480,7 @@ Keyframe time formats: `"1000"` (sample offset), `"1.5s"` (seconds), `"50%"` (pe
 
 ## VST3 Presets
 
-Parse and load Steinberg `.vstpreset` files.
+Parse, load, and write Steinberg `.vstpreset` files.
 
 ### VstPreset Class
 
@@ -498,6 +503,39 @@ load_vstpreset(path: str | Path, plugin: Plugin) -> None
 ```
 
 Load a `.vstpreset` file into a plugin via `plugin.set_state()`.
+
+```python
+write_vstpreset(
+    path: str | Path,
+    class_id: str,
+    component_state: bytes,
+    controller_state: bytes | None = None,
+) -> None
+```
+
+Write a `.vstpreset` file from raw chunk bytes and a processor `class_id` (32-char FUID).
+
+```python
+read_class_id_from_bundle(vst3_path: str | Path) -> str
+```
+
+Read the processor class ID (FUID) from a VST3 bundle's `Contents/Resources/moduleinfo.json`. Returns a 32-character uppercase hex string. Picks the first entry whose `Category` is `"Audio Module Class"`.
+
+Raises `ValueError` if `moduleinfo.json` is missing (plugin predates VST3 SDK 3.7.5), malformed, or contains no Audio Module Class entry. VST3 only.
+
+```python
+save_vstpreset(
+    path: str | Path,
+    plugin: Plugin,
+    class_id: str | None = None,
+) -> None
+```
+
+Save the plugin's current state to a `.vstpreset` file.
+
+When `class_id` is `None` (the default), the FUID is auto-detected from the plugin bundle's `moduleinfo.json` via `read_class_id_from_bundle(plugin.path)`. This requires the plugin to be VST3 and built against VST3 SDK 3.7.5 or newer (which all modern plugins ship).
+
+For legacy plugins without `moduleinfo.json`, or for non-VST3 formats, pass `class_id` explicitly or use `load_vstpreset()` to inherit one from an existing preset. Raises `ValueError` if `class_id` is `None` and cannot be auto-detected -- the function never silently writes a placeholder.
 
 ---
 
@@ -534,6 +572,26 @@ midi_get_output_ports() -> list[dict]
 ```
 
 Get list of available MIDI output ports. Each dict has `index` and `name`.
+
+---
+
+## Audio Device Enumeration
+
+### Functions
+
+```python
+audio_get_playback_devices() -> list[dict]
+```
+
+Get list of available audio playback devices. Each dict has keys `index`, `name`, and `is_default`.
+
+```python
+audio_get_capture_devices() -> list[dict]
+```
+
+Get list of available audio capture devices (for duplex / `capture=True` mode). Each dict has keys `index`, `name`, and `is_default`.
+
+Pass the `index` value into `AudioDevice(..., playback_device_index=N, capture_device_index=N)` to target a specific device.
 
 ---
 

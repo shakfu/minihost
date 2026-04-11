@@ -8,6 +8,7 @@
 | `mh_open_ex` | Load a plugin with sidechain channel configuration |
 | `mh_open_async` | Load a plugin in a background thread |
 | `mh_close` | Unload a plugin |
+| `mh_get_path` | Get the plugin file path passed to `mh_open` / `mh_open_ex` |
 | `mh_get_info` | Get plugin info (channels, params, latency, MIDI capabilities) |
 | `mh_probe` | Get plugin metadata without full instantiation |
 | `mh_scan_directory` | Recursively scan directory for plugins |
@@ -117,6 +118,30 @@ Constants: `MH_CHANGE_LATENCY`, `MH_CHANGE_PARAM_INFO`, `MH_CHANGE_PROGRAM`, `MH
 
 Set `MH_AudioConfig.capture = 1` to open the device in duplex mode (system audio input routed through the plugin). The audio callback de-interleaves captured audio directly into the plugin's input buffers.
 
+Set `MH_AudioConfig.playback_device_index` / `capture_device_index` to a 0-based device index to target a specific audio device. Use `-1` (the default) to use the system default.
+
+### Device Enumeration
+
+| Function | Description |
+|----------|-------------|
+| `mh_audio_enumerate_playback_devices` | Fill an array of `MH_AudioDeviceInfo` with available playback devices. Returns count |
+| `mh_audio_enumerate_capture_devices` | Fill an array of `MH_AudioDeviceInfo` with available capture devices. Returns count |
+
+**`MH_AudioDeviceInfo`** struct:
+
+- `char name[256]` -- device name (null-terminated)
+- `int is_default` -- `1` if this is the system default, else `0`
+
+Typical usage:
+
+```c
+MH_AudioDeviceInfo devices[32];
+int count = mh_audio_enumerate_playback_devices(devices, 32);
+for (int i = 0; i < count; i++) {
+    printf("[%d]%s %s\n", i, devices[i].is_default ? "*" : " ", devices[i].name);
+}
+```
+
 ### Audio Input (Ring Buffer)
 
 | Function | Description |
@@ -166,12 +191,14 @@ Set `MH_AudioConfig.capture = 1` to open the device in duplex mode (system audio
 ### Structs
 
 **`MH_AudioData`** -- returned by `mh_audio_read()`:
+
 - `float* data` -- interleaved float32 samples
 - `unsigned int channels`
 - `unsigned int frames`
 - `unsigned int sample_rate`
 
 **`MH_AudioFileInfo`** -- populated by `mh_audio_get_file_info()`:
+
 - `unsigned int channels`
 - `unsigned int sample_rate`
 - `unsigned long long frames`
@@ -225,3 +252,70 @@ Set `MH_AudioConfig.capture = 1` to open the device in duplex mode (system audio
 | `mh_midi_out_open_virtual` | Create virtual MIDI output port |
 | `mh_midi_out_close` | Close MIDI output |
 | `mh_midi_out_send` | Send raw MIDI message on output port |
+
+---
+
+## VST3 Preset Functions (minihost_vstpreset.h)
+
+Portable Steinberg `.vstpreset` reader/writer with no external dependencies (little-endian packing built in). Callable from both C and C++.
+
+| Function | Description |
+|----------|-------------|
+| `mh_vstpreset_read` | Read a `.vstpreset` file into an `MH_VstPreset` struct |
+| `mh_vstpreset_write` | Write `class_id` + component/controller state blobs to a `.vstpreset` file |
+| `mh_vstpreset_free` | Free heap-allocated state blobs inside an `MH_VstPreset` populated by `mh_vstpreset_read` |
+| `mh_vstpreset_read_class_id_from_bundle` | Read the processor FUID from a VST3 bundle's `Contents/Resources/moduleinfo.json` |
+
+### Structs
+
+**`MH_VstPreset`** -- populated by `mh_vstpreset_read()`:
+
+- `char class_id[33]` -- 32-char FUID plus null terminator (`MH_VSTPRESET_CLASS_ID_LEN` = 32)
+- `void* component_state` -- processor (`Comp`) chunk, heap-allocated
+- `int component_size`
+- `void* controller_state` -- controller (`Cont`) chunk, heap-allocated (may be `NULL`)
+- `int controller_size`
+
+Typical usage:
+
+```c
+#include "minihost_vstpreset.h"
+
+// Read
+MH_VstPreset preset;
+char err[256];
+if (mh_vstpreset_read("in.vstpreset", &preset, err, sizeof(err))) {
+    // apply preset.component_state to plugin via mh_set_state(), etc.
+    mh_vstpreset_free(&preset);
+}
+
+// Auto-detect the processor FUID from the plugin bundle (no plugin
+// instantiation required). Works for any VST3 plugin built against
+// SDK 3.7.5 or newer (which ships moduleinfo.json in the bundle).
+char class_id[MH_VSTPRESET_CLASS_ID_LEN + 1];
+if (!mh_vstpreset_read_class_id_from_bundle(
+        "/path/to/synth.vst3", class_id, err, sizeof(err))) {
+    fprintf(stderr, "%s\n", err);
+    // Legacy plugin: caller must supply class_id another way
+    // (e.g., copy from an existing .vstpreset).
+}
+
+// Write
+int state_size = mh_get_state_size(plugin);
+void* state = malloc(state_size);
+mh_get_state(plugin, state, state_size);
+mh_vstpreset_write("out.vstpreset",
+                   class_id,
+                   state, state_size,
+                   NULL, 0,  // no separate controller state
+                   err, sizeof(err));
+free(state);
+```
+
+### Notes on `mh_vstpreset_read_class_id_from_bundle`
+
+- Returns 1 on success and writes a 32-character uppercase hex FUID into `out_class_id` (which must be at least `MH_VSTPRESET_CLASS_ID_LEN + 1` bytes).
+- Selects the first entry in the bundle's `Classes` array whose `Category` is `"Audio Module Class"` (the processor component, not the controller).
+- Tolerates JSON5-style trailing commas, which appear in real-world bundles (e.g., Dexed, Strokes).
+- Returns 0 with a descriptive error in `err_buf` for: missing `moduleinfo.json` (plugin predates VST3 SDK 3.7.5), file unreadable, file > 1 MB, JSON malformed, no Audio Module Class entry, or CID not exactly 32 hex characters.
+- VST3 only -- AudioUnit and LV2 plugins do not have `.vstpreset` files or moduleinfo.json.

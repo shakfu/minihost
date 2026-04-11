@@ -7,10 +7,21 @@ import pytest
 from minihost.vstpreset import (
     VstPreset,
     load_vstpreset,
+    read_class_id_from_bundle,
     read_vstpreset,
     save_vstpreset,
     write_vstpreset,
 )
+
+
+def _make_bundle(tmp_path, moduleinfo_text):
+    """Create a fake .vst3 bundle directory containing the given
+    moduleinfo.json text. Returns the bundle path."""
+    bundle = tmp_path / "Plugin.vst3"
+    resources = bundle / "Contents" / "Resources"
+    resources.mkdir(parents=True)
+    (resources / "moduleinfo.json").write_text(moduleinfo_text)
+    return bundle
 
 
 def _build_vstpreset(class_id="A" * 32, component_state=b"", controller_state=None):
@@ -278,17 +289,68 @@ class TestSaveVstPreset:
         assert preset.component_state == b"state_from_plugin"
         assert preset.class_id == "A" * 32
 
-    def test_default_class_id(self, tmp_path):
+    def test_default_class_id_requires_vst3_path(self, tmp_path):
+        """save_vstpreset() with class_id=None must raise for non-VST3 plugins.
+
+        The .vstpreset format is VST3-only; without an explicit class_id we
+        need a real VST3 bundle to read the FUID from. A MagicMock plugin
+        whose .path is itself a Mock cannot satisfy that contract.
+        """
         from unittest.mock import MagicMock
 
         plugin = MagicMock()
+        plugin.path = "/some/effect.au"  # not a .vst3
         plugin.get_state.return_value = b"data"
 
         path = tmp_path / "out.vstpreset"
-        save_vstpreset(path, plugin)  # no class_id
+        with pytest.raises(ValueError, match="VST3-only"):
+            save_vstpreset(path, plugin)  # no class_id
 
-        preset = read_vstpreset(path)
-        assert preset.class_id  # not empty
+    def test_default_class_id_missing_moduleinfo(self, tmp_path):
+        """save_vstpreset() with class_id=None for a .vst3 path without
+        a moduleinfo.json must raise with a helpful message."""
+        from unittest.mock import MagicMock
+
+        # Pretend the plugin's path ends in .vst3, but the bundle dir
+        # doesn't actually exist -- so moduleinfo.json lookup will fail.
+        plugin = MagicMock()
+        plugin.path = str(tmp_path / "fake.vst3")
+        plugin.get_state.return_value = b"data"
+
+        out = tmp_path / "out.vstpreset"
+        with pytest.raises(ValueError, match="Could not auto-detect"):
+            save_vstpreset(out, plugin)
+
+    def test_default_class_id_from_moduleinfo(self, tmp_path):
+        """save_vstpreset() with class_id=None reads the FUID from a real
+        moduleinfo.json fixture."""
+        from unittest.mock import MagicMock
+
+        # Build a minimal valid VST3 bundle layout with moduleinfo.json
+        bundle = tmp_path / "FakePlugin.vst3"
+        resources = bundle / "Contents" / "Resources"
+        resources.mkdir(parents=True)
+        (resources / "moduleinfo.json").write_text(
+            '{\n'
+            '  "Classes": [\n'
+            '    {\n'
+            '      "CID": "ABCDEF0123456789ABCDEF0123456789",\n'
+            '      "Category": "Audio Module Class"\n'
+            '    }\n'
+            '  ]\n'
+            '}\n'
+        )
+
+        plugin = MagicMock()
+        plugin.path = str(bundle)
+        plugin.get_state.return_value = b"data"
+
+        out = tmp_path / "out.vstpreset"
+        save_vstpreset(out, plugin)
+
+        preset = read_vstpreset(out)
+        assert preset.class_id == "ABCDEF0123456789ABCDEF0123456789"
+        assert preset.component_state == b"data"
 
     def test_round_trip_load_after_save(self, tmp_path):
         """Save then load a preset through minihost's own loader."""
@@ -304,3 +366,177 @@ class TestSaveVstPreset:
         dst_plugin = MagicMock()
         load_vstpreset(path, dst_plugin)
         dst_plugin.set_state.assert_called_once_with(b"plugin_state_xyz")
+
+
+class TestReadClassIdFromBundle:
+    """Tests for the moduleinfo.json scanner."""
+
+    def test_basic(self, tmp_path):
+        bundle = _make_bundle(tmp_path,
+            '{\n'
+            '  "Classes": [\n'
+            '    {\n'
+            '      "CID": "ABCDEF0123456789ABCDEF0123456789",\n'
+            '      "Category": "Audio Module Class"\n'
+            '    }\n'
+            '  ]\n'
+            '}\n'
+        )
+        assert read_class_id_from_bundle(bundle) == "ABCDEF0123456789ABCDEF0123456789"
+
+    def test_picks_audio_module_class_not_controller(self, tmp_path):
+        """The scanner must skip the controller class and pick the
+        processor (Audio Module Class) entry, regardless of order."""
+        bundle = _make_bundle(tmp_path,
+            '{\n'
+            '  "Classes": [\n'
+            '    {\n'
+            '      "CID": "1111111111111111CCCCCCCCCCCCCCCC",\n'
+            '      "Category": "Component Controller Class"\n'
+            '    },\n'
+            '    {\n'
+            '      "CID": "2222222222222222AAAAAAAAAAAAAAAA",\n'
+            '      "Category": "Audio Module Class"\n'
+            '    }\n'
+            '  ]\n'
+            '}\n'
+        )
+        assert read_class_id_from_bundle(bundle) == "2222222222222222AAAAAAAAAAAAAAAA"
+
+    def test_tolerates_trailing_commas(self, tmp_path):
+        """Real-world moduleinfo.json files emit JSON5-style trailing
+        commas (e.g., Dexed, Strokes). The scanner must tolerate them."""
+        bundle = _make_bundle(tmp_path,
+            '{\n'
+            '  "Classes": [\n'
+            '    {\n'
+            '      "CID": "ABCDEF019182FAEB4447534244657864",\n'
+            '      "Category": "Audio Module Class",\n'
+            '      "Sub Categories": [\n'
+            '        "Instrument",\n'
+            '        "Synth",\n'
+            '      ],\n'
+            '    },\n'
+            '  ],\n'
+            '}\n'
+        )
+        assert read_class_id_from_bundle(bundle) == "ABCDEF019182FAEB4447534244657864"
+
+    def test_uppercases_lowercase_hex(self, tmp_path):
+        bundle = _make_bundle(tmp_path,
+            '{\n'
+            '  "Classes": [\n'
+            '    {\n'
+            '      "CID": "abcdef0123456789abcdef0123456789",\n'
+            '      "Category": "Audio Module Class"\n'
+            '    }\n'
+            '  ]\n'
+            '}\n'
+        )
+        assert read_class_id_from_bundle(bundle) == "ABCDEF0123456789ABCDEF0123456789"
+
+    def test_cid_before_category(self, tmp_path):
+        """Key order should not matter -- CID may appear before Category."""
+        bundle = _make_bundle(tmp_path,
+            '{\n'
+            '  "Classes": [\n'
+            '    {\n'
+            '      "Name": "Foo",\n'
+            '      "CID": "DEADBEEFDEADBEEFDEADBEEFDEADBEEF",\n'
+            '      "Vendor": "Acme",\n'
+            '      "Category": "Audio Module Class"\n'
+            '    }\n'
+            '  ]\n'
+            '}\n'
+        )
+        assert read_class_id_from_bundle(bundle) == "DEADBEEFDEADBEEFDEADBEEFDEADBEEF"
+
+    def test_picks_first_audio_module_class(self, tmp_path):
+        """If a bundle exposes multiple audio plugins, take the first."""
+        bundle = _make_bundle(tmp_path,
+            '{\n'
+            '  "Classes": [\n'
+            '    {\n'
+            '      "CID": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",\n'
+            '      "Category": "Audio Module Class"\n'
+            '    },\n'
+            '    {\n'
+            '      "CID": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",\n'
+            '      "Category": "Audio Module Class"\n'
+            '    }\n'
+            '  ]\n'
+            '}\n'
+        )
+        assert read_class_id_from_bundle(bundle) == "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+    def test_missing_moduleinfo_raises(self, tmp_path):
+        bundle = tmp_path / "Plugin.vst3"
+        bundle.mkdir()  # bundle exists but no moduleinfo.json
+        with pytest.raises(ValueError, match="moduleinfo.json not found"):
+            read_class_id_from_bundle(bundle)
+
+    def test_bundle_path_not_a_directory_raises(self, tmp_path):
+        with pytest.raises(ValueError, match="moduleinfo.json not found"):
+            read_class_id_from_bundle(tmp_path / "nonexistent.vst3")
+
+    def test_no_audio_module_class_raises(self, tmp_path):
+        bundle = _make_bundle(tmp_path,
+            '{\n'
+            '  "Classes": [\n'
+            '    {\n'
+            '      "CID": "1111111111111111CCCCCCCCCCCCCCCC",\n'
+            '      "Category": "Component Controller Class"\n'
+            '    }\n'
+            '  ]\n'
+            '}\n'
+        )
+        with pytest.raises(ValueError, match="Audio Module Class"):
+            read_class_id_from_bundle(bundle)
+
+    def test_invalid_cid_length_raises(self, tmp_path):
+        bundle = _make_bundle(tmp_path,
+            '{\n'
+            '  "Classes": [\n'
+            '    {\n'
+            '      "CID": "TOO_SHORT",\n'
+            '      "Category": "Audio Module Class"\n'
+            '    }\n'
+            '  ]\n'
+            '}\n'
+        )
+        with pytest.raises(ValueError, match="32 hex characters"):
+            read_class_id_from_bundle(bundle)
+
+    def test_non_hex_cid_raises(self, tmp_path):
+        bundle = _make_bundle(tmp_path,
+            '{\n'
+            '  "Classes": [\n'
+            '    {\n'
+            '      "CID": "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ",\n'
+            '      "Category": "Audio Module Class"\n'
+            '    }\n'
+            '  ]\n'
+            '}\n'
+        )
+        with pytest.raises(ValueError, match="32 hex characters"):
+            read_class_id_from_bundle(bundle)
+
+    def test_no_classes_key_raises(self, tmp_path):
+        bundle = _make_bundle(tmp_path, '{"Name": "Foo"}\n')
+        with pytest.raises(ValueError, match='"Classes" key'):
+            read_class_id_from_bundle(bundle)
+
+    def test_bundle_path_with_trailing_slash(self, tmp_path):
+        """Trailing slashes on the bundle path should be tolerated."""
+        bundle = _make_bundle(tmp_path,
+            '{\n'
+            '  "Classes": [\n'
+            '    {\n'
+            '      "CID": "ABCDEF0123456789ABCDEF0123456789",\n'
+            '      "Category": "Audio Module Class"\n'
+            '    }\n'
+            '  ]\n'
+            '}\n'
+        )
+        assert read_class_id_from_bundle(str(bundle) + "/") == \
+            "ABCDEF0123456789ABCDEF0123456789"

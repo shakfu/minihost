@@ -217,6 +217,305 @@ int mh_vstpreset_read(const char* path, MH_VstPreset* out,
     return 1;
 }
 
+// ---- moduleinfo.json scanner --------------------------------------------
+//
+// VST3 SDK 3.7.5+ plugins ship a `Contents/Resources/moduleinfo.json` file
+// inside the .vst3 bundle. The format is JSON5 (allows trailing commas), and
+// the processor class ID we want is the first entry in the "Classes" array
+// whose "Category" is "Audio Module Class". We don't pull in a JSON library;
+// instead we do a string-aware linear scan that:
+//
+//   1. Skips characters inside double-quoted strings (handles `\"` escapes).
+//   2. Tracks brace/bracket nesting depth so we can find object boundaries.
+//   3. Recognises "key": "value" patterns by matching literal key strings.
+//
+// This is sufficient because the schema is fixed and well-known; we don't
+// need to validate the surrounding structure or handle edge cases that
+// real-world bundles never produce.
+
+#define MH_MODULEINFO_MAX_BYTES (1024 * 1024)  // 1 MB cap
+
+// Skip whitespace. Returns the new offset.
+static size_t mi_skip_ws(const char* s, size_t i, size_t n) {
+    while (i < n) {
+        char c = s[i];
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') { i++; continue; }
+        break;
+    }
+    return i;
+}
+
+// Skip a JSON string starting at s[i], where s[i] must be '"'. Returns
+// the offset of the byte AFTER the closing quote, or n on error.
+static size_t mi_skip_string(const char* s, size_t i, size_t n) {
+    if (i >= n || s[i] != '"') return n;
+    i++;  // skip opening quote
+    while (i < n) {
+        char c = s[i];
+        if (c == '\\') {
+            // Skip escape sequence (we don't decode it)
+            i += 2;
+            continue;
+        }
+        if (c == '"') return i + 1;
+        i++;
+    }
+    return n;
+}
+
+// Find the next occurrence of `key_quoted` (a literal like "\"CID\"") in
+// s[start..end), skipping over quoted strings so we don't match inside one.
+// Returns the offset of the first character of the match, or end if not found.
+static size_t mi_find_key(const char* s, size_t start, size_t end,
+                          const char* key_quoted) {
+    size_t klen = strlen(key_quoted);
+    size_t i = start;
+    while (i < end) {
+        char c = s[i];
+        if (c == '"') {
+            // We're at the start of a string. Check if it matches the key.
+            if (i + klen <= end && memcmp(s + i, key_quoted, klen) == 0) {
+                // Confirm the next non-ws character is ':' so this is a key,
+                // not a value that happens to equal the key text.
+                size_t j = mi_skip_ws(s, i + klen, end);
+                if (j < end && s[j] == ':') return i;
+            }
+            i = mi_skip_string(s, i, end);
+            continue;
+        }
+        i++;
+    }
+    return end;
+}
+
+// Parse a string value at s[i] (must point to '"'). Copies the unescaped
+// content into out_buf (truncated to out_size - 1) and NUL-terminates.
+// We don't actually decode escapes — for our keys (CID, Category) the
+// values are plain ASCII without escapes.
+// Returns the offset after the closing quote, or n on error.
+static size_t mi_parse_string(const char* s, size_t i, size_t n,
+                              char* out_buf, size_t out_size) {
+    if (i >= n || s[i] != '"') return n;
+    i++;  // skip opening quote
+    size_t out_i = 0;
+    while (i < n) {
+        char c = s[i];
+        if (c == '\\') {
+            // Copy the escaped char literally
+            if (i + 1 < n && out_i + 1 < out_size) {
+                out_buf[out_i++] = s[i + 1];
+            }
+            i += 2;
+            continue;
+        }
+        if (c == '"') {
+            if (out_size > 0) out_buf[out_i] = '\0';
+            return i + 1;
+        }
+        if (out_i + 1 < out_size) out_buf[out_i++] = c;
+        i++;
+    }
+    if (out_size > 0) out_buf[out_size - 1] = '\0';
+    return n;
+}
+
+// After matching `mi_find_key`, advance past the key and the ':' to the
+// start of the value. Returns the offset of the first non-ws character of
+// the value, or n on error.
+static size_t mi_advance_to_value(const char* s, size_t key_offset, size_t n,
+                                  const char* key_quoted) {
+    size_t i = key_offset + strlen(key_quoted);
+    i = mi_skip_ws(s, i, n);
+    if (i >= n || s[i] != ':') return n;
+    i++;  // skip ':'
+    return mi_skip_ws(s, i, n);
+}
+
+// Find the matching closing brace for an opening brace at s[i]. s[i] must
+// be '{'. Tracks nesting and skips strings. Returns the offset of the
+// matching '}', or n on error.
+static size_t mi_find_matching_brace(const char* s, size_t i, size_t n) {
+    if (i >= n || s[i] != '{') return n;
+    int depth = 0;
+    while (i < n) {
+        char c = s[i];
+        if (c == '"') { i = mi_skip_string(s, i, n); continue; }
+        if (c == '{') { depth++; i++; continue; }
+        if (c == '}') {
+            depth--;
+            if (depth == 0) return i;
+            i++;
+            continue;
+        }
+        i++;
+    }
+    return n;
+}
+
+// Validate that `s` is exactly 32 hex characters and uppercase it in place.
+static int mi_validate_and_uppercase_cid(char* s) {
+    int len = 0;
+    while (s[len] != '\0') len++;
+    if (len != MH_VSTPRESET_CLASS_ID_LEN) return 0;
+    for (int i = 0; i < len; i++) {
+        char c = s[i];
+        if (c >= '0' && c <= '9') continue;
+        if (c >= 'A' && c <= 'F') continue;
+        if (c >= 'a' && c <= 'f') { s[i] = (char)(c - 'a' + 'A'); continue; }
+        return 0;
+    }
+    return 1;
+}
+
+int mh_vstpreset_read_class_id_from_bundle(const char* vst3_path,
+                                           char* out_class_id,
+                                           char* err_buf, size_t err_buf_size) {
+    if (!vst3_path || !out_class_id) {
+        set_err(err_buf, err_buf_size, "Invalid arguments");
+        return 0;
+    }
+    out_class_id[0] = '\0';
+
+    // Build "<vst3_path>/Contents/Resources/moduleinfo.json".
+    // Strip a trailing path separator if present.
+    char json_path[2048];
+    size_t plen = strlen(vst3_path);
+    while (plen > 0 && (vst3_path[plen - 1] == '/' || vst3_path[plen - 1] == '\\')) {
+        plen--;
+    }
+    int written = snprintf(json_path, sizeof(json_path),
+                           "%.*s/Contents/Resources/moduleinfo.json",
+                           (int)plen, vst3_path);
+    if (written < 0 || (size_t)written >= sizeof(json_path)) {
+        set_err(err_buf, err_buf_size, "Plugin path too long");
+        return 0;
+    }
+
+    FILE* f = fopen(json_path, "rb");
+    if (!f) {
+        if (err_buf && err_buf_size > 0) {
+            snprintf(err_buf, err_buf_size,
+                     "moduleinfo.json not found at %s "
+                     "(plugin may predate VST3 SDK 3.7.5)", json_path);
+        }
+        return 0;
+    }
+
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        set_err(err_buf, err_buf_size, "Failed to seek moduleinfo.json");
+        return 0;
+    }
+    long flen = ftell(f);
+    if (flen < 0) {
+        fclose(f);
+        set_err(err_buf, err_buf_size, "Failed to size moduleinfo.json");
+        return 0;
+    }
+    if (flen > MH_MODULEINFO_MAX_BYTES) {
+        fclose(f);
+        set_err(err_buf, err_buf_size, "moduleinfo.json exceeds 1 MB limit");
+        return 0;
+    }
+    rewind(f);
+
+    char* data = (char*)malloc((size_t)flen + 1);
+    if (!data) {
+        fclose(f);
+        set_err(err_buf, err_buf_size, "Out of memory");
+        return 0;
+    }
+    if (fread(data, 1, (size_t)flen, f) != (size_t)flen) {
+        free(data);
+        fclose(f);
+        set_err(err_buf, err_buf_size, "Failed to read moduleinfo.json");
+        return 0;
+    }
+    fclose(f);
+    data[flen] = '\0';
+    size_t n = (size_t)flen;
+
+    // Locate the "Classes" array.
+    size_t classes_key = mi_find_key(data, 0, n, "\"Classes\"");
+    if (classes_key >= n) {
+        free(data);
+        set_err(err_buf, err_buf_size, "moduleinfo.json has no \"Classes\" key");
+        return 0;
+    }
+    size_t i = mi_advance_to_value(data, classes_key, n, "\"Classes\"");
+    if (i >= n || data[i] != '[') {
+        free(data);
+        set_err(err_buf, err_buf_size, "\"Classes\" value is not an array");
+        return 0;
+    }
+    i++;  // step past '['
+
+    // Walk the array. Each top-level '{' opens a class object; we read
+    // its body, look for "Category" and "CID", and pick the first whose
+    // category equals "Audio Module Class".
+    while (i < n) {
+        i = mi_skip_ws(data, i, n);
+        if (i >= n) break;
+        if (data[i] == ']') break;             // end of array
+        if (data[i] == ',') { i++; continue; } // separator (or trailing)
+        if (data[i] != '{') { i++; continue; } // tolerate stray chars
+
+        size_t obj_start = i;
+        size_t obj_end = mi_find_matching_brace(data, i, n);
+        if (obj_end >= n) {
+            free(data);
+            set_err(err_buf, err_buf_size,
+                    "Unterminated class object in moduleinfo.json");
+            return 0;
+        }
+
+        // Look for "Category": "Audio Module Class" and "CID": "<32 hex>".
+        char category[64] = { 0 };
+        char cid[MH_VSTPRESET_CLASS_ID_LEN + 1] = { 0 };
+
+        size_t cat_key = mi_find_key(data, obj_start, obj_end, "\"Category\"");
+        if (cat_key < obj_end) {
+            size_t v = mi_advance_to_value(data, cat_key, obj_end, "\"Category\"");
+            if (v < obj_end && data[v] == '"') {
+                mi_parse_string(data, v, obj_end, category, sizeof(category));
+            }
+        }
+
+        if (strcmp(category, "Audio Module Class") == 0) {
+            size_t cid_key = mi_find_key(data, obj_start, obj_end, "\"CID\"");
+            if (cid_key < obj_end) {
+                size_t v = mi_advance_to_value(data, cid_key, obj_end, "\"CID\"");
+                if (v < obj_end && data[v] == '"') {
+                    mi_parse_string(data, v, obj_end, cid, sizeof(cid));
+                }
+            }
+            if (cid[0] != '\0') {
+                if (!mi_validate_and_uppercase_cid(cid)) {
+                    free(data);
+                    if (err_buf && err_buf_size > 0) {
+                        snprintf(err_buf, err_buf_size,
+                                 "CID is not 32 hex characters: %s", cid);
+                    }
+                    return 0;
+                }
+                // Copy out (caller buffer is at least
+                // MH_VSTPRESET_CLASS_ID_LEN + 1 bytes).
+                memcpy(out_class_id, cid, MH_VSTPRESET_CLASS_ID_LEN);
+                out_class_id[MH_VSTPRESET_CLASS_ID_LEN] = '\0';
+                free(data);
+                return 1;
+            }
+        }
+
+        i = obj_end + 1;  // move past '}'
+    }
+
+    free(data);
+    set_err(err_buf, err_buf_size,
+            "No \"Audio Module Class\" entry found in moduleinfo.json");
+    return 0;
+}
+
 int mh_vstpreset_write(const char* path,
                        const char* class_id,
                        const void* component_state, int component_size,

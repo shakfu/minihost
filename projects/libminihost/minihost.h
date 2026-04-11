@@ -116,6 +116,10 @@ MH_Plugin* mh_open(const char* plugin_path,
 
 void mh_close(MH_Plugin* p);
 
+// Returns the plugin file path passed to mh_open / mh_open_ex.
+// Owned by the MH_Plugin; valid until mh_close. Returns "" for NULL.
+const char* mh_get_path(const MH_Plugin* p);
+
 int mh_get_info(MH_Plugin* p, MH_Info* out_info);
 
 // Non-interleaved buffers: inputs[ch][nframes], outputs[ch][nframes]

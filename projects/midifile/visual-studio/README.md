@@ -1,7 +1,7 @@
 Compiling for Visual Studio
 ============================
 
-The solution file (midifile.sln) contains the project for the static 
+The solution file (midifile.sln) contains the project for the static
 library in /src (midifile.vcxproj) as well as projects for
 individual projects for client programs in /tools.
 
@@ -13,4 +13,3 @@ files should be created for them in this directory, and then added
 to midifile.sln. The easiest was of creating a new project file
 is to copy an existing project file and then rename all occurrences
 of the old name with the new one.
-

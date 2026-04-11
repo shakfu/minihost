@@ -55,6 +55,54 @@ minihost params /path/to/plugin.vst3 --json
 | `-V, --verbose` | Show ranges, defaults, flags |
 | `-j, --json` | Output as JSON |
 
+### `devices` -- List audio devices
+
+```bash
+minihost devices           # list playback and capture devices
+minihost devices --json    # output as JSON
+```
+
+| Option | Description |
+|--------|-------------|
+| `-j, --json` | Output as JSON |
+
+Lists available audio playback and capture devices. The system default device is marked. Use the index or a case-insensitive substring of the device name with `minihost play --playback-device` / `--capture-device`.
+
+### `presets` -- List factory presets or export `.vstpreset` files
+
+```bash
+# List all factory presets
+minihost presets /path/to/synth.vst3
+minihost presets /path/to/synth.vst3 --json
+
+# Export factory preset N as a .vstpreset
+minihost presets /path/to/synth.vst3 --program 5 --save preset5.vstpreset
+
+# Round-trip a .vstpreset through the plugin (loads, re-saves)
+minihost presets /path/to/synth.vst3 --load-vstpreset in.vstpreset --save out.vstpreset
+
+# Convert a raw state blob to .vstpreset
+minihost presets /path/to/synth.vst3 --state state.bin --save out.vstpreset
+```
+
+| Option | Description |
+|--------|-------------|
+| `plugin` | Path to plugin (required) |
+| `--save FILE.vstpreset` | Save current plugin state as a `.vstpreset` file |
+| `--program N` | Select factory program N before saving |
+| `--state FILE` | Load raw state blob into plugin before saving |
+| `--load-vstpreset FILE` | Load a `.vstpreset` before saving. When combined with `--save`, the source file's `class_id` is preserved in the output |
+| `-y, --overwrite` | Overwrite the `--save` target if it already exists |
+| `-j, --json` | Output the preset listing as JSON |
+
+Without `--save`, `presets` lists all factory presets (no truncation). With `--save`, the subcommand exports the plugin's current state (optionally after applying `--program`, `--state`, or `--load-vstpreset`) to a `.vstpreset` file.
+
+The output `.vstpreset`'s processor class ID (FUID) is determined as follows, in order:
+
+1. If `--load-vstpreset` was used, the source file's `class_id` is preserved in the output.
+2. Otherwise, the FUID is auto-detected from the plugin bundle's `Contents/Resources/moduleinfo.json` (requires VST3 SDK 3.7.5+, which all modern plugins ship).
+3. If neither path yields a valid FUID, the command fails with a helpful error rather than writing a `.vstpreset` with a bogus class ID. For legacy plugins, use `--load-vstpreset` to inherit a real FUID from an existing preset.
+
 ### `midi` -- List or monitor MIDI ports
 
 ```bash
@@ -77,6 +125,10 @@ minihost play /path/to/synth.vst3 --midi 0
 minihost play /path/to/synth.vst3 --virtual-midi "My Synth"
 minihost play /path/to/effect.vst3 --input              # duplex mode
 minihost play /path/to/effect.vst3 --input --midi 0     # duplex + MIDI
+
+# Select specific audio devices by index or case-insensitive name substring
+minihost play /path/to/synth.vst3 --playback-device "BlackHole"
+minihost play /path/to/effect.vst3 --input --capture-device 1 --playback-device 0
 ```
 
 | Option | Description |
@@ -87,8 +139,12 @@ minihost play /path/to/effect.vst3 --input --midi 0     # duplex + MIDI
 | `-v, --virtual-midi NAME` | Create virtual MIDI input |
 | `--midi-out N` | Connect to MIDI output port N |
 | `--virtual-midi-out NAME` | Create virtual MIDI output |
+| `--playback-device INDEX_OR_NAME` | Playback device selector (default: system default) |
+| `--capture-device INDEX_OR_NAME` | Capture device selector for `--input` duplex mode |
 
 When `--input` is enabled, the audio device opens in duplex mode: system audio input is captured, processed through the plugin, and played back through speakers. This is useful for guitar amp sims, vocal processing, and live effects.
+
+`--playback-device` and `--capture-device` accept either an integer index from `minihost devices` or a case-insensitive substring of the device name.
 
 ### `process` -- Process audio/MIDI offline
 

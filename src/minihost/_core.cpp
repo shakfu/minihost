@@ -13,6 +13,7 @@
 #include "minihost_audio.h"
 #include "minihost_audiofile.h"
 #include "minihost_midi.h"
+#include "minihost_vstpreset.h"
 #include "MidiFile.h"
 
 namespace nb = nanobind;
@@ -78,6 +79,11 @@ public:
     }
 
     // Properties
+    std::string path() const {
+        const char* p = mh_get_path(plugin_);
+        return p ? std::string(p) : std::string();
+    }
+
     int num_params() const {
         return mh_get_num_params(plugin_);
     }
@@ -1615,6 +1621,23 @@ NB_MODULE(_core, m) {
           "Get list of available audio capture (input) devices. "
           "Returns list of dicts with 'name', 'index', and 'is_default'.");
 
+    // VST3 .vstpreset helpers
+    m.def("vstpreset_read_class_id_from_bundle",
+          [](const std::string& vst3_path) {
+              char class_id[MH_VSTPRESET_CLASS_ID_LEN + 1] = {0};
+              char err[512] = {0};
+              if (!mh_vstpreset_read_class_id_from_bundle(
+                      vst3_path.c_str(), class_id, err, sizeof(err))) {
+                  throw std::runtime_error(std::string("vstpreset_read_class_id_from_bundle: ") + err);
+              }
+              return std::string(class_id);
+          },
+          nb::arg("vst3_path"),
+          "Read the processor class ID (32-char uppercase hex FUID) from a "
+          "VST3 bundle's Contents/Resources/moduleinfo.json. Raises RuntimeError "
+          "if the file is missing (plugin predates VST3 SDK 3.7.5), malformed, "
+          "or contains no Audio Module Class entry.");
+
     // Change notification flag constants
     m.attr("MH_CHANGE_LATENCY")         = MH_CHANGE_LATENCY;
     m.attr("MH_CHANGE_PARAM_INFO")      = MH_CHANGE_PARAM_INFO;
@@ -1636,6 +1659,8 @@ NB_MODULE(_core, m) {
              "Open an audio plugin (VST3 or AudioUnit). Use sidechain_channels > 0 for sidechain support.")
 
         // Properties
+        .def_prop_ro("path", &Plugin::path,
+                     "Plugin file path passed to the constructor")
         .def_prop_ro("num_params", &Plugin::num_params,
                      "Number of parameters")
         .def_prop_ro("num_input_channels", &Plugin::num_input_channels,

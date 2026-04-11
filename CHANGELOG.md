@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.5]
+
 ### Added
 
 - **Audio device selection** -- enumerate and select specific playback/capture audio devices
@@ -15,36 +17,36 @@
   - Combinable with `--program N`, `-s/--state FILE`, or `--load-vstpreset FILE` to apply an input state before saving; when `--load-vstpreset` is used, the source file's class_id is preserved in the output
   - `-y`/`--overwrite` allows overwriting an existing `--save` target
   - Byte-exact round-trip verified between Python, C, and C++ CLIs writing/reading the same `.vstpreset`
+
 - **`minihost_vstpreset.h/.c` in libminihost** -- new C module exposing `mh_vstpreset_read()`, `mh_vstpreset_write()`, and `mh_vstpreset_free()` for programmatic .vstpreset I/O from C/C++ callers (portable little-endian packing, no external dependencies)
 - **`write_vstpreset()` / `save_vstpreset()` in `minihost.vstpreset`** -- programmatic .vstpreset writer to complement the existing reader
+
 - **C/C++ CLI feature parity with Python frontend** -- brought `minihost_c` and `minihost_cpp` up to date with features already available in libminihost and the Python CLI
-
-  #### Process command (both CLIs)
-  - Audio file I/O via `minihost_audiofile.h` -- process WAV, FLAC, MP3 input and write WAV/FLAC output (raw float32 retained as fallback for non-audio extensions)
-  - `-i`/`--input` and `-o`/`--output` named arguments for input/output files (C CLI retains legacy positional syntax)
-  - Latency compensation -- output automatically trimmed using `mh_get_latency_samples()`
-  - `-p`/`--preset N` -- load factory preset before processing via `mh_set_program()`
-  - `--param "Name:value"` -- set parameters by name or index (repeatable), dispatched via `mh_process_auto()` for sample-accurate application
-  - `--sidechain FILE` -- sidechain input via `mh_open_ex()` + `mh_process_sidechain()`
-  - `--non-realtime` -- enable higher-quality offline processing via `mh_set_non_realtime()`
-  - `--bpm BPM` -- set transport tempo for tempo-synced plugins via `mh_set_transport()`
-  - `--bit-depth 16|24|32` -- control output bit depth (default: 24)
-
-  #### Process command (C++ CLI only)
-  - `-m`/`--midi-input FILE` -- render MIDI files through synth/effect plugins via midifile library + `mh_process_midi()`
-  - `-t`/`--tail SECONDS` -- configurable tail length for MIDI-only rendering (default: 2.0s)
-
-  #### Params command (both CLIs)
-  - `-V`/`--verbose` -- extended parameter display with ranges, defaults, and flags using `mh_param_to_text()`
-
-  #### Info command (both CLIs)
-  - `--probe` -- lightweight metadata-only mode (no full plugin load)
-  - `-j`/`--json` -- JSON output with merged probe and runtime info
+  - `process` (both CLIs): audio file I/O via `minihost_audiofile.h` -- process WAV, FLAC, MP3 input and write WAV/FLAC output (raw float32 retained as fallback for non-audio extensions)
+  - `process` (both CLIs): `-i`/`--input` and `-o`/`--output` named arguments for input/output files (C CLI retains legacy positional syntax)
+  - `process` (both CLIs): latency compensation -- output automatically trimmed using `mh_get_latency_samples()`
+  - `process` (both CLIs): `-p`/`--preset N` -- load factory preset before processing via `mh_set_program()`
+  - `process` (both CLIs): `--param "Name:value"` -- set parameters by name or index (repeatable), dispatched via `mh_process_auto()` for sample-accurate application
+  - `process` (both CLIs): `--sidechain FILE` -- sidechain input via `mh_open_ex()` + `mh_process_sidechain()`
+  - `process` (both CLIs): `--non-realtime` -- enable higher-quality offline processing via `mh_set_non_realtime()`
+  - `process` (both CLIs): `--bpm BPM` -- set transport tempo for tempo-synced plugins via `mh_set_transport()`
+  - `process` (both CLIs): `--bit-depth 16|24|32` -- control output bit depth (default: 24)
+  - `process` (C++ CLI only): `-m`/`--midi-input FILE` -- render MIDI files through synth/effect plugins via midifile library + `mh_process_midi()`
+  - `process` (C++ CLI only): `-t`/`--tail SECONDS` -- configurable tail length for MIDI-only rendering (default: 2.0s)
+  - `params` (both CLIs): `-V`/`--verbose` -- extended parameter display with ranges, defaults, and flags using `mh_param_to_text()`
+  - `info` (both CLIs): `--probe` -- lightweight metadata-only mode (no full plugin load)
+  - `info` (both CLIs): `-j`/`--json` -- JSON output with merged probe and runtime info
 
 ### Changed
 
 - `minihost_cpp` now links against `minihost_audio` and `midifile` libraries
 - `minihost_c` now links against `minihost_audio` library
+- **`save_vstpreset` now produces valid VST3 FUIDs.** When called with `class_id=None` (the default), the FUID is auto-detected from the plugin bundle's `Contents/Resources/moduleinfo.json` instead of writing a placeholder string. This requires the plugin to be built against VST3 SDK 3.7.5+ (which all modern plugins ship). For legacy plugins, callers must pass `class_id` explicitly or use `load_vstpreset()` to inherit one from an existing preset; there is no silent fallback. The same change applies to the `presets <plugin> --save` subcommand across all three CLI frontends.
+- `Plugin` Python class and `MH_Plugin` C struct now expose the constructor's plugin path via `Plugin.path` (Python) / `mh_get_path()` (C).
+
+### Fixed
+
+- **`.vstpreset` files written by `save_vstpreset()` (and the `presets --save` CLI) previously contained a bogus class ID** -- either the literal `"minihost_unknown"` or an 8-character hash from JUCE's `PluginDescription.uniqueId`, neither of which is a valid 32-character VST3 FUID. Files written this way round-tripped through minihost's own loader but were unrecognised by other VST3 hosts. Fixed by reading the real processor FUID from the plugin bundle's `moduleinfo.json` (see Changed). New `mh_vstpreset_read_class_id_from_bundle()` C function and `minihost.vstpreset.read_class_id_from_bundle()` Python helper expose the underlying lookup.
 
 ## [0.1.4]
 
@@ -310,6 +312,7 @@
 ### Fixed
 
 #### Linux Compilation
+
 - Added Linux build dependencies to README.md (JUCE requires freetype, fontconfig, webkit2gtk, gtk3, etc.)
 - Fixed `addFormat()` calls to use raw pointers instead of `std::make_unique<>()` (JUCE's API expects raw pointers)
 - Added `POSITION_INDEPENDENT_CODE ON` to libminihost CMakeLists.txt for linking into shared libraries (e.g., Python module)

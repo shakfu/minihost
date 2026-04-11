@@ -238,6 +238,31 @@ def write_vstpreset(
     Path(path).write_bytes(header + data_area + chunk_list)
 
 
+def read_class_id_from_bundle(vst3_path: str | Path) -> str:
+    """Read the processor class ID (FUID) from a VST3 bundle's moduleinfo.json.
+
+    Looks for ``<vst3_path>/Contents/Resources/moduleinfo.json`` and returns
+    the 32-character uppercase hex CID of the first entry whose ``Category``
+    is ``"Audio Module Class"`` (the processor component).
+
+    Args:
+        vst3_path: Path to the .vst3 bundle directory.
+
+    Returns:
+        A 32-character uppercase hex string.
+
+    Raises:
+        ValueError: If moduleinfo.json is missing (plugin predates VST3 SDK
+            3.7.5), malformed, or contains no Audio Module Class entry.
+    """
+    from . import _core
+
+    try:
+        return _core.vstpreset_read_class_id_from_bundle(str(vst3_path))
+    except RuntimeError as e:
+        raise ValueError(str(e)) from e
+
+
 def save_vstpreset(
     path: str | Path,
     plugin,
@@ -248,15 +273,32 @@ def save_vstpreset(
     Args:
         path: Destination file path.
         plugin: A minihost.Plugin instance.
-        class_id: Processor class ID. If None, uses the plugin's
-            probed unique_id (suitable only for round-trips through
-            minihost's own loader, not for cross-DAW compatibility).
+        class_id: Processor class ID (32-char hex FUID). If None, the FUID
+            is read from the plugin bundle's moduleinfo.json. This requires
+            the plugin to be VST3 and built against VST3 SDK 3.7.5 or newer.
+            For older plugins, or for non-VST3 formats (.vstpreset is a
+            VST3-only format), pass class_id explicitly or use
+            ``load_vstpreset`` to inherit one from an existing preset.
 
     Raises:
+        ValueError: If class_id is None and cannot be auto-detected.
         RuntimeError: If plugin.get_state() fails.
         OSError: If the file cannot be written.
     """
     state = plugin.get_state()
     if class_id is None:
-        class_id = "minihost_unknown"
+        plugin_path = getattr(plugin, "path", "") or ""
+        if not plugin_path.lower().endswith(".vst3"):
+            raise ValueError(
+                "save_vstpreset requires class_id for non-VST3 plugins; "
+                "'.vstpreset' is a VST3-only format. Pass class_id explicitly."
+            )
+        try:
+            class_id = read_class_id_from_bundle(plugin_path)
+        except ValueError as e:
+            raise ValueError(
+                f"Could not auto-detect VST3 class_id for {plugin_path!r}: {e}. "
+                f"Pass class_id explicitly, or use load_vstpreset() to inherit "
+                f"one from an existing .vstpreset file."
+            ) from e
     write_vstpreset(path, class_id, state)

@@ -10,13 +10,15 @@ minihost provides a C API built on JUCE with Python bindings via nanobind. It bu
 - **Headless mode**: no GUI dependencies, uses JUCE's `juce_audio_processors_headless`
 - **Plugin chaining**: connect multiple plugins in series
 - **Real-time audio**: playback and capture via miniaudio, with duplex mode for effect processing
+- **Audio device selection**: enumerate and target specific playback/capture devices
 - **Real-time MIDI**: input/output via libremidi, virtual ports on macOS/Linux
 - **Audio file I/O**: read WAV/FLAC/MP3/Vorbis, write WAV and FLAC
 - **Sample rate conversion**: built-in resampling via miniaudio
 - **Batch processing**: glob patterns and directory output for processing multiple files
 - **Auto-tail detection**: automatic reverb/delay tail detection in offline rendering
 - **Sample-accurate automation**: parameter changes at sample resolution
-- **CLI tool**: 7 subcommands for plugin inspection, playback, processing, and resampling
+- **VST3 preset I/O**: read and write `.vstpreset` files from C, C++, and Python
+- **CLI tool**: 9 subcommands for plugin inspection, device listing, preset export, playback, processing, and resampling
 
 ## Quick Start
 

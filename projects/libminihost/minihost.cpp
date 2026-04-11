@@ -24,6 +24,7 @@
 #endif
 #include <atomic>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -132,6 +133,7 @@ struct MH_Plugin
     int inCh = 0;
     int outCh = 0;
     int sidechainCh = 0;  // sidechain input channels (0 if none)
+    std::string path;     // plugin file path passed to mh_open / mh_open_ex
 
     AudioBuffer<float> inBuf;
     AudioBuffer<float> outBuf;
@@ -265,6 +267,7 @@ extern "C" MH_Plugin* mh_open(const char* plugin_path,
     std::unique_ptr<MH_Plugin> p(new MH_Plugin());
     p->sampleRate = sample_rate;
     p->maxBlockSize = max_block_size;
+    p->path = plugin_path;
 
     File f(String::fromUTF8(plugin_path));
     if (! f.exists())
@@ -324,6 +327,12 @@ extern "C" void mh_close(MH_Plugin* p)
         p->inst->releaseResources();
     }
     delete p;
+}
+
+extern "C" const char* mh_get_path(const MH_Plugin* p)
+{
+    if (!p) return "";
+    return p->path.c_str();
 }
 
 extern "C" int mh_get_info(MH_Plugin* p, MH_Info* out_info)
@@ -1000,6 +1009,7 @@ extern "C" MH_Plugin* mh_open_ex(const char* plugin_path,
     std::unique_ptr<MH_Plugin> p(new MH_Plugin());
     p->sampleRate = sample_rate;
     p->maxBlockSize = max_block_size;
+    p->path = plugin_path;
 
     File f(String::fromUTF8(plugin_path));
     if (! f.exists())

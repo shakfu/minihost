@@ -822,15 +822,19 @@ static int cmd_presets(const char* plugin_path, double sample_rate, int block_si
         }
 
         if (!have_class_id) {
-            // Fallback: probe unique_id, padded
-            MH_PluginDesc desc;
-            memset(&desc, 0, sizeof(desc));
-            char probe_err[256] = {0};
-            if (mh_probe(plugin_path, &desc, probe_err, sizeof(probe_err))
-                && desc.unique_id[0]) {
-                snprintf(class_id_buf, sizeof(class_id_buf), "%s", desc.unique_id);
-            } else {
-                snprintf(class_id_buf, sizeof(class_id_buf), "%s", "minihost_unknown");
+            // Auto-detect from the plugin bundle's moduleinfo.json. There is
+            // no silent fallback -- if this fails we error out rather than
+            // write a .vstpreset with a bogus class_id.
+            char cid_err[512] = {0};
+            if (!mh_vstpreset_read_class_id_from_bundle(
+                    plugin_path, class_id_buf, cid_err, sizeof(cid_err))) {
+                fprintf(stderr,
+                        "Error: cannot determine VST3 class_id for '%s': %s\n"
+                        "Use --load-vstpreset to inherit a class_id from an "
+                        "existing .vstpreset file.\n",
+                        plugin_path, cid_err);
+                mh_close(p);
+                return 1;
             }
         }
 

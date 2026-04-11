@@ -68,6 +68,35 @@ int mh_vstpreset_write(const char* path,
                        const void* controller_state, int controller_size,
                        char* err_buf, size_t err_buf_size);
 
+// Read the processor class ID (FUID) from a VST3 bundle's moduleinfo.json.
+//
+// vst3_path: path to the .vst3 bundle (a directory on macOS/Linux, or a
+//   bundle directory on Windows). Looks for
+//   <vst3_path>/Contents/Resources/moduleinfo.json.
+//
+// Picks the first entry in the "Classes" array whose "Category" is
+// "Audio Module Class" (the processor component) and copies its 32-char
+// uppercase hex CID into out_class_id, NUL-terminating it.
+//
+// out_class_id: caller-provided buffer of at least
+//   MH_VSTPRESET_CLASS_ID_LEN + 1 bytes. On success, contains a 32-char
+//   uppercase hex string followed by '\0'.
+//
+// Returns 1 on success, 0 on failure (writes error to err_buf).
+//
+// Failure modes:
+//   - moduleinfo.json missing (older plugins built against VST3 SDK < 3.7.5)
+//   - file unreadable or larger than 1 MB
+//   - JSON malformed beyond recovery
+//   - no class with Category "Audio Module Class" present
+//   - CID is not exactly 32 hex characters
+//
+// Note: this only works for VST3 plugins. For non-VST3 formats, callers
+// must supply class_id explicitly to mh_vstpreset_write().
+int mh_vstpreset_read_class_id_from_bundle(const char* vst3_path,
+                                           char* out_class_id,
+                                           char* err_buf, size_t err_buf_size);
+
 #ifdef __cplusplus
 }
 #endif
