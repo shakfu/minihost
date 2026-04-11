@@ -4,6 +4,19 @@
 
 ### Added
 
+- **Audio device selection** -- enumerate and select specific playback/capture audio devices
+  - C API: `MH_AudioDeviceInfo`, `mh_audio_enumerate_playback_devices()`, `mh_audio_enumerate_capture_devices()`; new `playback_device_index` and `capture_device_index` fields on `MH_AudioConfig`
+  - Python: `minihost.audio_get_playback_devices()`, `minihost.audio_get_capture_devices()`; `AudioDevice(..., playback_device_index=N, capture_device_index=N)`
+  - Python CLI: new `minihost devices` subcommand lists available devices; `minihost play --playback-device` and `--capture-device` accept either an index or a case-insensitive substring of the device name
+  - C/C++ CLIs: new `devices` subcommand (text + `-j`/`--json` output). The C/C++ CLIs have no real-time `play` command, so device-selection flags are not applicable there.
+- **Preset management CLI** -- `presets <plugin>` subcommand extended across all three frontends
+  - Default: lists all factory presets (no longer truncated at 10 like `info`); `-j/--json` for structured output
+  - `--save FILE.vstpreset` saves the current plugin state as a `.vstpreset`
+  - Combinable with `--program N`, `-s/--state FILE`, or `--load-vstpreset FILE` to apply an input state before saving; when `--load-vstpreset` is used, the source file's class_id is preserved in the output
+  - `-y`/`--overwrite` allows overwriting an existing `--save` target
+  - Byte-exact round-trip verified between Python, C, and C++ CLIs writing/reading the same `.vstpreset`
+- **`minihost_vstpreset.h/.c` in libminihost** -- new C module exposing `mh_vstpreset_read()`, `mh_vstpreset_write()`, and `mh_vstpreset_free()` for programmatic .vstpreset I/O from C/C++ callers (portable little-endian packing, no external dependencies)
+- **`write_vstpreset()` / `save_vstpreset()` in `minihost.vstpreset`** -- programmatic .vstpreset writer to complement the existing reader
 - **C/C++ CLI feature parity with Python frontend** -- brought `minihost_c` and `minihost_cpp` up to date with features already available in libminihost and the Python CLI
 
   #### Process command (both CLIs)

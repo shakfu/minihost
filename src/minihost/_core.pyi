@@ -175,6 +175,8 @@ class AudioDevice:
         midi_input_port: int = -1,
         midi_output_port: int = -1,
         capture: bool = False,
+        playback_device_index: int = -1,
+        capture_device_index: int = -1,
     ) -> None: ...
     @property
     def is_playing(self) -> bool: ...
@@ -271,6 +273,20 @@ def midi_get_input_ports() -> list[dict[str, Any]]:
 
 def midi_get_output_ports() -> list[dict[str, Any]]:
     """Get list of available MIDI output ports."""
+    ...
+
+def audio_get_playback_devices() -> list[dict[str, Any]]:
+    """Get list of available audio playback (output) devices.
+
+    Each dict has: name (str), index (int), is_default (bool).
+    """
+    ...
+
+def audio_get_capture_devices() -> list[dict[str, Any]]:
+    """Get list of available audio capture (input) devices.
+
+    Each dict has: name (str), index (int), is_default (bool).
+    """
     ...
 
 MH_CHANGE_LATENCY: int

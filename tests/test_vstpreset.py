@@ -4,7 +4,13 @@ import struct
 
 import pytest
 
-from minihost.vstpreset import VstPreset, read_vstpreset, load_vstpreset
+from minihost.vstpreset import (
+    VstPreset,
+    load_vstpreset,
+    read_vstpreset,
+    save_vstpreset,
+    write_vstpreset,
+)
 
 
 def _build_vstpreset(class_id="A" * 32, component_state=b"", controller_state=None):
@@ -193,3 +199,108 @@ class TestVstPresetDataclass:
         preset = VstPreset(class_id="x", component_state=None, controller_state=None)
         assert preset.component_state is None
         assert preset.controller_state is None
+
+
+class TestWriteVstPreset:
+    def test_round_trip_component_only(self, tmp_path):
+        path = tmp_path / "out.vstpreset"
+        state = b"\xde\xad\xbe\xef" * 32
+        write_vstpreset(path, "A" * 32, state)
+
+        preset = read_vstpreset(path)
+        assert preset.class_id == "A" * 32
+        assert preset.component_state == state
+        assert preset.controller_state is None
+
+    def test_round_trip_with_controller(self, tmp_path):
+        path = tmp_path / "out.vstpreset"
+        comp = b"component_state_bytes"
+        cont = b"controller_state_bytes"
+        write_vstpreset(path, "B" * 32, comp, cont)
+
+        preset = read_vstpreset(path)
+        assert preset.component_state == comp
+        assert preset.controller_state == cont
+
+    def test_class_id_truncation(self, tmp_path):
+        path = tmp_path / "out.vstpreset"
+        long_id = "X" * 100  # longer than 32
+        write_vstpreset(path, long_id, b"data")
+
+        preset = read_vstpreset(path)
+        assert preset.class_id == "X" * 32
+
+    def test_class_id_padding(self, tmp_path):
+        path = tmp_path / "out.vstpreset"
+        short_id = "short"
+        write_vstpreset(path, short_id, b"data")
+
+        preset = read_vstpreset(path)
+        # class_id after reading strips trailing NULs
+        assert preset.class_id == "short"
+
+    def test_empty_class_id_raises(self, tmp_path):
+        with pytest.raises(ValueError, match="non-empty"):
+            write_vstpreset(tmp_path / "x.vstpreset", "", b"data")
+
+    def test_none_state_raises(self, tmp_path):
+        with pytest.raises(ValueError, match="component_state"):
+            write_vstpreset(tmp_path / "x.vstpreset", "A" * 32, None)  # type: ignore[arg-type]
+
+    def test_empty_state(self, tmp_path):
+        path = tmp_path / "out.vstpreset"
+        write_vstpreset(path, "A" * 32, b"")
+
+        preset = read_vstpreset(path)
+        assert preset.component_state == b""
+
+    def test_large_state(self, tmp_path):
+        path = tmp_path / "out.vstpreset"
+        state = bytes(range(256)) * 500  # 128000 bytes
+        write_vstpreset(path, "A" * 32, state)
+
+        preset = read_vstpreset(path)
+        assert preset.component_state == state
+
+
+class TestSaveVstPreset:
+    def test_saves_plugin_state(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        plugin = MagicMock()
+        plugin.get_state.return_value = b"state_from_plugin"
+
+        path = tmp_path / "out.vstpreset"
+        save_vstpreset(path, plugin, class_id="A" * 32)
+
+        plugin.get_state.assert_called_once()
+        preset = read_vstpreset(path)
+        assert preset.component_state == b"state_from_plugin"
+        assert preset.class_id == "A" * 32
+
+    def test_default_class_id(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        plugin = MagicMock()
+        plugin.get_state.return_value = b"data"
+
+        path = tmp_path / "out.vstpreset"
+        save_vstpreset(path, plugin)  # no class_id
+
+        preset = read_vstpreset(path)
+        assert preset.class_id  # not empty
+
+    def test_round_trip_load_after_save(self, tmp_path):
+        """Save then load a preset through minihost's own loader."""
+        from unittest.mock import MagicMock
+
+        # Save side
+        src_plugin = MagicMock()
+        src_plugin.get_state.return_value = b"plugin_state_xyz"
+        path = tmp_path / "round.vstpreset"
+        save_vstpreset(path, src_plugin, class_id="ROUNDTRIP" + "_" * 23)
+
+        # Load side
+        dst_plugin = MagicMock()
+        load_vstpreset(path, dst_plugin)
+        dst_plugin.set_state.assert_called_once_with(b"plugin_state_xyz")

@@ -14,10 +14,13 @@ import pytest
 from minihost.cli import (
     _expand_globs,
     _is_batch_output,
+    _resolve_audio_device_arg,
+    cmd_devices,
     cmd_info,
     cmd_midi,
     cmd_params,
     cmd_play,
+    cmd_presets,
     cmd_process,
     cmd_resample,
     cmd_scan,
@@ -66,6 +69,18 @@ def _parse(argv):
         midi_p.add_argument("-m", "--monitor", type=int, default=None)
         midi_p.add_argument("--virtual-midi", type=str, default=None)
 
+        devices_p = subparsers.add_parser("devices")
+        devices_p.add_argument("-j", "--json", action="store_true")
+
+        presets_p = subparsers.add_parser("presets")
+        presets_p.add_argument("plugin")
+        presets_p.add_argument("-j", "--json", action="store_true")
+        presets_p.add_argument("--save")
+        presets_p.add_argument("--program", type=int)
+        presets_p.add_argument("--state")
+        presets_p.add_argument("--load-vstpreset")
+        presets_p.add_argument("-y", "--overwrite", action="store_true")
+
         play_p = subparsers.add_parser("play")
         play_p.add_argument("plugin")
         play_p.add_argument("-i", "--input", action="store_true")
@@ -73,6 +88,8 @@ def _parse(argv):
         play_p.add_argument("-v", "--virtual-midi", type=str)
         play_p.add_argument("--midi-out", type=int)
         play_p.add_argument("--virtual-midi-out", type=str)
+        play_p.add_argument("--playback-device")
+        play_p.add_argument("--capture-device")
 
         process_p = subparsers.add_parser("process")
         process_p.add_argument("plugin")
@@ -912,3 +929,476 @@ class TestCmdResample:
         assert info["channels"] == 2
         assert info["frames"] == 48000
         assert "48000" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Audio device selection
+# ---------------------------------------------------------------------------
+
+
+class TestArgParsingDevices:
+    def test_basic(self):
+        args = _parse(["devices"])
+        assert args.command == "devices"
+        assert args.json is False
+
+    def test_json_flag(self):
+        args = _parse(["devices", "-j"])
+        assert args.json is True
+
+
+class TestArgParsingPlayDevices:
+    def test_playback_device_index(self):
+        args = _parse(["play", "/synth.vst3", "--playback-device", "2"])
+        assert args.playback_device == "2"
+
+    def test_playback_device_name(self):
+        args = _parse(["play", "/synth.vst3", "--playback-device", "BlackHole"])
+        assert args.playback_device == "BlackHole"
+
+    def test_capture_device(self):
+        args = _parse(["play", "/effect.vst3", "-i", "--capture-device", "1"])
+        assert args.capture_device == "1"
+        assert args.input is True
+
+    def test_no_device_flags(self):
+        args = _parse(["play", "/synth.vst3"])
+        assert args.playback_device is None
+        assert args.capture_device is None
+
+
+class TestResolveAudioDeviceArg:
+    _devices = [
+        {"index": 0, "name": "Built-in Output", "is_default": True},
+        {"index": 1, "name": "BlackHole 2ch", "is_default": False},
+        {"index": 2, "name": "External Speakers", "is_default": False},
+    ]
+
+    def test_none_returns_minus_one(self):
+        assert _resolve_audio_device_arg(None, self._devices, "playback") == -1
+
+    def test_integer_index(self):
+        assert _resolve_audio_device_arg("1", self._devices, "playback") == 1
+
+    def test_integer_index_zero(self):
+        assert _resolve_audio_device_arg("0", self._devices, "playback") == 0
+
+    def test_integer_out_of_range(self):
+        with pytest.raises(ValueError, match="out of range"):
+            _resolve_audio_device_arg("99", self._devices, "playback")
+
+    def test_integer_negative(self):
+        with pytest.raises(ValueError, match="out of range"):
+            _resolve_audio_device_arg("-1", self._devices, "playback")
+
+    def test_name_substring_unique(self):
+        assert _resolve_audio_device_arg("BlackHole", self._devices, "playback") == 1
+
+    def test_name_case_insensitive(self):
+        assert _resolve_audio_device_arg("blackhole", self._devices, "playback") == 1
+
+    def test_name_no_match(self):
+        with pytest.raises(ValueError, match="No playback device matches"):
+            _resolve_audio_device_arg("XYZ", self._devices, "playback")
+
+    def test_ambiguous_match(self):
+        devs = [
+            {"index": 0, "name": "Foo Audio", "is_default": False},
+            {"index": 1, "name": "Foo Other", "is_default": False},
+        ]
+        with pytest.raises(ValueError, match="Ambiguous"):
+            _resolve_audio_device_arg("Foo", devs, "playback")
+
+    def test_empty_devices_integer(self):
+        with pytest.raises(ValueError, match="out of range"):
+            _resolve_audio_device_arg("0", [], "capture")
+
+    def test_empty_devices_name(self):
+        with pytest.raises(ValueError, match="No capture device matches"):
+            _resolve_audio_device_arg("Mic", [], "capture")
+
+
+class TestCmdDevices:
+    def test_text_output(self, capsys):
+        args = argparse.Namespace(json=False, sample_rate=48000, block_size=512)
+        playback = [
+            {"index": 0, "name": "Built-in Output", "is_default": True},
+            {"index": 1, "name": "BlackHole 2ch", "is_default": False},
+        ]
+        capture = [{"index": 0, "name": "Built-in Mic", "is_default": True}]
+        with (
+            patch("minihost.audio_get_playback_devices", return_value=playback),
+            patch("minihost.audio_get_capture_devices", return_value=capture),
+        ):
+            ret = cmd_devices(args)
+        assert ret == 0
+        out = capsys.readouterr().out
+        assert "Built-in Output" in out
+        assert "(default)" in out
+        assert "BlackHole" in out
+        assert "Built-in Mic" in out
+
+    def test_json_output(self, capsys):
+        import json
+
+        args = argparse.Namespace(json=True, sample_rate=48000, block_size=512)
+        playback = [{"index": 0, "name": "Speakers", "is_default": True}]
+        capture = []
+        with (
+            patch("minihost.audio_get_playback_devices", return_value=playback),
+            patch("minihost.audio_get_capture_devices", return_value=capture),
+        ):
+            ret = cmd_devices(args)
+        assert ret == 0
+        parsed = json.loads(capsys.readouterr().out)
+        assert "playback" in parsed
+        assert "capture" in parsed
+        assert parsed["playback"][0]["name"] == "Speakers"
+
+    def test_empty_devices(self, capsys):
+        args = argparse.Namespace(json=False, sample_rate=48000, block_size=512)
+        with (
+            patch("minihost.audio_get_playback_devices", return_value=[]),
+            patch("minihost.audio_get_capture_devices", return_value=[]),
+        ):
+            ret = cmd_devices(args)
+        assert ret == 0
+        assert "(none)" in capsys.readouterr().out
+
+    def test_runtime_error(self, capsys):
+        args = argparse.Namespace(json=False, sample_rate=48000, block_size=512)
+        with patch(
+            "minihost.audio_get_playback_devices",
+            side_effect=RuntimeError("backend unavailable"),
+        ):
+            ret = cmd_devices(args)
+        assert ret == 1
+        assert "backend unavailable" in capsys.readouterr().err
+
+
+class TestCmdPlayDeviceSelection:
+    def test_capture_device_without_input_errors(self, capsys):
+        """--capture-device requires --input."""
+        args = argparse.Namespace(
+            plugin="/effect.vst3",
+            input=False,
+            midi=None,
+            virtual_midi=None,
+            midi_out=None,
+            virtual_midi_out=None,
+            playback_device=None,
+            capture_device="0",
+            sample_rate=48000,
+            block_size=512,
+        )
+        ret = cmd_play(args)
+        assert ret == 1
+        assert "--capture-device requires --input" in capsys.readouterr().err
+
+    def test_invalid_playback_device_index(self, capsys):
+        args = argparse.Namespace(
+            plugin="/synth.vst3",
+            input=False,
+            midi=None,
+            virtual_midi=None,
+            midi_out=None,
+            virtual_midi_out=None,
+            playback_device="99",
+            capture_device=None,
+            sample_rate=48000,
+            block_size=512,
+        )
+        with patch("minihost.audio_get_playback_devices", return_value=[]):
+            ret = cmd_play(args)
+        assert ret == 1
+        assert "out of range" in capsys.readouterr().err
+
+    def test_invalid_playback_device_name(self, capsys):
+        args = argparse.Namespace(
+            plugin="/synth.vst3",
+            input=False,
+            midi=None,
+            virtual_midi=None,
+            midi_out=None,
+            virtual_midi_out=None,
+            playback_device="NopeDevice",
+            capture_device=None,
+            sample_rate=48000,
+            block_size=512,
+        )
+        with patch(
+            "minihost.audio_get_playback_devices",
+            return_value=[{"index": 0, "name": "Speakers", "is_default": True}],
+        ):
+            ret = cmd_play(args)
+        assert ret == 1
+        assert "No playback device matches" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Presets subcommand
+# ---------------------------------------------------------------------------
+
+
+class TestArgParsingPresets:
+    def test_basic_list(self):
+        args = _parse(["presets", "/path/to/synth.vst3"])
+        assert args.command == "presets"
+        assert args.plugin == "/path/to/synth.vst3"
+        assert args.save is None
+        assert args.program is None
+
+    def test_json_flag(self):
+        args = _parse(["presets", "/p.vst3", "--json"])
+        assert args.json is True
+
+    def test_save(self):
+        args = _parse(["presets", "/p.vst3", "--save", "out.vstpreset"])
+        assert args.save == "out.vstpreset"
+
+    def test_program(self):
+        args = _parse(["presets", "/p.vst3", "--program", "7", "--save", "o.vstpreset"])
+        assert args.program == 7
+        assert args.save == "o.vstpreset"
+
+    def test_state_input(self):
+        args = _parse(
+            ["presets", "/p.vst3", "--state", "state.bin", "--save", "o.vstpreset"]
+        )
+        assert args.state == "state.bin"
+
+    def test_load_vstpreset_input(self):
+        args = _parse(
+            [
+                "presets",
+                "/p.vst3",
+                "--load-vstpreset",
+                "in.vstpreset",
+                "--save",
+                "o.vstpreset",
+            ]
+        )
+        assert args.load_vstpreset == "in.vstpreset"
+
+    def test_overwrite(self):
+        args = _parse(["presets", "/p.vst3", "--save", "o.vstpreset", "-y"])
+        assert args.overwrite is True
+
+    def test_missing_plugin(self):
+        with pytest.raises(SystemExit):
+            _parse(["presets"])
+
+
+class TestCmdPresets:
+    def _make_args(self, **overrides):
+        defaults = dict(
+            plugin="/p.vst3",
+            json=False,
+            save=None,
+            program=None,
+            state=None,
+            load_vstpreset=None,
+            overwrite=False,
+            sample_rate=48000,
+            block_size=512,
+        )
+        defaults.update(overrides)
+        return argparse.Namespace(**defaults)
+
+    def test_load_error(self, capsys):
+        args = self._make_args()
+        with patch("minihost.Plugin", side_effect=RuntimeError("bad plugin")):
+            ret = cmd_presets(args)
+        assert ret == 1
+        assert "bad plugin" in capsys.readouterr().err
+
+    def test_list_text(self, capsys):
+        args = self._make_args()
+        mock_plugin = MagicMock()
+        mock_plugin.num_programs = 3
+        mock_plugin.program = 1
+        mock_plugin.get_program_name.side_effect = lambda i: f"Preset{i}"
+        with patch("minihost.Plugin", return_value=mock_plugin):
+            ret = cmd_presets(args)
+        assert ret == 0
+        out = capsys.readouterr().out
+        assert "Factory Presets: 3" in out
+        assert "Preset0" in out
+        assert "Preset1" in out
+        assert "(current)" in out
+
+    def test_list_empty(self, capsys):
+        args = self._make_args()
+        mock_plugin = MagicMock()
+        mock_plugin.num_programs = 0
+        with patch("minihost.Plugin", return_value=mock_plugin):
+            ret = cmd_presets(args)
+        assert ret == 0
+        assert "no factory presets" in capsys.readouterr().out
+
+    def test_list_json(self, capsys):
+        import json
+
+        args = self._make_args(json=True)
+        mock_plugin = MagicMock()
+        mock_plugin.num_programs = 2
+        mock_plugin.program = 0
+        mock_plugin.get_program_name.side_effect = lambda i: f"P{i}"
+        with patch("minihost.Plugin", return_value=mock_plugin):
+            ret = cmd_presets(args)
+        assert ret == 0
+        parsed = json.loads(capsys.readouterr().out)
+        assert parsed["count"] == 2
+        assert len(parsed["presets"]) == 2
+        assert parsed["presets"][0]["is_current"] is True
+        assert parsed["presets"][1]["is_current"] is False
+        assert parsed["presets"][0]["name"] == "P0"
+
+    def test_save_basic(self, tmp_path):
+        out_path = tmp_path / "out.vstpreset"
+        args = self._make_args(save=str(out_path))
+        mock_plugin = MagicMock()
+        mock_plugin.num_programs = 0
+        mock_plugin.get_state.return_value = b"saved_state_blob"
+        with (
+            patch("minihost.Plugin", return_value=mock_plugin),
+            patch("minihost.probe", return_value={"unique_id": "ABCDEF01"}),
+        ):
+            ret = cmd_presets(args)
+        assert ret == 0
+        assert out_path.exists()
+        # Round-trip: read back and confirm state
+        from minihost.vstpreset import read_vstpreset
+
+        preset = read_vstpreset(out_path)
+        assert preset.component_state == b"saved_state_blob"
+        # class_id should include the probed unique_id
+        assert "ABCDEF01" in preset.class_id
+
+    def test_save_with_program(self, tmp_path):
+        out_path = tmp_path / "out.vstpreset"
+        args = self._make_args(save=str(out_path), program=3)
+        mock_plugin = MagicMock()
+        mock_plugin.num_programs = 10
+        mock_plugin.get_state.return_value = b"program3_state"
+        with (
+            patch("minihost.Plugin", return_value=mock_plugin),
+            patch("minihost.probe", return_value={"unique_id": "X"}),
+        ):
+            ret = cmd_presets(args)
+        assert ret == 0
+        # Assert plugin.program was set to 3
+        assert mock_plugin.program == 3
+        from minihost.vstpreset import read_vstpreset
+
+        preset = read_vstpreset(out_path)
+        assert preset.component_state == b"program3_state"
+
+    def test_save_program_out_of_range(self, capsys):
+        args = self._make_args(save="out.vstpreset", program=99)
+        mock_plugin = MagicMock()
+        mock_plugin.num_programs = 5
+        with patch("minihost.Plugin", return_value=mock_plugin):
+            ret = cmd_presets(args)
+        assert ret == 1
+        assert "out of range" in capsys.readouterr().err
+
+    def test_save_program_no_presets(self, capsys):
+        args = self._make_args(save="out.vstpreset", program=0)
+        mock_plugin = MagicMock()
+        mock_plugin.num_programs = 0
+        with patch("minihost.Plugin", return_value=mock_plugin):
+            ret = cmd_presets(args)
+        assert ret == 1
+        assert "no factory presets" in capsys.readouterr().err
+
+    def test_save_output_exists_no_overwrite(self, capsys, tmp_path):
+        existing = tmp_path / "existing.vstpreset"
+        existing.write_bytes(b"x")
+        args = self._make_args(save=str(existing))
+        mock_plugin = MagicMock()
+        mock_plugin.num_programs = 0
+        with patch("minihost.Plugin", return_value=mock_plugin):
+            ret = cmd_presets(args)
+        assert ret == 1
+        assert "already exists" in capsys.readouterr().err
+
+    def test_save_overwrite(self, tmp_path):
+        existing = tmp_path / "existing.vstpreset"
+        existing.write_bytes(b"old")
+        args = self._make_args(save=str(existing), overwrite=True)
+        mock_plugin = MagicMock()
+        mock_plugin.num_programs = 0
+        mock_plugin.get_state.return_value = b"new_state"
+        with (
+            patch("minihost.Plugin", return_value=mock_plugin),
+            patch("minihost.probe", return_value={"unique_id": "1"}),
+        ):
+            ret = cmd_presets(args)
+        assert ret == 0
+        from minihost.vstpreset import read_vstpreset
+
+        preset = read_vstpreset(existing)
+        assert preset.component_state == b"new_state"
+
+    def test_save_with_raw_state(self, tmp_path):
+        state_file = tmp_path / "in.state"
+        state_file.write_bytes(b"raw_blob")
+        out_path = tmp_path / "out.vstpreset"
+
+        mock_plugin = MagicMock()
+        mock_plugin.num_programs = 0
+        mock_plugin.get_state.return_value = b"after_setstate"
+
+        args = self._make_args(state=str(state_file), save=str(out_path))
+        with (
+            patch("minihost.Plugin", return_value=mock_plugin),
+            patch("minihost.probe", return_value={"unique_id": "1"}),
+        ):
+            ret = cmd_presets(args)
+        assert ret == 0
+        mock_plugin.set_state.assert_called_once_with(b"raw_blob")
+
+    def test_save_preserves_vstpreset_class_id(self, tmp_path):
+        # Build a source .vstpreset with a distinctive class_id
+        from minihost.vstpreset import write_vstpreset
+
+        in_path = tmp_path / "in.vstpreset"
+        write_vstpreset(in_path, "DEADBEEF_CLASS_ID_32_CHARS_AAAAA", b"loaded_state")
+
+        out_path = tmp_path / "out.vstpreset"
+        mock_plugin = MagicMock()
+        mock_plugin.num_programs = 0
+        mock_plugin.get_state.return_value = b"loaded_state"
+
+        args = self._make_args(load_vstpreset=str(in_path), save=str(out_path))
+        with patch("minihost.Plugin", return_value=mock_plugin):
+            ret = cmd_presets(args)
+        assert ret == 0
+        mock_plugin.set_state.assert_called_once_with(b"loaded_state")
+
+        # The output preset's class_id should match the input's
+        from minihost.vstpreset import read_vstpreset
+
+        out_preset = read_vstpreset(out_path)
+        assert "DEADBEEF" in out_preset.class_id
+
+    def test_state_file_not_found(self, capsys):
+        args = self._make_args(state="/nonexistent.bin", save="o.vstpreset")
+        mock_plugin = MagicMock()
+        mock_plugin.num_programs = 0
+        with patch("minihost.Plugin", return_value=mock_plugin):
+            ret = cmd_presets(args)
+        assert ret == 1
+        assert "Error loading state" in capsys.readouterr().err
+
+    def test_load_vstpreset_file_not_found(self, capsys):
+        args = self._make_args(
+            load_vstpreset="/nonexistent.vstpreset", save="o.vstpreset"
+        )
+        mock_plugin = MagicMock()
+        mock_plugin.num_programs = 0
+        with patch("minihost.Plugin", return_value=mock_plugin):
+            ret = cmd_presets(args)
+        assert ret == 1
+        assert "Error loading .vstpreset" in capsys.readouterr().err

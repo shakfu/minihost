@@ -2,7 +2,9 @@
 // Provides command-line access to plugin hosting features
 
 #include "minihost.h"
+#include "minihost_audio.h"
 #include "minihost_audiofile.h"
+#include "minihost_vstpreset.h"
 #include "MidiFile.h"
 #include "MidiEvent.h"
 #include "include/CLI11.hpp"
@@ -614,12 +616,108 @@ int cmd_set_param(const std::string& plugin_path,
 }
 
 // ============================================================================
+// Command: devices
+// ============================================================================
+
+int cmd_devices(bool json_output) {
+    int playback_count = mh_audio_enumerate_playback_devices(nullptr, 0);
+    int capture_count = mh_audio_enumerate_capture_devices(nullptr, 0);
+    if (playback_count < 0) playback_count = 0;
+    if (capture_count < 0) capture_count = 0;
+
+    std::vector<MH_AudioDeviceInfo> playback(playback_count);
+    std::vector<MH_AudioDeviceInfo> capture(capture_count);
+    if (playback_count > 0) {
+        mh_audio_enumerate_playback_devices(playback.data(), playback_count);
+    }
+    if (capture_count > 0) {
+        mh_audio_enumerate_capture_devices(capture.data(), capture_count);
+    }
+
+    if (json_output) {
+        std::printf("{\n");
+        std::printf("  \"playback\": [");
+        for (int i = 0; i < playback_count; i++) {
+            std::printf("%s\n    {\"index\": %d, \"name\": \"%s\", \"is_default\": %s}",
+                        i == 0 ? "" : ",", i, playback[i].name,
+                        playback[i].is_default ? "true" : "false");
+        }
+        std::printf("%s],\n", playback_count > 0 ? "\n  " : "");
+        std::printf("  \"capture\": [");
+        for (int i = 0; i < capture_count; i++) {
+            std::printf("%s\n    {\"index\": %d, \"name\": \"%s\", \"is_default\": %s}",
+                        i == 0 ? "" : ",", i, capture[i].name,
+                        capture[i].is_default ? "true" : "false");
+        }
+        std::printf("%s]\n", capture_count > 0 ? "\n  " : "");
+        std::printf("}\n");
+    } else {
+        std::printf("Audio Playback (Output) Devices:\n");
+        if (playback_count == 0) {
+            std::printf("  (none)\n");
+        } else {
+            for (int i = 0; i < playback_count; i++) {
+                std::printf("  [%d] %s%s\n", i, playback[i].name,
+                            playback[i].is_default ? " (default)" : "");
+            }
+        }
+        std::printf("\nAudio Capture (Input) Devices:\n");
+        if (capture_count == 0) {
+            std::printf("  (none)\n");
+        } else {
+            for (int i = 0; i < capture_count; i++) {
+                std::printf("  [%d] %s%s\n", i, capture[i].name,
+                            capture[i].is_default ? " (default)" : "");
+            }
+        }
+    }
+    return 0;
+}
+
+// ============================================================================
 // Command: presets
 // ============================================================================
 
+namespace {
+bool file_exists_cpp(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    return f.good();
+}
+
+int load_state_from_file_cpp(MH_Plugin* p, const std::string& path) {
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    if (!f) {
+        std::fprintf(stderr, "Error: Cannot open state file '%s'\n", path.c_str());
+        return 0;
+    }
+    auto size = f.tellg();
+    if (size <= 0) {
+        std::fprintf(stderr, "Error: Empty state file '%s'\n", path.c_str());
+        return 0;
+    }
+    f.seekg(0, std::ios::beg);
+    std::vector<char> data(static_cast<size_t>(size));
+    if (!f.read(data.data(), size)) {
+        std::fprintf(stderr, "Error: Failed to read state file\n");
+        return 0;
+    }
+    if (!mh_set_state(p, data.data(), static_cast<int>(size))) {
+        std::fprintf(stderr, "Error: Failed to apply state\n");
+        return 0;
+    }
+    return 1;
+}
+}  // namespace
+
 int cmd_presets(const std::string& plugin_path,
                 double sample_rate,
-                int block_size) {
+                int block_size,
+                bool json_output,
+                const std::string& save_file,
+                int program_index,
+                const std::string& state_file_input,
+                const std::string& load_vstpreset_file,
+                bool overwrite) {
     char err[1024] = {0};
 
     MH_Plugin* p = mh_open(plugin_path.c_str(), sample_rate, block_size, 2, 2, err, sizeof(err));
@@ -628,14 +726,136 @@ int cmd_presets(const std::string& plugin_path,
         return 1;
     }
 
+    std::string class_id;  // for save mode
+    bool have_class_id = false;
+
+    if (!state_file_input.empty()) {
+        if (!load_state_from_file_cpp(p, state_file_input)) {
+            mh_close(p);
+            return 1;
+        }
+    }
+
+    if (!load_vstpreset_file.empty()) {
+        MH_VstPreset preset;
+        char perr[512] = {0};
+        if (!mh_vstpreset_read(load_vstpreset_file.c_str(), &preset, perr, sizeof(perr))) {
+            std::fprintf(stderr, "Error loading .vstpreset '%s': %s\n",
+                         load_vstpreset_file.c_str(), perr);
+            mh_close(p);
+            return 1;
+        }
+        if (!preset.component_state || preset.component_size == 0) {
+            std::fprintf(stderr, "Error: preset '%s' has no component state\n",
+                         load_vstpreset_file.c_str());
+            mh_vstpreset_free(&preset);
+            mh_close(p);
+            return 1;
+        }
+        if (!mh_set_state(p, preset.component_state, preset.component_size)) {
+            std::fprintf(stderr, "Error: Failed to apply preset state\n");
+            mh_vstpreset_free(&preset);
+            mh_close(p);
+            return 1;
+        }
+        class_id = preset.class_id;
+        have_class_id = true;
+        mh_vstpreset_free(&preset);
+    }
+
+    if (program_index >= 0) {
+        int num_programs = mh_get_num_programs(p);
+        if (num_programs == 0) {
+            std::fprintf(stderr, "Error: plugin has no factory presets\n");
+            mh_close(p);
+            return 1;
+        }
+        if (program_index >= num_programs) {
+            std::fprintf(stderr, "Error: program %d out of range (0-%d)\n",
+                         program_index, num_programs - 1);
+            mh_close(p);
+            return 1;
+        }
+        if (!mh_set_program(p, program_index)) {
+            std::fprintf(stderr, "Error: Failed to select program %d\n", program_index);
+            mh_close(p);
+            return 1;
+        }
+    }
+
+    // Save mode
+    if (!save_file.empty()) {
+        if (!overwrite && file_exists_cpp(save_file)) {
+            std::fprintf(stderr,
+                         "Error: Output file '%s' already exists. Use -y/--overwrite to overwrite.\n",
+                         save_file.c_str());
+            mh_close(p);
+            return 1;
+        }
+
+        if (!have_class_id) {
+            MH_PluginDesc desc;
+            std::memset(&desc, 0, sizeof(desc));
+            char probe_err[256] = {0};
+            if (mh_probe(plugin_path.c_str(), &desc, probe_err, sizeof(probe_err))
+                && desc.unique_id[0]) {
+                class_id = desc.unique_id;
+            } else {
+                class_id = "minihost_unknown";
+            }
+        }
+
+        int state_size = mh_get_state_size(p);
+        if (state_size <= 0) {
+            std::fprintf(stderr, "Error: Plugin has no state to save\n");
+            mh_close(p);
+            return 1;
+        }
+        std::vector<char> state(state_size);
+        if (!mh_get_state(p, state.data(), state_size)) {
+            std::fprintf(stderr, "Error: Failed to read plugin state\n");
+            mh_close(p);
+            return 1;
+        }
+
+        char werr[512] = {0};
+        int ok = mh_vstpreset_write(save_file.c_str(), class_id.c_str(),
+                                    state.data(), state_size,
+                                    nullptr, 0,
+                                    werr, sizeof(werr));
+        if (!ok) {
+            std::fprintf(stderr, "Error writing '%s': %s\n", save_file.c_str(), werr);
+            mh_close(p);
+            return 1;
+        }
+        std::printf("Wrote %s\n", save_file.c_str());
+        mh_close(p);
+        return 0;
+    }
+
+    // Listing mode
     int num_programs = mh_get_num_programs(p);
     int current = mh_get_program(p);
 
-    std::printf("Factory Presets (%d):\n", num_programs);
-    for (int i = 0; i < num_programs; i++) {
-        char name[256] = {0};
-        mh_get_program_name(p, i, name, sizeof(name));
-        std::printf("  [%3d] %s%s\n", i, name, (i == current) ? " *" : "");
+    if (json_output) {
+        std::printf("{\n  \"count\": %d,\n  \"presets\": [", num_programs);
+        for (int i = 0; i < num_programs; i++) {
+            char name[256] = {0};
+            mh_get_program_name(p, i, name, sizeof(name));
+            std::printf("%s\n    {\"index\": %d, \"name\": \"%s\", \"is_current\": %s}",
+                        i == 0 ? "" : ",", i, name,
+                        i == current ? "true" : "false");
+        }
+        std::printf("%s]\n}\n", num_programs > 0 ? "\n  " : "");
+    } else if (num_programs == 0) {
+        std::printf("(no factory presets)\n");
+    } else {
+        std::printf("Factory Presets (%d):\n", num_programs);
+        for (int i = 0; i < num_programs; i++) {
+            char name[256] = {0};
+            mh_get_program_name(p, i, name, sizeof(name));
+            std::printf("  [%3d] %s%s\n", i, name, (i == current) ? " *" : "");
+        }
     }
 
     mh_close(p);
@@ -1262,14 +1482,47 @@ int main(int argc, char** argv) {
     // ========================================================================
     // Subcommand: presets
     // ========================================================================
-    auto* presets_cmd = app.add_subcommand("presets", "List factory presets");
+    auto* presets_cmd = app.add_subcommand(
+        "presets",
+        "List factory presets, or save plugin state as .vstpreset");
     std::string presets_path;
+    bool presets_json = false;
+    std::string presets_save;
+    int presets_program = -1;
+    std::string presets_state;
+    std::string presets_load_vstpreset;
+    bool presets_overwrite = false;
 
     presets_cmd->add_option("plugin", presets_path, "Path to plugin")
         ->required();
+    presets_cmd->add_flag("-j,--json", presets_json, "Output as JSON");
+    presets_cmd->add_option("--save", presets_save,
+                            "Write current state as .vstpreset to FILE");
+    presets_cmd->add_option("--program", presets_program,
+                            "Select factory program N before saving");
+    presets_cmd->add_option("-s,--state", presets_state,
+                            "Load raw state blob before saving");
+    presets_cmd->add_option("--load-vstpreset", presets_load_vstpreset,
+                            "Load .vstpreset before saving (preserves class_id)");
+    presets_cmd->add_flag("-y,--overwrite", presets_overwrite,
+                          "Overwrite --save output if it exists");
 
     presets_cmd->callback([&]() {
-        std::exit(cmd_presets(presets_path, sample_rate, block_size));
+        std::exit(cmd_presets(presets_path, sample_rate, block_size,
+                              presets_json, presets_save, presets_program,
+                              presets_state, presets_load_vstpreset,
+                              presets_overwrite));
+    });
+
+    // ========================================================================
+    // Subcommand: devices
+    // ========================================================================
+    auto* devices_cmd = app.add_subcommand(
+        "devices", "List audio playback/capture devices");
+    bool devices_json = false;
+    devices_cmd->add_flag("-j,--json", devices_json, "Output as JSON");
+    devices_cmd->callback([&]() {
+        std::exit(cmd_devices(devices_json));
     });
 
     // ========================================================================

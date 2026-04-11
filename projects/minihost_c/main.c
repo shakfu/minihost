@@ -2,7 +2,9 @@
 // Provides command-line access to plugin hosting features
 
 #include "minihost.h"
+#include "minihost_audio.h"
 #include "minihost_audiofile.h"
+#include "minihost_vstpreset.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,7 +28,8 @@ static void print_usage(const char* prog) {
     printf("  params PLUGIN           List plugin parameters\n");
     printf("  get-param PLUGIN N      Get parameter N value\n");
     printf("  set-param PLUGIN N V    Set parameter N to value V (0.0-1.0)\n");
-    printf("  presets PLUGIN          List factory presets\n");
+    printf("  presets PLUGIN          List factory presets, or save state as .vstpreset\n");
+    printf("  devices                 List audio playback/capture devices\n");
     printf("  load-preset PLUGIN N    Load factory preset N\n");
     printf("  save-state PLUGIN F     Save plugin state to file F\n");
     printf("  load-state PLUGIN F     Load plugin state from file F\n");
@@ -46,7 +49,13 @@ static void print_usage(const char* prog) {
     printf("  --param NAME:VALUE      Set parameter (repeatable)\n");
     printf("  --non-realtime          Enable non-realtime mode\n");
     printf("  --bpm BPM              Set transport BPM\n");
-    printf("  --bit-depth N           Output bit depth (16, 24, 32)\n");
+    printf("  --bit-depth N           Output bit depth (16, 24, 32)\n\n");
+    printf("Presets command options:\n");
+    printf("  --save FILE             Write current state as .vstpreset to FILE\n");
+    printf("  --program N             Select factory program N before saving\n");
+    printf("  -s, --state FILE        Load raw state blob before saving\n");
+    printf("  --load-vstpreset FILE   Load .vstpreset before saving (preserves class_id)\n");
+    printf("  -y, --overwrite         Overwrite --save output if it exists\n");
 }
 
 static int str_eq(const char* a, const char* b) {
@@ -581,10 +590,154 @@ static int cmd_set_param(const char* plugin_path, int param_index, float param_v
 }
 
 // ============================================================================
+// Command: devices
+// ============================================================================
+
+static int cmd_devices(int json_output) {
+    int playback_count = mh_audio_enumerate_playback_devices(NULL, 0);
+    int capture_count = mh_audio_enumerate_capture_devices(NULL, 0);
+    if (playback_count < 0) playback_count = 0;
+    if (capture_count < 0) capture_count = 0;
+
+    MH_AudioDeviceInfo* playback = NULL;
+    MH_AudioDeviceInfo* capture = NULL;
+    if (playback_count > 0) {
+        playback = (MH_AudioDeviceInfo*)calloc(
+            (size_t)playback_count, sizeof(MH_AudioDeviceInfo));
+        if (!playback) {
+            fprintf(stderr, "Error: Out of memory\n");
+            return 1;
+        }
+        mh_audio_enumerate_playback_devices(playback, playback_count);
+    }
+    if (capture_count > 0) {
+        capture = (MH_AudioDeviceInfo*)calloc(
+            (size_t)capture_count, sizeof(MH_AudioDeviceInfo));
+        if (!capture) {
+            free(playback);
+            fprintf(stderr, "Error: Out of memory\n");
+            return 1;
+        }
+        mh_audio_enumerate_capture_devices(capture, capture_count);
+    }
+
+    if (json_output) {
+        printf("{\n");
+        printf("  \"playback\": [");
+        for (int i = 0; i < playback_count; i++) {
+            printf("%s\n    {\"index\": %d, \"name\": \"%s\", \"is_default\": %s}",
+                   i == 0 ? "" : ",", i, playback[i].name,
+                   playback[i].is_default ? "true" : "false");
+        }
+        printf("%s],\n", playback_count > 0 ? "\n  " : "");
+        printf("  \"capture\": [");
+        for (int i = 0; i < capture_count; i++) {
+            printf("%s\n    {\"index\": %d, \"name\": \"%s\", \"is_default\": %s}",
+                   i == 0 ? "" : ",", i, capture[i].name,
+                   capture[i].is_default ? "true" : "false");
+        }
+        printf("%s]\n", capture_count > 0 ? "\n  " : "");
+        printf("}\n");
+    } else {
+        printf("Audio Playback (Output) Devices:\n");
+        if (playback_count == 0) {
+            printf("  (none)\n");
+        } else {
+            for (int i = 0; i < playback_count; i++) {
+                printf("  [%d] %s%s\n", i, playback[i].name,
+                       playback[i].is_default ? " (default)" : "");
+            }
+        }
+        printf("\nAudio Capture (Input) Devices:\n");
+        if (capture_count == 0) {
+            printf("  (none)\n");
+        } else {
+            for (int i = 0; i < capture_count; i++) {
+                printf("  [%d] %s%s\n", i, capture[i].name,
+                       capture[i].is_default ? " (default)" : "");
+            }
+        }
+    }
+
+    free(playback);
+    free(capture);
+    return 0;
+}
+
+// ============================================================================
 // Command: presets
 // ============================================================================
 
-static int cmd_presets(const char* plugin_path, double sample_rate, int block_size) {
+// List-mode presets (shared by the original behaviour and the default listing).
+static int cmd_presets_list(MH_Plugin* p, int json_output) {
+    int num_programs = mh_get_num_programs(p);
+    int current = mh_get_program(p);
+
+    if (json_output) {
+        printf("{\n  \"count\": %d,\n  \"presets\": [", num_programs);
+        for (int i = 0; i < num_programs; i++) {
+            char name[256] = {0};
+            mh_get_program_name(p, i, name, sizeof(name));
+            printf("%s\n    {\"index\": %d, \"name\": \"%s\", \"is_current\": %s}",
+                   i == 0 ? "" : ",", i, name,
+                   i == current ? "true" : "false");
+        }
+        printf("%s]\n}\n", num_programs > 0 ? "\n  " : "");
+        return 0;
+    }
+
+    if (num_programs == 0) {
+        printf("(no factory presets)\n");
+        return 0;
+    }
+    printf("Factory Presets (%d):\n", num_programs);
+    for (int i = 0; i < num_programs; i++) {
+        char name[256] = {0};
+        mh_get_program_name(p, i, name, sizeof(name));
+        printf("  [%3d] %s%s\n", i, name, (i == current) ? " *" : "");
+    }
+    return 0;
+}
+
+// Load a raw state blob from file into the plugin.
+static int load_state_from_file(MH_Plugin* p, const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "Error: Cannot open state file '%s'\n", path);
+        return 0;
+    }
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return 0; }
+    long size = ftell(f);
+    if (size < 0) { fclose(f); return 0; }
+    rewind(f);
+    void* data = malloc((size_t)size);
+    if (!data) { fclose(f); fprintf(stderr, "Error: Out of memory\n"); return 0; }
+    if (fread(data, 1, (size_t)size, f) != (size_t)size) {
+        free(data); fclose(f);
+        fprintf(stderr, "Error: Failed to read state file\n");
+        return 0;
+    }
+    fclose(f);
+    int ok = mh_set_state(p, data, (int)size);
+    free(data);
+    if (!ok) {
+        fprintf(stderr, "Error: Failed to apply state\n");
+        return 0;
+    }
+    return 1;
+}
+
+// Returns 1 if a file exists at path.
+static int file_exists(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (f) { fclose(f); return 1; }
+    return 0;
+}
+
+static int cmd_presets(const char* plugin_path, double sample_rate, int block_size,
+                       int json_output, const char* save_file, int program_index,
+                       const char* state_file_input, const char* load_vstpreset_file,
+                       int overwrite) {
     char err[1024] = {0};
 
     MH_Plugin* p = mh_open(plugin_path, sample_rate, block_size, 2, 2, err, sizeof(err));
@@ -593,18 +746,129 @@ static int cmd_presets(const char* plugin_path, double sample_rate, int block_si
         return 1;
     }
 
-    int num_programs = mh_get_num_programs(p);
-    int current = mh_get_program(p);
+    // Class ID we'll write if --save is used. Prefer the source vstpreset's
+    // class_id (when one is loaded) over the probed unique_id fallback.
+    char class_id_buf[MH_VSTPRESET_CLASS_ID_LEN + 1] = {0};
+    int have_class_id = 0;
 
-    printf("Factory Presets (%d):\n", num_programs);
-    for (int i = 0; i < num_programs; i++) {
-        char name[256] = {0};
-        mh_get_program_name(p, i, name, sizeof(name));
-        printf("  [%3d] %s%s\n", i, name, (i == current) ? " *" : "");
+    // Apply input state, if any.
+    if (state_file_input && state_file_input[0]) {
+        if (!load_state_from_file(p, state_file_input)) {
+            mh_close(p);
+            return 1;
+        }
     }
 
+    if (load_vstpreset_file && load_vstpreset_file[0]) {
+        MH_VstPreset preset;
+        char perr[512] = {0};
+        if (!mh_vstpreset_read(load_vstpreset_file, &preset, perr, sizeof(perr))) {
+            fprintf(stderr, "Error loading .vstpreset '%s': %s\n",
+                    load_vstpreset_file, perr);
+            mh_close(p);
+            return 1;
+        }
+        if (!preset.component_state || preset.component_size == 0) {
+            fprintf(stderr, "Error: preset '%s' has no component state\n",
+                    load_vstpreset_file);
+            mh_vstpreset_free(&preset);
+            mh_close(p);
+            return 1;
+        }
+        if (!mh_set_state(p, preset.component_state, preset.component_size)) {
+            fprintf(stderr, "Error: Failed to apply preset state\n");
+            mh_vstpreset_free(&preset);
+            mh_close(p);
+            return 1;
+        }
+        // Preserve the source preset's class_id for save.
+        snprintf(class_id_buf, sizeof(class_id_buf), "%s", preset.class_id);
+        have_class_id = 1;
+        mh_vstpreset_free(&preset);
+    }
+
+    if (program_index >= 0) {
+        int num_programs = mh_get_num_programs(p);
+        if (num_programs == 0) {
+            fprintf(stderr, "Error: plugin has no factory presets\n");
+            mh_close(p);
+            return 1;
+        }
+        if (program_index >= num_programs) {
+            fprintf(stderr, "Error: program %d out of range (0-%d)\n",
+                    program_index, num_programs - 1);
+            mh_close(p);
+            return 1;
+        }
+        if (!mh_set_program(p, program_index)) {
+            fprintf(stderr, "Error: Failed to select program %d\n", program_index);
+            mh_close(p);
+            return 1;
+        }
+    }
+
+    // Save mode
+    if (save_file && save_file[0]) {
+        if (!overwrite && file_exists(save_file)) {
+            fprintf(stderr,
+                    "Error: Output file '%s' already exists. Use -y/--overwrite to overwrite.\n",
+                    save_file);
+            mh_close(p);
+            return 1;
+        }
+
+        if (!have_class_id) {
+            // Fallback: probe unique_id, padded
+            MH_PluginDesc desc;
+            memset(&desc, 0, sizeof(desc));
+            char probe_err[256] = {0};
+            if (mh_probe(plugin_path, &desc, probe_err, sizeof(probe_err))
+                && desc.unique_id[0]) {
+                snprintf(class_id_buf, sizeof(class_id_buf), "%s", desc.unique_id);
+            } else {
+                snprintf(class_id_buf, sizeof(class_id_buf), "%s", "minihost_unknown");
+            }
+        }
+
+        int state_size = mh_get_state_size(p);
+        if (state_size <= 0) {
+            fprintf(stderr, "Error: Plugin has no state to save\n");
+            mh_close(p);
+            return 1;
+        }
+        void* state = malloc((size_t)state_size);
+        if (!state) {
+            fprintf(stderr, "Error: Out of memory\n");
+            mh_close(p);
+            return 1;
+        }
+        if (!mh_get_state(p, state, state_size)) {
+            fprintf(stderr, "Error: Failed to read plugin state\n");
+            free(state);
+            mh_close(p);
+            return 1;
+        }
+
+        char werr[512] = {0};
+        int ok = mh_vstpreset_write(save_file, class_id_buf,
+                                    state, state_size,
+                                    NULL, 0,
+                                    werr, sizeof(werr));
+        free(state);
+        if (!ok) {
+            fprintf(stderr, "Error writing '%s': %s\n", save_file, werr);
+            mh_close(p);
+            return 1;
+        }
+        printf("Wrote %s\n", save_file);
+        mh_close(p);
+        return 0;
+    }
+
+    // Listing mode
+    int ret = cmd_presets_list(p, json_output);
     mh_close(p);
-    return 0;
+    return ret;
 }
 
 // ============================================================================
@@ -1183,6 +1447,11 @@ int main(int argc, char** argv) {
     const char* sidechain_file = NULL;
     const char* param_specs[MAX_PARAM_SPECS];
     int num_param_specs = 0;
+    // presets subcommand
+    const char* save_file = NULL;
+    int program_index = -1;
+    const char* load_vstpreset_file = NULL;
+    int overwrite = 0;
 
     // Parse global options and find command
     int cmd_index = 1;
@@ -1272,6 +1541,14 @@ int main(int argc, char** argv) {
             bpm = atof(args[++i]);
         } else if (str_eq(args[i], "--bit-depth") && i + 1 < remaining) {
             bit_depth = atoi(args[++i]);
+        } else if (str_eq(args[i], "--save") && i + 1 < remaining) {
+            save_file = args[++i];
+        } else if (str_eq(args[i], "--program") && i + 1 < remaining) {
+            program_index = atoi(args[++i]);
+        } else if (str_eq(args[i], "--load-vstpreset") && i + 1 < remaining) {
+            load_vstpreset_file = args[++i];
+        } else if (str_eq(args[i], "-y") || str_eq(args[i], "--overwrite")) {
+            overwrite = 1;
         } else {
             // Positional argument
             if (num_pos_args < 16) {
@@ -1327,10 +1604,15 @@ int main(int argc, char** argv) {
     }
     else if (str_eq(cmd, "presets")) {
         if (num_pos_args < 1) {
-            fprintf(stderr, "Usage: %s presets PLUGIN\n", argv[0]);
+            fprintf(stderr, "Usage: %s presets PLUGIN [--save FILE [--program N | --state FILE | --load-vstpreset FILE] [-y]]\n", argv[0]);
             return 1;
         }
-        return cmd_presets(args[pos_args[0]], sample_rate, block_size);
+        return cmd_presets(args[pos_args[0]], sample_rate, block_size,
+                           json_output, save_file, program_index,
+                           state_file, load_vstpreset_file, overwrite);
+    }
+    else if (str_eq(cmd, "devices")) {
+        return cmd_devices(json_output);
     }
     else if (str_eq(cmd, "load-preset")) {
         if (num_pos_args < 2) {

@@ -388,9 +388,234 @@ def _cmd_midi_monitor(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_presets(args: argparse.Namespace) -> int:
+    """List plugin factory presets, and optionally save current state as .vstpreset.
+
+    Modes:
+      - Default: list all factory presets.
+      - --save FILE: load the plugin (optionally applying --program, --state, or
+        --vstpreset input), then write the current plugin state to FILE as a
+        .vstpreset.
+    """
+    # Listing mode can use probe() to fetch class_id but still needs to load
+    # the plugin for program names / count, so just load once.
+    try:
+        plugin = minihost.Plugin(
+            args.plugin,
+            sample_rate=args.sample_rate,
+            max_block_size=args.block_size,
+        )
+    except RuntimeError as e:
+        print(f"Error loading plugin: {e}", file=sys.stderr)
+        return 1
+
+    # Determine class_id for writing: either from an input .vstpreset (to
+    # preserve identity) or from the plugin's probed unique_id as a fallback.
+    class_id: str | None = None
+
+    # Apply inputs, if any, before saving.
+    if args.state:
+        try:
+            with open(args.state, "rb") as f:
+                plugin.set_state(f.read())
+        except (OSError, RuntimeError) as e:
+            print(f"Error loading state '{args.state}': {e}", file=sys.stderr)
+            return 1
+
+    if args.load_vstpreset:
+        try:
+            from minihost.vstpreset import read_vstpreset
+
+            preset = read_vstpreset(args.load_vstpreset)
+            if preset.component_state is None:
+                raise ValueError("preset has no component state")
+            plugin.set_state(preset.component_state)
+            class_id = preset.class_id
+        except (FileNotFoundError, ValueError, RuntimeError) as e:
+            print(
+                f"Error loading .vstpreset '{args.load_vstpreset}': {e}",
+                file=sys.stderr,
+            )
+            return 1
+
+    if args.program is not None:
+        if plugin.num_programs == 0:
+            print("Error: plugin has no factory presets.", file=sys.stderr)
+            return 1
+        if args.program < 0 or args.program >= plugin.num_programs:
+            print(
+                f"Error: program {args.program} out of range "
+                f"(0-{plugin.num_programs - 1})",
+                file=sys.stderr,
+            )
+            return 1
+        plugin.program = args.program
+
+    # Save mode
+    if args.save:
+        if os.path.exists(args.save) and not args.overwrite:
+            print(
+                f"Error: Output file '{args.save}' already exists. "
+                f"Use -y/--overwrite to overwrite.",
+                file=sys.stderr,
+            )
+            return 1
+
+        # Fall back to probed unique_id if we didn't come from a .vstpreset
+        if class_id is None:
+            try:
+                probe_info = minihost.probe(args.plugin)
+                class_id = probe_info.get("unique_id") or "minihost_unknown"
+            except RuntimeError:
+                class_id = "minihost_unknown"
+
+        try:
+            from minihost.vstpreset import save_vstpreset
+
+            save_vstpreset(args.save, plugin, class_id=class_id)
+        except (OSError, RuntimeError) as e:
+            print(f"Error writing '{args.save}': {e}", file=sys.stderr)
+            return 1
+        print(f"Wrote {args.save}")
+        return 0
+
+    # Listing mode
+    if args.json:
+        import json
+
+        presets = []
+        current = plugin.program
+        for i in range(plugin.num_programs):
+            presets.append(
+                {
+                    "index": i,
+                    "name": plugin.get_program_name(i),
+                    "is_current": i == current,
+                }
+            )
+        print(json.dumps({"count": plugin.num_programs, "presets": presets}, indent=2))
+        return 0
+
+    if plugin.num_programs == 0:
+        print(f"{args.plugin}: no factory presets")
+        return 0
+
+    print(f"Factory Presets: {plugin.num_programs}")
+    current = plugin.program
+    for i in range(plugin.num_programs):
+        name = plugin.get_program_name(i)
+        marker = " (current)" if i == current else ""
+        print(f"  [{i}] {name}{marker}")
+    return 0
+
+
+def cmd_devices(args: argparse.Namespace) -> int:
+    """List available audio input/output devices."""
+    try:
+        playback = minihost.audio_get_playback_devices()
+        capture = minihost.audio_get_capture_devices()
+    except RuntimeError as e:
+        print(f"Error enumerating audio devices: {e}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        import json
+
+        print(json.dumps({"playback": playback, "capture": capture}, indent=2))
+        return 0
+
+    print("Audio Playback (Output) Devices:")
+    if playback:
+        for dev in playback:
+            marker = " (default)" if dev.get("is_default") else ""
+            print(f"  [{dev['index']}] {dev['name']}{marker}")
+    else:
+        print("  (none)")
+
+    print("\nAudio Capture (Input) Devices:")
+    if capture:
+        for dev in capture:
+            marker = " (default)" if dev.get("is_default") else ""
+            print(f"  [{dev['index']}] {dev['name']}{marker}")
+    else:
+        print("  (none)")
+    return 0
+
+
+def _resolve_audio_device_arg(value, devices, kind):
+    """Resolve a CLI device argument (int index or substring name match).
+
+    Args:
+        value: the raw CLI string (or None)
+        devices: list of device dicts from audio_get_*_devices()
+        kind: "playback" or "capture" (for error messages)
+
+    Returns:
+        An integer index (>= 0) on success, or -1 if value is None.
+
+    Raises:
+        ValueError: if the value cannot be resolved.
+    """
+    if value is None:
+        return -1
+
+    # Try integer index first
+    try:
+        idx = int(value)
+    except ValueError:
+        idx = None
+
+    if idx is not None:
+        if idx < 0 or idx >= len(devices):
+            raise ValueError(
+                f"{kind} device index {idx} out of range "
+                f"(0-{len(devices) - 1 if devices else 'none'})"
+            )
+        return idx
+
+    # Fall back to substring name match (case-insensitive)
+    needle = value.lower()
+    matches = [d for d in devices if needle in d["name"].lower()]
+    if not matches:
+        raise ValueError(f"No {kind} device matches '{value}'")
+    if len(matches) > 1:
+        names = ", ".join(f"[{m['index']}] {m['name']}" for m in matches)
+        raise ValueError(
+            f"Ambiguous {kind} device '{value}' matches: {names}. "
+            f"Use an explicit index."
+        )
+    return matches[0]["index"]
+
+
 def cmd_play(args: argparse.Namespace) -> int:
     """Play plugin with real-time audio and MIDI."""
     capture = getattr(args, "input", False) or False
+
+    # Resolve audio device selection (index or name substring)
+    playback_device_index = -1
+    capture_device_index = -1
+    try:
+        if getattr(args, "playback_device", None) is not None:
+            playback_device_index = _resolve_audio_device_arg(
+                args.playback_device,
+                minihost.audio_get_playback_devices(),
+                "playback",
+            )
+        if getattr(args, "capture_device", None) is not None:
+            if not capture:
+                print(
+                    "Error: --capture-device requires --input (duplex mode).",
+                    file=sys.stderr,
+                )
+                return 1
+            capture_device_index = _resolve_audio_device_arg(
+                args.capture_device,
+                minihost.audio_get_capture_devices(),
+                "capture",
+            )
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
 
     try:
         plugin = minihost.Plugin(
@@ -440,6 +665,8 @@ def cmd_play(args: argparse.Namespace) -> int:
             midi_input_port=midi_port,
             midi_output_port=midi_out_port,
             capture=capture,
+            playback_device_index=playback_device_index,
+            capture_device_index=capture_device_index,
         )
     except RuntimeError as e:
         print(f"Error opening audio device: {e}", file=sys.stderr)
@@ -1268,6 +1495,67 @@ Examples:
     )
     midi_p.set_defaults(func=cmd_midi)
 
+    # devices
+    devices_p = subparsers.add_parser(
+        "devices", help="List available audio playback/capture devices"
+    )
+    devices_p.add_argument("-j", "--json", action="store_true", help="Output as JSON")
+    devices_p.set_defaults(func=cmd_devices)
+
+    # presets
+    presets_p = subparsers.add_parser(
+        "presets",
+        help="List plugin factory presets, or save current state as .vstpreset",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # List factory presets
+  minihost presets /path/to/synth.vst3
+  minihost presets /path/to/synth.vst3 --json
+
+  # Export factory preset N as a .vstpreset
+  minihost presets /path/to/synth.vst3 --program 5 --save preset5.vstpreset
+
+  # Round-trip a .vstpreset through the plugin (loads, re-saves)
+  minihost presets /path/to/synth.vst3 \\
+    --load-vstpreset in.vstpreset --save out.vstpreset
+
+  # Convert a raw state blob to .vstpreset
+  minihost presets /path/to/synth.vst3 --state state.bin --save out.vstpreset
+""",
+    )
+    presets_p.add_argument("plugin", help="Path to plugin")
+    presets_p.add_argument("-j", "--json", action="store_true", help="Output as JSON")
+    presets_p.add_argument(
+        "--save",
+        metavar="FILE",
+        help="Save current plugin state as a .vstpreset file",
+    )
+    presets_p.add_argument(
+        "--program",
+        type=int,
+        metavar="N",
+        help="Select factory program N before saving",
+    )
+    presets_p.add_argument(
+        "--state",
+        metavar="FILE",
+        help="Load raw state blob into the plugin before saving",
+    )
+    presets_p.add_argument(
+        "--load-vstpreset",
+        metavar="FILE",
+        help="Load a .vstpreset file into the plugin before saving "
+        "(its class_id is preserved when --save is used)",
+    )
+    presets_p.add_argument(
+        "-y",
+        "--overwrite",
+        action="store_true",
+        help="Overwrite --save output file if it exists",
+    )
+    presets_p.set_defaults(func=cmd_presets)
+
     # play
     play_p = subparsers.add_parser("play", help="Play plugin with real-time audio/MIDI")
     play_p.add_argument("plugin", help="Path to plugin")
@@ -1295,6 +1583,18 @@ Examples:
         type=str,
         metavar="NAME",
         help="Create virtual MIDI output with NAME",
+    )
+    play_p.add_argument(
+        "--playback-device",
+        metavar="INDEX_OR_NAME",
+        help="Audio playback device (index from 'minihost devices' or case-insensitive "
+        "substring of device name). Default: system default.",
+    )
+    play_p.add_argument(
+        "--capture-device",
+        metavar="INDEX_OR_NAME",
+        help="Audio capture device for --input duplex mode (index or substring). "
+        "Default: system default.",
     )
     play_p.set_defaults(func=cmd_play)
 

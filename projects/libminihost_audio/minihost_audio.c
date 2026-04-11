@@ -53,6 +53,67 @@ struct MH_AudioDevice {
     int is_playing;
 };
 
+// Resolve playback/capture device IDs from MH_AudioConfig indices via an already-initialized context.
+// On success, stores pointers to the resolved ma_device_id into *out_playback_id / *out_capture_id
+// (which may be NULL if no selection was made). The pointed-to ma_device_info arrays remain valid
+// as long as the context is not re-enumerated.
+// Returns MA_SUCCESS on success (including "no selection requested"), or an ma_result on failure.
+static ma_result resolve_device_ids(ma_context* ctx,
+                                    const MH_AudioConfig* config,
+                                    int capture_enabled,
+                                    const ma_device_id** out_playback_id,
+                                    const ma_device_id** out_capture_id,
+                                    char* err_buf, size_t err_buf_size) {
+    *out_playback_id = NULL;
+    *out_capture_id = NULL;
+
+    int want_playback = (config && config->playback_device_index >= 0);
+    int want_capture = (capture_enabled && config && config->capture_device_index >= 0);
+    if (!want_playback && !want_capture) {
+        return MA_SUCCESS;
+    }
+
+    ma_device_info* playback_infos = NULL;
+    ma_uint32 playback_count = 0;
+    ma_device_info* capture_infos = NULL;
+    ma_uint32 capture_count = 0;
+
+    ma_result r = ma_context_get_devices(ctx, &playback_infos, &playback_count,
+                                         &capture_infos, &capture_count);
+    if (r != MA_SUCCESS) {
+        if (err_buf && err_buf_size > 0) {
+            snprintf(err_buf, err_buf_size, "Failed to enumerate audio devices: %d", r);
+        }
+        return r;
+    }
+
+    if (want_playback) {
+        if ((ma_uint32)config->playback_device_index >= playback_count) {
+            if (err_buf && err_buf_size > 0) {
+                snprintf(err_buf, err_buf_size,
+                         "Playback device index %d out of range (found %u device(s))",
+                         config->playback_device_index, (unsigned)playback_count);
+            }
+            return MA_INVALID_ARGS;
+        }
+        *out_playback_id = &playback_infos[config->playback_device_index].id;
+    }
+
+    if (want_capture) {
+        if ((ma_uint32)config->capture_device_index >= capture_count) {
+            if (err_buf && err_buf_size > 0) {
+                snprintf(err_buf, err_buf_size,
+                         "Capture device index %d out of range (found %u device(s))",
+                         config->capture_device_index, (unsigned)capture_count);
+            }
+            return MA_INVALID_ARGS;
+        }
+        *out_capture_id = &capture_infos[config->capture_device_index].id;
+    }
+
+    return MA_SUCCESS;
+}
+
 // Allocate non-interleaved buffer array
 static float** alloc_channel_buffers(int channels, int frames) {
     float** buffers = (float**)malloc(channels * sizeof(float*));
@@ -255,6 +316,21 @@ MH_AudioDevice* mh_audio_open(MH_Plugin* plugin, const MH_AudioConfig* config,
     device_config.dataCallback = audio_callback;
     device_config.pUserData = dev;
 
+    // Resolve explicit device selection (if any)
+    const ma_device_id* playback_id = NULL;
+    const ma_device_id* capture_id = NULL;
+    result = resolve_device_ids(&dev->context, config, capture,
+                                &playback_id, &capture_id, err_buf, err_buf_size);
+    if (result != MA_SUCCESS) {
+        ma_context_uninit(&dev->context);
+        free(dev);
+        return NULL;
+    }
+    device_config.playback.pDeviceID = (ma_device_id*)playback_id;
+    if (capture) {
+        device_config.capture.pDeviceID = (ma_device_id*)capture_id;
+    }
+
     // Initialize device
     result = ma_device_init(&dev->context, &device_config, &dev->device);
     if (result != MA_SUCCESS) {
@@ -413,6 +489,21 @@ MH_AudioDevice* mh_audio_open_chain(MH_PluginChain* chain, const MH_AudioConfig*
     device_config.periodSizeInFrames = requested_buffer_frames;
     device_config.dataCallback = audio_callback;
     device_config.pUserData = dev;
+
+    // Resolve explicit device selection (if any)
+    const ma_device_id* playback_id = NULL;
+    const ma_device_id* capture_id = NULL;
+    result = resolve_device_ids(&dev->context, config, capture,
+                                &playback_id, &capture_id, err_buf, err_buf_size);
+    if (result != MA_SUCCESS) {
+        ma_context_uninit(&dev->context);
+        free(dev);
+        return NULL;
+    }
+    device_config.playback.pDeviceID = (ma_device_id*)playback_id;
+    if (capture) {
+        device_config.capture.pDeviceID = (ma_device_id*)capture_id;
+    }
 
     // Initialize device
     result = ma_device_init(&dev->context, &device_config, &dev->device);
@@ -783,4 +874,48 @@ int mh_audio_write_input(MH_AudioDevice* dev, const float* data, int nframes) {
 int mh_audio_input_available(MH_AudioDevice* dev) {
     if (!dev || !dev->audio_in_buffer) return 0;
     return mh_audio_ringbuffer_available(dev->audio_in_buffer);
+}
+
+// Shared enumeration helper. Set is_capture=0 for playback devices, 1 for capture.
+static int enumerate_devices_impl(int is_capture,
+                                  MH_AudioDeviceInfo* out_devices,
+                                  int max_devices) {
+    ma_context ctx;
+    if (ma_context_init(NULL, 0, NULL, &ctx) != MA_SUCCESS) {
+        return -1;
+    }
+
+    ma_device_info* playback_infos = NULL;
+    ma_uint32 playback_count = 0;
+    ma_device_info* capture_infos = NULL;
+    ma_uint32 capture_count = 0;
+
+    if (ma_context_get_devices(&ctx, &playback_infos, &playback_count,
+                                &capture_infos, &capture_count) != MA_SUCCESS) {
+        ma_context_uninit(&ctx);
+        return -1;
+    }
+
+    ma_device_info* infos = is_capture ? capture_infos : playback_infos;
+    int total = is_capture ? (int)capture_count : (int)playback_count;
+
+    if (out_devices && max_devices > 0) {
+        int to_copy = total < max_devices ? total : max_devices;
+        for (int i = 0; i < to_copy; i++) {
+            strncpy(out_devices[i].name, infos[i].name, sizeof(out_devices[i].name) - 1);
+            out_devices[i].name[sizeof(out_devices[i].name) - 1] = '\0';
+            out_devices[i].is_default = infos[i].isDefault ? 1 : 0;
+        }
+    }
+
+    ma_context_uninit(&ctx);
+    return total;
+}
+
+int mh_audio_enumerate_playback_devices(MH_AudioDeviceInfo* out_devices, int max_devices) {
+    return enumerate_devices_impl(0, out_devices, max_devices);
+}
+
+int mh_audio_enumerate_capture_devices(MH_AudioDeviceInfo* out_devices, int max_devices) {
+    return enumerate_devices_impl(1, out_devices, max_devices);
 }

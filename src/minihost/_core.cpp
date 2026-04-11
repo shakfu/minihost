@@ -972,7 +972,8 @@ public:
     // Constructor for single plugin
     AudioDevice(Plugin& plugin, double sample_rate = 0, int buffer_frames = 0,
                 int output_channels = 0, int midi_input_port = -1, int midi_output_port = -1,
-                bool capture = false)
+                bool capture = false, int playback_device_index = -1,
+                int capture_device_index = -1)
         : plugin_ref_(&plugin), chain_ref_(nullptr)
     {
         MH_AudioConfig config;
@@ -982,6 +983,8 @@ public:
         config.midi_input_port = midi_input_port;
         config.midi_output_port = midi_output_port;
         config.capture = capture ? 1 : 0;
+        config.playback_device_index = playback_device_index;
+        config.capture_device_index = capture_device_index;
 
         char err[1024] = {0};
         device_ = mh_audio_open(plugin.plugin_, &config, err, sizeof(err));
@@ -993,7 +996,8 @@ public:
     // Constructor for plugin chain
     AudioDevice(PluginChain& chain, double sample_rate = 0, int buffer_frames = 0,
                 int output_channels = 0, int midi_input_port = -1, int midi_output_port = -1,
-                bool capture = false)
+                bool capture = false, int playback_device_index = -1,
+                int capture_device_index = -1)
         : plugin_ref_(nullptr), chain_ref_(&chain)
     {
         MH_AudioConfig config;
@@ -1003,6 +1007,8 @@ public:
         config.midi_input_port = midi_input_port;
         config.midi_output_port = midi_output_port;
         config.capture = capture ? 1 : 0;
+        config.playback_device_index = playback_device_index;
+        config.capture_device_index = capture_device_index;
 
         char err[1024] = {0};
         device_ = mh_audio_open_chain(chain.chain_, &config, err, sizeof(err));
@@ -1291,6 +1297,37 @@ nb::list midi_get_output_ports() {
     return result_list;
 }
 
+// Audio device enumeration
+static nb::list audio_enumerate(bool capture) {
+    // First pass: count
+    int total = capture
+        ? mh_audio_enumerate_capture_devices(nullptr, 0)
+        : mh_audio_enumerate_playback_devices(nullptr, 0);
+
+    nb::list result_list;
+    if (total <= 0) {
+        return result_list;
+    }
+
+    std::vector<MH_AudioDeviceInfo> infos(total);
+    int n = capture
+        ? mh_audio_enumerate_capture_devices(infos.data(), total)
+        : mh_audio_enumerate_playback_devices(infos.data(), total);
+    if (n < 0) n = 0;
+
+    for (int i = 0; i < n; i++) {
+        nb::dict d;
+        d["name"] = std::string(infos[i].name);
+        d["index"] = i;
+        d["is_default"] = infos[i].is_default != 0;
+        result_list.append(d);
+    }
+    return result_list;
+}
+
+nb::list audio_get_playback_devices() { return audio_enumerate(false); }
+nb::list audio_get_capture_devices() { return audio_enumerate(true); }
+
 // MIDI file wrapper class
 class MidiFile {
 public:
@@ -1570,6 +1607,14 @@ NB_MODULE(_core, m) {
     m.def("midi_get_output_ports", &midi_get_output_ports,
           "Get list of available MIDI output ports. Returns list of dicts with 'name' and 'index'.");
 
+    // Audio device enumeration
+    m.def("audio_get_playback_devices", &audio_get_playback_devices,
+          "Get list of available audio playback (output) devices. "
+          "Returns list of dicts with 'name', 'index', and 'is_default'.");
+    m.def("audio_get_capture_devices", &audio_get_capture_devices,
+          "Get list of available audio capture (input) devices. "
+          "Returns list of dicts with 'name', 'index', and 'is_default'.");
+
     // Change notification flag constants
     m.attr("MH_CHANGE_LATENCY")         = MH_CHANGE_LATENCY;
     m.attr("MH_CHANGE_PARAM_INFO")      = MH_CHANGE_PARAM_INFO;
@@ -1801,7 +1846,7 @@ NB_MODULE(_core, m) {
 
     // AudioDevice class for real-time playback
     nb::class_<AudioDevice>(m, "AudioDevice")
-        .def(nb::init<Plugin&, double, int, int, int, int, bool>(),
+        .def(nb::init<Plugin&, double, int, int, int, int, bool, int, int>(),
              nb::arg("plugin"),
              nb::arg("sample_rate") = 0.0,
              nb::arg("buffer_frames") = 0,
@@ -1809,14 +1854,20 @@ NB_MODULE(_core, m) {
              nb::arg("midi_input_port") = -1,
              nb::arg("midi_output_port") = -1,
              nb::arg("capture") = false,
+             nb::arg("playback_device_index") = -1,
+             nb::arg("capture_device_index") = -1,
              "Open an audio device for real-time playback with a single plugin. "
              "sample_rate=0 uses device default. "
              "buffer_frames=0 uses auto (~256-512). "
              "output_channels=0 uses plugin's output channels. "
              "midi_input_port=-1 means no MIDI input. "
              "midi_output_port=-1 means no MIDI output. "
-             "capture=True enables duplex mode (system audio input through plugin).")
-        .def(nb::init<PluginChain&, double, int, int, int, int, bool>(),
+             "capture=True enables duplex mode (system audio input through plugin). "
+             "playback_device_index=-1 uses the system default output device; "
+             "pass an index from audio_get_playback_devices() to select a specific one. "
+             "capture_device_index=-1 uses the system default input device (only consulted when capture=True); "
+             "pass an index from audio_get_capture_devices() to select a specific one.")
+        .def(nb::init<PluginChain&, double, int, int, int, int, bool, int, int>(),
              nb::arg("chain"),
              nb::arg("sample_rate") = 0.0,
              nb::arg("buffer_frames") = 0,
@@ -1824,13 +1875,16 @@ NB_MODULE(_core, m) {
              nb::arg("midi_input_port") = -1,
              nb::arg("midi_output_port") = -1,
              nb::arg("capture") = false,
+             nb::arg("playback_device_index") = -1,
+             nb::arg("capture_device_index") = -1,
              "Open an audio device for real-time playback with a plugin chain. "
              "sample_rate=0 uses device default. "
              "buffer_frames=0 uses auto (~256-512). "
              "output_channels=0 uses chain's output channels. "
              "midi_input_port=-1 means no MIDI input. "
              "midi_output_port=-1 means no MIDI output. "
-             "capture=True enables duplex mode (system audio input through chain).")
+             "capture=True enables duplex mode (system audio input through chain). "
+             "playback_device_index / capture_device_index: see single-plugin constructor.")
 
         .def("start", &AudioDevice::start,
              "Start audio playback")

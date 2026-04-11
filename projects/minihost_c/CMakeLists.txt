@@ -3,4 +3,6 @@
 add_executable(minihost_c main.c)
 target_include_directories(minihost_c PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../libminihost_audio)
-target_link_libraries(minihost_c PRIVATE minihost minihost_audio)
+# minihost is pulled in transitively via minihost_audio; listing it here too
+# causes the linker to emit 'ignoring duplicate libraries' warnings.
+target_link_libraries(minihost_c PRIVATE minihost_audio)

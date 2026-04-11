@@ -42,7 +42,9 @@ if(DEFINED SKBUILD)
     find_package(nanobind CONFIG REQUIRED)
 
     nanobind_add_module(_core src/minihost/_core.cpp)
-    target_link_libraries(_core PRIVATE minihost minihost_audio midifile)
+    # minihost is pulled in transitively via minihost_audio; listing it here
+    # too causes the linker to emit 'ignoring duplicate libraries' warnings.
+    target_link_libraries(_core PRIVATE minihost_audio midifile)
     target_include_directories(_core PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/projects/libminihost
         ${CMAKE_CURRENT_SOURCE_DIR}/projects/libminihost_audio

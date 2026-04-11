@@ -28,7 +28,25 @@ typedef struct MH_AudioConfig {
     int midi_input_port;     // -1 = none, >= 0 = MIDI input port index
     int midi_output_port;    // -1 = none, >= 0 = MIDI output port index
     int capture;             // 0 = playback only, 1 = duplex (capture + playback)
+    int playback_device_index; // -1 = system default, >= 0 = index into mh_audio_enumerate_playback_devices()
+    int capture_device_index;  // -1 = system default, >= 0 = index into mh_audio_enumerate_capture_devices()
 } MH_AudioConfig;
+
+// Audio device descriptor returned by enumeration functions.
+typedef struct MH_AudioDeviceInfo {
+    char name[256];
+    int is_default;  // 1 if this is the system default device
+} MH_AudioDeviceInfo;
+
+// Enumerate available audio playback (output) devices.
+// out_devices: optional buffer to receive device info (may be NULL to count only)
+// max_devices: capacity of out_devices buffer (0 to count only)
+// Returns total number of devices available (may exceed max_devices), or -1 on error.
+int mh_audio_enumerate_playback_devices(MH_AudioDeviceInfo* out_devices, int max_devices);
+
+// Enumerate available audio capture (input) devices.
+// See mh_audio_enumerate_playback_devices for semantics.
+int mh_audio_enumerate_capture_devices(MH_AudioDeviceInfo* out_devices, int max_devices);
 
 // Input callback for effects (called from audio thread)
 // Provides input audio to be processed by the plugin

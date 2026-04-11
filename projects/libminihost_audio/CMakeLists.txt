@@ -28,7 +28,12 @@ target_include_directories(minihost_audio PRIVATE
     ${CMAKE_SOURCE_DIR}/projects/tflac
 )
 
-target_link_libraries(minihost_audio PRIVATE minihost)
+# PUBLIC because minihost_audio's static archive references mh_* symbols
+# defined in libminihost; consumers need libminihost on their final link line
+# and (typically) need minihost.h on their include path too. PUBLIC forwards
+# both without requiring each consumer to list 'minihost' explicitly (which
+# would duplicate it on the link line).
+target_link_libraries(minihost_audio PUBLIC minihost)
 
 # libremidi configuration - header-only mode
 target_compile_definitions(minihost_audio PRIVATE

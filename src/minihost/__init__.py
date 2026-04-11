@@ -41,6 +41,8 @@ from minihost._core import (
     scan_directory,
     midi_get_input_ports,
     midi_get_output_ports,
+    audio_get_playback_devices,
+    audio_get_capture_devices,
     MH_CHANGE_LATENCY,
     MH_CHANGE_PARAM_INFO,
     MH_CHANGE_PROGRAM,
@@ -73,6 +75,8 @@ from minihost.vstpreset import (
     VstPreset,
     read_vstpreset,
     load_vstpreset,
+    write_vstpreset,
+    save_vstpreset,
 )
 
 __all__ = [
@@ -88,6 +92,9 @@ __all__ = [
     # MIDI ports
     "midi_get_input_ports",
     "midi_get_output_ports",
+    # Audio devices
+    "audio_get_playback_devices",
+    "audio_get_capture_devices",
     # MIDI rendering
     "render_midi",
     "render_midi_stream",
@@ -106,6 +113,8 @@ __all__ = [
     "VstPreset",
     "read_vstpreset",
     "load_vstpreset",
+    "write_vstpreset",
+    "save_vstpreset",
     # Change notification constants
     "MH_CHANGE_LATENCY",
     "MH_CHANGE_PARAM_INFO",

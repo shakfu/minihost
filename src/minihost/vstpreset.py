@@ -173,3 +173,90 @@ def load_vstpreset(path: str | Path, plugin) -> None:
         raise ValueError(f"Preset file has no component state ('Comp' chunk): {path}")
 
     plugin.set_state(preset.component_state)
+
+
+def write_vstpreset(
+    path: str | Path,
+    class_id: str,
+    component_state: bytes,
+    controller_state: bytes | None = None,
+) -> None:
+    """Write a .vstpreset file.
+
+    Args:
+        path: Destination file path.
+        class_id: Processor class ID (up to 32 ASCII characters).
+            For round-trip compatibility through minihost's own loader only the
+            component_state is needed, but the class_id is still written so
+            external tools can identify the target plugin. It will be truncated
+            or padded with NUL bytes to exactly 32 bytes.
+        component_state: Raw processor state bytes (from plugin.get_state()).
+        controller_state: Optional raw controller state bytes.
+
+    Raises:
+        ValueError: If class_id is empty or component_state is None.
+        OSError: If the file cannot be written.
+    """
+    if not class_id:
+        raise ValueError("class_id must be a non-empty string")
+    if component_state is None:
+        raise ValueError("component_state must not be None")
+
+    # Header: magic + version + 32-byte class id + placeholder list offset
+    class_id_bytes = class_id.encode("ascii", errors="replace")
+    class_id_bytes = class_id_bytes[:32].ljust(32, b"\x00")
+
+    # Data area: component state first, then optional controller state
+    data_area = bytes(component_state)
+    comp_offset = _HEADER_SIZE
+    comp_size = len(component_state)
+
+    entries: list[tuple[bytes, int, int]] = [(_COMPONENT_STATE_ID, comp_offset, comp_size)]
+
+    if controller_state is not None:
+        cont_offset = comp_offset + comp_size
+        cont_size = len(controller_state)
+        data_area += bytes(controller_state)
+        entries.append((_CONTROLLER_STATE_ID, cont_offset, cont_size))
+
+    list_offset = _HEADER_SIZE + len(data_area)
+
+    header = (
+        _MAGIC
+        + struct.pack("<i", 1)
+        + class_id_bytes
+        + struct.pack("<q", list_offset)
+    )
+    assert len(header) == _HEADER_SIZE
+
+    chunk_list = _CHUNK_LIST_ID + struct.pack("<i", len(entries))
+    for chunk_id, offset, size in entries:
+        chunk_list += chunk_id
+        chunk_list += struct.pack("<q", offset)
+        chunk_list += struct.pack("<q", size)
+
+    Path(path).write_bytes(header + data_area + chunk_list)
+
+
+def save_vstpreset(
+    path: str | Path,
+    plugin,
+    class_id: str | None = None,
+) -> None:
+    """Save a plugin's current state as a .vstpreset file.
+
+    Args:
+        path: Destination file path.
+        plugin: A minihost.Plugin instance.
+        class_id: Processor class ID. If None, uses the plugin's
+            probed unique_id (suitable only for round-trips through
+            minihost's own loader, not for cross-DAW compatibility).
+
+    Raises:
+        RuntimeError: If plugin.get_state() fails.
+        OSError: If the file cannot be written.
+    """
+    state = plugin.get_state()
+    if class_id is None:
+        class_id = "minihost_unknown"
+    write_vstpreset(path, class_id, state)
