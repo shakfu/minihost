@@ -209,6 +209,38 @@ public:
         return d;
     }
 
+    // Find parameter index by name (case-insensitive)
+    int find_param(const std::string& name) const {
+        int n = mh_get_num_params(plugin_);
+        // Convert search name to lowercase
+        std::string name_lower = name;
+        for (auto& c : name_lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+        for (int i = 0; i < n; ++i) {
+            MH_ParamInfo info;
+            if (mh_get_param_info(plugin_, i, &info)) {
+                std::string pname(info.name);
+                for (auto& c : pname) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                if (pname == name_lower)
+                    return i;
+            }
+        }
+        throw std::runtime_error("Parameter not found: '" + name + "'");
+    }
+
+    // Get parameter value by name
+    float get_param_by_name(const std::string& name) const {
+        return mh_get_param(plugin_, find_param(name));
+    }
+
+    // Set parameter value by name
+    void set_param_by_name(const std::string& name, float value) {
+        int idx = find_param(name);
+        if (!mh_set_param(plugin_, idx, value)) {
+            throw std::runtime_error("Failed to set parameter");
+        }
+    }
+
     // Parameter text conversion
     std::string param_to_text(int index, float value) const {
         char buf[256] = {0};
@@ -1703,6 +1735,15 @@ NB_MODULE(_core, m) {
         .def("get_param_info", &Plugin::get_param_info,
              nb::arg("index"),
              "Get parameter metadata as dict")
+        .def("find_param", &Plugin::find_param,
+             nb::arg("name"),
+             "Find parameter index by name (case-insensitive). Raises RuntimeError if not found.")
+        .def("get_param_by_name", &Plugin::get_param_by_name,
+             nb::arg("name"),
+             "Get parameter value by name (case-insensitive)")
+        .def("set_param_by_name", &Plugin::set_param_by_name,
+             nb::arg("name"), nb::arg("value"),
+             "Set parameter value by name (case-insensitive)")
         .def("param_to_text", &Plugin::param_to_text,
              nb::arg("index"), nb::arg("value"),
              "Convert normalized value (0-1) to display string (e.g., '2500 Hz')")

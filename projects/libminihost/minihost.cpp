@@ -33,42 +33,75 @@ using namespace juce;
 class MH_PlayHead : public AudioPlayHead
 {
 public:
-    bool hasTransport = false;
-    double bpm = 120.0;
-    int timeSigNum = 4;
-    int timeSigDenom = 4;
-    int64_t positionSamples = 0;
-    double positionBeats = 0.0;
-    bool isPlaying = false;
-    bool isRecording = false;
-    bool isLooping = false;
-    int64_t loopStartSamples = 0;
-    int64_t loopEndSamples = 0;
+    // Transport state snapshot -- copied atomically via seqlock
+    struct State
+    {
+        bool hasTransport = false;
+        double bpm = 120.0;
+        int timeSigNum = 4;
+        int timeSigDenom = 4;
+        int64_t positionSamples = 0;
+        double positionBeats = 0.0;
+        bool isPlaying = false;
+        bool isRecording = false;
+        bool isLooping = false;
+        int64_t loopStartSamples = 0;
+        int64_t loopEndSamples = 0;
+    };
+
     double sampleRate = 44100.0;
+
+    // Seqlock: writer increments seq_ before and after updating state_.
+    // Reader retries if seq_ changed during read (ensures torn-read safety
+    // without blocking the audio thread).
+    void write(const State& s)
+    {
+        seq_.fetch_add(1, std::memory_order_release);    // odd  = write in progress
+        state_ = s;
+        seq_.fetch_add(1, std::memory_order_release);    // even = write complete
+    }
+
+    State read() const
+    {
+        State s;
+        unsigned seq0, seq1;
+        do {
+            seq0 = seq_.load(std::memory_order_acquire);
+            s = state_;
+            seq1 = seq_.load(std::memory_order_acquire);
+        } while (seq0 != seq1 || (seq0 & 1));            // retry if torn or mid-write
+        return s;
+    }
 
     Optional<PositionInfo> getPosition() const override
     {
-        if (!hasTransport)
+        State s = read();
+
+        if (!s.hasTransport)
             return nullopt;
 
         PositionInfo info;
-        info.setBpm(bpm);
-        info.setTimeSignature(TimeSignature{timeSigNum, timeSigDenom});
-        info.setTimeInSamples(positionSamples);
-        info.setTimeInSeconds(static_cast<double>(positionSamples) / sampleRate);
-        info.setPpqPosition(positionBeats);
-        info.setIsPlaying(isPlaying);
-        info.setIsRecording(isRecording);
-        info.setIsLooping(isLooping);
-        if (isLooping)
+        info.setBpm(s.bpm);
+        info.setTimeSignature(TimeSignature{s.timeSigNum, s.timeSigDenom});
+        info.setTimeInSamples(s.positionSamples);
+        info.setTimeInSeconds(static_cast<double>(s.positionSamples) / sampleRate);
+        info.setPpqPosition(s.positionBeats);
+        info.setIsPlaying(s.isPlaying);
+        info.setIsRecording(s.isRecording);
+        info.setIsLooping(s.isLooping);
+        if (s.isLooping)
         {
             info.setLoopPoints(LoopPoints{
-                static_cast<double>(loopStartSamples) / sampleRate * (bpm / 60.0),
-                static_cast<double>(loopEndSamples) / sampleRate * (bpm / 60.0)
+                static_cast<double>(s.loopStartSamples) / sampleRate * (s.bpm / 60.0),
+                static_cast<double>(s.loopEndSamples) / sampleRate * (s.bpm / 60.0)
             });
         }
         return info;
     }
+
+private:
+    State state_;
+    std::atomic<unsigned> seq_{0};
 };
 
 struct MH_Plugin;
@@ -139,6 +172,12 @@ struct MH_Plugin
     AudioBuffer<float> outBuf;
     AudioBuffer<float> sidechainBuf;  // sidechain input buffer
     MidiBuffer midi;
+
+    // Persistent pointer arrays for mh_process_auto chunk splitting.
+    // Sized once on first call; avoids per-call heap allocation and removes
+    // the former hard-coded 64-channel limit.
+    std::vector<const float*> autoChunkIn;
+    std::vector<float*> autoChunkOut;
 
     // Mutex for thread-safe access to plugin state from non-audio threads
     // Note: mh_process* functions do NOT lock (audio thread must not block)
@@ -575,21 +614,25 @@ extern "C" int mh_set_transport(MH_Plugin* p, const MH_TransportInfo* transport)
 
     if (!transport)
     {
-        p->playHead.hasTransport = false;
+        MH_PlayHead::State s;
+        s.hasTransport = false;
+        p->playHead.write(s);
         return 1;
     }
 
-    p->playHead.hasTransport = true;
-    p->playHead.bpm = transport->bpm;
-    p->playHead.timeSigNum = transport->time_sig_numerator;
-    p->playHead.timeSigDenom = transport->time_sig_denominator;
-    p->playHead.positionSamples = transport->position_samples;
-    p->playHead.positionBeats = transport->position_beats;
-    p->playHead.isPlaying = transport->is_playing != 0;
-    p->playHead.isRecording = transport->is_recording != 0;
-    p->playHead.isLooping = transport->is_looping != 0;
-    p->playHead.loopStartSamples = transport->loop_start_samples;
-    p->playHead.loopEndSamples = transport->loop_end_samples;
+    MH_PlayHead::State s;
+    s.hasTransport = true;
+    s.bpm = transport->bpm;
+    s.timeSigNum = transport->time_sig_numerator;
+    s.timeSigDenom = transport->time_sig_denominator;
+    s.positionSamples = transport->position_samples;
+    s.positionBeats = transport->position_beats;
+    s.isPlaying = transport->is_playing != 0;
+    s.isRecording = transport->is_recording != 0;
+    s.isLooping = transport->is_looping != 0;
+    s.loopStartSamples = transport->loop_start_samples;
+    s.loopEndSamples = transport->loop_end_samples;
+    p->playHead.write(s);
 
     return 1;
 }
@@ -701,11 +744,15 @@ extern "C" int mh_process_auto(MH_Plugin* p,
             break;
 
         // Prepare input/output pointers for this chunk
-        const float* chunk_inputs[64];
-        float* chunk_outputs[64];
-        for (int ch = 0; ch < p->inCh && ch < 64; ++ch)
+        // Use persistent vectors on MH_Plugin to avoid heap allocation on the
+        // audio thread.  They are resized once (at first call) and reused.
+        auto& chunk_inputs  = p->autoChunkIn;
+        auto& chunk_outputs = p->autoChunkOut;
+        if ((int)chunk_inputs.size()  != p->inCh)  chunk_inputs.resize(p->inCh);
+        if ((int)chunk_outputs.size() != p->outCh) chunk_outputs.resize(p->outCh);
+        for (int ch = 0; ch < p->inCh; ++ch)
             chunk_inputs[ch] = inputs ? inputs[ch] + current_sample : nullptr;
-        for (int ch = 0; ch < p->outCh && ch < 64; ++ch)
+        for (int ch = 0; ch < p->outCh; ++ch)
             chunk_outputs[ch] = outputs ? outputs[ch] + current_sample : nullptr;
 
         // Collect MIDI events for this chunk
@@ -725,12 +772,12 @@ extern "C" int mh_process_auto(MH_Plugin* p,
 
         // Set up buffers for this chunk
         if (inputs)
-            p->inBuf.setDataToReferTo(const_cast<float**>(chunk_inputs), p->inCh, chunk_size);
+            p->inBuf.setDataToReferTo(const_cast<float**>(chunk_inputs.data()), p->inCh, chunk_size);
         else
             p->inBuf.clear(0, chunk_size);
 
         if (outputs)
-            p->outBuf.setDataToReferTo(chunk_outputs, p->outCh, chunk_size);
+            p->outBuf.setDataToReferTo(chunk_outputs.data(), p->outCh, chunk_size);
         else
             p->outBuf.clear(0, chunk_size);
 
@@ -792,10 +839,24 @@ extern "C" int mh_set_non_realtime(MH_Plugin* p, int non_realtime)
     return 1;
 }
 
-extern "C" int mh_probe(const char* plugin_path,
-                        MH_PluginDesc* out_desc,
-                        char* err_buf,
-                        size_t err_buf_size)
+// Populate a format manager with all supported plugin formats.
+static void initFormatManager(AudioPluginFormatManager& fm)
+{
+    fm.addFormat(std::make_unique<VST3Format>());
+   #if JUCE_MAC
+    fm.addFormat(std::make_unique<AUFormat>());
+   #endif
+   #if JUCE_PLUGINHOST_LV2
+    fm.addFormat(std::make_unique<LV2Format>());
+   #endif
+}
+
+// Internal probe using an existing format manager (avoids recreating one per call).
+static int probeWithFm(AudioPluginFormatManager& fm,
+                       const char* plugin_path,
+                       MH_PluginDesc* out_desc,
+                       char* err_buf,
+                       size_t err_buf_size)
 {
     if (!plugin_path || plugin_path[0] == '\0')
     {
@@ -809,7 +870,6 @@ extern "C" int mh_probe(const char* plugin_path,
         return 0;
     }
 
-    // Zero out the descriptor
     std::memset(out_desc, 0, sizeof(MH_PluginDesc));
 
     File f(String::fromUTF8(plugin_path));
@@ -819,17 +879,6 @@ extern "C" int mh_probe(const char* plugin_path,
         return 0;
     }
 
-    // Create a temporary format manager to scan the plugin
-    AudioPluginFormatManager fm;
-    fm.addFormat(std::make_unique<VST3Format>());
-   #if JUCE_MAC
-    fm.addFormat(std::make_unique<AUFormat>());
-   #endif
-   #if JUCE_PLUGINHOST_LV2
-    fm.addFormat(std::make_unique<LV2Format>());
-   #endif
-
-    // Find plugin description without instantiating
     PluginDescription desc;
     bool found = false;
     String formatName;
@@ -855,23 +904,29 @@ extern "C" int mh_probe(const char* plugin_path,
         return 0;
     }
 
-    // Fill in the descriptor
     std::snprintf(out_desc->name, sizeof(out_desc->name), "%s", desc.name.toRawUTF8());
     std::snprintf(out_desc->vendor, sizeof(out_desc->vendor), "%s", desc.manufacturerName.toRawUTF8());
     std::snprintf(out_desc->version, sizeof(out_desc->version), "%s", desc.version.toRawUTF8());
     std::snprintf(out_desc->format, sizeof(out_desc->format), "%s", formatName.toRawUTF8());
 
-    // uniqueId is an int, convert to hex string for portability
     std::snprintf(out_desc->unique_id, sizeof(out_desc->unique_id), "%08X", desc.uniqueId);
 
-    // isInstrument indicates the plugin accepts MIDI (synthesizers, samplers)
-    // Note: PluginDescription doesn't expose producesMidiOutput directly
     out_desc->accepts_midi = desc.isInstrument ? 1 : 0;
-    out_desc->produces_midi = 0;  // Cannot determine from description alone
+    out_desc->produces_midi = 0;
     out_desc->num_inputs = desc.numInputChannels;
     out_desc->num_outputs = desc.numOutputChannels;
 
     return 1;
+}
+
+extern "C" int mh_probe(const char* plugin_path,
+                        MH_PluginDesc* out_desc,
+                        char* err_buf,
+                        size_t err_buf_size)
+{
+    AudioPluginFormatManager fm;
+    initFormatManager(fm);
+    return probeWithFm(fm, plugin_path, out_desc, err_buf, err_buf_size);
 }
 
 extern "C" int mh_param_to_text(MH_Plugin* p, int index, float value, char* buf, size_t buf_size)
@@ -1323,24 +1378,23 @@ extern "C" int mh_scan_directory(const char* directory_path,
     dir.findChildFiles(pluginFiles, File::findDirectories, true, "*.lv2");
    #endif
 
-    // Process each plugin file
+    // Create one format manager for the entire scan instead of one per plugin.
+    AudioPluginFormatManager fm;
+    initFormatManager(fm);
+
     for (const auto& pluginFile : pluginFiles)
     {
         MH_PluginDesc desc;
         char errBuf[256];
 
-        // Try to probe the plugin
-        if (mh_probe(pluginFile.getFullPathName().toRawUTF8(), &desc, errBuf, sizeof(errBuf)))
+        if (probeWithFm(fm, pluginFile.getFullPathName().toRawUTF8(), &desc, errBuf, sizeof(errBuf)))
         {
-            // Fill in the path field
             std::snprintf(desc.path, sizeof(desc.path), "%s",
                           pluginFile.getFullPathName().toRawUTF8());
 
-            // Call the callback
             callback(&desc, user_data);
             ++count;
         }
-        // Invalid plugins are silently skipped
     }
 
     return count;

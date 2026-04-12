@@ -27,23 +27,10 @@ MH_AudioData* mh_audio_read(const char* path, char* err, size_t err_size) {
         return NULL;
     }
 
-    // We need to know the actual channel count and sample rate from the file.
-    // ma_decode_file doesn't return these directly when we pass 0.
-    // Re-open a decoder just to get the info.
-    ma_decoder decoder;
-    ma_decoder_config info_config = ma_decoder_config_init(ma_format_f32, 0, 0);
-    result = ma_decoder_init_file(path, &info_config, &decoder);
-    if (result != MA_SUCCESS) {
-        ma_free(frames, NULL);
-        if (err && err_size > 0) {
-            snprintf(err, err_size, "Failed to open audio file for info: %s (error %d)", path, result);
-        }
-        return NULL;
-    }
-
-    unsigned int channels = decoder.outputChannels;
-    unsigned int sample_rate = decoder.outputSampleRate;
-    ma_decoder_uninit(&decoder);
+    // ma_decode_file populates config.channels and config.sampleRate with the
+    // actual values from the decoded file (via ma_decoder__full_decode_and_uninit).
+    unsigned int channels = config.channels;
+    unsigned int sample_rate = config.sampleRate;
 
     MH_AudioData* data = (MH_AudioData*)malloc(sizeof(MH_AudioData));
     if (!data) {

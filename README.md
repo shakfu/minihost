@@ -30,6 +30,8 @@ Minihost is a headless, JUCE-based audio plugin host that supports VST3, AudioUn
 - Bus layout validation and sidechain support
 - Track name/color metadata forwarding to plugins
 - Latency and tail time reporting
+- **Parameter access by name** -- `plugin.find_param("Cutoff")`, `plugin.get_param_by_name("Cutoff")`, `plugin.set_param_by_name("Cutoff", 0.5)` with case-insensitive lookup
+- **Async plugin loading** -- `minihost.open_async()` returns a `concurrent.futures.Future` for background loading of large sample-library plugins
 - **VST3 preset I/O** -- read and write `.vstpreset` files from C (`minihost_vstpreset.h`), C++, and Python (`minihost.vstpreset`); `minihost presets` CLI subcommand exports the current plugin state, optionally after loading a program, state blob, or another `.vstpreset`
 
 ## Requirements
@@ -37,6 +39,7 @@ Minihost is a headless, JUCE-based audio plugin host that supports VST3, AudioUn
 - CMake 3.20+
 - C++17 compiler
 - JUCE framework (automatically downloaded if not present)
+- Vendored C libraries: miniaudio, tflac, libremidi, midifile (see [docs/vendored.md](docs/vendored.md))
 
 ### Platform-specific
 
@@ -281,6 +284,40 @@ plugin = minihost.Plugin("/path/to/plugin.vst3", sample_rate=48000)
 input_audio = np.zeros((2, 512), dtype=np.float32)
 output_audio = np.zeros((2, 512), dtype=np.float32)
 plugin.process(input_audio, output_audio)
+```
+
+### Parameter Access by Name
+
+```python
+import minihost
+
+plugin = minihost.Plugin("/path/to/synth.vst3", sample_rate=48000)
+
+# Find parameter index by name (case-insensitive)
+idx = plugin.find_param("Cutoff")
+
+# Get/set by name directly
+value = plugin.get_param_by_name("Cutoff")
+plugin.set_param_by_name("Cutoff", 0.7)
+plugin.set_param_by_name("resonance", 0.4)  # case-insensitive
+
+# Index-based API remains available for hot paths
+plugin.set_param(idx, 0.5)
+```
+
+### Async Plugin Loading
+
+```python
+import minihost
+
+# Load a heavy plugin in the background
+future = minihost.open_async("/path/to/heavy_sampler.vst3", sample_rate=48000)
+
+# Do other work while plugin loads...
+
+# Block until ready
+plugin = future.result()
+print(f"Loaded: {plugin.num_params} params")
 ```
 
 ### Audio Device Enumeration and Selection

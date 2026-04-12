@@ -61,6 +61,9 @@ Parameter changes are tuples of `(sample_offset, param_index, value)`.
 |--------|-------------|
 | `get_param(index)` | Get normalized value (0.0--1.0) |
 | `set_param(index, value)` | Set normalized value (0.0--1.0) |
+| `find_param(name)` | Find parameter index by name (case-insensitive). Raises `RuntimeError` if not found |
+| `get_param_by_name(name)` | Get normalized value by parameter name (case-insensitive) |
+| `set_param_by_name(name, value)` | Set normalized value by parameter name (case-insensitive) |
 | `get_param_info(index)` | Get metadata dict (`name`, `label`, `default`, `num_steps`, `id`, `category`) |
 | `param_to_text(index, value)` | Convert normalized value to display string (e.g. `"2500 Hz"`) |
 | `param_from_text(index, text)` | Convert display string to normalized value |
@@ -536,6 +539,29 @@ Save the plugin's current state to a `.vstpreset` file.
 When `class_id` is `None` (the default), the FUID is auto-detected from the plugin bundle's `moduleinfo.json` via `read_class_id_from_bundle(plugin.path)`. This requires the plugin to be VST3 and built against VST3 SDK 3.7.5 or newer (which all modern plugins ship).
 
 For legacy plugins without `moduleinfo.json`, or for non-VST3 formats, pass `class_id` explicitly or use `load_vstpreset()` to inherit one from an existing preset. Raises `ValueError` if `class_id` is `None` and cannot be auto-detected -- the function never silently writes a placeholder.
+
+---
+
+## Async Plugin Loading
+
+```python
+open_async(
+    path: str,
+    sample_rate: float = 48000.0,
+    max_block_size: int = 512,
+    in_channels: int = 2,
+    out_channels: int = 2,
+    sidechain_channels: int = 0,
+) -> concurrent.futures.Future
+```
+
+Load a plugin in a background thread. Returns a `concurrent.futures.Future` whose `.result()` is the loaded `Plugin`. Useful for large sample-library plugins that take seconds to load.
+
+```python
+future = minihost.open_async("/path/to/heavy_synth.vst3")
+# ... do other work ...
+plugin = future.result()  # blocks until ready
+```
 
 ---
 

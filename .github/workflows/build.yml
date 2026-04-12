@@ -119,6 +119,8 @@ jobs:
           CIBW_BEFORE_ALL_MACOS: python3 {project}/scripts/download_juce.py
           CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET=11.0
           CIBW_BEFORE_ALL_WINDOWS: python {project}/scripts/download_juce.py
+          CIBW_TEST_REQUIRES: pytest numpy
+          CIBW_TEST_COMMAND: pytest {project}/tests -v
         run: cibuildwheel --output-dir wheelhouse
 
       - uses: actions/upload-artifact@v4

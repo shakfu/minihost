@@ -192,118 +192,18 @@ def render_midi_stream(
         >>> chain = minihost.PluginChain([synth, reverb])
         >>> audio = minihost.render_midi(chain, "song.mid")
     """
-    import numpy as np
-
-    auto_tail = _is_auto_tail(tail_seconds)
-
-    # Load MIDI file if path provided
-    if isinstance(midi_file, str):
-        mf = MidiFile()
-        if not mf.load(midi_file):
-            raise RuntimeError(f"Failed to load MIDI file: {midi_file}")
-        midi_file = mf
-
-    # Get parameters
-    sample_rate = plugin.sample_rate
-    tpq = midi_file.ticks_per_quarter
-    in_channels = max(plugin.num_input_channels, 2)
-    out_channels = max(plugin.num_output_channels, 2)
-
-    # Determine tail length
-    if auto_tail:
-        # For auto mode, we use a large upper bound; the loop exits early
-        # when output decays below threshold.
-        effective_tail = max_tail_seconds
-    elif tail_seconds is None:
-        effective_tail = plugin.tail_seconds
-        # Reasonable default if plugin reports 0 or very large
-        if effective_tail <= 0 or effective_tail > 30:
-            effective_tail = 2.0
-    else:
-        effective_tail = float(tail_seconds)
-
-    # Build tempo map and collect events
-    tempo_map = _build_tempo_map(midi_file)
-    all_events = _collect_midi_events(midi_file)
-
-    # Find total duration from last event
-    if all_events:
-        last_tick = max(e["tick"] for e in all_events)
-        midi_duration = _tick_to_seconds(last_tick, tempo_map, tpq)
-    else:
-        midi_duration = 0.0
-
-    midi_end_samples = _seconds_to_samples(midi_duration, sample_rate)
-    total_duration = midi_duration + effective_tail
-    total_samples = _seconds_to_samples(total_duration, sample_rate)
-
-    # Convert all events to sample positions
-    events_with_samples = []
-    for event in all_events:
-        tick = event["tick"]
-        seconds = _tick_to_seconds(tick, tempo_map, tpq)
-        sample_pos = _seconds_to_samples(seconds, sample_rate)
-        events_with_samples.append((sample_pos, event))
-
-    # Create buffers
-    input_buffer = np.zeros((in_channels, block_size), dtype=np.float32)
-    output_buffer = np.zeros((out_channels, block_size), dtype=np.float32)
-
-    # Render loop
-    current_sample = 0
-    event_idx = 0
-    consecutive_silent = 0
-
-    while current_sample < total_samples:
-        # Determine block size for this iteration
-        remaining = total_samples - current_sample
-        this_block_size = min(block_size, remaining)
-
-        # Collect MIDI events for this block
-        block_events = []
-        while event_idx < len(events_with_samples):
-            sample_pos, event = events_with_samples[event_idx]
-            if sample_pos >= current_sample + this_block_size:
-                break
-
-            # Calculate offset within block
-            offset = sample_pos - current_sample
-            offset = max(0, min(offset, this_block_size - 1))
-
-            midi_tuple = _event_to_midi_tuple(event, offset)
-            if midi_tuple:
-                block_events.append(midi_tuple)
-
-            event_idx += 1
-
-        # Clear input buffer (synths don't need input)
-        input_buffer.fill(0)
-
-        # Process block
-        if this_block_size < block_size:
-            # Last partial block
-            in_slice = input_buffer[:, :this_block_size].copy()
-            out_slice = np.zeros((out_channels, this_block_size), dtype=np.float32)
-            plugin.process_midi(in_slice, out_slice, block_events)
-            yield out_slice
-            block_for_check = out_slice
-        else:
-            plugin.process_midi(input_buffer, output_buffer, block_events)
-            yield output_buffer.copy()
-            block_for_check = output_buffer
-
-        current_sample += this_block_size
-
-        # Auto-tail detection: after all MIDI events are done, check if output
-        # has decayed below threshold for several consecutive blocks.
-        if auto_tail and current_sample > midi_end_samples:
-            peak = float(np.max(np.abs(block_for_check)))
-            if peak < tail_threshold:
-                consecutive_silent += 1
-                if consecutive_silent >= _AUTO_TAIL_SILENT_BLOCKS:
-                    return  # Tail has decayed, stop rendering
-            else:
-                consecutive_silent = 0
+    renderer = MidiRenderer(
+        plugin,
+        midi_file,
+        block_size=block_size,
+        tail_seconds=tail_seconds,
+        tail_threshold=tail_threshold,
+        max_tail_seconds=max_tail_seconds,
+    )
+    while not renderer.is_finished:
+        block = renderer.render_block()
+        if block is not None:
+            yield block
 
 
 def render_midi(

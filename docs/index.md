@@ -17,6 +17,8 @@ minihost provides a C API built on JUCE with Python bindings via nanobind. It bu
 - **Batch processing**: glob patterns and directory output for processing multiple files
 - **Auto-tail detection**: automatic reverb/delay tail detection in offline rendering
 - **Sample-accurate automation**: parameter changes at sample resolution
+- **Parameter access by name**: case-insensitive `find_param()`, `get_param_by_name()`, `set_param_by_name()` on `Plugin`
+- **Async plugin loading**: `open_async()` returns a `Future` for background loading
 - **VST3 preset I/O**: read and write `.vstpreset` files from C, C++, and Python
 - **CLI tool**: 9 subcommands for plugin inspection, device listing, preset export, playback, processing, and resampling
 
@@ -59,6 +61,7 @@ minihost resample input.wav -o output.wav -r 48000
 
 - CMake 3.20+, C++17 compiler
 - JUCE 8.0.11+ (auto-downloaded)
+- Vendored C libraries: miniaudio, tflac, libremidi, midifile ([details](vendored.md))
 - Python bindings: nanobind, scikit-build-core, uv
 - Runtime: numpy
 

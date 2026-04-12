@@ -71,6 +71,8 @@ from minihost.automation import (
     parse_automation_file,
 )
 
+from minihost._async import open_async
+
 from minihost.vstpreset import (
     VstPreset,
     read_vstpreset,
@@ -105,6 +107,8 @@ __all__ = [
     "write_audio",
     "get_audio_info",
     "resample",
+    # Async loading
+    "open_async",
     # Automation
     "find_param_by_name",
     "parse_param_arg",

@@ -37,16 +37,30 @@
   - `info` (both CLIs): `--probe` -- lightweight metadata-only mode (no full plugin load)
   - `info` (both CLIs): `-j`/`--json` -- JSON output with merged probe and runtime info
 
+- **Parameter access by name** on the Python `Plugin` class -- `plugin.find_param("Cutoff")`, `plugin.get_param_by_name("Cutoff")`, `plugin.set_param_by_name("Cutoff", 0.5)`. Case-insensitive lookup, raises `RuntimeError` if not found. The index-based API remains for hot-path use.
+- **`minihost.open_async()`** -- load a plugin in a background thread, returns a `concurrent.futures.Future` that resolves to a `Plugin`. Useful for large sample-library plugins that take seconds to load.
+- **`VENDORED.md`** -- documents vendored dependency versions (miniaudio 0.11.24, tflac, libremidi 5.3.1, midifile) with upstream URLs and update instructions.
+
 ### Changed
 
 - `minihost_cpp` now links against `minihost_audio` and `midifile` libraries
 - `minihost_c` now links against `minihost_audio` library
 - **`save_vstpreset` now produces valid VST3 FUIDs.** When called with `class_id=None` (the default), the FUID is auto-detected from the plugin bundle's `Contents/Resources/moduleinfo.json` instead of writing a placeholder string. This requires the plugin to be built against VST3 SDK 3.7.5+ (which all modern plugins ship). For legacy plugins, callers must pass `class_id` explicitly or use `load_vstpreset()` to inherit one from an existing preset; there is no silent fallback. The same change applies to the `presets <plugin> --save` subcommand across all three CLI frontends.
 - `Plugin` Python class and `MH_Plugin` C struct now expose the constructor's plugin path via `Plugin.path` (Python) / `mh_get_path()` (C).
+- **`mh_scan_directory()` reuses a single `AudioPluginFormatManager`** instead of creating one per plugin via `mh_probe()`. Reduces overhead for large plugin collections.
+- **`render_midi_stream()` now delegates to `MidiRenderer`** instead of reimplementing the render loop. Eliminates ~60 lines of duplicated setup and block-processing logic between the two code paths.
 
 ### Fixed
 
 - **`.vstpreset` files written by `save_vstpreset()` (and the `presets --save` CLI) previously contained a bogus class ID** -- either the literal `"minihost_unknown"` or an 8-character hash from JUCE's `PluginDescription.uniqueId`, neither of which is a valid 32-character VST3 FUID. Files written this way round-tripped through minihost's own loader but were unrecognised by other VST3 hosts. Fixed by reading the real processor FUID from the plugin bundle's `moduleinfo.json` (see Changed). New `mh_vstpreset_read_class_id_from_bundle()` C function and `minihost.vstpreset.read_class_id_from_bundle()` Python helper expose the underlying lookup.
+- **`mh_audio_read()` opened the audio file twice** -- once via `ma_decode_file()` to decode audio, then again via `ma_decoder_init_file()` just to read channel count and sample rate. The second open was unnecessary: `ma_decode_file()` already populates `config.channels` and `config.sampleRate` upon return. Removed the redundant decoder open.
+- **CI workflow did not run the test suite** -- `build-wheels` job built Python wheels on all platforms but never ran `pytest`. Added `CIBW_TEST_REQUIRES` and `CIBW_TEST_COMMAND` so cibuildwheel runs `pytest tests/ -v` against each built wheel. Plugin-dependent integration tests skip gracefully via `MINIHOST_TEST_PLUGIN` guard.
+- **`mh_set_transport()` data race** -- transport fields (`bpm`, `positionSamples`, etc.) were written from the control thread without synchronisation while `getPosition()` read them from the audio thread, risking torn reads. Replaced with a seqlock: the writer snapshots all fields into an `MH_PlayHead::State` struct and bumps an atomic sequence counter before/after the copy; the reader retries if the counter changed mid-read. Zero overhead on the audio thread (no mutex, no CAS loop -- just two relaxed loads and a compare).
+- **`mh_process_auto()` buffer overread with >64 channels** -- chunk pointer arrays were hard-coded to 64 entries, but `setDataToReferTo` was passed the plugin's actual channel count, causing an overread into uninitialised stack memory for plugins with more than 64 channels. Replaced with persistent `std::vector` members on `MH_Plugin`, sized once on first call and reused to avoid per-call heap allocation.
+
+### Tests
+
+- **Audio processing data-pipeline tests** (`tests/test_audio_processing.py`) -- 33 new tests covering MIDI event conversion, timing accuracy, render pipeline data flow, and automation interpolation edge cases, all runnable without a real plugin. Additional 8 plugin-dependent integration tests (gated behind `MINIHOST_TEST_PLUGIN`) verify process/process_midi/process_auto output correctness, multi-block state continuity, transport stability, and render_midi output shape.
 
 ## [0.1.4]
 
