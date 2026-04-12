@@ -4,6 +4,7 @@
 #include "minihost.h"
 #include "minihost_audio.h"
 #include "minihost_audiofile.h"
+#include "minihost_midi.h"
 #include "minihost_vstpreset.h"
 #include "MidiFile.h"
 #include "MidiEvent.h"
@@ -11,14 +12,21 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+
+volatile sig_atomic_t g_running = 1;
+
+void sigint_handler(int) { g_running = 0; }
 
 // ============================================================================
 // Helper functions
@@ -1368,6 +1376,375 @@ int cmd_process(const std::string& plugin_path,
 }
 
 // ============================================================================
+// Helper: print MIDI message
+// ============================================================================
+
+static void print_midi_msg(const unsigned char* data, size_t len) {
+    static const char* note_names[] = {
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
+    };
+
+    if (len == 0) return;
+
+    unsigned char status = data[0];
+    unsigned char type = status & 0xF0;
+    unsigned char ch = (status & 0x0F) + 1;
+
+    switch (type) {
+    case 0x90:
+        if (len >= 3 && data[2] > 0) {
+            int note = data[1];
+            int oct = (note / 12) - 1;
+            std::printf("NoteOn   ch=%2d  %s%d (%3d)  vel=%3d\n",
+                        ch, note_names[note % 12], oct, note, data[2]);
+        } else if (len >= 3) {
+            int note = data[1];
+            int oct = (note / 12) - 1;
+            std::printf("NoteOff  ch=%2d  %s%d (%3d)\n",
+                        ch, note_names[note % 12], oct, note);
+        }
+        break;
+    case 0x80:
+        if (len >= 3) {
+            int note = data[1];
+            int oct = (note / 12) - 1;
+            std::printf("NoteOff  ch=%2d  %s%d (%3d)  vel=%3d\n",
+                        ch, note_names[note % 12], oct, note, data[2]);
+        }
+        break;
+    case 0xB0:
+        if (len >= 3) {
+            std::printf("CC       ch=%2d  cc=%3d  val=%3d\n", ch, data[1], data[2]);
+        }
+        break;
+    case 0xE0:
+        if (len >= 3) {
+            int bend = (data[2] << 7) | data[1];
+            std::printf("PitchBend ch=%2d  val=%5d\n", ch, bend);
+        }
+        break;
+    case 0xC0:
+        if (len >= 2) {
+            std::printf("PgmChg   ch=%2d  pgm=%3d\n", ch, data[1]);
+        }
+        break;
+    case 0xD0:
+        if (len >= 2) {
+            std::printf("ChPress  ch=%2d  val=%3d\n", ch, data[1]);
+        }
+        break;
+    default:
+        std::printf("MIDI    ");
+        for (size_t i = 0; i < len; i++) {
+            std::printf(" %02X", data[i]);
+        }
+        std::printf("\n");
+        break;
+    }
+}
+
+// ============================================================================
+// Command: midi
+// ============================================================================
+
+int cmd_midi(int port_index, const std::string& virtual_name,
+             bool monitor, bool json_output) {
+    if (!monitor) {
+        // List mode
+        int num_in = mh_midi_get_num_inputs();
+        int num_out = mh_midi_get_num_outputs();
+
+        if (json_output) {
+            std::printf("{\n");
+            std::printf("  \"inputs\": [");
+            for (int i = 0; i < num_in; i++) {
+                char name[256] = {0};
+                mh_midi_get_input_name(i, name, sizeof(name));
+                std::printf("%s\n    {\"index\": %d, \"name\": \"%s\"}",
+                            i == 0 ? "" : ",", i, name);
+            }
+            std::printf("%s],\n", num_in > 0 ? "\n  " : "");
+            std::printf("  \"outputs\": [");
+            for (int i = 0; i < num_out; i++) {
+                char name[256] = {0};
+                mh_midi_get_output_name(i, name, sizeof(name));
+                std::printf("%s\n    {\"index\": %d, \"name\": \"%s\"}",
+                            i == 0 ? "" : ",", i, name);
+            }
+            std::printf("%s]\n", num_out > 0 ? "\n  " : "");
+            std::printf("}\n");
+        } else {
+            std::printf("MIDI Input Ports:\n");
+            if (num_in == 0) {
+                std::printf("  (none)\n");
+            } else {
+                for (int i = 0; i < num_in; i++) {
+                    char name[256] = {0};
+                    mh_midi_get_input_name(i, name, sizeof(name));
+                    std::printf("  [%d] %s\n", i, name);
+                }
+            }
+            std::printf("\nMIDI Output Ports:\n");
+            if (num_out == 0) {
+                std::printf("  (none)\n");
+            } else {
+                for (int i = 0; i < num_out; i++) {
+                    char name[256] = {0};
+                    mh_midi_get_output_name(i, name, sizeof(name));
+                    std::printf("  [%d] %s\n", i, name);
+                }
+            }
+        }
+        return 0;
+    }
+
+    // Monitor mode
+    auto midi_callback = [](const unsigned char* data, size_t len, void* /*user_data*/) {
+        print_midi_msg(data, len);
+    };
+
+    char err[1024] = {0};
+    MH_MidiIn* midi_in = nullptr;
+
+    if (!virtual_name.empty()) {
+        midi_in = mh_midi_in_open_virtual(virtual_name.c_str(), midi_callback, nullptr,
+                                          err, sizeof(err));
+        if (!midi_in) {
+            print_error(err);
+            return 1;
+        }
+        std::fprintf(stderr, "Monitoring virtual MIDI port: %s\n", virtual_name.c_str());
+    } else {
+        if (port_index < 0) {
+            port_index = 0;
+        }
+        midi_in = mh_midi_in_open(port_index, midi_callback, nullptr, err, sizeof(err));
+        if (!midi_in) {
+            print_error(err);
+            return 1;
+        }
+        char name[256] = {0};
+        mh_midi_get_input_name(port_index, name, sizeof(name));
+        std::fprintf(stderr, "Monitoring MIDI port [%d]: %s\n", port_index, name);
+    }
+
+    std::fprintf(stderr, "Press Ctrl+C to stop.\n");
+
+    g_running = 1;
+    std::signal(SIGINT, sigint_handler);
+
+    while (g_running) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    mh_midi_in_close(midi_in);
+    std::fprintf(stderr, "\nStopped.\n");
+    return 0;
+}
+
+// ============================================================================
+// Command: play
+// ============================================================================
+
+int cmd_play(const std::string& plugin_path,
+             double sample_rate, int block_size,
+             int midi_port, const std::string& virtual_midi,
+             const std::string& virtual_midi_out,
+             int playback_device, int capture_device, bool capture,
+             const std::string& state_file, int preset_index,
+             const std::vector<std::string>& param_specs) {
+    char err[1024] = {0};
+
+    // Open plugin
+    int in_ch = capture ? 2 : 2;
+    int out_ch = 2;
+    MH_Plugin* p = mh_open(plugin_path.c_str(), sample_rate, block_size,
+                           in_ch, out_ch, err, sizeof(err));
+    if (!p) {
+        print_error(err);
+        return 1;
+    }
+
+    // Load state
+    if (!state_file.empty()) {
+        std::ifstream ifs(state_file, std::ios::binary);
+        if (ifs) {
+            std::vector<char> data((std::istreambuf_iterator<char>(ifs)),
+                                    std::istreambuf_iterator<char>());
+            if (mh_set_state(p, data.data(), static_cast<int>(data.size()))) {
+                std::fprintf(stderr, "Loaded state from %s\n", state_file.c_str());
+            } else {
+                std::fprintf(stderr, "Warning: Failed to load state from %s\n", state_file.c_str());
+            }
+        }
+    }
+
+    // Load preset
+    if (preset_index >= 0) {
+        int num_programs = mh_get_num_programs(p);
+        if (preset_index >= num_programs) {
+            std::fprintf(stderr, "Error: Preset index %d out of range (0-%d)\n",
+                         preset_index, num_programs - 1);
+            mh_close(p);
+            return 1;
+        }
+        mh_set_program(p, preset_index);
+        char name[256] = {0};
+        mh_get_program_name(p, preset_index, name, sizeof(name));
+        std::fprintf(stderr, "Loaded preset [%d]: %s\n", preset_index, name);
+    }
+
+    // Apply parameter overrides
+    for (const auto& spec : param_specs) {
+        int idx;
+        float val;
+        if (!parse_param_spec(p, spec, idx, val)) {
+            std::fprintf(stderr, "Error: Invalid parameter spec '%s'\n", spec.c_str());
+            mh_close(p);
+            return 1;
+        }
+        mh_set_param(p, idx, val);
+    }
+
+    // Build audio config
+    MH_AudioConfig config = {};
+    config.sample_rate = sample_rate;
+    config.buffer_frames = block_size;
+    config.output_channels = 0;
+    config.midi_input_port = virtual_midi.empty() ? midi_port : -1;
+    config.midi_output_port = -1;
+    config.capture = capture ? 1 : 0;
+    config.playback_device_index = playback_device;
+    config.capture_device_index = capture_device;
+
+    // Open audio device
+    MH_AudioDevice* dev = mh_audio_open(p, &config, err, sizeof(err));
+    if (!dev) {
+        print_error(err);
+        mh_close(p);
+        return 1;
+    }
+
+    // Create virtual MIDI ports
+    if (!virtual_midi.empty()) {
+        if (!mh_audio_create_virtual_midi_input(dev, virtual_midi.c_str())) {
+            std::fprintf(stderr, "Warning: Failed to create virtual MIDI input '%s'\n",
+                         virtual_midi.c_str());
+        } else {
+            std::fprintf(stderr, "Virtual MIDI input: %s\n", virtual_midi.c_str());
+        }
+    }
+
+    if (!virtual_midi_out.empty()) {
+        if (!mh_audio_create_virtual_midi_output(dev, virtual_midi_out.c_str())) {
+            std::fprintf(stderr, "Warning: Failed to create virtual MIDI output '%s'\n",
+                         virtual_midi_out.c_str());
+        } else {
+            std::fprintf(stderr, "Virtual MIDI output: %s\n", virtual_midi_out.c_str());
+        }
+    }
+
+    // Start audio
+    if (!mh_audio_start(dev)) {
+        print_error("Failed to start audio");
+        mh_audio_close(dev);
+        mh_close(p);
+        return 1;
+    }
+
+    // Install signal handler
+    g_running = 1;
+    std::signal(SIGINT, sigint_handler);
+
+    std::fprintf(stderr, "Playing: %s\n", plugin_path.c_str());
+    std::fprintf(stderr, "  Sample rate: %.0f Hz\n", mh_audio_get_sample_rate(dev));
+    std::fprintf(stderr, "  Buffer:      %d frames\n", mh_audio_get_buffer_frames(dev));
+    std::fprintf(stderr, "  Channels:    %d\n", mh_audio_get_channels(dev));
+    std::fprintf(stderr, "Press Ctrl+C to stop.\n");
+
+    while (g_running) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    // Cleanup
+    std::fprintf(stderr, "\nStopping...\n");
+    mh_audio_stop(dev);
+    mh_audio_close(dev);
+    mh_close(p);
+    return 0;
+}
+
+// ============================================================================
+// Command: resample
+// ============================================================================
+
+int cmd_resample(const std::string& input_path, const std::string& output_path,
+                 unsigned int target_rate, int bit_depth, bool overwrite) {
+    // Check if output exists
+    if (!overwrite) {
+        std::ifstream test(output_path);
+        if (test.good()) {
+            std::fprintf(stderr, "Error: Output file '%s' already exists (use -y to overwrite)\n",
+                         output_path.c_str());
+            return 1;
+        }
+    }
+
+    // Read input
+    char err[1024] = {0};
+    MH_AudioData* input = mh_audio_read(input_path.c_str(), err, sizeof(err));
+    if (!input) {
+        print_error(err);
+        return 1;
+    }
+
+    if (input->sample_rate == target_rate) {
+        std::fprintf(stderr, "Input already at %u Hz, writing without resampling\n", target_rate);
+        if (!mh_audio_write(output_path.c_str(), input->data,
+                            input->channels, input->frames,
+                            input->sample_rate, bit_depth, err, sizeof(err))) {
+            print_error(err);
+            mh_audio_data_free(input);
+            return 1;
+        }
+        std::printf("%s -> %s (%u Hz, %u ch, %u frames, %d-bit)\n",
+                    input_path.c_str(), output_path.c_str(),
+                    input->sample_rate, input->channels, input->frames, bit_depth);
+        mh_audio_data_free(input);
+        return 0;
+    }
+
+    // Resample
+    MH_AudioData* resampled = mh_audio_resample(
+        input->data, input->channels, input->frames,
+        input->sample_rate, target_rate, err, sizeof(err));
+    if (!resampled) {
+        print_error(err);
+        mh_audio_data_free(input);
+        return 1;
+    }
+
+    // Write output
+    if (!mh_audio_write(output_path.c_str(), resampled->data,
+                        resampled->channels, resampled->frames,
+                        resampled->sample_rate, bit_depth, err, sizeof(err))) {
+        print_error(err);
+        mh_audio_data_free(resampled);
+        mh_audio_data_free(input);
+        return 1;
+    }
+
+    std::printf("%s -> %s (%u Hz -> %u Hz, %u ch, %u -> %u frames, %d-bit)\n",
+                input_path.c_str(), output_path.c_str(),
+                input->sample_rate, resampled->sample_rate,
+                resampled->channels, input->frames, resampled->frames, bit_depth);
+
+    mh_audio_data_free(resampled);
+    mh_audio_data_free(input);
+    return 0;
+}
+
+// ============================================================================
 // Main
 // ============================================================================
 
@@ -1629,6 +2006,90 @@ int main(int argc, char** argv) {
                               process_preset, process_params,
                               process_double, process_nrt, process_bpm,
                               process_bit_depth, process_tail));
+    });
+
+    // ========================================================================
+    // Subcommand: midi
+    // ========================================================================
+    auto* midi_cmd = app.add_subcommand("midi", "List MIDI ports or monitor input");
+    int midi_port = -1;
+    std::string midi_virtual_name;
+    bool midi_monitor = false;
+    bool midi_json = false;
+
+    midi_cmd->add_option("-m,--port", midi_port, "MIDI input port index")
+        ->default_val(-1);
+    midi_cmd->add_option("--virtual-midi", midi_virtual_name, "Create virtual MIDI input port");
+    midi_cmd->add_flag("--monitor", midi_monitor, "Monitor MIDI input");
+    midi_cmd->add_flag("-j,--json", midi_json, "Output as JSON");
+
+    midi_cmd->callback([&]() {
+        std::exit(cmd_midi(midi_port, midi_virtual_name, midi_monitor, midi_json));
+    });
+
+    // ========================================================================
+    // Subcommand: play
+    // ========================================================================
+    auto* play_cmd = app.add_subcommand("play", "Real-time playback with plugin");
+    std::string play_plugin;
+    int play_midi = -1;
+    std::string play_virtual_midi;
+    std::string play_virtual_midi_out;
+    bool play_capture = false;
+    int play_playback_device = -1;
+    int play_capture_device = -1;
+    std::string play_state;
+    int play_preset = -1;
+    std::vector<std::string> play_params;
+
+    play_cmd->add_option("plugin", play_plugin, "Path to plugin")
+        ->required();
+    play_cmd->add_option("-m,--midi", play_midi, "MIDI input port index")
+        ->default_val(-1);
+    play_cmd->add_option("--virtual-midi", play_virtual_midi, "Create virtual MIDI input port");
+    play_cmd->add_option("--virtual-midi-out", play_virtual_midi_out, "Create virtual MIDI output port");
+    play_cmd->add_flag("-i,--input", play_capture, "Enable audio capture (duplex mode)");
+    play_cmd->add_option("--playback-device", play_playback_device, "Playback device index")
+        ->default_val(-1);
+    play_cmd->add_option("--capture-device", play_capture_device, "Capture device index")
+        ->default_val(-1);
+    play_cmd->add_option("-s,--state", play_state, "Load plugin state from file");
+    play_cmd->add_option("-p,--preset", play_preset, "Load factory preset N")
+        ->default_val(-1);
+    play_cmd->add_option("--param", play_params, "Set parameter: \"Name:value\" (repeatable)");
+
+    play_cmd->callback([&]() {
+        std::exit(cmd_play(play_plugin, sample_rate, block_size,
+                           play_midi, play_virtual_midi, play_virtual_midi_out,
+                           play_playback_device, play_capture_device, play_capture,
+                           play_state, play_preset, play_params));
+    });
+
+    // ========================================================================
+    // Subcommand: resample
+    // ========================================================================
+    auto* resample_cmd = app.add_subcommand("resample", "Resample audio file");
+    std::string resample_input;
+    std::string resample_output;
+    unsigned int resample_target_rate = 0;
+    int resample_bit_depth = 24;
+    bool resample_overwrite = false;
+
+    resample_cmd->add_option("input", resample_input, "Input audio file")
+        ->required();
+    resample_cmd->add_option("-o,--output", resample_output, "Output audio file")
+        ->required();
+    resample_cmd->add_option("-r,--target-rate", resample_target_rate, "Target sample rate (Hz)")
+        ->required();
+    resample_cmd->add_option("--bit-depth", resample_bit_depth, "Output bit depth (16, 24, or 32)")
+        ->default_val(24)
+        ->check(CLI::IsMember({16, 24, 32}));
+    resample_cmd->add_flag("-y,--overwrite", resample_overwrite, "Overwrite output if it exists");
+
+    resample_cmd->callback([&]() {
+        std::exit(cmd_resample(resample_input, resample_output,
+                               resample_target_rate, resample_bit_depth,
+                               resample_overwrite));
     });
 
     // Parse and run

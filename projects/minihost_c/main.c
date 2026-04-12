@@ -4,15 +4,30 @@
 #include "minihost.h"
 #include "minihost_audio.h"
 #include "minihost_audiofile.h"
+#include "minihost_midi.h"
 #include "minihost_vstpreset.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <signal.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 #ifdef _MSC_VER
 #define strcasecmp _stricmp
 #endif
+
+static volatile sig_atomic_t g_running = 1;
+
+static void sigint_handler(int sig) {
+    (void)sig;
+    g_running = 0;
+}
 
 // ============================================================================
 // Helper functions
@@ -34,10 +49,13 @@ static void print_usage(const char* prog) {
     printf("  set-param PLUGIN N V    Set parameter N to value V (0.0-1.0)\n");
     printf("  presets PLUGIN          List factory presets, or save state as .vstpreset\n");
     printf("  devices                 List audio playback/capture devices\n");
+    printf("  midi                    List MIDI ports or monitor input\n");
+    printf("  play PLUGIN             Play plugin with real-time audio\n");
     printf("  load-preset PLUGIN N    Load factory preset N\n");
     printf("  save-state PLUGIN F     Save plugin state to file F\n");
     printf("  load-state PLUGIN F     Load plugin state from file F\n");
-    printf("  process PLUGIN          Process audio through plugin\n\n");
+    printf("  process PLUGIN          Process audio through plugin\n");
+    printf("  resample INPUT OUTPUT   Resample audio file\n\n");
     printf("Options for specific commands:\n");
     printf("  -j, --json              Output as JSON (probe, scan, params, info)\n");
     printf("  -s, --state FILE        State file (set-param, load-preset, process)\n");
@@ -48,12 +66,26 @@ static void print_usage(const char* prog) {
     printf("Process command options:\n");
     printf("  -i, --input FILE        Input audio file (WAV, FLAC, MP3)\n");
     printf("  -o, --output FILE       Output audio file (WAV, FLAC)\n");
+    printf("  -m, --midi FILE         MIDI input file (not yet supported)\n");
     printf("  --sidechain FILE        Sidechain input audio file\n");
     printf("  --preset N              Load factory preset N\n");
     printf("  --param NAME:VALUE      Set parameter (repeatable)\n");
     printf("  --non-realtime          Enable non-realtime mode\n");
     printf("  --bpm BPM              Set transport BPM\n");
-    printf("  --bit-depth N           Output bit depth (16, 24, 32)\n\n");
+    printf("  --bit-depth N           Output bit depth (16, 24, 32)\n");
+    printf("  --tail SECONDS          Extra tail time for reverb/delay (process)\n\n");
+    printf("MIDI command options:\n");
+    printf("  --monitor               Monitor MIDI input (Ctrl-C to stop)\n");
+    printf("  --port N                MIDI port index\n");
+    printf("  --virtual NAME          Create virtual MIDI port\n\n");
+    printf("Play command options:\n");
+    printf("  --port N                MIDI input port index\n");
+    printf("  --virtual NAME          Create virtual MIDI input port\n");
+    printf("  --capture               Enable audio capture (duplex mode)\n");
+    printf("  --playback-device N     Playback device index\n");
+    printf("  --capture-device N      Capture device index\n\n");
+    printf("Resample command options:\n");
+    printf("  --rate N                Target sample rate in Hz\n\n");
     printf("Presets command options:\n");
     printf("  --save FILE             Write current state as .vstpreset to FILE\n");
     printf("  --program N             Select factory program N before saving\n");
@@ -108,6 +140,59 @@ static void free_channels_double(double** p, int ch) {
 
 static int min_int(int a, int b) { return a < b ? a : b; }
 static size_t min_size(size_t a, size_t b) { return a < b ? a : b; }
+
+static void print_midi_msg(const unsigned char* data, size_t len) {
+    static const char* note_names[] = {
+        "C","C#","D","D#","E","F","F#","G","G#","A","A#","B"
+    };
+
+    if (len == 0) return;
+
+    unsigned char status = data[0];
+    unsigned char hi = status & 0xF0;
+    unsigned char ch = (status & 0x0F) + 1;
+
+    switch (hi) {
+    case 0x90:
+        if (len >= 3) {
+            int note = data[1];
+            printf("NoteOn  ch=%u  %s%d  vel=%u\n",
+                   ch, note_names[note % 12], note / 12 - 1, data[2]);
+        }
+        break;
+    case 0x80:
+        if (len >= 3) {
+            int note = data[1];
+            printf("NoteOff ch=%u  %s%d  vel=%u\n",
+                   ch, note_names[note % 12], note / 12 - 1, data[2]);
+        }
+        break;
+    case 0xB0:
+        if (len >= 3)
+            printf("CC      ch=%u  cc=%u  val=%u\n", ch, data[1], data[2]);
+        break;
+    case 0xE0:
+        if (len >= 3) {
+            int bend = (int)data[1] | ((int)data[2] << 7);
+            printf("Bend    ch=%u  val=%d\n", ch, bend - 8192);
+        }
+        break;
+    case 0xC0:
+        if (len >= 2)
+            printf("PgmChg  ch=%u  pgm=%u\n", ch, data[1]);
+        break;
+    case 0xD0:
+        if (len >= 2)
+            printf("ChPress ch=%u  val=%u\n", ch, data[1]);
+        break;
+    default:
+        printf("MIDI   ");
+        for (size_t i = 0; i < len; i++)
+            printf(" %02X", data[i]);
+        printf("\n");
+        break;
+    }
+}
 
 // Detect audio file by extension
 static int is_audio_file(const char* path) {
@@ -1077,7 +1162,8 @@ static int cmd_process(const char* plugin_path,
                        int use_double,
                        int non_realtime,
                        double bpm,
-                       int bit_depth) {
+                       int bit_depth,
+                       double tail_seconds) {
     char err[1024] = {0};
 
     int has_audio_input = (input_file && input_file[0] != '\0');
@@ -1224,7 +1310,10 @@ static int cmd_process(const char* plugin_path,
     mh_get_info(p, &pinfo);
     int out_ch = pinfo.num_output_ch > 0 ? pinfo.num_output_ch : 2;
     int latency = mh_get_latency_samples(p);
-    int total_samples = in_frames;
+    int tail_frames = 0;
+    if (tail_seconds > 0)
+        tail_frames = (int)(tail_seconds * sample_rate);
+    int total_samples = in_frames + tail_frames;
     int output_total = total_samples + latency;
 
     // --- Print summary ---
@@ -1233,6 +1322,9 @@ static int cmd_process(const char* plugin_path,
     fprintf(stderr, "  Block size:  %d\n", block_size);
     fprintf(stderr, "  Latency:     %d samples\n", latency);
     fprintf(stderr, "  Input:       %d ch, %d samples\n", in_ch, in_frames);
+    if (tail_frames > 0) {
+        fprintf(stderr, "  Tail:        %d samples (%.2fs)\n", tail_frames, tail_seconds);
+    }
     if (has_sidechain) {
         fprintf(stderr, "  Sidechain:   %d ch\n", sc_ch);
     }
@@ -1428,6 +1520,287 @@ static int cmd_process(const char* plugin_path,
 }
 
 // ============================================================================
+// Command: midi
+// ============================================================================
+
+static void midi_monitor_callback(const unsigned char* data, size_t len, void* user_data) {
+    (void)user_data;
+    print_midi_msg(data, len);
+    fflush(stdout);
+}
+
+static int cmd_midi(int json_output, int monitor, int midi_port,
+                    const char* virtual_midi_name) {
+    if (monitor) {
+        char err[1024] = {0};
+        MH_MidiIn* midi_in = NULL;
+
+        if (virtual_midi_name && virtual_midi_name[0] != '\0') {
+            midi_in = mh_midi_in_open_virtual(virtual_midi_name,
+                                               midi_monitor_callback, NULL,
+                                               err, sizeof(err));
+            if (!midi_in) {
+                fprintf(stderr, "Error: %s\n", err);
+                return 1;
+            }
+            fprintf(stderr, "Monitoring virtual MIDI port '%s' (Ctrl-C to stop)\n",
+                    virtual_midi_name);
+        } else {
+            if (midi_port < 0) midi_port = 0;
+            midi_in = mh_midi_in_open(midi_port,
+                                       midi_monitor_callback, NULL,
+                                       err, sizeof(err));
+            if (!midi_in) {
+                fprintf(stderr, "Error: %s\n", err);
+                return 1;
+            }
+            char name[256] = {0};
+            mh_midi_get_input_name(midi_port, name, sizeof(name));
+            fprintf(stderr, "Monitoring MIDI port [%d] %s (Ctrl-C to stop)\n",
+                    midi_port, name);
+        }
+
+        signal(SIGINT, sigint_handler);
+        g_running = 1;
+        while (g_running) {
+#ifdef _WIN32
+            Sleep(100);
+#else
+            usleep(100000);
+#endif
+        }
+        fprintf(stderr, "\nStopped.\n");
+        mh_midi_in_close(midi_in);
+        return 0;
+    }
+
+    // List MIDI ports
+    int num_inputs = mh_midi_get_num_inputs();
+    int num_outputs = mh_midi_get_num_outputs();
+    if (num_inputs < 0) num_inputs = 0;
+    if (num_outputs < 0) num_outputs = 0;
+
+    if (json_output) {
+        printf("{\n");
+        printf("  \"inputs\": [");
+        for (int i = 0; i < num_inputs; i++) {
+            char name[256] = {0};
+            mh_midi_get_input_name(i, name, sizeof(name));
+            printf("%s\n    {\"index\": %d, \"name\": \"%s\"}",
+                   i == 0 ? "" : ",", i, name);
+        }
+        printf("%s],\n", num_inputs > 0 ? "\n  " : "");
+        printf("  \"outputs\": [");
+        for (int i = 0; i < num_outputs; i++) {
+            char name[256] = {0};
+            mh_midi_get_output_name(i, name, sizeof(name));
+            printf("%s\n    {\"index\": %d, \"name\": \"%s\"}",
+                   i == 0 ? "" : ",", i, name);
+        }
+        printf("%s]\n", num_outputs > 0 ? "\n  " : "");
+        printf("}\n");
+    } else {
+        printf("MIDI Input Ports:\n");
+        if (num_inputs == 0) {
+            printf("  (none)\n");
+        } else {
+            for (int i = 0; i < num_inputs; i++) {
+                char name[256] = {0};
+                mh_midi_get_input_name(i, name, sizeof(name));
+                printf("  [%d] %s\n", i, name);
+            }
+        }
+        printf("\nMIDI Output Ports:\n");
+        if (num_outputs == 0) {
+            printf("  (none)\n");
+        } else {
+            for (int i = 0; i < num_outputs; i++) {
+                char name[256] = {0};
+                mh_midi_get_output_name(i, name, sizeof(name));
+                printf("  [%d] %s\n", i, name);
+            }
+        }
+    }
+
+    return 0;
+}
+
+// ============================================================================
+// Command: play
+// ============================================================================
+
+static int cmd_play(const char* plugin_path,
+                    double sample_rate,
+                    int block_size,
+                    const char* state_file,
+                    int preset_index,
+                    const char** param_specs,
+                    int num_param_specs,
+                    int midi_port,
+                    const char* virtual_midi_name,
+                    int capture,
+                    int playback_device,
+                    int capture_device) {
+    char err[1024] = {0};
+
+    MH_Plugin* p = mh_open(plugin_path, sample_rate, block_size, 2, 2, err, sizeof(err));
+    if (!p) {
+        fprintf(stderr, "Error: %s\n", err);
+        return 1;
+    }
+
+    // Load state
+    if (state_file && state_file[0] != '\0') {
+        if (load_state_file(p, state_file)) {
+            fprintf(stderr, "Loaded state from %s\n", state_file);
+        } else {
+            fprintf(stderr, "Warning: Failed to load state from %s\n", state_file);
+        }
+    }
+
+    // Load preset
+    if (preset_index >= 0) {
+        int num_programs = mh_get_num_programs(p);
+        if (preset_index >= num_programs) {
+            fprintf(stderr, "Error: Preset index %d out of range (0-%d)\n",
+                    preset_index, num_programs - 1);
+            mh_close(p);
+            return 1;
+        }
+        mh_set_program(p, preset_index);
+        char name[256] = {0};
+        mh_get_program_name(p, preset_index, name, sizeof(name));
+        fprintf(stderr, "Loaded preset [%d]: %s\n", preset_index, name);
+    }
+
+    // Apply param overrides
+    for (int i = 0; i < num_param_specs && i < MAX_PARAM_SPECS; i++) {
+        int idx;
+        float val;
+        if (!parse_param_spec(p, param_specs[i], &idx, &val)) {
+            fprintf(stderr, "Error: Invalid parameter spec '%s'\n", param_specs[i]);
+            mh_close(p);
+            return 1;
+        }
+        mh_set_param(p, idx, val);
+    }
+
+    // Build audio config
+    MH_AudioConfig config;
+    memset(&config, 0, sizeof(config));
+    config.sample_rate = sample_rate;
+    config.buffer_frames = block_size;
+    config.midi_input_port = midi_port;
+    config.midi_output_port = -1;
+    config.capture = capture;
+    config.playback_device_index = playback_device;
+    config.capture_device_index = capture_device;
+
+    MH_AudioDevice* dev = mh_audio_open(p, &config, err, sizeof(err));
+    if (!dev) {
+        fprintf(stderr, "Error: %s\n", err);
+        mh_close(p);
+        return 1;
+    }
+
+    // Create virtual MIDI port if requested
+    if (virtual_midi_name && virtual_midi_name[0] != '\0') {
+        if (!mh_audio_create_virtual_midi_input(dev, virtual_midi_name)) {
+            fprintf(stderr, "Warning: Failed to create virtual MIDI port '%s'\n",
+                    virtual_midi_name);
+        } else {
+            fprintf(stderr, "Virtual MIDI input: %s\n", virtual_midi_name);
+        }
+    }
+
+    if (!mh_audio_start(dev)) {
+        fprintf(stderr, "Error: Failed to start audio\n");
+        mh_audio_close(dev);
+        mh_close(p);
+        return 1;
+    }
+
+    fprintf(stderr, "Playing (Ctrl-C to stop)\n");
+    fprintf(stderr, "  Sample rate: %.0f Hz\n", mh_audio_get_sample_rate(dev));
+    fprintf(stderr, "  Buffer:      %d frames\n", mh_audio_get_buffer_frames(dev));
+    fprintf(stderr, "  Channels:    %d\n", mh_audio_get_channels(dev));
+
+    signal(SIGINT, sigint_handler);
+    g_running = 1;
+    while (g_running) {
+#ifdef _WIN32
+        Sleep(100);
+#else
+        usleep(100000);
+#endif
+    }
+
+    fprintf(stderr, "\nStopping...\n");
+    mh_audio_stop(dev);
+    mh_audio_close(dev);
+    mh_close(p);
+    return 0;
+}
+
+// ============================================================================
+// Command: resample
+// ============================================================================
+
+static int cmd_resample(const char* input_file, const char* output_file,
+                        int target_rate, int bit_depth) {
+    char err[1024] = {0};
+
+    MH_AudioData* audio = mh_audio_read(input_file, err, sizeof(err));
+    if (!audio) {
+        fprintf(stderr, "Error: %s\n", err);
+        return 1;
+    }
+
+    if (target_rate <= 0) {
+        fprintf(stderr, "Error: Target sample rate required (--rate N)\n");
+        mh_audio_data_free(audio);
+        return 1;
+    }
+
+    if ((unsigned)target_rate == audio->sample_rate) {
+        fprintf(stderr, "Error: Input already at %d Hz\n", target_rate);
+        mh_audio_data_free(audio);
+        return 1;
+    }
+
+    MH_AudioData* resampled = mh_audio_resample(audio->data,
+                                                 audio->channels,
+                                                 audio->frames,
+                                                 audio->sample_rate,
+                                                 (unsigned)target_rate,
+                                                 err, sizeof(err));
+    if (!resampled) {
+        fprintf(stderr, "Error: %s\n", err);
+        mh_audio_data_free(audio);
+        return 1;
+    }
+
+    if (bit_depth <= 0) bit_depth = 24;
+    if (!mh_audio_write(output_file, resampled->data,
+                        resampled->channels, resampled->frames,
+                        resampled->sample_rate, bit_depth,
+                        err, sizeof(err))) {
+        fprintf(stderr, "Error: %s\n", err);
+        mh_audio_data_free(resampled);
+        mh_audio_data_free(audio);
+        return 1;
+    }
+
+    fprintf(stderr, "Resampled %u Hz -> %u Hz\n", audio->sample_rate, resampled->sample_rate);
+    fprintf(stderr, "  Input:  %u frames, %u ch\n", audio->frames, audio->channels);
+    fprintf(stderr, "  Output: %u frames -> %s\n", resampled->frames, output_file);
+
+    mh_audio_data_free(resampled);
+    mh_audio_data_free(audio);
+    return 0;
+}
+
+// ============================================================================
 // Main
 // ============================================================================
 
@@ -1455,6 +1828,16 @@ int main(int argc, char** argv) {
     const char* sidechain_file = NULL;
     const char* param_specs[MAX_PARAM_SPECS];
     int num_param_specs = 0;
+    // midi / play / resample options
+    int midi_port = -1;
+    const char* virtual_midi_name = NULL;
+    int monitor_flag = 0;
+    int capture_flag = 0;
+    int playback_device = -1;
+    int capture_device = -1;
+    int resample_rate = 0;
+    double tail_seconds = 0.0;
+    const char* midi_input_file = NULL;
     // presets subcommand
     const char* save_file = NULL;
     int program_index = -1;
@@ -1557,6 +1940,24 @@ int main(int argc, char** argv) {
             load_vstpreset_file = args[++i];
         } else if (str_eq(args[i], "-y") || str_eq(args[i], "--overwrite")) {
             overwrite = 1;
+        } else if (str_eq(args[i], "--monitor")) {
+            monitor_flag = 1;
+        } else if (str_eq(args[i], "--port") && i + 1 < remaining) {
+            midi_port = atoi(args[++i]);
+        } else if (str_eq(args[i], "--virtual") && i + 1 < remaining) {
+            virtual_midi_name = args[++i];
+        } else if (str_eq(args[i], "--capture")) {
+            capture_flag = 1;
+        } else if (str_eq(args[i], "--playback-device") && i + 1 < remaining) {
+            playback_device = atoi(args[++i]);
+        } else if (str_eq(args[i], "--capture-device") && i + 1 < remaining) {
+            capture_device = atoi(args[++i]);
+        } else if (str_eq(args[i], "--rate") && i + 1 < remaining) {
+            resample_rate = atoi(args[++i]);
+        } else if (str_eq(args[i], "--tail") && i + 1 < remaining) {
+            tail_seconds = atof(args[++i]);
+        } else if ((str_eq(args[i], "-m") || str_eq(args[i], "--midi")) && i + 1 < remaining) {
+            midi_input_file = args[++i];
         } else {
             // Positional argument
             if (num_pos_args < 16) {
@@ -1645,6 +2046,35 @@ int main(int argc, char** argv) {
         return cmd_load_state(args[pos_args[0]], args[pos_args[1]],
                               sample_rate, block_size, show_params);
     }
+    else if (str_eq(cmd, "midi")) {
+        return cmd_midi(json_output, monitor_flag, midi_port, virtual_midi_name);
+    }
+    else if (str_eq(cmd, "play")) {
+        if (num_pos_args < 1) {
+            fprintf(stderr, "Usage: %s play PLUGIN [options]\n", argv[0]);
+            return 1;
+        }
+        return cmd_play(args[pos_args[0]], sample_rate, block_size,
+                        state_file, preset_index, param_specs, num_param_specs,
+                        midi_port, virtual_midi_name,
+                        capture_flag, playback_device, capture_device);
+    }
+    else if (str_eq(cmd, "resample")) {
+        const char* rs_input = NULL;
+        const char* rs_output = NULL;
+        if (input_file && output_file) {
+            rs_input = input_file;
+            rs_output = output_file;
+        } else if (num_pos_args >= 2) {
+            rs_input = args[pos_args[0]];
+            rs_output = args[pos_args[1]];
+        }
+        if (!rs_input || !rs_output) {
+            fprintf(stderr, "Usage: %s resample INPUT OUTPUT --rate N\n", argv[0]);
+            return 1;
+        }
+        return cmd_resample(rs_input, rs_output, resample_rate, bit_depth);
+    }
     else if (str_eq(cmd, "process")) {
         if (num_pos_args < 1) {
             fprintf(stderr, "Usage: %s process PLUGIN -i INPUT -o OUTPUT [options]\n", argv[0]);
@@ -1660,6 +2090,11 @@ int main(int argc, char** argv) {
             output_file = args[pos_args[2]];
         }
 
+        if (midi_input_file) {
+            fprintf(stderr, "Error: MIDI file input (-m) is not yet supported in the C CLI\n");
+            return 1;
+        }
+
         if (!input_file || !output_file) {
             fprintf(stderr, "Error: Both input (-i) and output (-o) files are required\n");
             return 1;
@@ -1668,7 +2103,8 @@ int main(int argc, char** argv) {
         return cmd_process(plugin, input_file, output_file, sidechain_file,
                            sample_rate, block_size, state_file,
                            preset_index, param_specs, num_param_specs,
-                           use_double, non_realtime, bpm, bit_depth);
+                           use_double, non_realtime, bpm, bit_depth,
+                           tail_seconds);
     }
     else {
         fprintf(stderr, "Error: Unknown command '%s'\n", cmd);
