@@ -53,8 +53,6 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.14.14",
     "twine>=6.2.0",
-]
-docs = [
     "mkdocs>=1.6",
     "mkdocs-material>=9.5",
 ]

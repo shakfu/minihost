@@ -20,7 +20,7 @@ if(NOT EXISTS "${JUCE_PATH}/CMakeLists.txt")
     message(FATAL_ERROR "JUCE not found at ${JUCE_PATH}. Run ./scripts/download_juce.sh or set -DJUCE_PATH=/path/to/JUCE")
 endif()
 
-add_subdirectory(${JUCE_PATH} ${CMAKE_CURRENT_BINARY_DIR}/JUCE)
+add_subdirectory(${JUCE_PATH} ${CMAKE_CURRENT_BINARY_DIR}/JUCE EXCLUDE_FROM_ALL)
 
 # Add project subdirectories
 add_subdirectory(projects/libminihost)
@@ -28,7 +28,7 @@ add_subdirectory(projects/libminihost_audio)
 
 # midifile library (MIDI file read/write) - build library only, skip tools
 set(BUILD_MIDILIBRARY_ONLY ON CACHE BOOL "Build only the midifile library" FORCE)
-add_subdirectory(projects/midifile)
+add_subdirectory(projects/midifile EXCLUDE_FROM_ALL)
 
 # Only build CLI tools for standalone builds (not Python wheel builds)
 if(NOT DEFINED SKBUILD)
