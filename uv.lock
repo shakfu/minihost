@@ -599,14 +599,12 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "mkdocs" },
+    { name = "mkdocs-material" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "ruff" },
     { name = "twine" },
-]
-docs = [
-    { name = "mkdocs" },
-    { name = "mkdocs-material" },
 ]
 
 [package.metadata]
@@ -614,14 +612,12 @@ requires-dist = [{ name = "numpy", specifier = ">=1.20" }]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "mkdocs", specifier = ">=1.6" },
+    { name = "mkdocs-material", specifier = ">=9.5" },
     { name = "mypy", specifier = ">=1.19.1" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "ruff", specifier = ">=0.14.14" },
     { name = "twine", specifier = ">=6.2.0" },
-]
-docs = [
-    { name = "mkdocs", specifier = ">=1.6" },
-    { name = "mkdocs-material", specifier = ">=9.5" },
 ]
 
 [[package]]

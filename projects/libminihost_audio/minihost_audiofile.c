@@ -248,7 +248,11 @@ static int write_flac(const char* path, const float* data,
         tflac_finalize(&t);
 
         // Encode final STREAMINFO
-        unsigned char si_buf[38];
+        // tflac's bitwriter always writes a full tflac_uint (8 bytes on
+        // 64-bit) at the current position, even when only a few logical
+        // bytes remain.  Add 8 bytes of padding so the final flush does
+        // not overwrite past the buffer (detected by MSVC /GS on Windows).
+        unsigned char si_buf[38 + 8];
         tflac_u32 si_used = 0;
         // lastflag=1 means this is the last metadata block
         if (tflac_encode_streaminfo(&t, 1, si_buf, sizeof(si_buf), &si_used) != 0) {
