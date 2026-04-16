@@ -170,7 +170,8 @@ struct MH_Plugin
 
     AudioBuffer<float> inBuf;
     AudioBuffer<float> outBuf;
-    AudioBuffer<float> sidechainBuf;  // sidechain input buffer
+    AudioBuffer<float> sidechainBuf;   // sidechain input buffer
+    AudioBuffer<float> combinedBuf;    // pre-allocated for mh_process_sidechain
     MidiBuffer midi;
 
     // Persistent pointer arrays for mh_process_auto chunk splitting.
@@ -231,30 +232,6 @@ static bool findFirstTypeForFile(AudioPluginFormatManager& fm,
     return foundAny;
 }
 
-static void tryConfigureBuses(AudioPluginInstance& inst, int reqIn, int reqOut)
-{
-    // Minimal, best-effort bus/channel config.
-    // Many plugins will accept this; some need more complex routing.
-    inst.enableAllBuses();
-
-    // Main buses (bus 0)
-    if (inst.getBusCount(true) > 0)
-    {
-        if (reqIn > 0)
-            inst.setChannelLayoutOfBus(true, 0, AudioChannelSet::canonicalChannelSet(reqIn));
-    }
-
-    if (inst.getBusCount(false) > 0)
-    {
-        if (reqOut > 0)
-            inst.setChannelLayoutOfBus(false, 0, AudioChannelSet::canonicalChannelSet(reqOut));
-    }
-
-    // Apply combined layout if possible
-    auto layout = inst.getBusesLayout();
-    inst.setBusesLayout(layout);
-}
-
 static void tryConfigureBusesEx(AudioPluginInstance& inst, int reqIn, int reqOut, int reqSidechain)
 {
     // Extended bus configuration with sidechain support
@@ -289,6 +266,16 @@ static void tryConfigureBusesEx(AudioPluginInstance& inst, int reqIn, int reqOut
     inst.setBusesLayout(layout);
 }
 
+// Forward declaration -- mh_open delegates to mh_open_ex (defined below).
+extern "C" MH_Plugin* mh_open_ex(const char* plugin_path,
+                                 double sample_rate,
+                                 int max_block_size,
+                                 int main_in_ch,
+                                 int main_out_ch,
+                                 int sidechain_in_ch,
+                                 char* err_buf,
+                                 size_t err_buf_size);
+
 extern "C" MH_Plugin* mh_open(const char* plugin_path,
                               double sample_rate,
                               int max_block_size,
@@ -297,64 +284,9 @@ extern "C" MH_Plugin* mh_open(const char* plugin_path,
                               char* err_buf,
                               size_t err_buf_size)
 {
-    if (plugin_path == nullptr || plugin_path[0] == '\0')
-    {
-        setErr(err_buf, err_buf_size, "plugin_path is empty");
-        return nullptr;
-    }
-
-    std::unique_ptr<MH_Plugin> p(new MH_Plugin());
-    p->sampleRate = sample_rate;
-    p->maxBlockSize = max_block_size;
-    p->path = plugin_path;
-
-    File f(String::fromUTF8(plugin_path));
-    if (! f.exists())
-    {
-        setErr(err_buf, err_buf_size, "Plugin file does not exist: " + f.getFullPathName());
-        return nullptr;
-    }
-
-    PluginDescription desc;
-    String err;
-    if (! findFirstTypeForFile(p->fm, f, desc, err))
-    {
-        setErr(err_buf, err_buf_size, err);
-        return nullptr;
-    }
-
-    String createErr;
-    std::unique_ptr<AudioPluginInstance> inst(
-        p->fm.createPluginInstance(desc, sample_rate, max_block_size, createErr)
-    );
-
-    if (! inst)
-    {
-        setErr(err_buf, err_buf_size, "createPluginInstance failed: " + createErr);
-        return nullptr;
-    }
-
-    // Best-effort channel/bus layout
-    tryConfigureBuses(*inst, requested_in_ch, requested_out_ch);
-
-    inst->setRateAndBufferSizeDetails(sample_rate, max_block_size);
-    inst->prepareToPlay(sample_rate, max_block_size);
-
-    // Use actual channel counts after bus config and prepareToPlay.
-    // This ensures p->inCh/outCh match what the plugin expects in processBlock.
-    p->inCh  = jmax(1, inst->getTotalNumInputChannels());
-    p->outCh = jmax(1, inst->getTotalNumOutputChannels());
-
-    p->inBuf.setSize(p->inCh, max_block_size, false, false, true);
-    p->outBuf.setSize(p->outCh, max_block_size, false, false, true);
-
-    // Set up playhead for transport info
-    p->playHead.sampleRate = sample_rate;
-    inst->setPlayHead(&p->playHead);
-
-    p->inst = std::move(inst);
-    p->inst->addListener(&p->listener);
-    return p.release();
+    return mh_open_ex(plugin_path, sample_rate, max_block_size,
+                      requested_in_ch, requested_out_ch, /*sidechain_in_ch=*/0,
+                      err_buf, err_buf_size);
 }
 
 extern "C" void mh_close(MH_Plugin* p)
@@ -1118,6 +1050,10 @@ extern "C" MH_Plugin* mh_open_ex(const char* plugin_path,
     if (p->sidechainCh > 0)
     {
         p->sidechainBuf.setSize(p->sidechainCh, max_block_size, false, false, true);
+        // Pre-allocate combined buffer for mh_process_sidechain
+        // (main + sidechain channels merged for JUCE processBlock)
+        int totalCh = jmax(p->inCh + p->sidechainCh, p->outCh);
+        p->combinedBuf.setSize(totalCh, max_block_size, false, false, true);
     }
 
     // Set up playhead for transport info
@@ -1138,13 +1074,11 @@ extern "C" int mh_process_sidechain(MH_Plugin* p,
     if (!p || !p->inst) return 0;
     if (nframes < 0 || nframes > p->maxBlockSize) return 0;
 
-    // Total channels needed = max(main_in + sidechain, main_out)
-    // JUCE processBlock uses a single buffer for in-place processing
+    // Use pre-allocated combinedBuf (sized in mh_open_ex) to avoid
+    // per-call heap allocation on the audio thread.
+    auto& buffer = p->combinedBuf;
     int totalInCh = p->inCh + p->sidechainCh;
-    int totalCh = jmax(totalInCh, p->outCh);
-
-    // Create a combined buffer large enough for all channels
-    AudioBuffer<float> buffer(totalCh, nframes);
+    int totalCh = buffer.getNumChannels();
 
     // Copy main input to first channels
     if (main_in)

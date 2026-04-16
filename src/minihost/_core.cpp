@@ -44,6 +44,39 @@ static MH_MidiEvent parse_midi_event(nb::handle item) {
     return e;
 }
 
+// Convert planar float audio [ch0_s0,ch0_s1,...,ch1_s0,ch1_s1,...] to interleaved
+// [s0_ch0,s0_ch1,...,s1_ch0,s1_ch1,...].
+static void planar_to_interleaved(const float* planar, float* interleaved,
+                                  size_t channels, size_t frames) {
+    for (size_t f = 0; f < frames; f++)
+        for (size_t ch = 0; ch < channels; ch++)
+            interleaved[f * channels + ch] = planar[ch * frames + f];
+}
+
+// Convert interleaved float audio to planar layout.
+static void interleaved_to_planar(const float* interleaved, float* planar,
+                                  size_t channels, size_t frames) {
+    for (size_t ch = 0; ch < channels; ch++)
+        for (size_t f = 0; f < frames; f++)
+            planar[ch * frames + f] = interleaved[f * channels + ch];
+}
+
+// Build a Python dict from MH_PluginDesc fields.
+static nb::dict plugin_desc_to_dict(const MH_PluginDesc& desc) {
+    nb::dict d;
+    d["name"] = std::string(desc.name);
+    d["vendor"] = std::string(desc.vendor);
+    d["version"] = std::string(desc.version);
+    d["format"] = std::string(desc.format);
+    d["unique_id"] = std::string(desc.unique_id);
+    d["path"] = std::string(desc.path);
+    d["accepts_midi"] = desc.accepts_midi != 0;
+    d["produces_midi"] = desc.produces_midi != 0;
+    d["num_inputs"] = desc.num_inputs;
+    d["num_outputs"] = desc.num_outputs;
+    return d;
+}
+
 // Deferred callback event -- pushed from any thread (including the audio thread)
 // without acquiring the GIL, drained from Python via poll_callbacks().
 struct CallbackEvent {
@@ -1292,18 +1325,7 @@ nb::dict probe_plugin(const std::string& path) {
         throw std::runtime_error(std::string("Failed to probe plugin: ") + err);
     }
 
-    nb::dict d;
-    d["name"] = std::string(desc.name);
-    d["vendor"] = std::string(desc.vendor);
-    d["version"] = std::string(desc.version);
-    d["format"] = std::string(desc.format);
-    d["unique_id"] = std::string(desc.unique_id);
-    d["path"] = std::string(desc.path);
-    d["accepts_midi"] = desc.accepts_midi != 0;
-    d["produces_midi"] = desc.produces_midi != 0;
-    d["num_inputs"] = desc.num_inputs;
-    d["num_outputs"] = desc.num_outputs;
-    return d;
+    return plugin_desc_to_dict(desc);
 }
 
 // Callback context for scan_directory
@@ -1313,20 +1335,7 @@ struct ScanContext {
 
 static void scan_callback(const MH_PluginDesc* desc, void* user_data) {
     auto* ctx = static_cast<ScanContext*>(user_data);
-
-    nb::dict d;
-    d["name"] = std::string(desc->name);
-    d["vendor"] = std::string(desc->vendor);
-    d["version"] = std::string(desc->version);
-    d["format"] = std::string(desc->format);
-    d["unique_id"] = std::string(desc->unique_id);
-    d["path"] = std::string(desc->path);
-    d["accepts_midi"] = desc->accepts_midi != 0;
-    d["produces_midi"] = desc->produces_midi != 0;
-    d["num_inputs"] = desc->num_inputs;
-    d["num_outputs"] = desc->num_outputs;
-
-    ctx->results->push_back(d);
+    ctx->results->push_back(plugin_desc_to_dict(*desc));
 }
 
 // Module-level scan_directory function
@@ -2173,17 +2182,10 @@ NB_MODULE(_core, m) {
         unsigned int frames = data->frames;
         unsigned int sample_rate = data->sample_rate;
 
-        // Create numpy array shape (channels, frames) from interleaved data
+        // De-interleave to planar layout for numpy
         size_t total_samples = (size_t)channels * frames;
         float* buf = new float[total_samples];
-
-        // De-interleave: interleaved [L0,R0,L1,R1,...] -> planar [L0,L1,...,R0,R1,...]
-        for (unsigned int ch = 0; ch < channels; ch++) {
-            for (unsigned int f = 0; f < frames; f++) {
-                buf[ch * frames + f] = data->data[f * channels + ch];
-            }
-        }
-
+        interleaved_to_planar(data->data, buf, channels, frames);
         mh_audio_data_free(data);
 
         // Create numpy array with capsule for ownership
@@ -2203,16 +2205,9 @@ NB_MODULE(_core, m) {
         size_t channels = data.shape(0);
         size_t frames = data.shape(1);
 
-        // Interleave: planar [L0,L1,...,R0,R1,...] -> interleaved [L0,R0,L1,R1,...]
-        size_t total_samples = channels * frames;
-        std::vector<float> interleaved(total_samples);
-        const float* src = data.data();
-
-        for (size_t f = 0; f < frames; f++) {
-            for (size_t ch = 0; ch < channels; ch++) {
-                interleaved[f * channels + ch] = src[ch * frames + f];
-            }
-        }
+        // Interleave planar numpy data for the C API
+        std::vector<float> interleaved(channels * frames);
+        planar_to_interleaved(data.data(), interleaved.data(), channels, frames);
 
         char err[1024] = {0};
         int ok = mh_audio_write(path.c_str(), interleaved.data(),
@@ -2231,15 +2226,9 @@ NB_MODULE(_core, m) {
         size_t channels = data.shape(0);
         size_t frames_in = data.shape(1);
 
-        // Interleave: planar -> interleaved for C API
-        size_t total_in = channels * frames_in;
-        std::vector<float> interleaved(total_in);
-        const float* src = data.data();
-        for (size_t f = 0; f < frames_in; f++) {
-            for (size_t ch = 0; ch < channels; ch++) {
-                interleaved[f * channels + ch] = src[ch * frames_in + f];
-            }
-        }
+        // Interleave planar numpy data for the C API
+        std::vector<float> interleaved(channels * frames_in);
+        planar_to_interleaved(data.data(), interleaved.data(), channels, frames_in);
 
         char err[1024] = {0};
         MH_AudioData* result = mh_audio_resample(
@@ -2255,14 +2244,10 @@ NB_MODULE(_core, m) {
         unsigned int out_ch = result->channels;
         unsigned int out_frames = result->frames;
 
-        // De-interleave output: interleaved -> planar
+        // De-interleave resampled output to planar layout
         size_t total_out = (size_t)out_ch * out_frames;
         float* buf = new float[total_out];
-        for (unsigned int ch = 0; ch < out_ch; ch++) {
-            for (unsigned int f = 0; f < out_frames; f++) {
-                buf[ch * out_frames + f] = result->data[f * out_ch + ch];
-            }
-        }
+        interleaved_to_planar(result->data, buf, out_ch, out_frames);
         mh_audio_data_free(result);
 
         nb::capsule owner(buf, [](void* p) noexcept { delete[] static_cast<float*>(p); });
