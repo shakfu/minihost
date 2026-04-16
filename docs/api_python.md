@@ -47,8 +47,8 @@ Plugin(
 | Method | Description |
 |--------|-------------|
 | `process(input, output)` | Process audio. Arrays shape: `(channels, frames)`, dtype: `float32` |
-| `process_midi(input, output, midi_in)` | Process with MIDI. Returns list of output MIDI events |
-| `process_auto(input, output, midi_in, param_changes)` | Process with sample-accurate automation and MIDI |
+| `process_midi(input, output, midi_in)` | Process with MIDI. Returns list of output MIDI events (max 256 per call) |
+| `process_auto(input, output, midi_in, param_changes)` | Process with sample-accurate automation and MIDI. Returns output MIDI (max 256) |
 | `process_sidechain(main_in, main_out, sidechain_in)` | Process with sidechain input |
 | `process_double(input, output)` | Process with 64-bit double precision. Arrays dtype: `float64` |
 
@@ -97,11 +97,15 @@ Parameter changes are tuples of `(sample_offset, param_index, value)`.
 
 ### Change Notifications
 
+Callback events are queued internally and never dispatched on the audio thread.
+Call `poll_callbacks()` from your main/UI thread to drain the queue and invoke registered callbacks.
+
 | Method | Description |
 |--------|-------------|
 | `set_change_callback(callback)` | Register callback `(change_flags: int) -> None` for processor-level changes |
 | `set_param_value_callback(callback)` | Register callback `(index: int, value: float) -> None` for plugin-initiated value changes |
 | `set_param_gesture_callback(callback)` | Register callback `(index: int, is_begin: bool) -> None` for gesture begin/end |
+| `poll_callbacks()` | Drain pending events and dispatch to registered callbacks. Returns number of events dispatched |
 
 Change flag constants: `MH_CHANGE_LATENCY`, `MH_CHANGE_PARAM_INFO`, `MH_CHANGE_PROGRAM`, `MH_CHANGE_NON_PARAM_STATE`.
 
@@ -141,8 +145,8 @@ All plugins must share the same sample rate.
 | Method | Description |
 |--------|-------------|
 | `process(input, output)` | Process audio through chain |
-| `process_midi(input, output, midi_events)` | Process with MIDI (MIDI goes to first plugin). Returns output MIDI events |
-| `process_auto(input, output, midi_in, param_changes)` | Process with sample-accurate automation and MIDI |
+| `process_midi(input, output, midi_events)` | Process with MIDI (MIDI goes to first plugin). Returns output MIDI events (max 256) |
+| `process_auto(input, output, midi_in, param_changes)` | Process with sample-accurate automation and MIDI. Returns output MIDI (max 256) |
 | `get_plugin(index)` | Get plugin by index |
 | `reset()` | Reset all plugins |
 | `set_non_realtime(enabled)` | Set non-realtime mode for all plugins |

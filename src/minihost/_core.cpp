@@ -7,6 +7,7 @@
 #include <vector>
 #include <stdexcept>
 #include <cstring>
+#include <mutex>
 
 #include "minihost.h"
 #include "minihost_chain.h"
@@ -21,6 +22,36 @@ namespace nb = nanobind;
 // Helper to convert numpy arrays to raw pointers
 using AudioArray = nb::ndarray<float, nb::shape<-1, -1>, nb::c_contig, nb::device::cpu>;
 using DoubleAudioArray = nb::ndarray<double, nb::shape<-1, -1>, nb::c_contig, nb::device::cpu>;
+
+// Maximum number of MIDI output events per process call.
+// Events beyond this limit are silently dropped by the C layer.
+static constexpr int MIDI_OUT_CAPACITY = 256;
+
+// Parse a Python MIDI event tuple (sample_offset, status, data1, data2) into MH_MidiEvent.
+// Validates that the tuple has exactly 4 elements before indexing.
+static MH_MidiEvent parse_midi_event(nb::handle item) {
+    nb::tuple ev = nb::cast<nb::tuple>(item);
+    if (nb::len(ev) < 4) {
+        throw std::runtime_error(
+            "MIDI event must be a tuple of 4 elements: "
+            "(sample_offset, status, data1, data2)");
+    }
+    MH_MidiEvent e;
+    e.sample_offset = nb::cast<int>(ev[0]);
+    e.status = nb::cast<unsigned char>(ev[1]);
+    e.data1 = nb::cast<unsigned char>(ev[2]);
+    e.data2 = nb::cast<unsigned char>(ev[3]);
+    return e;
+}
+
+// Deferred callback event -- pushed from any thread (including the audio thread)
+// without acquiring the GIL, drained from Python via poll_callbacks().
+struct CallbackEvent {
+    enum Type : uint8_t { Change, ParamValue, GestureBegin, GestureEnd };
+    Type type;
+    int int_val;     // flags (Change) or param_index (ParamValue, Gesture*)
+    float float_val; // new_value (ParamValue only)
+};
 
 // Python wrapper class for MH_Plugin
 class Plugin {
@@ -405,13 +436,7 @@ public:
         // Convert MIDI input
         std::vector<MH_MidiEvent> midi_events;
         for (size_t i = 0; i < nb::len(midi_in); ++i) {
-            nb::tuple ev = nb::cast<nb::tuple>(midi_in[i]);
-            MH_MidiEvent e;
-            e.sample_offset = nb::cast<int>(ev[0]);
-            e.status = nb::cast<unsigned char>(ev[1]);
-            e.data1 = nb::cast<unsigned char>(ev[2]);
-            e.data2 = nb::cast<unsigned char>(ev[3]);
-            midi_events.push_back(e);
+            midi_events.push_back(parse_midi_event(midi_in[i]));
         }
 
         // Set up channel pointers
@@ -425,13 +450,13 @@ public:
             out_ptrs[ch] = output.data() + ch * out_frames;
         }
 
-        // Output MIDI buffer
-        std::vector<MH_MidiEvent> midi_out(256);
+        // Output MIDI buffer (capped at MIDI_OUT_CAPACITY; excess events are dropped)
+        std::vector<MH_MidiEvent> midi_out(MIDI_OUT_CAPACITY);
         int num_midi_out = 0;
 
         if (!mh_process_midi_io(plugin_, in_ptrs.data(), out_ptrs.data(), in_frames,
                                 midi_events.data(), static_cast<int>(midi_events.size()),
-                                midi_out.data(), 256, &num_midi_out)) {
+                                midi_out.data(), MIDI_OUT_CAPACITY, &num_midi_out)) {
             throw std::runtime_error("Process failed");
         }
 
@@ -467,13 +492,7 @@ public:
         // Convert MIDI input
         std::vector<MH_MidiEvent> midi_events;
         for (size_t i = 0; i < nb::len(midi_in); ++i) {
-            nb::tuple ev = nb::cast<nb::tuple>(midi_in[i]);
-            MH_MidiEvent e;
-            e.sample_offset = nb::cast<int>(ev[0]);
-            e.status = nb::cast<unsigned char>(ev[1]);
-            e.data1 = nb::cast<unsigned char>(ev[2]);
-            e.data2 = nb::cast<unsigned char>(ev[3]);
-            midi_events.push_back(e);
+            midi_events.push_back(parse_midi_event(midi_in[i]));
         }
 
         // Convert param changes
@@ -498,13 +517,13 @@ public:
             out_ptrs[ch] = output.data() + ch * out_frames;
         }
 
-        // Output MIDI buffer
-        std::vector<MH_MidiEvent> midi_out(256);
+        // Output MIDI buffer (capped at MIDI_OUT_CAPACITY; excess events are dropped)
+        std::vector<MH_MidiEvent> midi_out(MIDI_OUT_CAPACITY);
         int num_midi_out = 0;
 
         if (!mh_process_auto(plugin_, in_ptrs.data(), out_ptrs.data(), in_frames,
                              midi_events.data(), static_cast<int>(midi_events.size()),
-                             midi_out.data(), 256, &num_midi_out,
+                             midi_out.data(), MIDI_OUT_CAPACITY, &num_midi_out,
                              changes.data(), static_cast<int>(changes.size()))) {
             throw std::runtime_error("Process failed");
         }
@@ -701,6 +720,41 @@ public:
         }
     }
 
+    // Drain pending callback events and dispatch to registered Python callbacks.
+    // Call this from the main thread (or any non-audio thread) to receive
+    // notifications that the plugin queued since the last poll.
+    // Returns the number of events dispatched.
+    int poll_callbacks() {
+        // Swap the queue under the lock so we hold it only briefly.
+        std::vector<CallbackEvent> events;
+        {
+            std::lock_guard<std::mutex> lock(cb_queue_mutex_);
+            events.swap(cb_queue_);
+        }
+
+        for (const auto& ev : events) {
+            switch (ev.type) {
+                case CallbackEvent::Change:
+                    if (change_callback_.is_valid() && !change_callback_.is_none())
+                        change_callback_(ev.int_val);
+                    break;
+                case CallbackEvent::ParamValue:
+                    if (param_value_callback_.is_valid() && !param_value_callback_.is_none())
+                        param_value_callback_(ev.int_val, ev.float_val);
+                    break;
+                case CallbackEvent::GestureBegin:
+                    if (param_gesture_callback_.is_valid() && !param_gesture_callback_.is_none())
+                        param_gesture_callback_(ev.int_val, true);
+                    break;
+                case CallbackEvent::GestureEnd:
+                    if (param_gesture_callback_.is_valid() && !param_gesture_callback_.is_none())
+                        param_gesture_callback_(ev.int_val, false);
+                    break;
+            }
+        }
+        return static_cast<int>(events.size());
+    }
+
 private:
     MH_Plugin* plugin_ = nullptr;
     double sample_rate_;
@@ -712,26 +766,31 @@ private:
     nb::object param_value_callback_;
     nb::object param_gesture_callback_;
 
-    // Static trampoline functions for C callbacks
+    // Lock-protected queue for deferred callback dispatch.
+    // Trampolines push events here from any thread (including the audio thread)
+    // without acquiring the GIL.  Python drains via poll_callbacks().
+    std::mutex cb_queue_mutex_;
+    std::vector<CallbackEvent> cb_queue_;
+
+    // Static trampolines -- enqueue events without touching the GIL.
+    // The mutex is held only for a vector push_back (sub-microsecond).
     static void change_callback_trampoline(MH_Plugin*, int flags, void* user_data) {
         auto* self = static_cast<Plugin*>(user_data);
-        nb::gil_scoped_acquire gil;
-        if (self->change_callback_.is_valid() && !self->change_callback_.is_none())
-            self->change_callback_(flags);
+        std::lock_guard<std::mutex> lock(self->cb_queue_mutex_);
+        self->cb_queue_.push_back({CallbackEvent::Change, flags, 0.0f});
     }
 
     static void param_value_callback_trampoline(MH_Plugin*, int param_index, float new_value, void* user_data) {
         auto* self = static_cast<Plugin*>(user_data);
-        nb::gil_scoped_acquire gil;
-        if (self->param_value_callback_.is_valid() && !self->param_value_callback_.is_none())
-            self->param_value_callback_(param_index, new_value);
+        std::lock_guard<std::mutex> lock(self->cb_queue_mutex_);
+        self->cb_queue_.push_back({CallbackEvent::ParamValue, param_index, new_value});
     }
 
     static void param_gesture_callback_trampoline(MH_Plugin*, int param_index, int gesture_starting, void* user_data) {
         auto* self = static_cast<Plugin*>(user_data);
-        nb::gil_scoped_acquire gil;
-        if (self->param_gesture_callback_.is_valid() && !self->param_gesture_callback_.is_none())
-            self->param_gesture_callback_(param_index, gesture_starting != 0);
+        std::lock_guard<std::mutex> lock(self->cb_queue_mutex_);
+        self->cb_queue_.push_back({gesture_starting ? CallbackEvent::GestureBegin : CallbackEvent::GestureEnd,
+                                   param_index, 0.0f});
     }
 
     // Allow AudioDevice and PluginChain to access raw plugin pointer
@@ -753,6 +812,11 @@ public:
         std::vector<MH_Plugin*> raw_ptrs;
         for (size_t i = 0; i < nb::len(plugins); ++i) {
             Plugin& p = nb::cast<Plugin&>(plugins[i]);
+            if (!p.plugin_) {
+                throw std::runtime_error(
+                    "Plugin at index " + std::to_string(i) +
+                    " is invalid (null internal pointer -- was it moved from?)");
+            }
             raw_ptrs.push_back(p.plugin_);
             plugin_refs_.push_back(&p);
         }
@@ -881,13 +945,7 @@ public:
         // Convert MIDI input
         std::vector<MH_MidiEvent> midi_events;
         for (size_t i = 0; i < nb::len(midi_in); ++i) {
-            nb::tuple ev = nb::cast<nb::tuple>(midi_in[i]);
-            MH_MidiEvent e;
-            e.sample_offset = nb::cast<int>(ev[0]);
-            e.status = nb::cast<unsigned char>(ev[1]);
-            e.data1 = nb::cast<unsigned char>(ev[2]);
-            e.data2 = nb::cast<unsigned char>(ev[3]);
-            midi_events.push_back(e);
+            midi_events.push_back(parse_midi_event(midi_in[i]));
         }
 
         std::vector<const float*> in_ptrs(in_channels);
@@ -900,13 +958,13 @@ public:
             out_ptrs[ch] = output.data() + ch * out_frames;
         }
 
-        // Output MIDI buffer
-        std::vector<MH_MidiEvent> midi_out(256);
+        // Output MIDI buffer (capped at MIDI_OUT_CAPACITY; excess events are dropped)
+        std::vector<MH_MidiEvent> midi_out(MIDI_OUT_CAPACITY);
         int num_midi_out = 0;
 
         if (!mh_chain_process_midi_io(chain_, in_ptrs.data(), out_ptrs.data(), in_frames,
                                        midi_events.data(), static_cast<int>(midi_events.size()),
-                                       midi_out.data(), 256, &num_midi_out)) {
+                                       midi_out.data(), MIDI_OUT_CAPACITY, &num_midi_out)) {
             throw std::runtime_error("Chain process failed");
         }
 
@@ -939,13 +997,7 @@ public:
         // Convert MIDI input
         std::vector<MH_MidiEvent> midi_events;
         for (size_t i = 0; i < nb::len(midi_in); ++i) {
-            nb::tuple ev = nb::cast<nb::tuple>(midi_in[i]);
-            MH_MidiEvent e;
-            e.sample_offset = nb::cast<int>(ev[0]);
-            e.status = nb::cast<unsigned char>(ev[1]);
-            e.data1 = nb::cast<unsigned char>(ev[2]);
-            e.data2 = nb::cast<unsigned char>(ev[3]);
-            midi_events.push_back(e);
+            midi_events.push_back(parse_midi_event(midi_in[i]));
         }
 
         // Convert param changes (4-tuples: sample_offset, plugin_index, param_index, value)
@@ -971,13 +1023,13 @@ public:
             out_ptrs[ch] = output.data() + ch * out_frames;
         }
 
-        // Output MIDI buffer
-        std::vector<MH_MidiEvent> midi_out(256);
+        // Output MIDI buffer (capped at MIDI_OUT_CAPACITY; excess events are dropped)
+        std::vector<MH_MidiEvent> midi_out(MIDI_OUT_CAPACITY);
         int num_midi_out = 0;
 
         if (!mh_chain_process_auto(chain_, in_ptrs.data(), out_ptrs.data(), in_frames,
                                     midi_events.data(), static_cast<int>(midi_events.size()),
-                                    midi_out.data(), 256, &num_midi_out,
+                                    midi_out.data(), MIDI_OUT_CAPACITY, &num_midi_out,
                                     changes.data(), static_cast<int>(changes.size()))) {
             throw std::runtime_error("Chain process_auto failed");
         }
@@ -1599,6 +1651,8 @@ private:
     MH_MidiIn* handle_;
     nb::callable callback_;
 
+    // NOTE: Called from the MIDI I/O thread. Acquires the GIL; callback must
+    // return quickly to avoid missed MIDI events.
     static void midi_callback(const unsigned char* data, size_t len, void* user_data) {
         nb::gil_scoped_acquire gil;
         auto* self = static_cast<MidiIn*>(user_data);
@@ -1801,10 +1855,12 @@ NB_MODULE(_core, m) {
              "Process audio (shape: [channels, frames])")
         .def("process_midi", &Plugin::process_midi,
              nb::arg("input"), nb::arg("output"), nb::arg("midi_in"),
-             "Process audio with MIDI. midi_in: list of (sample_offset, status, data1, data2)")
+             "Process audio with MIDI. midi_in: list of (sample_offset, status, data1, data2). "
+             "Returns list of output MIDI events (max 256 per call; excess events are dropped).")
         .def("process_auto", &Plugin::process_auto,
              nb::arg("input"), nb::arg("output"), nb::arg("midi_in"), nb::arg("param_changes"),
-             "Process with sample-accurate automation. param_changes: list of (sample_offset, param_index, value)")
+             "Process with sample-accurate automation. param_changes: list of (sample_offset, param_index, value). "
+             "Returns list of output MIDI events (max 256 per call; excess events are dropped).")
         .def("process_sidechain", &Plugin::process_sidechain,
              nb::arg("main_in"), nb::arg("main_out"), nb::arg("sidechain_in"),
              "Process audio with sidechain input (all arrays shape: [channels, frames])")
@@ -1847,19 +1903,26 @@ NB_MODULE(_core, m) {
              nb::arg("data"),
              "Restore current program state from bytes")
 
-        // Change notification callbacks
+        // Change notification callbacks (deferred -- never called on audio thread)
         .def("set_change_callback", &Plugin::set_change_callback,
              nb::arg("callback").none(),
              "Register callback for processor-level changes (latency, param info, program). "
-             "Callback receives (flags: int). Pass None to clear.")
+             "Callback receives (flags: int). Pass None to clear. "
+             "Events are queued and dispatched when poll_callbacks() is called.")
         .def("set_param_value_callback", &Plugin::set_param_value_callback,
              nb::arg("callback").none(),
              "Register callback for plugin-initiated parameter changes. "
-             "Callback receives (param_index: int, new_value: float). Pass None to clear.")
+             "Callback receives (param_index: int, new_value: float). Pass None to clear. "
+             "Events are queued and dispatched when poll_callbacks() is called.")
         .def("set_param_gesture_callback", &Plugin::set_param_gesture_callback,
              nb::arg("callback").none(),
              "Register callback for parameter gesture begin/end from plugin UI. "
-             "Callback receives (param_index: int, gesture_starting: bool). Pass None to clear.");
+             "Callback receives (param_index: int, gesture_starting: bool). Pass None to clear. "
+             "Events are queued and dispatched when poll_callbacks() is called.")
+        .def("poll_callbacks", &Plugin::poll_callbacks,
+             "Drain pending callback events and dispatch to registered Python callbacks. "
+             "Call this periodically from your main/UI thread to receive change, "
+             "parameter value, and gesture notifications. Returns the number of events dispatched.");
 
     // PluginChain class for chaining multiple plugins
     nb::class_<PluginChain>(m, "PluginChain")
@@ -1905,10 +1968,12 @@ NB_MODULE(_core, m) {
              "Process audio through the chain (shape: [channels, frames])")
         .def("process_midi", &PluginChain::process_midi,
              nb::arg("input"), nb::arg("output"), nb::arg("midi_in"),
-             "Process audio with MIDI (to first plugin). midi_in: list of (sample_offset, status, data1, data2)")
+             "Process audio with MIDI (to first plugin). midi_in: list of (sample_offset, status, data1, data2). "
+             "Returns list of output MIDI events (max 256 per call; excess events are dropped).")
         .def("process_auto", &PluginChain::process_auto,
              nb::arg("input"), nb::arg("output"), nb::arg("midi_in"), nb::arg("param_changes"),
-             "Process with sample-accurate automation. param_changes: list of (sample_offset, plugin_index, param_index, value)");
+             "Process with sample-accurate automation. param_changes: list of (sample_offset, plugin_index, param_index, value). "
+             "Returns list of output MIDI events (max 256 per call; excess events are dropped).");
 
     // AudioDevice class for real-time playback
     nb::class_<AudioDevice>(m, "AudioDevice")

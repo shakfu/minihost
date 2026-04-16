@@ -25,7 +25,7 @@ Minihost is a headless, JUCE-based audio plugin host that supports VST3, AudioUn
 - Transport info for tempo-synced plugins
 - State save/restore for presets and per-program state
 - Thread-safe parameter access
-- Change notifications (latency, parameter info, program, non-parameter state)
+- Change notifications (latency, parameter info, program, non-parameter state) with deferred dispatch via `poll_callbacks()`
 - Parameter gestures for automation bracketing
 - Bus layout validation and sidechain support
 - Track name/color metadata forwarding to plugins

@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`Plugin.poll_callbacks()`** -- new method to drain pending callback events from a non-audio thread. Change, parameter-value, and gesture callbacks are now queued internally and dispatched only when `poll_callbacks()` is called, returning the number of events dispatched.
+
+### Changed
+
+- **Callback dispatch moved off the audio thread** -- `set_change_callback()`, `set_param_value_callback()`, and `set_param_gesture_callback()` no longer acquire the Python GIL from the audio thread. Callback events from the plugin (via JUCE's `AudioProcessorListener`) are pushed to a lightweight mutex-protected queue and dispatched to Python only when `poll_callbacks()` is called. This eliminates a class of audio dropouts caused by GIL contention.
+
+### Fixed
+
+- **MIDI event tuple validation** -- `process_midi()` and `process_auto()` (on both `Plugin` and `PluginChain`) now validate that each MIDI event tuple has at least 4 elements before indexing, producing a clear `RuntimeError` instead of an opaque `IndexError` from the nanobind layer.
+- **Null plugin guard in `PluginChain`** -- the `PluginChain` constructor now checks each `Plugin` for a valid internal pointer. Passing a moved-from or otherwise invalid `Plugin` now raises a descriptive `RuntimeError` instead of causing undefined behavior.
+- **MIDI output buffer limit documented** -- `process_midi()` and `process_auto()` docstrings now state that MIDI output is capped at 256 events per call, with excess events silently dropped. The hard-coded buffer size is consolidated into a named constant (`MIDI_OUT_CAPACITY`).
+
 ## [0.1.5]
 
 ### Added
