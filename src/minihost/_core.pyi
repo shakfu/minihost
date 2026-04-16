@@ -18,6 +18,8 @@ class Plugin:
         sidechain_channels: int = 0,
     ) -> None: ...
     @property
+    def path(self) -> str: ...
+    @property
     def num_params(self) -> int: ...
     @property
     def num_input_channels(self) -> int: ...
@@ -165,6 +167,13 @@ class PluginChain:
         input: NDArray[np.float32],
         output: NDArray[np.float32],
         midi_in: list[tuple[int, int, int, int]],
+    ) -> list[tuple[int, int, int, int]]: ...
+    def process_auto(
+        self,
+        input: NDArray[np.float32],
+        output: NDArray[np.float32],
+        midi_in: list[tuple[int, int, int, int]],
+        param_changes: list[tuple[int, int, int, float]],
     ) -> list[tuple[int, int, int, int]]: ...
 
 class AudioDevice:
@@ -323,4 +332,8 @@ def audio_resample(
 
 def audio_get_file_info(path: str) -> dict[str, Any]:
     """Get audio file metadata without decoding."""
+    ...
+
+def vstpreset_read_class_id_from_bundle(vst3_path: str) -> str:
+    """Read the processor class ID (32-char uppercase hex FUID) from a VST3 bundle."""
     ...

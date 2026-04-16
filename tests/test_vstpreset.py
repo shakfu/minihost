@@ -331,14 +331,14 @@ class TestSaveVstPreset:
         resources = bundle / "Contents" / "Resources"
         resources.mkdir(parents=True)
         (resources / "moduleinfo.json").write_text(
-            '{\n'
+            "{\n"
             '  "Classes": [\n'
-            '    {\n'
+            "    {\n"
             '      "CID": "ABCDEF0123456789ABCDEF0123456789",\n'
             '      "Category": "Audio Module Class"\n'
-            '    }\n'
-            '  ]\n'
-            '}\n'
+            "    }\n"
+            "  ]\n"
+            "}\n"
         )
 
         plugin = MagicMock()
@@ -372,100 +372,106 @@ class TestReadClassIdFromBundle:
     """Tests for the moduleinfo.json scanner."""
 
     def test_basic(self, tmp_path):
-        bundle = _make_bundle(tmp_path,
-            '{\n'
+        bundle = _make_bundle(
+            tmp_path,
+            "{\n"
             '  "Classes": [\n'
-            '    {\n'
+            "    {\n"
             '      "CID": "ABCDEF0123456789ABCDEF0123456789",\n'
             '      "Category": "Audio Module Class"\n'
-            '    }\n'
-            '  ]\n'
-            '}\n'
+            "    }\n"
+            "  ]\n"
+            "}\n",
         )
         assert read_class_id_from_bundle(bundle) == "ABCDEF0123456789ABCDEF0123456789"
 
     def test_picks_audio_module_class_not_controller(self, tmp_path):
         """The scanner must skip the controller class and pick the
         processor (Audio Module Class) entry, regardless of order."""
-        bundle = _make_bundle(tmp_path,
-            '{\n'
+        bundle = _make_bundle(
+            tmp_path,
+            "{\n"
             '  "Classes": [\n'
-            '    {\n'
+            "    {\n"
             '      "CID": "1111111111111111CCCCCCCCCCCCCCCC",\n'
             '      "Category": "Component Controller Class"\n'
-            '    },\n'
-            '    {\n'
+            "    },\n"
+            "    {\n"
             '      "CID": "2222222222222222AAAAAAAAAAAAAAAA",\n'
             '      "Category": "Audio Module Class"\n'
-            '    }\n'
-            '  ]\n'
-            '}\n'
+            "    }\n"
+            "  ]\n"
+            "}\n",
         )
         assert read_class_id_from_bundle(bundle) == "2222222222222222AAAAAAAAAAAAAAAA"
 
     def test_tolerates_trailing_commas(self, tmp_path):
         """Real-world moduleinfo.json files emit JSON5-style trailing
         commas (e.g., Dexed, Strokes). The scanner must tolerate them."""
-        bundle = _make_bundle(tmp_path,
-            '{\n'
+        bundle = _make_bundle(
+            tmp_path,
+            "{\n"
             '  "Classes": [\n'
-            '    {\n'
+            "    {\n"
             '      "CID": "ABCDEF019182FAEB4447534244657864",\n'
             '      "Category": "Audio Module Class",\n'
             '      "Sub Categories": [\n'
             '        "Instrument",\n'
             '        "Synth",\n'
-            '      ],\n'
-            '    },\n'
-            '  ],\n'
-            '}\n'
+            "      ],\n"
+            "    },\n"
+            "  ],\n"
+            "}\n",
         )
         assert read_class_id_from_bundle(bundle) == "ABCDEF019182FAEB4447534244657864"
 
     def test_uppercases_lowercase_hex(self, tmp_path):
-        bundle = _make_bundle(tmp_path,
-            '{\n'
+        bundle = _make_bundle(
+            tmp_path,
+            "{\n"
             '  "Classes": [\n'
-            '    {\n'
+            "    {\n"
             '      "CID": "abcdef0123456789abcdef0123456789",\n'
             '      "Category": "Audio Module Class"\n'
-            '    }\n'
-            '  ]\n'
-            '}\n'
+            "    }\n"
+            "  ]\n"
+            "}\n",
         )
         assert read_class_id_from_bundle(bundle) == "ABCDEF0123456789ABCDEF0123456789"
 
     def test_cid_before_category(self, tmp_path):
         """Key order should not matter -- CID may appear before Category."""
-        bundle = _make_bundle(tmp_path,
-            '{\n'
+        bundle = _make_bundle(
+            tmp_path,
+            "{\n"
             '  "Classes": [\n'
-            '    {\n'
+            "    {\n"
             '      "Name": "Foo",\n'
             '      "CID": "DEADBEEFDEADBEEFDEADBEEFDEADBEEF",\n'
             '      "Vendor": "Acme",\n'
             '      "Category": "Audio Module Class"\n'
-            '    }\n'
-            '  ]\n'
-            '}\n'
+            "    }\n"
+            "  ]\n"
+            "}\n",
         )
         assert read_class_id_from_bundle(bundle) == "DEADBEEFDEADBEEFDEADBEEFDEADBEEF"
 
     def test_picks_first_audio_module_class(self, tmp_path):
         """If a bundle exposes multiple audio plugins, take the first."""
-        bundle = _make_bundle(tmp_path,
-            '{\n'
+        bundle = _make_bundle(
+            tmp_path,
+            "{\n"
             '  "Classes": [\n'
-            '    {\n'
+            "    {\n"
             '      "CID": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",\n'
             '      "Category": "Audio Module Class"\n'
-            '    },\n'
-            '    {\n'
+            "    },\n"
+            "    {\n"
             '      "CID": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",\n'
             '      "Category": "Audio Module Class"\n'
-            '    }\n'
-            '  ]\n'
-            '}\n'
+            "    }\n"
+            "  ]\n"
+            "}\n",
         )
         assert read_class_id_from_bundle(bundle) == "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
@@ -480,43 +486,46 @@ class TestReadClassIdFromBundle:
             read_class_id_from_bundle(tmp_path / "nonexistent.vst3")
 
     def test_no_audio_module_class_raises(self, tmp_path):
-        bundle = _make_bundle(tmp_path,
-            '{\n'
+        bundle = _make_bundle(
+            tmp_path,
+            "{\n"
             '  "Classes": [\n'
-            '    {\n'
+            "    {\n"
             '      "CID": "1111111111111111CCCCCCCCCCCCCCCC",\n'
             '      "Category": "Component Controller Class"\n'
-            '    }\n'
-            '  ]\n'
-            '}\n'
+            "    }\n"
+            "  ]\n"
+            "}\n",
         )
         with pytest.raises(ValueError, match="Audio Module Class"):
             read_class_id_from_bundle(bundle)
 
     def test_invalid_cid_length_raises(self, tmp_path):
-        bundle = _make_bundle(tmp_path,
-            '{\n'
+        bundle = _make_bundle(
+            tmp_path,
+            "{\n"
             '  "Classes": [\n'
-            '    {\n'
+            "    {\n"
             '      "CID": "TOO_SHORT",\n'
             '      "Category": "Audio Module Class"\n'
-            '    }\n'
-            '  ]\n'
-            '}\n'
+            "    }\n"
+            "  ]\n"
+            "}\n",
         )
         with pytest.raises(ValueError, match="32 hex characters"):
             read_class_id_from_bundle(bundle)
 
     def test_non_hex_cid_raises(self, tmp_path):
-        bundle = _make_bundle(tmp_path,
-            '{\n'
+        bundle = _make_bundle(
+            tmp_path,
+            "{\n"
             '  "Classes": [\n'
-            '    {\n'
+            "    {\n"
             '      "CID": "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ",\n'
             '      "Category": "Audio Module Class"\n'
-            '    }\n'
-            '  ]\n'
-            '}\n'
+            "    }\n"
+            "  ]\n"
+            "}\n",
         )
         with pytest.raises(ValueError, match="32 hex characters"):
             read_class_id_from_bundle(bundle)
@@ -528,15 +537,18 @@ class TestReadClassIdFromBundle:
 
     def test_bundle_path_with_trailing_slash(self, tmp_path):
         """Trailing slashes on the bundle path should be tolerated."""
-        bundle = _make_bundle(tmp_path,
-            '{\n'
+        bundle = _make_bundle(
+            tmp_path,
+            "{\n"
             '  "Classes": [\n'
-            '    {\n'
+            "    {\n"
             '      "CID": "ABCDEF0123456789ABCDEF0123456789",\n'
             '      "Category": "Audio Module Class"\n'
-            '    }\n'
-            '  ]\n'
-            '}\n'
+            "    }\n"
+            "  ]\n"
+            "}\n",
         )
-        assert read_class_id_from_bundle(str(bundle) + "/") == \
-            "ABCDEF0123456789ABCDEF0123456789"
+        assert (
+            read_class_id_from_bundle(str(bundle) + "/")
+            == "ABCDEF0123456789ABCDEF0123456789"
+        )

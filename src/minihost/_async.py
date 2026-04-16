@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import concurrent.futures
 import threading
-from typing import Optional
 
 
 def open_async(

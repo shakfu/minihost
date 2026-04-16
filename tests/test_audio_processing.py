@@ -481,6 +481,7 @@ def plugin_path():
 @pytest.fixture
 def plugin(plugin_path):
     import minihost
+
     return minihost.Plugin(plugin_path, sample_rate=48000, max_block_size=512)
 
 
@@ -598,7 +599,7 @@ class TestProcessIntegration:
         assert isinstance(audio, np.ndarray)
         assert audio.ndim == 2
         assert audio.shape[0] >= 2  # at least stereo
-        assert audio.shape[1] > 0   # non-empty
+        assert audio.shape[1] > 0  # non-empty
         assert np.all(np.isfinite(audio))
 
     def test_render_midi_stream_yields_correct_shape(self, plugin):

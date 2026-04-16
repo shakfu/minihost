@@ -211,7 +211,9 @@ def write_vstpreset(
     comp_offset = _HEADER_SIZE
     comp_size = len(component_state)
 
-    entries: list[tuple[bytes, int, int]] = [(_COMPONENT_STATE_ID, comp_offset, comp_size)]
+    entries: list[tuple[bytes, int, int]] = [
+        (_COMPONENT_STATE_ID, comp_offset, comp_size)
+    ]
 
     if controller_state is not None:
         cont_offset = comp_offset + comp_size
@@ -222,10 +224,7 @@ def write_vstpreset(
     list_offset = _HEADER_SIZE + len(data_area)
 
     header = (
-        _MAGIC
-        + struct.pack("<i", 1)
-        + class_id_bytes
-        + struct.pack("<q", list_offset)
+        _MAGIC + struct.pack("<i", 1) + class_id_bytes + struct.pack("<q", list_offset)
     )
     assert len(header) == _HEADER_SIZE
 
