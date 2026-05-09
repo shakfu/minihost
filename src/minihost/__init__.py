@@ -43,6 +43,13 @@ from minihost._core import (
     midi_get_output_ports,
     audio_get_playback_devices,
     audio_get_capture_devices,
+    api_version,
+    api_version_string,
+    MH_API_VERSION_MAJOR,
+    MH_API_VERSION_MINOR,
+    MH_API_VERSION_PATCH,
+    MH_API_VERSION_NUMBER,
+    MH_API_VERSION_STRING,
     MH_CHANGE_LATENCY,
     MH_CHANGE_PARAM_INFO,
     MH_CHANGE_PROGRAM,
@@ -127,5 +134,13 @@ __all__ = [
     # Processing precision constants
     "MH_PRECISION_SINGLE",
     "MH_PRECISION_DOUBLE",
+    # ABI versioning
+    "api_version",
+    "api_version_string",
+    "MH_API_VERSION_MAJOR",
+    "MH_API_VERSION_MINOR",
+    "MH_API_VERSION_PATCH",
+    "MH_API_VERSION_NUMBER",
+    "MH_API_VERSION_STRING",
 ]
 __version__ = "0.1.5"

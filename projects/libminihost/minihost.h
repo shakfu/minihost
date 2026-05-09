@@ -8,12 +8,58 @@
 //     They use internal locking to protect plugin state.
 //   - Do not call mh_close while another thread is using the plugin.
 //
+// ABI Versioning:
+//   The MH_API_VERSION_* macros below describe the ABI version the header
+//   was generated for; mh_api_version() returns the version the linked
+//   implementation was built against. Callers that ship as compiled
+//   binaries against minihost should validate at startup:
+//
+//       if (mh_api_version() < MH_API_VERSION_NUMBER) {
+//           // Linked minihost is older than the header expects.
+//           return -1;
+//       }
+//
+//   Major version bumps indicate incompatible changes (struct layout,
+//   removed/renamed functions). Minor bumps are backward-compatible
+//   additions (new functions, new fields appended to existing structs).
+//   Patch bumps are non-API fixes.
+//
+//   Public structs are evolved by appending new fields at the end. Callers
+//   should always zero-initialize structs they pass in (e.g. via
+//   memset(&info, 0, sizeof(info))) so future field additions don't read
+//   uninitialized memory if the caller is rebuilt against a newer header.
+//
 #pragma once
 #include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// API version components. Bump per the policy described above.
+#define MH_API_VERSION_MAJOR 1
+#define MH_API_VERSION_MINOR 0
+#define MH_API_VERSION_PATCH 0
+
+// Single packed integer for compile-time comparison.
+// Layout: MAJOR * 10000 + MINOR * 100 + PATCH (so 1.2.3 == 10203).
+#define MH_API_VERSION_NUMBER \
+    ((MH_API_VERSION_MAJOR) * 10000 + (MH_API_VERSION_MINOR) * 100 + (MH_API_VERSION_PATCH))
+
+#define MH_API_VERSION_STRINGIFY_(x) #x
+#define MH_API_VERSION_STRINGIFY(x) MH_API_VERSION_STRINGIFY_(x)
+#define MH_API_VERSION_STRING                          \
+    MH_API_VERSION_STRINGIFY(MH_API_VERSION_MAJOR) "." \
+    MH_API_VERSION_STRINGIFY(MH_API_VERSION_MINOR) "." \
+    MH_API_VERSION_STRINGIFY(MH_API_VERSION_PATCH)
+
+// Returns the API version the linked implementation was compiled against.
+// Compare with MH_API_VERSION_NUMBER (header-side) to detect mismatches.
+int mh_api_version(void);
+
+// Returns the implementation's API version as a "MAJOR.MINOR.PATCH" string.
+// Storage is owned by the library; do not free.
+const char* mh_api_version_string(void);
 
 typedef struct MH_Plugin MH_Plugin;
 
@@ -25,8 +71,8 @@ typedef struct MH_PluginDesc {
     char format[16];            // "VST3", "AU", or "LV2"
     char unique_id[64];         // for state compatibility checking
     char path[1024];            // full path to plugin file (populated by mh_scan_directory)
-    int accepts_midi;
-    int produces_midi;
+    int accepts_midi;           // best-effort heuristic (instruments=1, others=0); mh_get_info() is authoritative
+    int produces_midi;          // not derivable at probe time; always 0 -- call mh_get_info() to query
     int num_inputs;             // default input channel count
     int num_outputs;            // default output channel count
 } MH_PluginDesc;

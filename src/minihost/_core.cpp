@@ -137,9 +137,20 @@ public:
         if (!plugin_) {
             throw std::runtime_error(std::string("Failed to open plugin: ") + err);
         }
+        // Pre-allocate the callback queues so the audio-thread trampoline
+        // never has to allocate. capacity is preserved across poll_callbacks
+        // by using clear() rather than swap() to drain.
+        cb_queue_.reserve(CB_QUEUE_CAPACITY);
+        dispatch_buffer_.reserve(CB_QUEUE_CAPACITY);
     }
 
     ~Plugin() {
+        close();
+    }
+
+    // Explicit close. Idempotent. Subsequent operations on this Plugin
+    // raise a clear RuntimeError via the underlying C API's null-checks.
+    void close() {
         if (plugin_) {
             // Clear callbacks before closing to avoid dangling pointers
             mh_set_change_callback(plugin_, nullptr, nullptr);
@@ -149,6 +160,9 @@ public:
             plugin_ = nullptr;
         }
     }
+
+    Plugin& enter() { return *this; }
+    void exit(nb::object, nb::object, nb::object) { close(); }
 
     // Disable copy
     Plugin(const Plugin&) = delete;
@@ -803,14 +817,19 @@ public:
     // notifications that the plugin queued since the last poll.
     // Returns the number of events dispatched.
     int poll_callbacks() {
-        // Swap the queue under the lock so we hold it only briefly.
-        std::vector<CallbackEvent> events;
+        // Copy out events under the lock; clear() preserves capacity so the
+        // producer side never has to reallocate inside the trampoline. The
+        // local `dispatch_buffer_` is reused across calls for the same
+        // reason on the consumer side.
         {
             std::lock_guard<std::mutex> lock(cb_queue_mutex_);
-            events.swap(cb_queue_);
+            // Use assign-from-iterators so dispatch_buffer_ keeps its own
+            // capacity across calls and only grows once.
+            dispatch_buffer_.assign(cb_queue_.begin(), cb_queue_.end());
+            cb_queue_.clear();
         }
 
-        for (const auto& ev : events) {
+        for (const auto& ev : dispatch_buffer_) {
             switch (ev.type) {
                 case CallbackEvent::Change:
                     if (change_callback_.is_valid() && !change_callback_.is_none())
@@ -830,7 +849,14 @@ public:
                     break;
             }
         }
-        return static_cast<int>(events.size());
+        return static_cast<int>(dispatch_buffer_.size());
+    }
+
+    // Number of callback events dropped because the bounded queue was full.
+    // Resets to zero on read; useful for diagnostics if poll_callbacks() is
+    // not being drained frequently enough.
+    int callback_events_dropped() {
+        return cb_queue_dropped_.exchange(0, std::memory_order_relaxed);
     }
 
 private:
@@ -844,30 +870,49 @@ private:
     nb::object param_value_callback_;
     nb::object param_gesture_callback_;
 
-    // Lock-protected queue for deferred callback dispatch.
-    // Trampolines push events here from any thread (including the audio thread)
-    // without acquiring the GIL.  Python drains via poll_callbacks().
+    // Bounded, capacity-preserving queue for deferred callback dispatch.
+    // Trampolines push events here from any thread (including the audio
+    // thread) without acquiring the GIL. Python drains via poll_callbacks().
+    //
+    // RT-safety on the producer side rests on three properties:
+    //   1. cb_queue_ is reserve()'d to CB_QUEUE_CAPACITY at construction.
+    //   2. push_back on a vector with sufficient capacity does not allocate.
+    //   3. poll_callbacks() uses clear() (not swap) so capacity is preserved
+    //      across drains.
+    // The mutex hold is microseconds (one push_back, no allocation). When
+    // the queue is full, events are dropped and counted in
+    // cb_queue_dropped_; the producer never blocks waiting for the consumer.
+    static constexpr size_t CB_QUEUE_CAPACITY = 1024;
     std::mutex cb_queue_mutex_;
     std::vector<CallbackEvent> cb_queue_;
+    std::vector<CallbackEvent> dispatch_buffer_;   // owned by poll_callbacks
+    std::atomic<int> cb_queue_dropped_{0};
+
+    // Push helper: returns true if pushed, false if dropped (queue full).
+    bool push_callback_event(const CallbackEvent& ev) {
+        std::lock_guard<std::mutex> lock(cb_queue_mutex_);
+        if (cb_queue_.size() >= CB_QUEUE_CAPACITY) {
+            cb_queue_dropped_.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+        cb_queue_.push_back(ev);
+        return true;
+    }
 
     // Static trampolines -- enqueue events without touching the GIL.
-    // The mutex is held only for a vector push_back (sub-microsecond).
     static void change_callback_trampoline(MH_Plugin*, int flags, void* user_data) {
         auto* self = static_cast<Plugin*>(user_data);
-        std::lock_guard<std::mutex> lock(self->cb_queue_mutex_);
-        self->cb_queue_.push_back({CallbackEvent::Change, flags, 0.0f});
+        self->push_callback_event({CallbackEvent::Change, flags, 0.0f});
     }
 
     static void param_value_callback_trampoline(MH_Plugin*, int param_index, float new_value, void* user_data) {
         auto* self = static_cast<Plugin*>(user_data);
-        std::lock_guard<std::mutex> lock(self->cb_queue_mutex_);
-        self->cb_queue_.push_back({CallbackEvent::ParamValue, param_index, new_value});
+        self->push_callback_event({CallbackEvent::ParamValue, param_index, new_value});
     }
 
     static void param_gesture_callback_trampoline(MH_Plugin*, int param_index, int gesture_starting, void* user_data) {
         auto* self = static_cast<Plugin*>(user_data);
-        std::lock_guard<std::mutex> lock(self->cb_queue_mutex_);
-        self->cb_queue_.push_back({gesture_starting ? CallbackEvent::GestureBegin : CallbackEvent::GestureEnd,
+        self->push_callback_event({gesture_starting ? CallbackEvent::GestureBegin : CallbackEvent::GestureEnd,
                                    param_index, 0.0f});
     }
 
@@ -908,11 +953,18 @@ public:
     }
 
     ~PluginChain() {
+        close();
+    }
+
+    void close() {
         if (chain_) {
             mh_chain_close(chain_);
             chain_ = nullptr;
         }
     }
+
+    PluginChain& enter() { return *this; }
+    void exit(nb::object, nb::object, nb::object) { close(); }
 
     // Disable copy
     PluginChain(const PluginChain&) = delete;
@@ -1741,6 +1793,21 @@ private:
 NB_MODULE(_core, m) {
     m.doc() = "minihost - Python bindings for audio plugin hosting";
 
+    // ABI version of the linked C library. Header constants
+    // MH_API_VERSION_{MAJOR,MINOR,PATCH} are exposed so a wheel built against
+    // one header version can detect a mismatch with a separately-installed
+    // libminihost. Layout: MAJOR*10000 + MINOR*100 + PATCH.
+    m.attr("MH_API_VERSION_MAJOR") = MH_API_VERSION_MAJOR;
+    m.attr("MH_API_VERSION_MINOR") = MH_API_VERSION_MINOR;
+    m.attr("MH_API_VERSION_PATCH") = MH_API_VERSION_PATCH;
+    m.attr("MH_API_VERSION_NUMBER") = MH_API_VERSION_NUMBER;
+    m.attr("MH_API_VERSION_STRING") = MH_API_VERSION_STRING;
+    m.def("api_version", &mh_api_version,
+          "Return the ABI version the linked C library was compiled against, "
+          "as MAJOR*10000 + MINOR*100 + PATCH.");
+    m.def("api_version_string", &mh_api_version_string,
+          "Return the linked C library's ABI version as 'MAJOR.MINOR.PATCH'.");
+
     // Module-level functions
     m.def("probe", &probe_plugin,
           nb::arg("path"),
@@ -1979,7 +2046,21 @@ NB_MODULE(_core, m) {
         .def("poll_callbacks", &Plugin::poll_callbacks,
              "Drain pending callback events and dispatch to registered Python callbacks. "
              "Call this periodically from your main/UI thread to receive change, "
-             "parameter value, and gesture notifications. Returns the number of events dispatched.");
+             "parameter value, and gesture notifications. Returns the number of events dispatched.")
+        .def("callback_events_dropped", &Plugin::callback_events_dropped,
+             "Return (and reset) the count of callback events dropped because "
+             "the bounded queue (capacity 1024) was full. Non-zero values "
+             "indicate poll_callbacks() is not being called frequently enough.")
+
+        // Explicit close + context-manager support
+        .def("close", &Plugin::close,
+             "Release plugin resources immediately. Idempotent. Subsequent "
+             "operations on this Plugin raise RuntimeError. Equivalent to "
+             "letting the Plugin go out of scope, but deterministic.")
+        .def("__enter__", &Plugin::enter, nb::rv_policy::reference)
+        .def("__exit__", [](Plugin& self, const nb::args&) {
+            self.close();
+        });
 
     // PluginChain class for chaining multiple plugins
     nb::class_<PluginChain>(m, "PluginChain")
@@ -2035,7 +2116,17 @@ NB_MODULE(_core, m) {
         .def("process_auto", &PluginChain::process_auto,
              nb::arg("input"), nb::arg("output"), nb::arg("midi_in"), nb::arg("param_changes"),
              "Process with sample-accurate automation. param_changes: list of (sample_offset, plugin_index, param_index, value). "
-             "Returns list of output MIDI events (max 256 per call; excess events are dropped).");
+             "Returns list of output MIDI events (max 256 per call; excess events are dropped).")
+
+        // Explicit close + context-manager support
+        .def("close", &PluginChain::close,
+             "Release the chain's internal resources. Idempotent. The "
+             "underlying Plugin objects are not closed by this call; they "
+             "remain owned by the caller (or by their own context managers).")
+        .def("__enter__", &PluginChain::enter, nb::rv_policy::reference)
+        .def("__exit__", [](PluginChain& self, const nb::args&) {
+            self.close();
+        });
 
     // AudioDevice class for real-time playback
     nb::class_<AudioDevice>(m, "AudioDevice")

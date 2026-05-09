@@ -30,6 +30,19 @@
 
 using namespace juce;
 
+// ABI version reporting. The number returned reflects the version the
+// implementation was built against. Callers should compare with the
+// MH_API_VERSION_NUMBER macro from the header at startup.
+extern "C" int mh_api_version(void)
+{
+    return MH_API_VERSION_NUMBER;
+}
+
+extern "C" const char* mh_api_version_string(void)
+{
+    return MH_API_VERSION_STRING;
+}
+
 class MH_PlayHead : public AudioPlayHead
 {
 public:
@@ -833,6 +846,13 @@ static int probeWithFm(AudioPluginFormatManager& fm,
 
     std::snprintf(out_desc->unique_id, sizeof(out_desc->unique_id), "%08X", desc.uniqueId);
 
+    // accepts_midi/produces_midi are a best-effort heuristic at probe time.
+    // JUCE's PluginDescription does not expose dedicated MIDI-input/output
+    // flags in this version, so the value is conservatively derived from
+    // isInstrument (instruments accept MIDI). MIDI effects, MIDI generators,
+    // and analyzer plugins are NOT correctly classified by this heuristic.
+    // Callers needing authoritative values must call mh_open + mh_get_info,
+    // which queries the instantiated plugin directly.
     out_desc->accepts_midi = desc.isInstrument ? 1 : 0;
     out_desc->produces_midi = 0;
     out_desc->num_inputs = desc.numInputChannels;
