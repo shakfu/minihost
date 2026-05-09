@@ -61,6 +61,37 @@ static void interleaved_to_planar(const float* interleaved, float* planar,
             planar[ch * frames + f] = interleaved[f * channels + ch];
 }
 
+// Validate audio buffer shape for a process call. Throws on mismatch.
+// User arrays must have >= the plugin's required channel count; extra
+// channels are harmless (the C layer only references the first N).
+static void validate_process_shape(int in_channels, int out_channels,
+                                   int in_frames, int out_frames,
+                                   int required_in, int required_out,
+                                   int max_block_size) {
+    if (in_frames != out_frames) {
+        throw std::runtime_error(
+            "Input and output frame counts must match (input=" +
+            std::to_string(in_frames) + ", output=" + std::to_string(out_frames) + ")");
+    }
+    if (in_frames > max_block_size) {
+        throw std::runtime_error(
+            "Frame count " + std::to_string(in_frames) +
+            " exceeds max block size " + std::to_string(max_block_size));
+    }
+    if (in_channels < required_in) {
+        throw std::runtime_error(
+            "Input has " + std::to_string(in_channels) +
+            " channel(s) but plugin requires at least " +
+            std::to_string(required_in));
+    }
+    if (out_channels < required_out) {
+        throw std::runtime_error(
+            "Output has " + std::to_string(out_channels) +
+            " channel(s) but plugin requires at least " +
+            std::to_string(required_out));
+    }
+}
+
 // Build a Python dict from MH_PluginDesc fields.
 static nb::dict plugin_desc_to_dict(const MH_PluginDesc& desc) {
     nb::dict d;
@@ -427,12 +458,10 @@ public:
         int in_frames = static_cast<int>(input.shape(1));
         int out_frames = static_cast<int>(output.shape(1));
 
-        if (in_frames != out_frames) {
-            throw std::runtime_error("Input and output frame counts must match");
-        }
-        if (in_frames > max_block_size_) {
-            throw std::runtime_error("Frame count exceeds max block size");
-        }
+        MH_Info info;
+        mh_get_info(plugin_, &info);
+        validate_process_shape(in_channels, out_channels, in_frames, out_frames,
+                               info.num_input_ch, info.num_output_ch, max_block_size_);
 
         // Set up channel pointers
         std::vector<const float*> in_ptrs(in_channels);
@@ -459,12 +488,10 @@ public:
         int in_frames = static_cast<int>(input.shape(1));
         int out_frames = static_cast<int>(output.shape(1));
 
-        if (in_frames != out_frames) {
-            throw std::runtime_error("Input and output frame counts must match");
-        }
-        if (in_frames > max_block_size_) {
-            throw std::runtime_error("Frame count exceeds max block size");
-        }
+        MH_Info info;
+        mh_get_info(plugin_, &info);
+        validate_process_shape(in_channels, out_channels, in_frames, out_frames,
+                               info.num_input_ch, info.num_output_ch, max_block_size_);
 
         // Convert MIDI input
         std::vector<MH_MidiEvent> midi_events;
@@ -515,12 +542,10 @@ public:
         int in_frames = static_cast<int>(input.shape(1));
         int out_frames = static_cast<int>(output.shape(1));
 
-        if (in_frames != out_frames) {
-            throw std::runtime_error("Input and output frame counts must match");
-        }
-        if (in_frames > max_block_size_) {
-            throw std::runtime_error("Frame count exceeds max block size");
-        }
+        MH_Info info;
+        mh_get_info(plugin_, &info);
+        validate_process_shape(in_channels, out_channels, in_frames, out_frames,
+                               info.num_input_ch, info.num_output_ch, max_block_size_);
 
         // Convert MIDI input
         std::vector<MH_MidiEvent> midi_events;
@@ -592,6 +617,28 @@ public:
             throw std::runtime_error("Frame count exceeds max block size");
         }
 
+        MH_Info info;
+        mh_get_info(plugin_, &info);
+        int required_sc = mh_get_sidechain_channels(plugin_);
+        if (main_in_ch < info.num_input_ch) {
+            throw std::runtime_error(
+                "Main input has " + std::to_string(main_in_ch) +
+                " channel(s) but plugin requires at least " +
+                std::to_string(info.num_input_ch));
+        }
+        if (main_out_ch < info.num_output_ch) {
+            throw std::runtime_error(
+                "Main output has " + std::to_string(main_out_ch) +
+                " channel(s) but plugin requires at least " +
+                std::to_string(info.num_output_ch));
+        }
+        if (sc_ch < required_sc) {
+            throw std::runtime_error(
+                "Sidechain input has " + std::to_string(sc_ch) +
+                " channel(s) but plugin requires " +
+                std::to_string(required_sc));
+        }
+
         int nframes = main_in_frames;
 
         // Set up channel pointers for main input
@@ -633,12 +680,10 @@ public:
         int in_frames = static_cast<int>(input.shape(1));
         int out_frames = static_cast<int>(output.shape(1));
 
-        if (in_frames != out_frames) {
-            throw std::runtime_error("Input and output frame counts must match");
-        }
-        if (in_frames > max_block_size_) {
-            throw std::runtime_error("Frame count exceeds max block size");
-        }
+        MH_Info info;
+        mh_get_info(plugin_, &info);
+        validate_process_shape(in_channels, out_channels, in_frames, out_frames,
+                               info.num_input_ch, info.num_output_ch, max_block_size_);
 
         // Set up channel pointers
         std::vector<const double*> in_ptrs(in_channels);
@@ -944,9 +989,10 @@ public:
         int in_frames = static_cast<int>(input.shape(1));
         int out_frames = static_cast<int>(output.shape(1));
 
-        if (in_frames != out_frames) {
-            throw std::runtime_error("Input and output frame counts must match");
-        }
+        validate_process_shape(in_channels, out_channels, in_frames, out_frames,
+                               mh_chain_get_num_input_channels(chain_),
+                               mh_chain_get_num_output_channels(chain_),
+                               mh_chain_get_max_block_size(chain_));
 
         std::vector<const float*> in_ptrs(in_channels);
         std::vector<float*> out_ptrs(out_channels);
@@ -971,9 +1017,10 @@ public:
         int in_frames = static_cast<int>(input.shape(1));
         int out_frames = static_cast<int>(output.shape(1));
 
-        if (in_frames != out_frames) {
-            throw std::runtime_error("Input and output frame counts must match");
-        }
+        validate_process_shape(in_channels, out_channels, in_frames, out_frames,
+                               mh_chain_get_num_input_channels(chain_),
+                               mh_chain_get_num_output_channels(chain_),
+                               mh_chain_get_max_block_size(chain_));
 
         // Convert MIDI input
         std::vector<MH_MidiEvent> midi_events;
@@ -1023,9 +1070,10 @@ public:
         int in_frames = static_cast<int>(input.shape(1));
         int out_frames = static_cast<int>(output.shape(1));
 
-        if (in_frames != out_frames) {
-            throw std::runtime_error("Input and output frame counts must match");
-        }
+        validate_process_shape(in_channels, out_channels, in_frames, out_frames,
+                               mh_chain_get_num_input_channels(chain_),
+                               mh_chain_get_num_output_channels(chain_),
+                               mh_chain_get_max_block_size(chain_));
 
         // Convert MIDI input
         std::vector<MH_MidiEvent> midi_events;
@@ -1937,6 +1985,11 @@ NB_MODULE(_core, m) {
     nb::class_<PluginChain>(m, "PluginChain")
         .def(nb::init<nb::list>(),
              nb::arg("plugins"),
+             // keep_alive<1, 2>: tie the passed list's Python lifetime to the
+             // chain. The list holds references to its Plugin elements, so the
+             // raw Plugin* pointers stored in plugin_refs_ stay valid as long
+             // as the chain exists, even if the caller does not retain the list.
+             nb::keep_alive<1, 2>(),
              "Create a plugin chain from a list of Plugin instances. "
              "Audio flows sequentially through plugins (e.g., synth -> reverb -> limiter). "
              "All plugins must have the same sample rate. "
@@ -1996,6 +2049,9 @@ NB_MODULE(_core, m) {
              nb::arg("capture") = false,
              nb::arg("playback_device_index") = -1,
              nb::arg("capture_device_index") = -1,
+             // Pin the Plugin's Python lifetime to the AudioDevice so the
+             // device's stored raw Plugin* (plugin_ref_) cannot dangle.
+             nb::keep_alive<1, 2>(),
              "Open an audio device for real-time playback with a single plugin. "
              "sample_rate=0 uses device default. "
              "buffer_frames=0 uses auto (~256-512). "
@@ -2017,6 +2073,8 @@ NB_MODULE(_core, m) {
              nb::arg("capture") = false,
              nb::arg("playback_device_index") = -1,
              nb::arg("capture_device_index") = -1,
+             // Pin the PluginChain's Python lifetime to the AudioDevice.
+             nb::keep_alive<1, 2>(),
              "Open an audio device for real-time playback with a plugin chain. "
              "sample_rate=0 uses device default. "
              "buffer_frames=0 uses auto (~256-512). "

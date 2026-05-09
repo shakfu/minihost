@@ -11,15 +11,29 @@
 - **Callback dispatch moved off the audio thread** -- `set_change_callback()`, `set_param_value_callback()`, and `set_param_gesture_callback()` no longer acquire the Python GIL from the audio thread. Callback events from the plugin (via JUCE's `AudioProcessorListener`) are pushed to a lightweight mutex-protected queue and dispatched to Python only when `poll_callbacks()` is called. This eliminates a class of audio dropouts caused by GIL contention.
 - **`mh_open()` now delegates to `mh_open_ex()`** with `sidechain_in_ch=0`, removing ~50 lines of duplicated plugin-loading logic. `tryConfigureBuses()` removed (subsumed by `tryConfigureBusesEx()` which already handles zero sidechain correctly).
 - **`mh_process_sidechain()` no longer heap-allocates on the audio thread** -- the combined main+sidechain buffer is pre-allocated once in `mh_open_ex()` and reused across calls, matching the zero-allocation pattern used by all other process functions.
+- **`mh_process_double()` no longer heap-allocates on the audio thread** -- previously allocated `AudioBuffer<double>`/`AudioBuffer<float>` and `MidiBuffer` per call, violating the header's documented RT-safety contract. Added a persistent `AudioBuffer<double> processBufD` to `MH_Plugin` (sized once in `mh_open_ex` to match the float `processBuf`); the float-fallback path reuses `processBuf`. Both branches now reuse `p->midi`. Combined-buffer pattern also resolves the same `inCh > outCh` data-loss bug as the float path.
+- **`mh_chain_process_auto()` no longer heap-allocates on the audio thread** -- previously allocated four `std::vector`s per chunk (`chunk_inputs`, `chunk_outputs`, `chunk_midi`, a 256-element `chunk_midi_out`); a block with 16 param changes did 64 heap allocations. Added persistent `autoChunkIn` / `autoChunkOut` / `autoChunkMidiIn` / `autoChunkMidiOut` members to `MH_PluginChain`, pre-sized at construction; the chunk loop now uses `clear()` + `push_back` against preserved capacity.
+- **Unified processing buffer in `MH_Plugin`** -- removed `inBuf`, `outBuf`, `sidechainBuf`, `combinedBuf`, `autoChunkIn`, `autoChunkOut` (six members). Replaced with a single `processBuf` (and its `processBufD` double-precision mirror) used uniformly by `mh_process_midi_io`, `mh_process_auto`, `mh_process_sidechain`, and `mh_process_double`. Reduces struct size and gives every audio path the same correctness guarantees.
 - **Extracted shared helpers in Python bindings** (`_core.cpp`):
   - `planar_to_interleaved()` / `interleaved_to_planar()` replace 4 inline loop nests across `audio_read`, `audio_write`, and `audio_resample`
   - `plugin_desc_to_dict()` replaces 2 identical 10-field dict constructions in `probe()` and `scan_directory()`
 
 ### Fixed
 
+- **`PluginChain` and `AudioDevice` no longer dangle on anonymous Python inputs** -- `PluginChain([Plugin(...)])` and `AudioDevice(Plugin(...))` previously stored raw `Plugin*` pointers without holding a Python reference, so once the temporary `Plugin` / list went out of scope the wrappers could be garbage-collected, leaving the chain or device with dangling pointers. Added `nb::keep_alive<1, 2>()` to both constructors (and the `AudioDevice(PluginChain&, ...)` overload) so the inputs' Python lifetime is pinned to the new instance. Crash was nondeterministic and depended on GC timing.
+- **`mh_process_midi_io()` silently dropped input channels when `inCh > outCh`** -- the buffer passed to JUCE's `processBlock` was sized only to `outCh` channels, so plugins configured with more inputs than outputs (e.g. 4-in / 2-out downmix) only ever saw the first `outCh` input channels. Replaced the dual `inBuf`/`outBuf` setup with a single persistent `processBuf` sized to `max(inCh + sidechainCh, outCh)`; main inputs are copied into channels `[0, inCh)`, remaining channels are zeroed, and outputs are copied back from channels `[0, outCh)`. The same fix is applied per chunk in `mh_process_auto()`. Symmetric (`inCh == outCh`) plugins pay one extra `memcpy` per block; the previous code already did the equivalent copy for the in-place pre-fill.
+- **Channel-count validation on `Plugin.process*` and `PluginChain.process*`** -- passing a numpy array with fewer channels than the plugin requires previously dereferenced past the internal `std::vector<const float*>` (undefined behavior). All eight process methods now validate via a new `validate_process_shape()` helper and raise `RuntimeError` with a message naming the actual vs. required channel counts. Extra channels remain accepted (harmless; the C layer only references the first N).
 - **MIDI event tuple validation** -- `process_midi()` and `process_auto()` (on both `Plugin` and `PluginChain`) now validate that each MIDI event tuple has at least 4 elements before indexing, producing a clear `RuntimeError` instead of an opaque `IndexError` from the nanobind layer.
 - **Null plugin guard in `PluginChain`** -- the `PluginChain` constructor now checks each `Plugin` for a valid internal pointer. Passing a moved-from or otherwise invalid `Plugin` now raises a descriptive `RuntimeError` instead of causing undefined behavior.
 - **MIDI output buffer limit documented** -- `process_midi()` and `process_auto()` docstrings now state that MIDI output is capped at 256 events per call, with excess events silently dropped. The hard-coded buffer size is consolidated into a named constant (`MIDI_OUT_CAPACITY`).
+
+### Internal
+
+- **New regression tests** under `tests/`:
+  - `test_chain_gc.py` -- `PluginChain`/`AudioDevice` lifetime pinning
+  - `test_channel_validation.py` -- shape validation on all process entry points
+  - `test_asymmetric_channels.py` -- combined-buffer correctness for `process` and `process_auto`
+  - `test_rt_allocations.py` -- repeated-call stability for `process_double` and chain `process_auto`
 
 ## [0.1.5]
 

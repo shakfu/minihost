@@ -26,6 +26,14 @@ struct MH_PluginChain
     double sample_rate;
     int num_input_channels;   // First plugin's input channels
     int num_output_channels;  // Last plugin's output channels
+
+    // Persistent scratch buffers for mh_chain_process_auto chunk splitting.
+    // Sized once at chain construction; reused across calls so the audio
+    // thread never has to allocate.
+    std::vector<const float*> autoChunkIn;
+    std::vector<float*> autoChunkOut;
+    std::vector<MH_MidiEvent> autoChunkMidiIn;
+    std::vector<MH_MidiEvent> autoChunkMidiOut;
 };
 
 static void setErr(char* buf, size_t n, const char* msg)
@@ -112,6 +120,14 @@ MH_PluginChain* mh_chain_create(MH_Plugin** plugins, int num_plugins,
     {
         chain->stage_channels.push_back(infos[i].num_output_ch);
     }
+
+    // Pre-size scratch vectors used by mh_chain_process_auto so the audio
+    // thread never allocates. Capacity is the chain's I/O channel count and
+    // a generous MIDI-event ceiling matching the C API's documented limit.
+    chain->autoChunkIn.resize(chain->num_input_channels);
+    chain->autoChunkOut.resize(chain->num_output_channels);
+    chain->autoChunkMidiIn.reserve(256);
+    chain->autoChunkMidiOut.resize(256);
 
     // Allocate intermediate buffers (n-1 buffers for n plugins)
     chain->intermediate_storage.resize(num_plugins - 1);
@@ -383,16 +399,20 @@ int mh_chain_process_auto(MH_PluginChain* chain,
         if (chunk_size <= 0)
             break;
 
-        // Prepare offset input/output pointers for this chunk
-        std::vector<const float*> chunk_inputs(in_ch);
-        std::vector<float*> chunk_outputs(out_ch);
+        // Prepare offset input/output pointers for this chunk using the
+        // chain's persistent scratch vectors (no per-chunk allocation).
+        auto& chunk_inputs = chain->autoChunkIn;
+        auto& chunk_outputs = chain->autoChunkOut;
         for (int ch = 0; ch < in_ch; ++ch)
             chunk_inputs[ch] = inputs ? inputs[ch] + current_sample : nullptr;
         for (int ch = 0; ch < out_ch; ++ch)
             chunk_outputs[ch] = outputs ? outputs[ch] + current_sample : nullptr;
 
-        // Collect MIDI events for this chunk (adjust offsets to chunk-local)
-        std::vector<MH_MidiEvent> chunk_midi;
+        // Collect MIDI events for this chunk (adjust offsets to chunk-local).
+        // clear() preserves capacity, so push_back stays allocation-free
+        // after the first warm-up call where capacity was reserved.
+        auto& chunk_midi = chain->autoChunkMidiIn;
+        chunk_midi.clear();
         while (midi_idx < num_midi_in)
         {
             const auto& ev = midi_in[midi_idx];
@@ -407,8 +427,8 @@ int mh_chain_process_auto(MH_PluginChain* chain,
             ++midi_idx;
         }
 
-        // Process chunk through the chain
-        std::vector<MH_MidiEvent> chunk_midi_out(256);
+        // Process chunk through the chain (persistent MIDI-out scratch).
+        auto& chunk_midi_out = chain->autoChunkMidiOut;
         int chunk_num_midi_out = 0;
 
         int result = mh_chain_process_midi_io(

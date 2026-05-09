@@ -168,17 +168,14 @@ struct MH_Plugin
     int sidechainCh = 0;  // sidechain input channels (0 if none)
     std::string path;     // plugin file path passed to mh_open / mh_open_ex
 
-    AudioBuffer<float> inBuf;
-    AudioBuffer<float> outBuf;
-    AudioBuffer<float> sidechainBuf;   // sidechain input buffer
-    AudioBuffer<float> combinedBuf;    // pre-allocated for mh_process_sidechain
+    // Single processing buffer sized to max(inCh + sidechainCh, outCh) channels.
+    // JUCE's processBlock contract requires the buffer to have enough channels
+    // for both inputs and outputs; sizing to the max handles asymmetric layouts
+    // (inCh > outCh, outCh > inCh) and the sidechain case uniformly.
+    // Inputs are copied in at the start; outputs are copied out at the end.
+    AudioBuffer<float> processBuf;
+    AudioBuffer<double> processBufD;   // mirror of processBuf for mh_process_double
     MidiBuffer midi;
-
-    // Persistent pointer arrays for mh_process_auto chunk splitting.
-    // Sized once on first call; avoids per-call heap allocation and removes
-    // the former hard-coded 64-channel limit.
-    std::vector<const float*> autoChunkIn;
-    std::vector<float*> autoChunkOut;
 
     // Mutex for thread-safe access to plugin state from non-audio threads
     // Note: mh_process* functions do NOT lock (audio thread must not block)
@@ -334,41 +331,31 @@ extern "C" int mh_process_midi_io(MH_Plugin* p,
     if (!p || !p->inst) return 0;
     if (nframes < 0 || nframes > p->maxBlockSize) return 0;
 
-    // Wrap caller buffers (no copy). If inputs/outputs are null, use internal buffers.
-    // Input
+    auto& buf = p->processBuf;
+    const int totalCh = buf.getNumChannels();
+    const size_t bytes = sizeof(float) * (size_t)nframes;
+
+    // Match the buffer's reported sample count to nframes so processBlock
+    // processes the right number of frames. avoidReallocating=true ensures no
+    // heap activity as long as nframes <= maxBlockSize (already validated).
+    buf.setSize(totalCh, nframes, false, false, true);
+
+    // Copy main inputs into the first p->inCh channels of the combined buffer;
+    // zero any remaining channels (sidechain slots, output-only channels when
+    // outCh > inCh). This ensures the plugin sees a buffer with
+    // max(inCh + sidechainCh, outCh) channels of valid data, as JUCE requires.
     if (inputs)
     {
-        // setDataToReferTo expects non-const; we only read, so cast is acceptable here.
-        p->inBuf.setDataToReferTo(const_cast<float**>(inputs), p->inCh, nframes);
+        for (int ch = 0; ch < p->inCh; ++ch)
+            std::memcpy(buf.getWritePointer(ch), inputs[ch], bytes);
     }
     else
     {
-        p->inBuf.clear(0, nframes);
+        for (int ch = 0; ch < p->inCh; ++ch)
+            std::memset(buf.getWritePointer(ch), 0, bytes);
     }
-
-    // Output
-    if (outputs)
-    {
-        p->outBuf.setDataToReferTo(outputs, p->outCh, nframes);
-    }
-    else
-    {
-        p->outBuf.clear(0, nframes);
-    }
-
-    // Many plugins do in-place; we pass output buffer to processBlock.
-    // If you want "separate in/out", copy input -> output first.
-    if (inputs && outputs)
-    {
-        // Copy min(inCh,outCh)
-        auto minCh = jmin(p->inCh, p->outCh);
-        for (int ch = 0; ch < minCh; ++ch)
-            std::memcpy(outputs[ch], inputs[ch], sizeof(float) * (size_t)nframes);
-
-        // If more outs than ins, clear extra outs
-        for (int ch = minCh; ch < p->outCh; ++ch)
-            std::memset(outputs[ch], 0, sizeof(float) * (size_t)nframes);
-    }
+    for (int ch = p->inCh; ch < totalCh; ++ch)
+        std::memset(buf.getWritePointer(ch), 0, bytes);
 
     // Build MIDI input buffer from events
     p->midi.clear();
@@ -382,8 +369,14 @@ extern "C" int mh_process_midi_io(MH_Plugin* p,
         }
     }
 
-    p->inst->processBlock(p->outBuf, p->midi);
+    p->inst->processBlock(buf, p->midi);
 
+    // Copy outputs back from the first p->outCh channels.
+    if (outputs)
+    {
+        for (int ch = 0; ch < p->outCh; ++ch)
+            std::memcpy(outputs[ch], buf.getReadPointer(ch), bytes);
+    }
 
     // Extract MIDI output events
     if (num_midi_out)
@@ -675,17 +668,27 @@ extern "C" int mh_process_auto(MH_Plugin* p,
         if (chunk_size <= 0)
             break;
 
-        // Prepare input/output pointers for this chunk
-        // Use persistent vectors on MH_Plugin to avoid heap allocation on the
-        // audio thread.  They are resized once (at first call) and reused.
-        auto& chunk_inputs  = p->autoChunkIn;
-        auto& chunk_outputs = p->autoChunkOut;
-        if ((int)chunk_inputs.size()  != p->inCh)  chunk_inputs.resize(p->inCh);
-        if ((int)chunk_outputs.size() != p->outCh) chunk_outputs.resize(p->outCh);
-        for (int ch = 0; ch < p->inCh; ++ch)
-            chunk_inputs[ch] = inputs ? inputs[ch] + current_sample : nullptr;
-        for (int ch = 0; ch < p->outCh; ++ch)
-            chunk_outputs[ch] = outputs ? outputs[ch] + current_sample : nullptr;
+        // Stage chunk inputs into the combined processBuf. Same pattern as
+        // mh_process_midi_io: copy main inputs to the first inCh channels,
+        // zero any output-only channels above inCh.
+        auto& buf = p->processBuf;
+        const int totalCh = buf.getNumChannels();
+        const size_t chunk_bytes = sizeof(float) * (size_t)chunk_size;
+        buf.setSize(totalCh, chunk_size, false, false, true);
+
+        if (inputs)
+        {
+            for (int ch = 0; ch < p->inCh; ++ch)
+                std::memcpy(buf.getWritePointer(ch),
+                            inputs[ch] + current_sample, chunk_bytes);
+        }
+        else
+        {
+            for (int ch = 0; ch < p->inCh; ++ch)
+                std::memset(buf.getWritePointer(ch), 0, chunk_bytes);
+        }
+        for (int ch = p->inCh; ch < totalCh; ++ch)
+            std::memset(buf.getWritePointer(ch), 0, chunk_bytes);
 
         // Collect MIDI events for this chunk
         p->midi.clear();
@@ -702,29 +705,16 @@ extern "C" int mh_process_auto(MH_Plugin* p,
             ++midi_idx;
         }
 
-        // Set up buffers for this chunk
-        if (inputs)
-            p->inBuf.setDataToReferTo(const_cast<float**>(chunk_inputs.data()), p->inCh, chunk_size);
-        else
-            p->inBuf.clear(0, chunk_size);
-
-        if (outputs)
-            p->outBuf.setDataToReferTo(chunk_outputs.data(), p->outCh, chunk_size);
-        else
-            p->outBuf.clear(0, chunk_size);
-
-        // Copy input to output for in-place processing
-        if (inputs && outputs)
-        {
-            auto minCh = jmin(p->inCh, p->outCh);
-            for (int ch = 0; ch < minCh; ++ch)
-                std::memcpy(chunk_outputs[ch], chunk_inputs[ch], sizeof(float) * chunk_size);
-            for (int ch = minCh; ch < p->outCh; ++ch)
-                std::memset(chunk_outputs[ch], 0, sizeof(float) * chunk_size);
-        }
-
         // Process this chunk
-        p->inst->processBlock(p->outBuf, p->midi);
+        p->inst->processBlock(buf, p->midi);
+
+        // Copy outputs back into the caller's buffer at current_sample offset.
+        if (outputs)
+        {
+            for (int ch = 0; ch < p->outCh; ++ch)
+                std::memcpy(outputs[ch] + current_sample,
+                            buf.getReadPointer(ch), chunk_bytes);
+        }
 
         // Collect MIDI output from this chunk
         if (midi_out && midi_out_capacity > 0)
@@ -1045,16 +1035,13 @@ extern "C" MH_Plugin* mh_open_ex(const char* plugin_path,
     p->inCh  = jmax(1, inst->getTotalNumInputChannels());
     p->outCh = jmax(1, inst->getTotalNumOutputChannels());
 
-    p->inBuf.setSize(p->inCh, max_block_size, false, false, true);
-    p->outBuf.setSize(p->outCh, max_block_size, false, false, true);
-    if (p->sidechainCh > 0)
-    {
-        p->sidechainBuf.setSize(p->sidechainCh, max_block_size, false, false, true);
-        // Pre-allocate combined buffer for mh_process_sidechain
-        // (main + sidechain channels merged for JUCE processBlock)
-        int totalCh = jmax(p->inCh + p->sidechainCh, p->outCh);
-        p->combinedBuf.setSize(totalCh, max_block_size, false, false, true);
-    }
+    // Allocate the combined processing buffer once. Size: max channels
+    // required across input (main + sidechain) and output. JUCE's processBlock
+    // reads inputs from channels 0..inCh+sidechainCh-1 and writes outputs to
+    // channels 0..outCh-1, so the buffer must accommodate both.
+    int totalProcessCh = jmax(p->inCh + p->sidechainCh, p->outCh);
+    p->processBuf.setSize(totalProcessCh, max_block_size, false, false, true);
+    p->processBufD.setSize(totalProcessCh, max_block_size, false, false, true);
 
     // Set up playhead for transport info
     p->playHead.sampleRate = sample_rate;
@@ -1074,11 +1061,12 @@ extern "C" int mh_process_sidechain(MH_Plugin* p,
     if (!p || !p->inst) return 0;
     if (nframes < 0 || nframes > p->maxBlockSize) return 0;
 
-    // Use pre-allocated combinedBuf (sized in mh_open_ex) to avoid
-    // per-call heap allocation on the audio thread.
-    auto& buffer = p->combinedBuf;
+    // Use the pre-allocated combined processBuf (sized in mh_open_ex to
+    // max(inCh + sidechainCh, outCh)) to avoid per-call heap allocation.
+    auto& buffer = p->processBuf;
     int totalInCh = p->inCh + p->sidechainCh;
     int totalCh = buffer.getNumChannels();
+    buffer.setSize(totalCh, nframes, false, false, true);
 
     // Copy main input to first channels
     if (main_in)
@@ -1409,100 +1397,78 @@ extern "C" int mh_process_double(MH_Plugin* p,
     if (!p || !p->inst) return 0;
     if (nframes < 0 || nframes > p->maxBlockSize) return 0;
 
-    // Check if plugin supports native double precision
+    // Both branches use persistent buffers (sized once in mh_open_ex) to
+    // avoid heap allocation on the audio thread. setSize with
+    // avoidReallocating=true updates the reported sample count without
+    // reallocating because nframes <= maxBlockSize is already validated.
     if (p->inst->supportsDoublePrecisionProcessing())
     {
-        // Use native double precision processing
-        AudioBuffer<double> inBuf(p->inCh, nframes);
-        AudioBuffer<double> outBuf(p->outCh, nframes);
+        auto& buf = p->processBufD;
+        const int totalCh = buf.getNumChannels();
+        const size_t bytes = sizeof(double) * (size_t)nframes;
+        buf.setSize(totalCh, nframes, false, false, true);
 
-        // Copy input to buffer
         if (inputs)
         {
             for (int ch = 0; ch < p->inCh; ++ch)
-                std::memcpy(inBuf.getWritePointer(ch), inputs[ch], sizeof(double) * nframes);
+                std::memcpy(buf.getWritePointer(ch), inputs[ch], bytes);
         }
         else
         {
-            inBuf.clear();
+            for (int ch = 0; ch < p->inCh; ++ch)
+                std::memset(buf.getWritePointer(ch), 0, bytes);
         }
+        for (int ch = p->inCh; ch < totalCh; ++ch)
+            std::memset(buf.getWritePointer(ch), 0, bytes);
 
-        // Copy input to output for in-place processing
-        if (inputs && outputs)
-        {
-            int minCh = jmin(p->inCh, p->outCh);
-            for (int ch = 0; ch < minCh; ++ch)
-                std::memcpy(outBuf.getWritePointer(ch), inputs[ch], sizeof(double) * nframes);
-            for (int ch = minCh; ch < p->outCh; ++ch)
-                outBuf.clear(ch, 0, nframes);
-        }
-        else if (outputs)
-        {
-            outBuf.clear();
-        }
+        p->midi.clear();
+        p->inst->processBlock(buf, p->midi);
 
-        // Process with double precision
-        MidiBuffer midi;
-        p->inst->processBlock(outBuf, midi);
-
-        // Copy output back
         if (outputs)
         {
             for (int ch = 0; ch < p->outCh; ++ch)
-                std::memcpy(outputs[ch], outBuf.getReadPointer(ch), sizeof(double) * nframes);
+                std::memcpy(outputs[ch], buf.getReadPointer(ch), bytes);
         }
     }
     else
     {
-        // Convert to float, process, convert back
-        AudioBuffer<float> inBuf(p->inCh, nframes);
-        AudioBuffer<float> outBuf(p->outCh, nframes);
+        // Plugin only supports float; convert double <-> float through the
+        // existing float processBuf.
+        auto& buf = p->processBuf;
+        const int totalCh = buf.getNumChannels();
+        buf.setSize(totalCh, nframes, false, false, true);
 
-        // Convert double input to float
         if (inputs)
         {
             for (int ch = 0; ch < p->inCh; ++ch)
             {
-                auto* dest = inBuf.getWritePointer(ch);
+                auto* dest = buf.getWritePointer(ch);
+                const double* src = inputs[ch];
                 for (int i = 0; i < nframes; ++i)
-                    dest[i] = static_cast<float>(inputs[ch][i]);
+                    dest[i] = static_cast<float>(src[i]);
             }
         }
         else
         {
-            inBuf.clear();
+            for (int ch = 0; ch < p->inCh; ++ch)
+                std::memset(buf.getWritePointer(ch), 0,
+                            sizeof(float) * (size_t)nframes);
         }
+        for (int ch = p->inCh; ch < totalCh; ++ch)
+            std::memset(buf.getWritePointer(ch), 0,
+                        sizeof(float) * (size_t)nframes);
 
-        // Copy input to output for in-place processing
-        if (inputs && outputs)
-        {
-            int minCh = jmin(p->inCh, p->outCh);
-            for (int ch = 0; ch < minCh; ++ch)
-            {
-                auto* dest = outBuf.getWritePointer(ch);
-                for (int i = 0; i < nframes; ++i)
-                    dest[i] = static_cast<float>(inputs[ch][i]);
-            }
-            for (int ch = minCh; ch < p->outCh; ++ch)
-                outBuf.clear(ch, 0, nframes);
-        }
-        else if (outputs)
-        {
-            outBuf.clear();
-        }
+        p->midi.clear();
+        p->inst->processBlock(buf, p->midi);
 
-        // Process with float
-        MidiBuffer midi;
-        p->inst->processBlock(outBuf, midi);
-
-        // Convert float output back to double
         if (outputs)
         {
             for (int ch = 0; ch < p->outCh; ++ch)
             {
-                const auto* src = outBuf.getReadPointer(ch);
+                const auto* src = buf.getReadPointer(ch);
+                double* dest = outputs[ch];
                 for (int i = 0; i < nframes; ++i)
-                    outputs[ch][i] = static_cast<double>(src[i]);
+                    dest[i] = static_cast<double>(src[i]);
             }
         }
     }
