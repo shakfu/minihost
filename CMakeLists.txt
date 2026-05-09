@@ -22,6 +22,17 @@ endif()
 
 add_subdirectory(${JUCE_PATH} ${CMAKE_CURRENT_BINARY_DIR}/JUCE EXCLUDE_FROM_ALL)
 
+# Install option must be set before subdirectories so install(TARGETS ... EXPORT)
+# rules inside them fire when needed.
+if(DEFINED SKBUILD)
+    set(_MINIHOST_INSTALL_DEFAULT OFF)
+else()
+    set(_MINIHOST_INSTALL_DEFAULT ON)
+endif()
+option(MINIHOST_INSTALL
+       "Generate install rules for libminihost and headers (standalone builds)"
+       ${_MINIHOST_INSTALL_DEFAULT})
+
 # Add project subdirectories
 add_subdirectory(projects/libminihost)
 add_subdirectory(projects/libminihost_audio)
@@ -34,6 +45,28 @@ add_subdirectory(projects/midifile EXCLUDE_FROM_ALL)
 if(NOT DEFINED SKBUILD)
     add_subdirectory(projects/minihost_c)
     add_subdirectory(projects/minihost_cpp)
+endif()
+
+if(MINIHOST_INSTALL)
+    include(GNUInstallDirs)
+
+    # Install the public C/C++ headers. The static library archive itself
+    # is installed by projects/libminihost/CMakeLists.txt.
+    #
+    # We deliberately do NOT generate a find_package(minihost) config or
+    # an exported target. The static library has PRIVATE link dependencies
+    # on JUCE modules (juce_core, juce_audio_basics,
+    # juce_audio_processors_headless) that this project vendors via
+    # add_subdirectory of a downloaded JUCE source tree -- those targets
+    # are not themselves installable and therefore cannot be exported as
+    # part of minihost's interface. Downstream C/C++ consumers should
+    # either rebuild minihost from source as a subdirectory, or link the
+    # installed libminihost.a manually together with their own JUCE build.
+    install(FILES
+        projects/libminihost/minihost.h
+        projects/libminihost/minihost_chain.h
+        projects/libminihost/minihost_vstpreset.h
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/minihost)
 endif()
 
 # Python bindings (only when building with scikit-build-core)

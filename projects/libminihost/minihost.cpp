@@ -1243,7 +1243,10 @@ extern "C" int mh_set_program_state(MH_Plugin* p, const void* data, int data_siz
 extern "C" int mh_set_sample_rate(MH_Plugin* p, double new_sample_rate)
 {
     if (!p || !p->inst) return 0;
-    if (new_sample_rate <= 0.0) return 0;
+    // Reject obviously invalid rates up front; common SR range is 8000-384000.
+    // We don't enforce a hard upper bound (some plugins support 768 kHz) but
+    // negative/zero/NaN must fail fast.
+    if (!(new_sample_rate > 0.0)) return 0;
 
     std::lock_guard<std::mutex> lock(p->stateMutex);
 
@@ -1266,6 +1269,21 @@ extern "C" int mh_set_sample_rate(MH_Plugin* p, double new_sample_rate)
     // Re-prepare with new sample rate
     p->inst->setRateAndBufferSizeDetails(new_sample_rate, p->maxBlockSize);
     p->inst->prepareToPlay(new_sample_rate, p->maxBlockSize);
+
+    // Verify the plugin actually accepted the rate. JUCE's prepareToPlay is
+    // void, so detection is via getSampleRate() reflecting back. If the
+    // plugin internally clamped or ignored the request, fail loudly so the
+    // caller doesn't silently process at the wrong rate.
+    double actual = p->inst->getSampleRate();
+    if (std::abs(actual - new_sample_rate) > 0.5)
+    {
+        // Best-effort recovery: re-prepare at whatever the plugin reports,
+        // and roll back our own bookkeeping so subsequent process calls
+        // match reality.
+        p->sampleRate = actual;
+        p->playHead.sampleRate = actual;
+        return 0;
+    }
 
     // Restore state from blob
     if (stateData.getSize() > 0)
@@ -1382,6 +1400,20 @@ extern "C" int mh_set_processing_precision(MH_Plugin* p, int precision)
     p->inst->setProcessingPrecision(newPrecision);
     p->inst->setRateAndBufferSizeDetails(p->sampleRate, p->maxBlockSize);
     p->inst->prepareToPlay(p->sampleRate, p->maxBlockSize);
+
+    // Verify the plugin actually switched precision. setProcessingPrecision
+    // is a request, not a guarantee -- some plugins decline doublePrecision
+    // even after supportsDoublePrecisionProcessing() returns true (e.g.,
+    // when an internal DSP unit only has a float code path). Surface the
+    // mismatch instead of silently processing at the wrong precision.
+    if (p->inst->getProcessingPrecision() != newPrecision)
+    {
+        // Plugin is now in some other (its preferred) precision; restore
+        // state so we leave it consistent before returning failure.
+        if (stateData.getSize() > 0)
+            p->inst->setStateInformation(stateData.getData(), static_cast<int>(stateData.getSize()));
+        return 0;
+    }
 
     if (stateData.getSize() > 0)
         p->inst->setStateInformation(stateData.getData(), static_cast<int>(stateData.getSize()));

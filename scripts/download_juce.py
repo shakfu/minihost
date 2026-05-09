@@ -15,6 +15,22 @@ import zipfile
 from pathlib import Path
 
 JUCE_VERSION = os.environ.get("JUCE_VERSION", "8.0.12")
+# Pinned commit SHA for the default JUCE_VERSION above. GitHub tags are
+# mutable on the server side (a tag can be force-pushed), so we resolve to
+# a content-addressed commit SHA for reproducibility. Update both this and
+# JUCE_VERSION together when bumping JUCE.
+#
+# To find the SHA for a new tag:
+#   curl -s https://api.github.com/repos/juce-framework/JUCE/git/refs/tags/X.Y.Z \
+#     | python3 -c "import json,sys; print(json.load(sys.stdin)['object']['sha'])"
+JUCE_PINNED_SHA = os.environ.get(
+    "JUCE_SHA",
+    "29396c22c93392d6738e021b83196283d6e4d850",  # corresponds to 8.0.12
+)
+# Set JUCE_ALLOW_TAG=1 to bypass SHA pinning (downloads by tag name). Use only
+# for ad-hoc bumps when JUCE_VERSION has been overridden but the corresponding
+# SHA is not yet known. Default off so CI gets reproducible builds.
+JUCE_ALLOW_TAG = os.environ.get("JUCE_ALLOW_TAG", "").strip() in ("1", "true", "yes")
 SCRIPT_DIR = Path(__file__).parent.resolve()
 PROJECT_ROOT = SCRIPT_DIR.parent
 JUCE_DIR = Path(os.environ.get("JUCE_DIR", PROJECT_ROOT / "JUCE"))
@@ -49,14 +65,27 @@ def main() -> int:
         print(f"JUCE already exists at {JUCE_DIR}")
         return 0
 
-    print(f"Downloading JUCE {JUCE_VERSION}...")
+    if JUCE_ALLOW_TAG:
+        print(f"Downloading JUCE {JUCE_VERSION} (by tag, NOT SHA-pinned)...")
+        archive_ref = JUCE_VERSION
+        extracted_name = f"JUCE-{JUCE_VERSION}"
+        archive_url = (
+            f"https://github.com/juce-framework/JUCE/archive/refs/tags/{archive_ref}.tar.gz"
+        )
+    else:
+        print(f"Downloading JUCE {JUCE_VERSION} (SHA {JUCE_PINNED_SHA[:12]})...")
+        archive_ref = JUCE_PINNED_SHA
+        # GitHub names commit-archive directories <repo>-<full sha>.
+        extracted_name = f"JUCE-{JUCE_PINNED_SHA}"
+        archive_url = (
+            f"https://github.com/juce-framework/JUCE/archive/{archive_ref}.tar.gz"
+        )
 
     # Create temp directory for download
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
 
         # Download archive (use tar.gz which works on all platforms with Python)
-        archive_url = f"https://github.com/juce-framework/JUCE/archive/refs/tags/{JUCE_VERSION}.tar.gz"
         archive_path = tmpdir_path / "juce.tar.gz"
 
         try:
@@ -72,7 +101,7 @@ def main() -> int:
             return 1
 
         # Move to destination
-        extracted_dir = tmpdir_path / f"JUCE-{JUCE_VERSION}"
+        extracted_dir = tmpdir_path / extracted_name
         if not extracted_dir.exists():
             print(f"Error: Expected directory {extracted_dir} not found", file=sys.stderr)
             return 1

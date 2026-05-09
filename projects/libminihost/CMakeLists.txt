@@ -44,3 +44,14 @@ target_compile_definitions(minihost PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
 )
+
+# Install the static library archive. No EXPORT here: see the comment in
+# the top-level CMakeLists.txt MINIHOST_INSTALL block for why we don't
+# generate a find_package(minihost) config target.
+if(MINIHOST_INSTALL)
+    include(GNUInstallDirs)
+    install(TARGETS minihost
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()

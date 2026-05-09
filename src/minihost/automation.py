@@ -28,6 +28,10 @@ if TYPE_CHECKING:
 def find_param_by_name(plugin: Plugin, name: str) -> int:
     """Find a parameter index by name (case-insensitive).
 
+    Thin wrapper around ``Plugin.find_param`` that translates the C++
+    binding's ``RuntimeError`` into ``ValueError`` for the public Python
+    contract and adds a CLI-discovery hint to the message.
+
     Args:
         plugin: Plugin instance.
         name: Parameter name to search for.
@@ -38,15 +42,13 @@ def find_param_by_name(plugin: Plugin, name: str) -> int:
     Raises:
         ValueError: If no parameter with that name exists.
     """
-    name_lower = name.lower()
-    for i in range(plugin.num_params):
-        info = plugin.get_param_info(i)
-        if info["name"].lower() == name_lower:
-            return i
-    raise ValueError(
-        f"Parameter not found: '{name}'. "
-        f"Use 'minihost params <plugin>' to list available parameters."
-    )
+    try:
+        return plugin.find_param(name)
+    except RuntimeError as e:
+        raise ValueError(
+            f"Parameter not found: '{name}'. "
+            f"Use 'minihost params <plugin>' to list available parameters."
+        ) from e
 
 
 def parse_param_arg(arg_str: str, plugin: Plugin) -> tuple[int, float]:

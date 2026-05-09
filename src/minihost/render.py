@@ -302,31 +302,48 @@ def render_midi_to_file(
     if bit_depth not in (16, 24, 32):
         raise ValueError("bit_depth must be 16, 24, or 32")
 
-    sample_rate = int(plugin.sample_rate)
-
-    blocks = list(
-        render_midi_stream(
-            plugin,
-            midi_file,
-            block_size,
-            tail_seconds,
-            tail_threshold=tail_threshold,
-            max_tail_seconds=max_tail_seconds,
-        )
+    # Use MidiRenderer directly so we can pre-allocate the output buffer
+    # against its known total_samples upper bound. This avoids the previous
+    # ~3x peak memory (block list + np.concatenate + write_audio's internal
+    # interleave) by writing each rendered block directly into a single
+    # contiguous output array. Auto-tail detection may finish early, in
+    # which case we trim before writing.
+    renderer = MidiRenderer(
+        plugin,
+        midi_file,
+        block_size=block_size,
+        tail_seconds=tail_seconds,
+        tail_threshold=tail_threshold,
+        max_tail_seconds=max_tail_seconds,
     )
+    sample_rate = int(plugin.sample_rate)
+    out_channels = renderer.channels
+    total = renderer.total_samples
 
-    if not blocks:
-        out_channels = max(plugin.num_output_channels, 2)
+    if total == 0:
         empty = np.zeros((out_channels, 0), dtype=np.float32)
         write_audio(output_path, empty, sample_rate, bit_depth=bit_depth)
         return 0
 
-    audio = np.concatenate(blocks, axis=1)
-    total_samples = audio.shape[1]
+    audio = np.zeros((out_channels, total), dtype=np.float32)
+    written = 0
+    while not renderer.is_finished:
+        block = renderer.render_block()
+        if block is None:
+            break
+        n = block.shape[1]
+        # Defensive: never write past the pre-allocated extent. Should not
+        # happen given the renderer's own bounds, but truncate if it does.
+        if written + n > total:
+            n = total - written
+            if n <= 0:
+                break
+            block = block[:, :n]
+        audio[:, written:written + n] = block
+        written += n
 
-    write_audio(output_path, audio, sample_rate, bit_depth=bit_depth)
-
-    return total_samples
+    write_audio(output_path, audio[:, :written], sample_rate, bit_depth=bit_depth)
+    return written
 
 
 class MidiRenderer:
@@ -422,6 +439,25 @@ class MidiRenderer:
             self._total_duration, self.sample_rate
         )
 
+        # Latency compensation: a plugin reporting N samples of latency emits
+        # the response to a MIDI event at input sample T at output sample T+N.
+        # To time-align the rendered audio with MIDI tempo positions, we
+        # render N extra input samples past the user-visible end and skip
+        # the first N output samples (which contain pre-roll silence and
+        # nothing else, since no MIDI event has registered yet).
+        #
+        # The user-facing properties (duration_seconds, total_samples,
+        # progress) continue to report the user-visible duration. Internal
+        # bookkeeping uses _render_samples for the loop bound.
+        try:
+            self._latency = int(plugin.latency_samples)
+        except Exception:
+            self._latency = 0
+        if self._latency < 0:
+            self._latency = 0
+        self._render_samples = self._total_samples + self._latency
+        self._skip_remaining = self._latency
+
         # Convert events to sample positions
         self._events_with_samples = []
         for event in all_events:
@@ -471,21 +507,33 @@ class MidiRenderer:
     @property
     def progress(self) -> float:
         """Rendering progress as fraction (0.0 to 1.0)."""
-        if self._total_samples == 0:
+        if self._render_samples == 0:
             return 1.0
-        return min(1.0, self._current_sample / self._total_samples)
+        return min(1.0, self._current_sample / self._render_samples)
 
     @property
     def is_finished(self) -> bool:
         """True if rendering is complete."""
         if self._auto_tail_finished:
             return True
-        return self._current_sample >= self._total_samples
+        return self._current_sample >= self._render_samples
 
     @property
     def channels(self) -> int:
         """Number of output channels."""
         return self._out_channels
+
+    @property
+    def latency_samples(self) -> int:
+        """Plugin latency in samples that the renderer compensates for.
+
+        The renderer renders ``latency_samples`` extra input samples past
+        the user-visible end and discards the first ``latency_samples`` of
+        output, so that audio is time-aligned with MIDI tempo positions.
+        Read this if you are wrapping the renderer and need to know how
+        many samples of pre-roll the plugin reported.
+        """
+        return self._latency
 
     def reset(self):
         """Reset renderer to beginning."""
@@ -493,19 +541,25 @@ class MidiRenderer:
         self._event_idx = 0
         self._consecutive_silent = 0
         self._auto_tail_finished = False
+        self._skip_remaining = self._latency
         self.plugin.reset()
 
     def render_block(self) -> "Optional[np.ndarray]":
         """Render next block of audio.
 
         Returns:
-            numpy array of shape (channels, block_size), or None if finished
+            numpy array of shape (channels, n) where n <= block_size, or
+            None if finished. May also return None for early blocks
+            consumed entirely by latency-compensation skip.
         """
         if self.is_finished:
             return None
 
-        # Determine block size
-        remaining = self._total_samples - self._current_sample
+        # Determine block size against the *internal* render bound (which
+        # includes the latency tail). User-visible output is bounded by
+        # _total_samples, but we render _render_samples to capture the
+        # plugin's pre-roll latency.
+        remaining = self._render_samples - self._current_sample
         this_block_size = min(self.block_size, remaining)
 
         # Collect MIDI events for this block
@@ -542,8 +596,22 @@ class MidiRenderer:
 
         self._current_sample += this_block_size
 
-        # Auto-tail detection
-        if self._auto_tail and self._current_sample > self._midi_end_samples:
+        # Latency compensation: discard the first _latency samples of output.
+        # If this whole block falls inside the skip region, return None and
+        # let the caller loop again. Otherwise trim the leading skip portion.
+        if self._skip_remaining > 0:
+            n = result.shape[1]
+            if n <= self._skip_remaining:
+                self._skip_remaining -= n
+                return None
+            result = result[:, self._skip_remaining:]
+            self._skip_remaining = 0
+
+        # Auto-tail detection runs against the post-skip (user-visible)
+        # output. The MIDI-end check is in input-sample space, but we
+        # subtract the latency offset so "after MIDI" matches the
+        # user-visible timeline.
+        if self._auto_tail and self._current_sample > self._midi_end_samples + self._latency:
             peak = float(self._np.max(self._np.abs(result)))
             if peak < self._tail_threshold:
                 self._consecutive_silent += 1

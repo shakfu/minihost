@@ -1848,6 +1848,57 @@ NB_MODULE(_core, m) {
           "if the file is missing (plugin predates VST3 SDK 3.7.5), malformed, "
           "or contains no Audio Module Class entry.");
 
+    // Read a .vstpreset via the C parser; return (class_id, component_state, controller_state).
+    // controller_state is None if not present in the file.
+    m.def("vstpreset_read",
+          [](const std::string& path) {
+              MH_VstPreset preset{};
+              char err[512] = {0};
+              if (!mh_vstpreset_read(path.c_str(), &preset, err, sizeof(err))) {
+                  throw std::runtime_error(std::string("vstpreset_read: ") + err);
+              }
+              std::string class_id(preset.class_id);
+              nb::object comp = preset.component_state
+                  ? nb::cast<nb::object>(nb::bytes(static_cast<const char*>(preset.component_state),
+                                                    preset.component_size))
+                  : nb::none();
+              nb::object cont = preset.controller_state
+                  ? nb::cast<nb::object>(nb::bytes(static_cast<const char*>(preset.controller_state),
+                                                    preset.controller_size))
+                  : nb::none();
+              mh_vstpreset_free(&preset);
+              return nb::make_tuple(class_id, comp, cont);
+          },
+          nb::arg("path"),
+          "Read a .vstpreset file via the C parser. Returns "
+          "(class_id, component_state, controller_state) where the latter two "
+          "are bytes objects (or None if the chunk is absent).");
+
+    // Write a .vstpreset via the C writer.
+    m.def("vstpreset_write",
+          [](const std::string& path, const std::string& class_id,
+             nb::bytes component_state, std::optional<nb::bytes> controller_state) {
+              char err[512] = {0};
+              const void* cont_data = nullptr;
+              int cont_size = 0;
+              if (controller_state.has_value()) {
+                  cont_data = controller_state->c_str();
+                  cont_size = static_cast<int>(controller_state->size());
+              }
+              if (!mh_vstpreset_write(
+                      path.c_str(), class_id.c_str(),
+                      component_state.c_str(),
+                      static_cast<int>(component_state.size()),
+                      cont_data, cont_size,
+                      err, sizeof(err))) {
+                  throw std::runtime_error(std::string("vstpreset_write: ") + err);
+              }
+          },
+          nb::arg("path"), nb::arg("class_id"), nb::arg("component_state"),
+          nb::arg("controller_state") = nb::none(),
+          "Write a .vstpreset file via the C writer. controller_state is "
+          "optional; pass None to write only the 'Comp' chunk.");
+
     // Change notification flag constants
     m.attr("MH_CHANGE_LATENCY")         = MH_CHANGE_LATENCY;
     m.attr("MH_CHANGE_PARAM_INFO")      = MH_CHANGE_PARAM_INFO;

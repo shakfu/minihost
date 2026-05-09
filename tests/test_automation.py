@@ -44,8 +44,19 @@ def _make_mock_plugin(params=None):
                 return known[text]
             raise ValueError(f"Unknown text: {text}")
 
+    def find_param(name):
+        # Match Plugin.find_param's behavior: case-insensitive by name,
+        # raises RuntimeError on miss (which find_param_by_name translates
+        # to ValueError).
+        target = name.lower()
+        for i, p in enumerate(params):
+            if p["name"].lower() == target:
+                return i
+        raise RuntimeError(f"Parameter not found: '{name}'")
+
     plugin.get_param_info = MagicMock(side_effect=get_param_info)
     plugin.param_from_text = MagicMock(side_effect=param_from_text)
+    plugin.find_param = MagicMock(side_effect=find_param)
     return plugin
 
 

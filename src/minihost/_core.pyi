@@ -79,6 +79,10 @@ class Plugin:
     def set_param_value_callback(self, callback: Any) -> None: ...
     def set_param_gesture_callback(self, callback: Any) -> None: ...
     def poll_callbacks(self) -> int: ...
+    def callback_events_dropped(self) -> int: ...
+    def close(self) -> None: ...
+    def __enter__(self) -> "Plugin": ...
+    def __exit__(self, *args: object) -> None: ...
     def set_track_properties(
         self, name: str | None = None, colour: int | None = None
     ) -> None: ...
@@ -175,6 +179,9 @@ class PluginChain:
         midi_in: list[tuple[int, int, int, int]],
         param_changes: list[tuple[int, int, int, float]],
     ) -> list[tuple[int, int, int, int]]: ...
+    def close(self) -> None: ...
+    def __enter__(self) -> "PluginChain": ...
+    def __exit__(self, *args: object) -> None: ...
 
 class AudioDevice:
     """Real-time audio device for plugin playback."""
@@ -309,6 +316,21 @@ MH_CHANGE_NON_PARAM_STATE: int
 MH_PRECISION_SINGLE: int
 MH_PRECISION_DOUBLE: int
 
+# ABI version (mirrors header MH_API_VERSION_*).
+MH_API_VERSION_MAJOR: int
+MH_API_VERSION_MINOR: int
+MH_API_VERSION_PATCH: int
+MH_API_VERSION_NUMBER: int
+MH_API_VERSION_STRING: str
+
+def api_version() -> int:
+    """Return the ABI version the linked C library was compiled against."""
+    ...
+
+def api_version_string() -> str:
+    """Return the linked C library's ABI version as 'MAJOR.MINOR.PATCH'."""
+    ...
+
 def audio_read(path: str) -> tuple[NDArray[np.float32], int]:
     """Read an audio file. Returns (data, sample_rate) where data has shape (channels, frames)."""
     ...
@@ -336,4 +358,21 @@ def audio_get_file_info(path: str) -> dict[str, Any]:
 
 def vstpreset_read_class_id_from_bundle(vst3_path: str) -> str:
     """Read the processor class ID (32-char uppercase hex FUID) from a VST3 bundle."""
+    ...
+
+def vstpreset_read(path: str) -> tuple[str, bytes | None, bytes | None]:
+    """Read a .vstpreset file via the C parser.
+
+    Returns (class_id, component_state, controller_state). The latter two
+    are bytes objects, or None if the corresponding chunk is absent.
+    """
+    ...
+
+def vstpreset_write(
+    path: str,
+    class_id: str,
+    component_state: bytes,
+    controller_state: bytes | None = None,
+) -> None:
+    """Write a .vstpreset file via the C writer."""
     ...

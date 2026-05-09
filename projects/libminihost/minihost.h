@@ -2,12 +2,53 @@
 // Minimal audio plugin host library using JUCE
 //
 // Thread Safety:
-//   - mh_process, mh_process_midi, mh_process_midi_io: Call from audio thread only.
-//     These functions do NOT lock to avoid blocking the realtime audio thread.
-//   - All other functions are thread-safe and can be called from any thread.
-//     They use internal locking to protect plugin state.
-//   - Do not call mh_close while another thread is using the plugin.
+//   Functions fall into three thread-safety classes:
 //
+//   1. AUDIO-THREAD ONLY (no locks, no allocations after warmup):
+//        mh_process, mh_process_midi, mh_process_midi_io,
+//        mh_process_auto, mh_process_sidechain, mh_process_double
+//      Call from exactly one thread (the audio callback). Concurrent calls
+//      from multiple threads on the same MH_Plugin are undefined.
+//
+//   2. CONCURRENT WITH AUDIO (atomic / brief lock; safe to overlap mh_process):
+//        mh_set_param, mh_get_param, mh_get_param_info,
+//        mh_get_num_params, mh_get_info, mh_get_path,
+//        mh_get_latency_samples, mh_get_tail_seconds,
+//        mh_get_bypass, mh_set_bypass,
+//        mh_set_transport, mh_param_to_text, mh_param_from_text,
+//        mh_get_num_buses, mh_get_bus_info, mh_get_sidechain_channels,
+//        mh_check_buses_layout, mh_set_track_properties,
+//        mh_supports_double, mh_get_processing_precision,
+//        mh_get_sample_rate, mh_get_num_programs, mh_get_program_name,
+//        mh_get_program, mh_set_program (program-change is safe; it goes
+//        through param notifications, not releaseResources),
+//        mh_begin_param_gesture, mh_end_param_gesture,
+//        mh_set_change_callback / mh_set_param_value_callback /
+//        mh_set_param_gesture_callback,
+//        mh_api_version, mh_api_version_string
+//
+//   3. NOT SAFE TO OVERLAP mh_process (calls releaseResources/prepareToPlay
+//      or otherwise reconfigures the plugin's audio pipeline):
+//        mh_set_state, mh_set_program_state, mh_get_state, mh_get_state_size,
+//        mh_get_program_state, mh_get_program_state_size,
+//        mh_set_sample_rate, mh_set_processing_precision,
+//        mh_set_non_realtime, mh_reset
+//      Stop the audio thread (or AudioDevice) before calling these. They
+//      DO take the same internal lock that class 2 functions use, so
+//      concurrent UI/control-thread access between class 2 and class 3 is
+//      serialized -- but the audio thread does NOT acquire that lock and is
+//      not protected.
+//
+//   Lifecycle:
+//     - mh_close() is not safe to call while ANY other thread is using the
+//       plugin. Callers must stop the audio device, drop callbacks, and
+//       ensure no other thread holds the MH_Plugin* before closing.
+//     - When using mh_audio_open / MH_AudioDevice, call mh_audio_stop() and
+//       mh_audio_close() BEFORE mh_close() on the underlying plugin. The
+//       AudioDevice keeps a raw MH_Plugin* pointer; closing the plugin
+//       first leaves the device dangling.
+//
+// ABI Versioning:
 // ABI Versioning:
 //   The MH_API_VERSION_* macros below describe the ABI version the header
 //   was generated for; mh_api_version() returns the version the linked
