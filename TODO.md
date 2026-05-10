@@ -38,8 +38,31 @@
 - [ ] **Session/engine object** -- share the JUCE `AudioPluginFormatManager` across plugin loads, reducing overhead for multi-plugin workflows and plugin scanning. Currently each `mh_open` creates its own format manager.
 - [ ] **Dynamic MIDI output buffer** -- make the 256-event MIDI output cap configurable at the Python level, or use a dynamically-sized buffer.
 
-### Lower impact (low effort)
+### AudioBuffer migration follow-ups
 
+The initial AudioBuffer migration (see CHANGELOG `[Unreleased]`) covers
+construction, indexing, basic DSP ops, DLPack/numpy interop, and integrates
+with `read_audio` / `render_midi*` / `process_audio*` via the `as_=` selector.
+Items below are deliberate follow-ups that build on that base.
+
+- [ ] **Expose more JUCE AudioBuffer DSP ops on `minihost.AudioBuffer`** -- v1 exposes `clear`, `apply_gain`, `magnitude`, `copy`. JUCE provides additional in-place operations that map cleanly onto the same surface and would save users a `.numpy()` round-trip. Worth adding when real demand surfaces:
+  - `apply_gain_ramp(start, count, gain_start, gain_end)` -- linear gain ramp (declick, fade in/out without numpy)
+  - `add_from(dest_channel, dest_start, source_buffer, source_channel, source_start, count, gain=1.0)` -- mix into another buffer with optional gain
+  - `add_from_with_ramp(...)` -- ramped variant of the above
+  - `get_rms_level(channel, start, count)` -- per-channel RMS for level metering
+  - `reverse(channel, start, count)` -- in-place reverse for sample reversal effects
+  - `reverse_in_place()` -- whole-buffer convenience
+  - `apply_gain_per_channel(gains)` -- accept a list of per-channel gains in one call
+  Each is a 5-15 line nanobind binding mapped onto the existing `juce::AudioBuffer<float>` instance carried inside `MhAudioBuffer`. Add tests covering each (round-trip vs. numpy reference).
+- [ ] **Double-precision `AudioBufferD`** -- the v1 `AudioBuffer` is float32 only. `Plugin.process_double` still requires numpy float64 arrays for symmetry with the C++ double path. Add a parallel `MhAudioBufferD` wrapper around `juce::AudioBuffer<double>` and wire it into `process_double`. Same template/binding shape, just `<double>`. Decide whether to expose as `AudioBufferD` (separate class) or `AudioBuffer(channels, frames, dtype="float64")` (one class with a precision flag).
+- [ ] **Zero-copy channel-range slicing** -- `buf[k:m, :]` currently always copies (the v1 `__getitem__` rule was "slices return copies, not views" to keep semantics simple). Channel-range slices ARE contiguous in the planar layout, so a true zero-copy view is feasible without strided-view complexity. Add `AudioBuffer.channel_view(start, count)` returning a new `AudioBuffer` that aliases (rather than copies) a contiguous channel range of the parent. Frame slicing stays copy-only because that path requires strided views. Document the lifetime relationship and aliasing rules.
+- [ ] **`process_audio_stream(plugin_or_chain, audio, ...)` generator** -- mirror `render_midi_stream` for the audio-in case. Lets users write block-by-block to disk for very long renders without holding the full output in memory. Same `tail_seconds` / latency-compensation contract as `process_audio`.
+- [ ] **`process_audio` in-place mode** -- when `input.channels == output.channels`, allow `process_audio(plugin, audio, in_place=True)` to skip allocating a separate output buffer and write into the input. Saves one buffer's worth of memory for the common stereo-in / stereo-out case.
+- [ ] **MidiRenderer's internal buffers as AudioBuffer** -- `MidiRenderer._input_buffer` and `_output_buffer` are still numpy ndarrays (slicing is easier in numpy). Migrate to `AudioBuffer` for internal consistency. Lowest priority; current code works and the per-block conversion is already cheap.
+- [ ] **Convert `minihost process` CLI to use `process_audio_to_file`** -- the CLI subcommand likely loops manually over blocks (predates the high-level helper). Replacing the loop with one call to `process_audio_to_file` removes ~50 lines of CLI code and gets latency compensation + auto-resampling for free. Verify behavior parity (especially around `--sidechain` and `--non-realtime` flags) before swapping.
+- [ ] **Update README to lead with `AudioBuffer` + `process_audio_to_file`** -- the README's current Quick Start examples predate both APIs. New canonical example: load a chain, call `process_audio_to_file` (5 lines total). Move the manual block-loop example to a "Lower-level API" subsection for users who need it.
+- [ ] **Migration / breaking-changes guide** -- the AudioBuffer migration introduced two breaking changes (`read_audio` and `render_midi*` default return type). Write a short `docs/migration.md` (or CHANGELOG section under the next versioned release) showing the one-keyword fix (`as_=np.ndarray`) and the recommended new patterns (use `AudioBuffer` + `np.asarray()` at the boundary if you still need numpy ops). Include a minimal "if your old code did X, change to Y" table.
+- [ ] **DLPack interop verification with PyTorch / JAX** -- `MhAudioBuffer.__dlpack__` should make `AudioBuffer` consumable by any framework that accepts DLPack (PyTorch via `torch.from_dlpack(buf)`, JAX via `jax.dlpack.from_dlpack`). Smoke-test this and add a one-paragraph "interop with other array libraries" section to the docs. Frees users to flow audio through ML pipelines without going through numpy.
 - [ ] **Output normalization** - `--normalize` flag on `process` / `render_midi_to_file` for peak or LUFS normalization
 - [ ] **Progress reporting in CLI** - Surface `MidiRenderer.progress` in the `process` command (progress bar or `--progress` flag) for long renders
 - [ ] **Declarative chain definitions** - JSON/YAML chain config files for reproducible rendering pipelines (plugin paths, params, presets per slot)

@@ -8,6 +8,10 @@
 #include <stdexcept>
 #include <cstring>
 #include <mutex>
+#include <memory>
+
+#include <juce_core/juce_core.h>
+#include <juce_audio_basics/juce_audio_basics.h>
 
 #include "minihost.h"
 #include "minihost_chain.h"
@@ -18,6 +22,100 @@
 #include "MidiFile.h"
 
 namespace nb = nanobind;
+using namespace nb::literals;
+
+// Thin wrapper around juce::AudioBuffer<float> exposed to Python as
+// minihost.AudioBuffer. The wrapper enforces the contiguous-memory
+// invariant by only ever calling the (channels, frames) constructor of
+// juce::AudioBuffer (never setDataToReferTo). This guarantees the data
+// pointer is one big block of channels*frames floats laid out planar
+// (row-major: ch0..., ch1..., ...), which is what nb::ndarray<float,
+// nb::shape<-1, -1>, nb::c_contig> expects.
+class MhAudioBuffer {
+public:
+    MhAudioBuffer(int channels, int frames)
+        : buf_(juce::jmax(1, channels), juce::jmax(0, frames))
+    {
+        // juce::AudioBuffer leaves memory uninitialized; explicit clear so
+        // freshly constructed buffers are deterministic (zero-filled).
+        buf_.clear();
+    }
+
+    int channels() const { return buf_.getNumChannels(); }
+    int frames()   const { return buf_.getNumSamples(); }
+    float*       data()       { return buf_.getWritePointer(0); }
+    const float* data() const { return buf_.getReadPointer(0); }
+
+    juce::AudioBuffer<float>&       juce()       { return buf_; }
+    const juce::AudioBuffer<float>& juce() const { return buf_; }
+
+private:
+    juce::AudioBuffer<float> buf_;
+};
+
+// Normalize a (possibly negative) index to [0, size). Throws on out-of-range.
+static int normalize_index(int idx, int size, const char* axis) {
+    int result = idx;
+    if (result < 0) result += size;
+    if (result < 0 || result >= size) {
+        throw nb::index_error(
+            (std::string(axis) + " index " + std::to_string(idx) +
+             " out of range for axis of length " + std::to_string(size)).c_str());
+    }
+    return result;
+}
+
+// Resolve a slice or int key on one axis. Returns (start, count). For an int
+// key the count is 1. Throws TypeError on stride != 1, fancy indexing,
+// Ellipsis, or other unsupported forms.
+static std::pair<int, int> resolve_axis_key(nb::handle key, int size,
+                                            const char* axis) {
+    PyObject* p = key.ptr();
+    if (PyLong_Check(p)) {
+        int idx = nb::cast<int>(key);
+        return {normalize_index(idx, size, axis), 1};
+    }
+    if (PySlice_Check(p)) {
+        Py_ssize_t start, stop, step, length;
+        if (PySlice_GetIndicesEx(p, size, &start, &stop, &step, &length) != 0) {
+            throw nb::python_error();
+        }
+        if (step != 1) {
+            throw nb::type_error(
+                "AudioBuffer does not support strided slicing "
+                "(step != 1). Use .numpy() for that.");
+        }
+        return {(int)start, (int)length};
+    }
+    if (p == Py_Ellipsis) {
+        throw nb::type_error(
+            "AudioBuffer does not support Ellipsis indexing. Use .numpy() for that.");
+    }
+    if (PyList_Check(p) || PyTuple_Check(p)
+        || (Py_TYPE(p)->tp_iter != nullptr && !PyUnicode_Check(p))) {
+        throw nb::type_error(
+            "AudioBuffer does not support fancy / boolean indexing. "
+            "Use .numpy() for that.");
+    }
+    throw nb::type_error(
+        (std::string(axis) + " key must be an int or slice").c_str());
+}
+
+// Validate a 2-tuple key for AudioBuffer.__getitem__ / __setitem__.
+// Returns the two key elements; throws TypeError on shape mismatch.
+static std::pair<nb::object, nb::object> require_2tuple(nb::object key) {
+    if (!PyTuple_Check(key.ptr())) {
+        throw nb::type_error(
+            "AudioBuffer requires 2-axis indexing: buf[ch, fr]. "
+            "Single-axis access (buf[ch]) is ambiguous; use buf[ch, :] instead.");
+    }
+    auto t = nb::cast<nb::tuple>(key);
+    if (t.size() != 2) {
+        throw nb::type_error(
+            "AudioBuffer requires exactly 2 indices (channel, frame).");
+    }
+    return {t[0], t[1]};
+}
 
 // Helper to convert numpy arrays to raw pointers
 using AudioArray = nb::ndarray<float, nb::shape<-1, -1>, nb::c_contig, nb::device::cpu>;
@@ -1908,6 +2006,264 @@ NB_MODULE(_core, m) {
     // Processing precision constants
     m.attr("MH_PRECISION_SINGLE") = MH_PRECISION_SINGLE;
     m.attr("MH_PRECISION_DOUBLE") = MH_PRECISION_DOUBLE;
+
+    // ----------------------------------------------------------------------
+    // AudioBuffer (wrapper around juce::AudioBuffer<float>)
+    // ----------------------------------------------------------------------
+    //
+    // Layout: planar float32, row-major (channels x frames). Data is one
+    // contiguous block; the wrapper enforces this by only allowing the
+    // (channels, frames) constructor of juce::AudioBuffer.
+    //
+    // Buffer-protocol exposure: __dlpack__ returns an nb::ndarray that
+    // aliases the underlying memory. nanobind's nb::ndarray<...> parameter
+    // converter consults __dlpack__, so AudioBuffer instances can be passed
+    // directly to Plugin.process / chain.process / etc. on Python 3.10+
+    // without an explicit .array property or memoryview cast.
+    //
+    // Slicing: numpy-shaped 2-axis indexing, with documented limits (no
+    // strided slices, no fancy indexing, no Ellipsis -- raise TypeError
+    // pointing the user at .numpy() for those).
+    nb::class_<MhAudioBuffer>(m, "AudioBuffer",
+        "Planar float32 audio buffer (stdlib-only; backed by juce::AudioBuffer).\n\n"
+        "Layout is (channels x frames) row-major. The buffer is always\n"
+        "contiguous in memory and exposes the DLPack buffer protocol, so it\n"
+        "can be passed directly to Plugin.process / PluginChain.process /\n"
+        "minihost.write_audio without an explicit conversion.\n\n"
+        "2-axis indexing follows numpy conventions with deliberate limits:\n"
+        "  buf[ch, fr]                -> float\n"
+        "  buf[ch_slice, fr_slice]    -> AudioBuffer (copy, not view)\n"
+        "Strided slices (step != 1), fancy indexing, boolean indexing, and\n"
+        "Ellipsis raise TypeError; use .numpy() if you need those.")
+        .def(nb::init<int, int>(), "channels"_a, "frames"_a,
+             "Allocate a new AudioBuffer of (channels, frames) float32 samples, "
+             "zero-initialized.")
+
+        .def_prop_ro("channels", &MhAudioBuffer::channels,
+                     "Number of channels.")
+        .def_prop_ro("frames", &MhAudioBuffer::frames,
+                     "Number of frames per channel.")
+        .def_prop_ro("shape",
+                     [](const MhAudioBuffer& self) {
+                         return nb::make_tuple(self.channels(), self.frames());
+                     },
+                     "(channels, frames). Matches numpy's .shape on 2D arrays.")
+        .def_prop_ro_static("dtype",
+                            [](nb::handle) { return std::string("float32"); },
+                            "Element dtype string. Always 'float32'.")
+
+        .def("__len__", &MhAudioBuffer::channels,
+             "Number of channels (matches numpy's len() on 2D arrays).")
+        .def("__repr__",
+             [](const MhAudioBuffer& self) {
+                 return "AudioBuffer(channels=" + std::to_string(self.channels()) +
+                        ", frames=" + std::to_string(self.frames()) + ")";
+             })
+
+        // ---- 2-axis indexing ----
+        .def("__getitem__",
+             [](MhAudioBuffer& self, nb::object key) -> nb::object {
+                 auto [ch_key, fr_key] = require_2tuple(key);
+
+                 // Scalar/scalar fast path -> Python float
+                 if (PyLong_Check(ch_key.ptr()) && PyLong_Check(fr_key.ptr())) {
+                     int ch = normalize_index(nb::cast<int>(ch_key),
+                                              self.channels(), "channel");
+                     int fr = normalize_index(nb::cast<int>(fr_key),
+                                              self.frames(), "frame");
+                     return nb::cast(self.data()[(size_t)ch * self.frames() + fr]);
+                 }
+
+                 // Slice or scalar mixed -> new AudioBuffer (copy).
+                 // Scalar axis becomes 1-element (so buf[0, 100:200] returns
+                 // a 1xN buffer, never a flat 1D array -- consistent shape).
+                 auto [ch_start, ch_count] = resolve_axis_key(ch_key,
+                                                              self.channels(),
+                                                              "channel");
+                 auto [fr_start, fr_count] = resolve_axis_key(fr_key,
+                                                              self.frames(),
+                                                              "frame");
+                 auto* out = new MhAudioBuffer(ch_count, fr_count);
+                 const float* src = self.data();
+                 float* dst = out->data();
+                 const size_t src_stride = (size_t)self.frames();
+                 const size_t dst_stride = (size_t)fr_count;
+                 const size_t bytes = (size_t)fr_count * sizeof(float);
+                 for (int i = 0; i < ch_count; ++i) {
+                     std::memcpy(dst + (size_t)i * dst_stride,
+                                 src + ((size_t)ch_start + i) * src_stride + fr_start,
+                                 bytes);
+                 }
+                 // Hand ownership of the new instance to Python.
+                 return nb::cast(out, nb::rv_policy::take_ownership);
+             })
+        .def("__setitem__",
+             [](MhAudioBuffer& self, nb::object key, nb::object value) {
+                 auto [ch_key, fr_key] = require_2tuple(key);
+                 auto [ch_start, ch_count] = resolve_axis_key(ch_key,
+                                                              self.channels(),
+                                                              "channel");
+                 auto [fr_start, fr_count] = resolve_axis_key(fr_key,
+                                                              self.frames(),
+                                                              "frame");
+
+                 float* dst = self.data();
+                 const size_t dst_stride = (size_t)self.frames();
+                 const size_t bytes = (size_t)fr_count * sizeof(float);
+
+                 // Scalar broadcast.
+                 if (PyFloat_Check(value.ptr()) || PyLong_Check(value.ptr())) {
+                     float v = nb::cast<float>(value);
+                     for (int i = 0; i < ch_count; ++i) {
+                         float* row = dst + ((size_t)ch_start + i) * dst_stride
+                                      + fr_start;
+                         for (int j = 0; j < fr_count; ++j) row[j] = v;
+                     }
+                     return;
+                 }
+
+                 // 2D buffer-protocol source (numpy ndarray, AudioBuffer
+                 // via DLPack, etc.). Shape must match exactly.
+                 nb::ndarray<const float, nb::shape<-1, -1>, nb::c_contig,
+                             nb::device::cpu> src;
+                 try {
+                     src = nb::cast<nb::ndarray<const float, nb::shape<-1, -1>,
+                                                nb::c_contig, nb::device::cpu>>(value);
+                 } catch (const nb::cast_error&) {
+                     throw nb::type_error(
+                         "AudioBuffer.__setitem__ value must be a Python "
+                         "scalar (broadcast) or a 2D float32 c-contiguous "
+                         "buffer (AudioBuffer / numpy ndarray / similar).");
+                 }
+                 if ((int)src.shape(0) != ch_count
+                     || (int)src.shape(1) != fr_count) {
+                     throw nb::value_error(
+                         ("Source shape " + std::to_string(src.shape(0)) + "x"
+                          + std::to_string(src.shape(1)) +
+                          " does not match destination slice " +
+                          std::to_string(ch_count) + "x" +
+                          std::to_string(fr_count)).c_str());
+                 }
+                 const float* src_data = src.data();
+                 const size_t src_stride = (size_t)src.shape(1);
+                 for (int i = 0; i < ch_count; ++i) {
+                     std::memcpy(dst + ((size_t)ch_start + i) * dst_stride
+                                       + fr_start,
+                                 src_data + (size_t)i * src_stride,
+                                 bytes);
+                 }
+             })
+
+        // ---- DSP ops borrowed from juce::AudioBuffer ----
+        .def("clear",
+             [](MhAudioBuffer& self,
+                std::optional<int> start, std::optional<int> count) {
+                 int s = start.value_or(0);
+                 int n = count.value_or(self.frames() - s);
+                 if (s < 0 || n < 0 || s + n > self.frames()) {
+                     throw nb::value_error("clear range out of bounds");
+                 }
+                 self.juce().clear(s, n);
+             },
+             "start"_a = nb::none(), "count"_a = nb::none(),
+             "Zero-fill all channels in the range [start, start+count). "
+             "Defaults to the whole buffer.")
+        .def("apply_gain",
+             [](MhAudioBuffer& self, float gain) {
+                 self.juce().applyGain(gain);
+             }, "gain"_a,
+             "Multiply every sample by `gain` in place.")
+        .def("magnitude",
+             [](MhAudioBuffer& self,
+                std::optional<int> start, std::optional<int> count) {
+                 int s = start.value_or(0);
+                 int n = count.value_or(self.frames() - s);
+                 if (s < 0 || n < 0 || s + n > self.frames()) {
+                     throw nb::value_error("magnitude range out of bounds");
+                 }
+                 return self.juce().getMagnitude(s, n);
+             },
+             "start"_a = nb::none(), "count"_a = nb::none(),
+             "Return the peak absolute sample value across all channels in "
+             "the range [start, start+count). Defaults to the whole buffer.")
+        .def("copy",
+             [](const MhAudioBuffer& self) {
+                 auto* out = new MhAudioBuffer(self.channels(),
+                                               self.frames());
+                 std::memcpy(out->data(), self.data(),
+                             (size_t)self.channels() * self.frames()
+                                 * sizeof(float));
+                 return nb::cast(out, nb::rv_policy::take_ownership);
+             },
+             "Return a deep copy of this buffer.")
+
+        // ---- Buffer-protocol export (DLPack) ----
+        // Allows Plugin.process(buf, out) etc. to consume AudioBuffer
+        // directly without an explicit .numpy() / memoryview conversion.
+        .def("__dlpack__",
+             [](nb::handle self_h, nb::handle /*stream*/) {
+                 auto& self = nb::cast<MhAudioBuffer&>(self_h);
+                 size_t shape[2] = { (size_t)self.channels(),
+                                     (size_t)self.frames() };
+                 return nb::ndarray<float, nb::shape<-1, -1>, nb::c_contig,
+                                    nb::device::cpu>(
+                     self.data(), 2, shape, self_h);
+             },
+             "stream"_a = nb::none(),
+             "DLPack export. Consumers like nanobind's nb::ndarray and "
+             "numpy.asarray call this to obtain a zero-copy view.")
+        .def("__dlpack_device__",
+             [](const MhAudioBuffer&) {
+                 return nb::make_tuple(1, 0);  // (kDLCPU, device_id=0)
+             },
+             "DLPack device descriptor. Always (kDLCPU=1, 0).")
+
+        // ---- numpy interop (lazy import) ----
+        // For both .numpy() and .__array__(), we receive the bound object
+        // as nb::handle (the Python self) so we can pass it as the owner
+        // of the returned nb::ndarray. The owner is what keeps the
+        // AudioBuffer alive while the consuming numpy array (or DLPack
+        // capsule) is in use; without it the underlying memory is freed
+        // out from under any view that outlives the local reference.
+        .def("numpy",
+             [](nb::handle self_h) {
+                 auto& self = nb::cast<MhAudioBuffer&>(self_h);
+                 size_t shape[2] = { (size_t)self.channels(),
+                                     (size_t)self.frames() };
+                 return nb::ndarray<nb::numpy, float, nb::shape<-1, -1>,
+                                    nb::c_contig>(
+                     self.data(), 2, shape, self_h);
+             },
+             "Return a numpy ndarray view (zero-copy). Requires numpy.")
+        // numpy's asarray()/array() consult __array__ before __dlpack__.
+        // Without this hook, numpy falls back to iterating __getitem__,
+        // which our 2-axis-only indexing rejects.
+        .def("__array__",
+             [](nb::handle self_h,
+                nb::handle /*dtype*/, nb::handle /*copy*/) {
+                 auto& self = nb::cast<MhAudioBuffer&>(self_h);
+                 size_t shape[2] = { (size_t)self.channels(),
+                                     (size_t)self.frames() };
+                 return nb::ndarray<nb::numpy, float, nb::shape<-1, -1>,
+                                    nb::c_contig>(
+                     self.data(), 2, shape, self_h);
+             },
+             "dtype"_a = nb::none(), "copy"_a = nb::none(),
+             "numpy interop hook. Returns a numpy ndarray view (zero-copy). "
+             "dtype and copy arguments are accepted for numpy 2.x compatibility "
+             "but ignored (the buffer is always float32; numpy may copy).")
+        .def_static("from_numpy",
+             [](nb::ndarray<const float, nb::shape<-1, -1>, nb::c_contig,
+                            nb::device::cpu> arr) {
+                 int channels = (int)arr.shape(0);
+                 int frames = (int)arr.shape(1);
+                 auto* buf = new MhAudioBuffer(channels, frames);
+                 std::memcpy(buf->data(), arr.data(),
+                             (size_t)channels * frames * sizeof(float));
+                 return nb::cast(buf, nb::rv_policy::take_ownership);
+             }, "array"_a,
+             "Construct a new AudioBuffer by copying from a 2D float32 "
+             "c-contiguous array (numpy ndarray, another AudioBuffer, etc.).");
 
     nb::class_<Plugin>(m, "Plugin")
         .def(nb::init<const std::string&, double, int, int, int, int>(),

@@ -32,6 +32,7 @@ Example usage:
 """
 
 from minihost._core import (
+    AudioBuffer,
     Plugin,
     PluginChain,
     AudioDevice,
@@ -72,6 +73,11 @@ from minihost.audio_io import (
     resample,
 )
 
+from minihost.process import (
+    process_audio,
+    process_audio_to_file,
+)
+
 from minihost.automation import (
     find_param_by_name,
     parse_param_arg,
@@ -90,6 +96,7 @@ from minihost.vstpreset import (
 
 __all__ = [
     # Core classes
+    "AudioBuffer",
     "Plugin",
     "PluginChain",
     "AudioDevice",
@@ -114,6 +121,9 @@ __all__ = [
     "write_audio",
     "get_audio_info",
     "resample",
+    # Audio processing
+    "process_audio",
+    "process_audio_to_file",
     # Async loading
     "open_async",
     # Automation

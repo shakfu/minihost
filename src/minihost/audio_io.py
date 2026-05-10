@@ -3,18 +3,29 @@
 Uses miniaudio (via C bindings) for reading and writing audio files.
 Supports reading WAV, FLAC, MP3, and Vorbis. Writing supports WAV
 (16/24/32-bit) and FLAC (16/24-bit).
+
+The default container type is ``minihost.AudioBuffer`` (stdlib-only,
+backed by ``juce::AudioBuffer<float>``). Pass ``as_=numpy.ndarray`` to
+``read_audio`` if you'd rather work with numpy directly.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from minihost._core import AudioBuffer
 from minihost._core import audio_get_file_info as _get_info
 from minihost._core import audio_read as _read
 from minihost._core import audio_resample as _resample
 from minihost._core import audio_write as _write
+
+if TYPE_CHECKING:
+    from typing import Union
+
+    AudioData = Union[AudioBuffer, np.ndarray]
 
 # Extensions supported for reading
 _READ_EXTENSIONS = {".wav", ".flac", ".mp3", ".ogg"}
@@ -25,35 +36,51 @@ _WRITE_EXTENSIONS = {".wav", ".flac"}
 _VALID_BIT_DEPTHS = {16, 24, 32}
 
 
-def read_audio(path: str | Path) -> tuple[np.ndarray, int]:
+def read_audio(
+    path: str | Path,
+    as_: type = AudioBuffer,
+) -> tuple[Any, int]:
     """Read an audio file and return (data, sample_rate).
 
     Args:
         path: Path to audio file (WAV, FLAC, MP3, Vorbis).
+        as_: Container type for the returned audio data. ``AudioBuffer``
+            (default, stdlib-only) or ``numpy.ndarray``. The data is
+            float32 with shape ``(channels, samples)`` either way.
 
     Returns:
-        Tuple of (data, sample_rate) where data is a float32 ndarray
-        of shape (channels, samples).
+        Tuple of (data, sample_rate). ``data`` has shape
+        ``(channels, samples)`` and is the type requested via ``as_``.
 
     Raises:
         FileNotFoundError: If the file does not exist.
         RuntimeError: If the file cannot be read.
+        TypeError: If ``as_`` is not a recognized container type.
     """
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Audio file not found: {path}")
 
     try:
+        # The C binding returns a numpy ndarray (zero-copy view onto the
+        # decoded buffer). When the caller wants AudioBuffer we copy once
+        # into a fresh AudioBuffer of matching shape.
         data, sample_rate = _read(str(path))
     except RuntimeError as e:
         raise RuntimeError(f"Failed to read audio file: {path}: {e}") from e
 
-    return np.asarray(data, dtype=np.float32), int(sample_rate)
+    if as_ is AudioBuffer:
+        return AudioBuffer.from_numpy(np.ascontiguousarray(data, dtype=np.float32)), int(sample_rate)
+    if as_ is np.ndarray:
+        return np.asarray(data, dtype=np.float32), int(sample_rate)
+    raise TypeError(
+        f"as_ must be AudioBuffer or numpy.ndarray, got {as_!r}"
+    )
 
 
 def write_audio(
     path: str | Path,
-    data: np.ndarray,
+    data: "AudioData",
     sample_rate: int,
     bit_depth: int = 24,
 ) -> None:
@@ -61,7 +88,9 @@ def write_audio(
 
     Args:
         path: Output file path (.wav or .flac).
-        data: Audio data of shape (channels, samples).
+        data: Audio data of shape (channels, samples). Accepts an
+            ``AudioBuffer``, a numpy ndarray, or any 2D float32 c-contiguous
+            buffer (DLPack / buffer-protocol producer).
         sample_rate: Sample rate in Hz.
         bit_depth: Bit depth (16, 24, or 32). Default 24.
             16 and 24 write integer PCM; 32 writes IEEE float (WAV only).
@@ -88,7 +117,8 @@ def write_audio(
     if bit_depth not in _VALID_BIT_DEPTHS:
         raise ValueError(f"bit_depth must be 16, 24, or 32, got {bit_depth}")
 
-    # Ensure float32 and contiguous
+    # Coerce to a 2D float32 c-contiguous numpy array. AudioBuffer satisfies
+    # this via DLPack / __array__; numpy ndarrays go through ascontiguousarray.
     write_data = np.ascontiguousarray(data, dtype=np.float32)
 
     # Ensure 2D (channels, samples)
@@ -99,26 +129,37 @@ def write_audio(
 
 
 def resample(
-    data: np.ndarray,
+    data: "AudioData",
     sample_rate_in: int,
     sample_rate_out: int,
-) -> np.ndarray:
+) -> "AudioData":
     """Resample audio data to a different sample rate.
 
     Args:
-        data: Audio data of shape (channels, samples), float32.
+        data: Audio data of shape (channels, samples), float32. Accepts
+            ``AudioBuffer``, numpy ndarray, or any 2D float32 c-contiguous
+            buffer.
         sample_rate_in: Source sample rate in Hz.
         sample_rate_out: Target sample rate in Hz.
 
     Returns:
-        Resampled float32 ndarray of shape (channels, new_samples).
+        Resampled data of shape (channels, new_samples). The return type
+        matches the input type (``AudioBuffer`` in -> ``AudioBuffer`` out;
+        ``numpy.ndarray`` in -> ``numpy.ndarray`` out).
     """
-    data = np.ascontiguousarray(data, dtype=np.float32)
-    if data.ndim == 1:
-        data = data.reshape(1, -1)
-    return np.asarray(
-        _resample(data, int(sample_rate_in), int(sample_rate_out)), dtype=np.float32
+    is_audiobuffer = isinstance(data, AudioBuffer)
+
+    arr = np.ascontiguousarray(data, dtype=np.float32)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, -1)
+    out = np.asarray(
+        _resample(arr, int(sample_rate_in), int(sample_rate_out)),
+        dtype=np.float32,
     )
+
+    if is_audiobuffer:
+        return AudioBuffer.from_numpy(out)
+    return out
 
 
 def get_audio_info(path: str | Path) -> dict:

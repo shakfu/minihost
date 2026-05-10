@@ -1134,21 +1134,27 @@ class TestMidiRendering:
         mf.add_note_off(0, 480, 0, 60, 0)
         return mf
 
-    def test_render_midi_returns_array(self, synth_plugin, test_midi_file):
-        """Test that render_midi returns a numpy array."""
+    def test_render_midi_returns_audiobuffer_by_default(self, synth_plugin, test_midi_file):
+        """render_midi returns AudioBuffer by default; pass as_=np.ndarray for numpy."""
         import numpy as np
 
         audio = minihost.render_midi(
             synth_plugin, test_midi_file, block_size=512, tail_seconds=0.5
         )
+        assert isinstance(audio, minihost.AudioBuffer)
+        assert audio.channels >= 1
+        assert audio.frames > 0
 
-        assert isinstance(audio, np.ndarray)
-        assert audio.ndim == 2
-        assert audio.shape[0] >= 1  # At least 1 channel
-        assert audio.shape[1] > 0  # Some samples
+        # Numpy path via as_=
+        audio_np = minihost.render_midi(
+            synth_plugin, test_midi_file, block_size=512, tail_seconds=0.5,
+            as_=np.ndarray,
+        )
+        assert isinstance(audio_np, np.ndarray)
+        assert audio_np.ndim == 2
 
     def test_render_midi_stream_yields_blocks(self, synth_plugin, test_midi_file):
-        """Test that render_midi_stream yields audio blocks."""
+        """render_midi_stream yields AudioBuffer blocks by default."""
         import numpy as np
 
         blocks = list(
@@ -1159,6 +1165,17 @@ class TestMidiRendering:
 
         assert len(blocks) > 0
         for block in blocks:
+            assert isinstance(block, minihost.AudioBuffer)
+            assert block.channels >= 1
+
+        # Numpy path via as_=
+        np_blocks = list(
+            minihost.render_midi_stream(
+                synth_plugin, test_midi_file, block_size=256, tail_seconds=0.1,
+                as_=np.ndarray,
+            )
+        )
+        for block in np_blocks:
             assert isinstance(block, np.ndarray)
             assert block.ndim == 2
 
@@ -1368,7 +1385,8 @@ class TestPluginChain:
         mf.add_note_on(0, 0, 0, 60, 100)
         mf.add_note_off(0, 480, 0, 60, 0)
 
-        audio = minihost.render_midi(chain, mf, tail_seconds=0.5)
+        audio = minihost.render_midi(chain, mf, tail_seconds=0.5,
+                                     as_=np.ndarray)
 
         assert isinstance(audio, np.ndarray)
         assert audio.ndim == 2

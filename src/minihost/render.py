@@ -1,20 +1,31 @@
 """MIDI file rendering utilities for minihost.
 
 This module provides functions to render MIDI files through audio plugins,
-supporting output to numpy arrays, audio files, or streaming generators.
+returning :class:`AudioBuffer` by default and ``numpy.ndarray`` on request
+via the ``as_=`` keyword. Streaming and file-output variants are also
+provided.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Iterator, Optional, Union
+from typing import TYPE_CHECKING, Any, Iterator, Optional, Union, cast
 
 if TYPE_CHECKING:
     import numpy as np
 
-from minihost._core import Plugin, PluginChain, MidiFile
+from minihost._core import AudioBuffer, Plugin, PluginChain, MidiFile
 
 # Type alias for plugin or chain
 PluginOrChain = Union[Plugin, PluginChain]
+
+
+def _coerce_block(block: AudioBuffer, as_: type) -> Any:
+    """Convert a renderer block to the requested container type."""
+    if as_ is AudioBuffer:
+        return block
+    # numpy or anything that wants the np.ndarray side: convert via numpy().
+    # The fast path: AudioBuffer.numpy() returns a zero-copy view.
+    return block.numpy()
 
 
 def _build_tempo_map(midi_file: MidiFile) -> list[tuple[int, float]]:
@@ -158,7 +169,8 @@ def render_midi_stream(
     tail_seconds: Optional[Union[float, str]] = None,
     tail_threshold: float = _AUTO_TAIL_THRESHOLD,
     max_tail_seconds: float = _AUTO_TAIL_MAX_SECONDS,
-) -> "Iterator[np.ndarray]":
+    as_: type = AudioBuffer,
+) -> "Iterator[AudioBuffer | np.ndarray]":
     """Render MIDI file through plugin or chain as a generator of audio blocks.
 
     Args:
@@ -172,9 +184,12 @@ def render_midi_stream(
                        Default is 1e-4 (~-80 dB). Only used when tail_seconds="auto".
         max_tail_seconds: Maximum tail duration for auto mode (safety cap).
                          Default is 30.0 seconds.
+        as_: Container type for each yielded block. ``AudioBuffer``
+            (default) or ``numpy.ndarray``.
 
     Yields:
-        numpy arrays of shape (channels, block_size) containing rendered audio
+        Audio blocks of shape ``(channels, n)`` where ``n <= block_size``.
+        Type matches the ``as_`` argument.
 
     Example:
         >>> plugin = minihost.Plugin("synth.vst3", sample_rate=48000)
@@ -182,15 +197,11 @@ def render_midi_stream(
         ...     # Process or write each block
         ...     pass
 
-        >>> # Auto-detect reverb tail
-        >>> for block in minihost.render_midi_stream(plugin, "song.mid", tail_seconds="auto"):
-        ...     pass
-
-        >>> # With a plugin chain
-        >>> synth = minihost.Plugin("synth.vst3", sample_rate=48000)
-        >>> reverb = minihost.Plugin("reverb.vst3", sample_rate=48000)
-        >>> chain = minihost.PluginChain([synth, reverb])
-        >>> audio = minihost.render_midi(chain, "song.mid")
+        >>> # numpy blocks if you prefer
+        >>> import numpy as np
+        >>> for block in minihost.render_midi_stream(plugin, "song.mid",
+        ...                                          as_=np.ndarray):
+        ...     ...
     """
     renderer = MidiRenderer(
         plugin,
@@ -203,7 +214,7 @@ def render_midi_stream(
     while not renderer.is_finished:
         block = renderer.render_block()
         if block is not None:
-            yield block
+            yield _coerce_block(block, as_)
 
 
 def render_midi(
@@ -214,8 +225,9 @@ def render_midi(
     dtype: Optional[type] = None,
     tail_threshold: float = _AUTO_TAIL_THRESHOLD,
     max_tail_seconds: float = _AUTO_TAIL_MAX_SECONDS,
-) -> "np.ndarray":
-    """Render MIDI file through plugin or chain to a numpy array.
+    as_: type = AudioBuffer,
+) -> "AudioBuffer | np.ndarray":
+    """Render MIDI file through plugin or chain to a single buffer.
 
     Args:
         plugin: Plugin or PluginChain instance to render through
@@ -223,45 +235,37 @@ def render_midi(
         block_size: Audio block size in samples
         tail_seconds: Extra time to render after MIDI ends for reverb/delay tails.
                      "auto" = detect tail by monitoring output level.
-        dtype: Output dtype (np.float32 or np.float64). None = np.float32
+        dtype: When ``as_=numpy.ndarray``, the dtype of the returned array
+            (``np.float32`` or ``np.float64``). Ignored for the
+            ``AudioBuffer`` path (always float32).
         tail_threshold: Peak amplitude threshold for auto-tail detection (linear).
         max_tail_seconds: Maximum tail duration for auto mode (safety cap).
+        as_: Container type for the returned audio. ``AudioBuffer``
+            (default) or ``numpy.ndarray``.
 
     Returns:
-        numpy array of shape (channels, total_samples)
+        An ``AudioBuffer`` or ``numpy.ndarray`` of shape
+        ``(channels, total_samples)``. Type matches the ``as_`` argument.
 
     Example:
         >>> plugin = minihost.Plugin("synth.vst3", sample_rate=48000)
         >>> audio = minihost.render_midi(plugin, "song.mid")
-        >>> print(f"Rendered {audio.shape[1] / 48000:.2f} seconds")
+        >>> print(f"Rendered {audio.frames / 48000:.2f} seconds")
     """
     import numpy as np
 
     if dtype is None:
         dtype = np.float32
 
-    blocks = list(
-        render_midi_stream(
-            plugin,
-            midi_file,
-            block_size,
-            tail_seconds,
-            tail_threshold=tail_threshold,
-            max_tail_seconds=max_tail_seconds,
-        )
+    renderer = MidiRenderer(
+        plugin,
+        midi_file,
+        block_size=block_size,
+        tail_seconds=tail_seconds,
+        tail_threshold=tail_threshold,
+        max_tail_seconds=max_tail_seconds,
     )
-
-    if not blocks:
-        out_channels = max(plugin.num_output_channels, 2)
-        return np.zeros((out_channels, 0), dtype=dtype)
-
-    # Concatenate all blocks
-    result = np.concatenate(blocks, axis=1)
-
-    if dtype != np.float32:
-        result = result.astype(dtype)
-
-    return result
+    return renderer.render_all(dtype=dtype, as_=as_)
 
 
 def render_midi_to_file(
@@ -325,24 +329,33 @@ def render_midi_to_file(
         write_audio(output_path, empty, sample_rate, bit_depth=bit_depth)
         return 0
 
-    audio = np.zeros((out_channels, total), dtype=np.float32)
+    # Allocate the output as an AudioBuffer; obtain a numpy view onto its
+    # storage for slice-assignment of each rendered block. AudioBuffer
+    # blocks coming back from render_block() are converted via np.asarray
+    # (zero-copy via __array__).
+    audio = AudioBuffer(out_channels, total)
+    audio_view = audio.numpy()
     written = 0
     while not renderer.is_finished:
         block = renderer.render_block()
         if block is None:
-            break
-        n = block.shape[1]
+            continue
+        n = block.frames
         # Defensive: never write past the pre-allocated extent. Should not
         # happen given the renderer's own bounds, but truncate if it does.
         if written + n > total:
             n = total - written
             if n <= 0:
                 break
-            block = block[:, :n]
-        audio[:, written:written + n] = block
+            # Slice always returns an AudioBuffer (only scalar/scalar
+            # indexing returns a float); cast for mypy.
+            block = cast(AudioBuffer, block[:, :n])
+        audio_view[:, written:written + n] = np.asarray(block)
         written += n
 
-    write_audio(output_path, audio[:, :written], sample_rate, bit_depth=bit_depth)
+    if written < total:
+        audio = cast(AudioBuffer, audio[:, :written])  # trim
+    write_audio(output_path, audio, sample_rate, bit_depth=bit_depth)
     return written
 
 
@@ -544,13 +557,15 @@ class MidiRenderer:
         self._skip_remaining = self._latency
         self.plugin.reset()
 
-    def render_block(self) -> "Optional[np.ndarray]":
+    def render_block(self) -> Optional[AudioBuffer]:
         """Render next block of audio.
 
         Returns:
-            numpy array of shape (channels, n) where n <= block_size, or
-            None if finished. May also return None for early blocks
-            consumed entirely by latency-compensation skip.
+            :class:`AudioBuffer` of shape ``(channels, n)`` where
+            ``n <= block_size``, or ``None`` if finished. May also return
+            ``None`` for early blocks consumed entirely by latency-
+            compensation skip. Call ``.numpy()`` on the returned buffer
+            if you need a numpy view.
         """
         if self.is_finished:
             return None
@@ -620,31 +635,60 @@ class MidiRenderer:
             else:
                 self._consecutive_silent = 0
 
-        return result
+        # Wrap the (possibly sliced) numpy result in an AudioBuffer at the
+        # public-API boundary. AudioBuffer.from_numpy copies; for the
+        # full-block case this replaces the explicit .copy() above.
+        return AudioBuffer.from_numpy(self._np.ascontiguousarray(result))
 
-    def render_all(self, dtype: Optional[type] = None) -> "np.ndarray":
+    def render_all(
+        self,
+        dtype: Optional[type] = None,
+        as_: type = AudioBuffer,
+    ) -> "AudioBuffer | np.ndarray":
         """Render all remaining audio.
 
         Args:
-            dtype: Output dtype (np.float32 or np.float64). None = np.float32
+            dtype: When ``as_=np.ndarray``, the dtype of the returned array
+                (``np.float32`` or ``np.float64``). Ignored for the
+                ``AudioBuffer`` path (always float32).
+            as_: Container type for the returned audio. ``AudioBuffer``
+                (default) or ``numpy.ndarray``.
 
         Returns:
-            numpy array of shape (channels, remaining_samples)
+            An ``AudioBuffer`` or ``numpy.ndarray`` of shape
+            ``(channels, remaining_samples)``.
         """
         if dtype is None:
             dtype = self._np.float32
 
-        blocks = []
+        # Pre-allocate against the renderer's known upper bound, then write
+        # blocks directly into slices. Same memory-efficient pattern as
+        # render_midi_to_file. Avoids list+concatenate's transient peak.
+        remaining = max(0, self._render_samples - self._current_sample)
+        out = AudioBuffer(self._out_channels, remaining)
+        out_view = out.numpy()
+        written = 0
         while not self.is_finished:
             block = self.render_block()
-            if block is not None:
-                blocks.append(block)
+            if block is None:
+                continue
+            n = block.frames
+            if written + n > remaining:
+                n = remaining - written
+                if n <= 0:
+                    break
+                block = cast(AudioBuffer, block[:, :n])
+            out_view[:, written:written + n] = self._np.asarray(block)
+            written += n
 
-        if not blocks:
-            return self._np.zeros((self._out_channels, 0), dtype=dtype)
+        if written < remaining:
+            out = cast(AudioBuffer, out[:, :written])  # trim
 
-        result = self._np.concatenate(blocks, axis=1)
-        if dtype != self._np.float32:
-            result = result.astype(dtype)
-
-        return result
+        if as_ is AudioBuffer:
+            return out
+        if as_ is self._np.ndarray:
+            arr = self._np.asarray(out)
+            if dtype != self._np.float32:
+                arr = arr.astype(dtype)
+            return arr
+        raise TypeError(f"as_ must be AudioBuffer or numpy.ndarray, got {as_!r}")
