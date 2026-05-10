@@ -557,6 +557,123 @@ class TestCmdPlayErrors:
         assert "MIDI port 99 not found" in capsys.readouterr().err
 
 
+class TestParseMapSpec:
+    """Unit tests for the --map argument parser used by cmd_play."""
+
+    def setup_method(self):
+        from minihost.cli import _parse_map_spec
+        self._parse = _parse_map_spec
+
+    def test_three_field_form_uses_defaults(self):
+        ch, cc, p, vr, curve = self._parse("0:7:Volume")
+        assert (ch, cc, p) == (0, 7, "Volume")
+        assert vr == (0.0, 1.0)
+        assert curve == "linear"
+
+    def test_five_field_form_sets_value_range(self):
+        ch, cc, p, vr, curve = self._parse("3:10:Pan:-1:1")
+        assert (ch, cc, p) == (3, 10, "Pan")
+        assert vr == (-1.0, 1.0)
+        assert curve == "linear"
+
+    def test_six_field_form_sets_curve(self):
+        ch, cc, p, vr, curve = self._parse("0:74:Cutoff:0:1:exp")
+        assert (ch, cc, p, vr, curve) == (0, 74, "Cutoff", (0.0, 1.0), "exp")
+
+    def test_wrong_field_count_raises(self):
+        for spec in ("just-one", "0:7", "0:7:Volume:0", "0:7:Volume:0:1:exp:extra"):
+            with pytest.raises(ValueError, match="3, 5, or 6"):
+                self._parse(spec)
+
+    def test_non_integer_channel_raises(self):
+        with pytest.raises(ValueError, match="must be integers"):
+            self._parse("a:7:Volume")
+
+    def test_non_numeric_range_raises(self):
+        with pytest.raises(ValueError, match="lo and hi must be numbers"):
+            self._parse("0:7:Volume:nope:1")
+
+    def test_empty_param_raises(self):
+        with pytest.raises(ValueError, match="param name must be non-empty"):
+            self._parse("0:7:")
+
+
+class TestCmdPlayMapping:
+    """Tests for the --map integration in cmd_play (no audio device opened)."""
+
+    def _mock_plugin_with_params(self, names):
+        plugin = MagicMock()
+        plugin.num_input_channels = 2
+        plugin.num_output_channels = 2
+        plugin.num_params = len(names)
+
+        def find_param(n):
+            try:
+                return names.index(n.lower())
+            except ValueError:
+                # Match the real Plugin.find_param contract.
+                raise RuntimeError(f"Parameter not found: '{n}'")
+
+        plugin.find_param = MagicMock(side_effect=find_param)
+        return plugin
+
+    def test_play_map_unknown_param_raises_error(self, capsys):
+        plugin = self._mock_plugin_with_params(["volume", "pan"])
+        args = argparse.Namespace(
+            plugin="/synth.vst3",
+            input=False,
+            midi=0,
+            virtual_midi=None,
+            midi_out=None,
+            virtual_midi_out=None,
+            sample_rate=48000,
+            block_size=512,
+            map=["0:7:Volume", "0:99:NotARealParam"],
+        )
+        with patch("minihost.Plugin", return_value=plugin):
+            ret = cmd_play(args)
+        assert ret == 1
+        err = capsys.readouterr().err
+        assert "Error parsing --map" in err
+        assert "Parameter not found" in err
+
+    def test_play_map_malformed_spec_raises_error(self, capsys):
+        plugin = self._mock_plugin_with_params(["volume"])
+        args = argparse.Namespace(
+            plugin="/synth.vst3",
+            input=False,
+            midi=0,
+            virtual_midi=None,
+            midi_out=None,
+            virtual_midi_out=None,
+            sample_rate=48000,
+            block_size=512,
+            map=["badspec"],
+        )
+        with patch("minihost.Plugin", return_value=plugin):
+            ret = cmd_play(args)
+        assert ret == 1
+        assert "Error parsing --map" in capsys.readouterr().err
+
+    def test_play_map_without_midi_input_raises_error(self, capsys):
+        plugin = self._mock_plugin_with_params(["volume"])
+        args = argparse.Namespace(
+            plugin="/synth.vst3",
+            input=False,
+            midi=None,
+            virtual_midi=None,
+            midi_out=None,
+            virtual_midi_out=None,
+            sample_rate=48000,
+            block_size=512,
+            map=["0:7:Volume"],
+        )
+        with patch("minihost.Plugin", return_value=plugin):
+            ret = cmd_play(args)
+        assert ret == 1
+        assert "--map requires --midi" in capsys.readouterr().err
+
+
 class TestCmdProcessErrors:
     def test_process_no_input_or_midi(self, capsys):
         """process requires at least one of --input or --midi-input."""

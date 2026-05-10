@@ -33,7 +33,8 @@
 
 ### Medium impact
 
-- [ ] **MIDI CC-to-parameter mapping in `play` command** - Map incoming MIDI CC to plugin parameters (e.g. `--map CC1:Cutoff`) to make real-time mode usable for live performance
+<!-- Resolved: --map flag wired in to cmd_play. See CHANGELOG. -->
+- [x] ~~**MIDI CC-to-parameter mapping in `play` command**~~ -- DONE. `minihost play --map "channel:cc:param[:lo:hi[:curve]]"` (repeatable) builds a `MidiMapper`, routes the MIDI input through it, and forwards unmapped events to the plugin via `AudioDevice.send_midi`. Library piece is `minihost.MidiMapper`; CLI parser is `_parse_map_spec` in `cli.py`. 10 tests in `tests/test_cli.py::TestParseMapSpec` and `::TestCmdPlayMapping`.
 - [ ] **Dry/wet mix on PluginChain** - Per-plugin mix knob in chain (`mh_chain_set_mix(chain, plugin_index, 0.5f)`) for parallel compression, reverb blending, etc. without manual buffer management
 - [ ] **Plugin graph / parallel routing** - A `PluginGraph` allowing parallel branches (dry + wet summed) beyond the serial-only `PluginChain`, for more complex mixing scenarios
 - [ ] **Session/engine object** -- share the JUCE `AudioPluginFormatManager` across plugin loads, reducing overhead for multi-plugin workflows and plugin scanning. Currently each `mh_open` creates its own format manager.

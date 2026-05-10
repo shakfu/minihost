@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from typing import Optional
 import signal
 import sys
 import time
@@ -599,6 +600,47 @@ def _resolve_audio_device_arg(value, devices, kind):
     return matches[0]["index"]
 
 
+def _parse_map_spec(spec: str) -> tuple[int, int, str, tuple[float, float], str]:
+    """Parse one --map argument string into (channel, cc, param, value_range, curve).
+
+    Format: 'channel:cc:param[:lo:hi[:curve]]'. Caller is responsible for
+    further validation (e.g. checking the parameter exists on the plugin
+    via MidiMapper.map_cc, which raises if not found).
+    """
+    parts = spec.split(":")
+    if len(parts) not in (3, 5, 6):
+        raise ValueError(
+            f"--map expects 'channel:cc:param[:lo:hi[:curve]]' "
+            f"(3, 5, or 6 colon-separated fields), got {spec!r}"
+        )
+    try:
+        channel = int(parts[0])
+        cc = int(parts[1])
+    except ValueError as e:
+        raise ValueError(
+            f"--map: channel and cc must be integers, got {spec!r}"
+        ) from e
+
+    param = parts[2]
+    if not param:
+        raise ValueError(f"--map: param name must be non-empty, got {spec!r}")
+
+    if len(parts) >= 5:
+        try:
+            lo = float(parts[3])
+            hi = float(parts[4])
+        except ValueError as e:
+            raise ValueError(
+                f"--map: lo and hi must be numbers, got {spec!r}"
+            ) from e
+        value_range = (lo, hi)
+    else:
+        value_range = (0.0, 1.0)
+
+    curve = parts[5] if len(parts) == 6 else "linear"
+    return channel, cc, param, value_range, curve
+
+
 def cmd_play(args: argparse.Namespace) -> int:
     """Play plugin with real-time audio and MIDI."""
     capture = getattr(args, "input", False) or False
@@ -642,6 +684,32 @@ def cmd_play(args: argparse.Namespace) -> int:
     print(f"  Outputs: {plugin.num_output_channels}")
     print(f"  Parameters: {plugin.num_params}")
 
+    # Build CC->parameter mapper from --map specs, if any.
+    # When a mapper is active we route the MIDI port through Python via
+    # MidiIn instead of letting AudioDevice consume it directly: the
+    # mapper translates mapped CCs to set_param calls on the plugin and
+    # forwards everything else (notes, unmapped CCs) to the plugin via
+    # AudioDevice.send_midi so the user can still play notes.
+    midi_mapper: Optional[minihost.MidiMapper] = None
+    map_specs = getattr(args, "map", None) or []
+    if map_specs:
+        midi_mapper = minihost.MidiMapper(plugin)
+        try:
+            for spec in map_specs:
+                channel, cc, param, value_range, curve = _parse_map_spec(spec)
+                midi_mapper.map_cc(
+                    channel=channel, cc=cc, param=param,
+                    value_range=value_range, curve=curve,
+                )
+        except (ValueError, RuntimeError) as e:
+            # ValueError from _parse_map_spec; RuntimeError from
+            # Plugin.find_param via MidiMapper.map_cc on unknown param.
+            print(f"Error parsing --map: {e}", file=sys.stderr)
+            return 1
+        print(f"  CC mappings: {len(midi_mapper.cc_mappings)}")
+        for (ch, cc), pname in sorted(midi_mapper.cc_mappings.items()):
+            print(f"    ch={ch} cc={cc:<3} -> {pname}")
+
     # Determine MIDI configuration
     midi_port = -1
     if args.midi is not None:
@@ -654,6 +722,12 @@ def cmd_play(args: argparse.Namespace) -> int:
             )
             return 1
         print(f"  MIDI Input: [{midi_port}] {inputs[midi_port]['name']}")
+    elif midi_mapper is not None and not args.virtual_midi:
+        print(
+            "Error: --map requires --midi N or --virtual-midi NAME so the "
+            "mapper has an input source.", file=sys.stderr,
+        )
+        return 1
 
     # Determine MIDI output configuration
     midi_out_port = -1
@@ -668,13 +742,19 @@ def cmd_play(args: argparse.Namespace) -> int:
             return 1
         print(f"  MIDI Output: [{midi_out_port}] {outputs[midi_out_port]['name']}")
 
+    # When a mapper is active, AudioDevice must NOT also open the MIDI
+    # input port -- the port is owned by the standalone MidiIn that drives
+    # the mapper. The mapper's on_unmapped forwards events back into the
+    # plugin via AudioDevice.send_midi, set up after the device is created.
+    audio_midi_input_port = -1 if midi_mapper is not None else midi_port
+
     # Open audio device (duplex mode if --input)
     try:
         audio = minihost.AudioDevice(
             plugin,
             sample_rate=args.sample_rate,
             buffer_frames=args.block_size,
-            midi_input_port=midi_port,
+            midi_input_port=audio_midi_input_port,
             midi_output_port=midi_out_port,
             capture=capture,
             playback_device_index=playback_device_index,
@@ -708,6 +788,39 @@ def cmd_play(args: argparse.Namespace) -> int:
                 f"Warning: Could not create virtual MIDI output port: {e}",
                 file=sys.stderr,
             )
+
+    # Wire up MidiIn -> mapper -> forwarder. The mapper translates mapped
+    # CCs to plugin.set_param; on_unmapped forwards everything else (notes,
+    # unmapped CCs) into the plugin's MIDI queue via audio.send_midi.
+    # SysEx and longer messages aren't forwarded (send_midi takes 3 bytes).
+    midi_in_handle = None
+    if midi_mapper is not None:
+        def _forward_unmapped(data: bytes) -> None:
+            n = len(data)
+            if n >= 3:
+                audio.send_midi(data[0], data[1], data[2])
+            elif n == 2:
+                audio.send_midi(data[0], data[1], 0)
+            elif n == 1:
+                audio.send_midi(data[0], 0, 0)
+
+        midi_mapper.set_on_unmapped(_forward_unmapped)
+
+        if midi_port >= 0:
+            try:
+                midi_in_handle = minihost.MidiIn.open(midi_port, midi_mapper)
+            except RuntimeError as e:
+                print(f"Error opening MIDI input: {e}", file=sys.stderr)
+                return 1
+        elif args.virtual_midi:
+            try:
+                midi_in_handle = minihost.MidiIn.open_virtual(
+                    args.virtual_midi, midi_mapper
+                )
+            except RuntimeError as e:
+                print(f"Error creating virtual MIDI input: {e}",
+                      file=sys.stderr)
+                return 1
 
     # Setup signal handler
     running = True
@@ -743,6 +856,8 @@ def cmd_play(args: argparse.Namespace) -> int:
         pass
 
     audio.stop()
+    if midi_in_handle is not None:
+        midi_in_handle.close()
     print("Done.")
     return 0
 
@@ -1590,6 +1705,24 @@ Examples:
         metavar="INDEX_OR_NAME",
         help="Audio capture device for --input duplex mode (index or substring). "
         "Default: system default.",
+    )
+    play_p.add_argument(
+        "--map",
+        action="append",
+        default=[],
+        metavar="SPEC",
+        help=(
+            "Map an incoming MIDI CC to a plugin parameter. Repeatable. "
+            "Format: 'channel:cc:param[:lo:hi[:curve]]'. "
+            "channel and cc are integers (0-15 / 0-127); param is the plugin "
+            "parameter name (case-insensitive). Optional lo:hi rescale the "
+            "0..127 CC value (default 0:1). Optional curve is one of "
+            "'linear' (default), 'exp' (more resolution at low end), or "
+            "'log' (more resolution at high end). When --map is set, MIDI "
+            "is routed through Python; unmapped events are forwarded to the "
+            "plugin so notes still play. "
+            "Example: --map 0:74:Cutoff:0:1:exp"
+        ),
     )
     play_p.set_defaults(func=cmd_play)
 

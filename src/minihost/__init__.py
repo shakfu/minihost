@@ -90,6 +90,8 @@ def _audiobuffer_as_ndarray_with_friendly_error(self):
 AudioBuffer.as_ndarray = _audiobuffer_as_ndarray_with_friendly_error  # type: ignore[method-assign]
 
 
+from minihost.control import MidiMapper
+
 from minihost.process import (
     process_audio,
     process_audio_to_file,
@@ -141,6 +143,8 @@ __all__ = [
     # Audio processing
     "process_audio",
     "process_audio_to_file",
+    # Control surface mapping
+    "MidiMapper",
     # Async loading
     "open_async",
     # Automation
