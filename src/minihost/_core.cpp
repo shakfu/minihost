@@ -83,19 +83,19 @@ static std::pair<int, int> resolve_axis_key(nb::handle key, int size,
         if (step != 1) {
             throw nb::type_error(
                 "AudioBuffer does not support strided slicing "
-                "(step != 1). Use .numpy() for that.");
+                "(step != 1). Use .as_ndarray() for that.");
         }
         return {(int)start, (int)length};
     }
     if (p == Py_Ellipsis) {
         throw nb::type_error(
-            "AudioBuffer does not support Ellipsis indexing. Use .numpy() for that.");
+            "AudioBuffer does not support Ellipsis indexing. Use .as_ndarray() for that.");
     }
     if (PyList_Check(p) || PyTuple_Check(p)
         || (Py_TYPE(p)->tp_iter != nullptr && !PyUnicode_Check(p))) {
         throw nb::type_error(
             "AudioBuffer does not support fancy / boolean indexing. "
-            "Use .numpy() for that.");
+            "Use .as_ndarray() for that.");
     }
     throw nb::type_error(
         (std::string(axis) + " key must be an int or slice").c_str());
@@ -2023,7 +2023,7 @@ NB_MODULE(_core, m) {
     //
     // Slicing: numpy-shaped 2-axis indexing, with documented limits (no
     // strided slices, no fancy indexing, no Ellipsis -- raise TypeError
-    // pointing the user at .numpy() for those).
+    // pointing the user at .as_ndarray() for those).
     nb::class_<MhAudioBuffer>(m, "AudioBuffer",
         "Planar float32 audio buffer (stdlib-only; backed by juce::AudioBuffer).\n\n"
         "Layout is (channels x frames) row-major. The buffer is always\n"
@@ -2034,7 +2034,7 @@ NB_MODULE(_core, m) {
         "  buf[ch, fr]                -> float\n"
         "  buf[ch_slice, fr_slice]    -> AudioBuffer (copy, not view)\n"
         "Strided slices (step != 1), fancy indexing, boolean indexing, and\n"
-        "Ellipsis raise TypeError; use .numpy() if you need those.")
+        "Ellipsis raise TypeError; use .as_ndarray() if you need those.")
         .def(nb::init<int, int>(), "channels"_a, "frames"_a,
              "Allocate a new AudioBuffer of (channels, frames) float32 samples, "
              "zero-initialized.")
@@ -2199,7 +2199,7 @@ NB_MODULE(_core, m) {
 
         // ---- Buffer-protocol export (DLPack) ----
         // Allows Plugin.process(buf, out) etc. to consume AudioBuffer
-        // directly without an explicit .numpy() / memoryview conversion.
+        // directly without an explicit .as_ndarray() / memoryview conversion.
         .def("__dlpack__",
              [](nb::handle self_h, nb::handle /*stream*/) {
                  auto& self = nb::cast<MhAudioBuffer&>(self_h);
@@ -2219,13 +2219,13 @@ NB_MODULE(_core, m) {
              "DLPack device descriptor. Always (kDLCPU=1, 0).")
 
         // ---- numpy interop (lazy import) ----
-        // For both .numpy() and .__array__(), we receive the bound object
-        // as nb::handle (the Python self) so we can pass it as the owner
-        // of the returned nb::ndarray. The owner is what keeps the
+        // For both .as_ndarray() and .__array__(), we receive the bound
+        // object as nb::handle (the Python self) so we can pass it as the
+        // owner of the returned nb::ndarray. The owner is what keeps the
         // AudioBuffer alive while the consuming numpy array (or DLPack
         // capsule) is in use; without it the underlying memory is freed
         // out from under any view that outlives the local reference.
-        .def("numpy",
+        .def("as_ndarray",
              [](nb::handle self_h) {
                  auto& self = nb::cast<MhAudioBuffer&>(self_h);
                  size_t shape[2] = { (size_t)self.channels(),
@@ -2234,7 +2234,8 @@ NB_MODULE(_core, m) {
                                     nb::c_contig>(
                      self.data(), 2, shape, self_h);
              },
-             "Return a numpy ndarray view (zero-copy). Requires numpy.")
+             "Return a numpy.ndarray view of this buffer (zero-copy). "
+             "Requires numpy installed; raises ImportError otherwise.")
         // numpy's asarray()/array() consult __array__ before __dlpack__.
         // Without this hook, numpy falls back to iterating __getitem__,
         // which our 2-axis-only indexing rejects.
@@ -2738,21 +2739,18 @@ NB_MODULE(_core, m) {
         unsigned int frames = data->frames;
         unsigned int sample_rate = data->sample_rate;
 
-        // De-interleave to planar layout for numpy
-        size_t total_samples = (size_t)channels * frames;
-        float* buf = new float[total_samples];
-        interleaved_to_planar(data->data, buf, channels, frames);
+        // De-interleave directly into a fresh AudioBuffer. Avoids the
+        // numpy detour: this binding does not require numpy at all.
+        auto* buf = new MhAudioBuffer((int)channels, (int)frames);
+        interleaved_to_planar(data->data, buf->data(), channels, frames);
         mh_audio_data_free(data);
 
-        // Create numpy array with capsule for ownership
-        nb::capsule owner(buf, [](void* p) noexcept { delete[] static_cast<float*>(p); });
-        size_t shape[2] = {channels, frames};
-        auto array = nb::ndarray<float, nb::numpy, nb::shape<-1, -1>>(
-            buf, 2, shape, owner);
-
-        return nb::make_tuple(array, sample_rate);
+        return nb::make_tuple(
+            nb::cast(buf, nb::rv_policy::take_ownership),
+            sample_rate);
     }, nb::arg("path"),
-       "Read an audio file. Returns (data, sample_rate) where data has shape (channels, frames).");
+       "Read an audio file. Returns (AudioBuffer, sample_rate) where "
+       "the AudioBuffer has shape (channels, frames).");
 
     m.def("audio_write", [](const std::string& path,
                             nb::ndarray<const float, nb::shape<-1, -1>, nb::c_contig, nb::device::cpu> data,
@@ -2782,7 +2780,9 @@ NB_MODULE(_core, m) {
         size_t channels = data.shape(0);
         size_t frames_in = data.shape(1);
 
-        // Interleave planar numpy data for the C API
+        // Accept any 2D float32 c-contiguous buffer-protocol producer
+        // (numpy ndarray, AudioBuffer via DLPack, memoryview, ...).
+        // Interleave for the miniaudio resampler.
         std::vector<float> interleaved(channels * frames_in);
         planar_to_interleaved(data.data(), interleaved.data(), channels, frames_in);
 
@@ -2800,20 +2800,16 @@ NB_MODULE(_core, m) {
         unsigned int out_ch = result->channels;
         unsigned int out_frames = result->frames;
 
-        // De-interleave resampled output to planar layout
-        size_t total_out = (size_t)out_ch * out_frames;
-        float* buf = new float[total_out];
-        interleaved_to_planar(result->data, buf, out_ch, out_frames);
+        // De-interleave directly into a fresh AudioBuffer. No numpy required.
+        auto* buf = new MhAudioBuffer((int)out_ch, (int)out_frames);
+        interleaved_to_planar(result->data, buf->data(), out_ch, out_frames);
         mh_audio_data_free(result);
 
-        nb::capsule owner(buf, [](void* p) noexcept { delete[] static_cast<float*>(p); });
-        size_t shape[2] = {out_ch, out_frames};
-        auto array = nb::ndarray<float, nb::numpy, nb::shape<-1, -1>>(
-            buf, 2, shape, owner);
-
-        return array;
+        return nb::cast(buf, nb::rv_policy::take_ownership);
     }, nb::arg("data"), nb::arg("sample_rate_in"), nb::arg("sample_rate_out"),
-       "Resample audio data. Input shape: (channels, frames). Returns resampled array at sample_rate_out.");
+       "Resample audio data. Input: any 2D float32 c-contiguous buffer-protocol "
+       "producer (AudioBuffer / numpy ndarray / ...). Returns an AudioBuffer at "
+       "sample_rate_out.");
 
     m.def("audio_get_file_info", [](const std::string& path) {
         char err[1024] = {0};

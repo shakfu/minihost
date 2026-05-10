@@ -35,10 +35,16 @@ class _FakePlugin:
     def process_midi(self, input_buffer, output_buffer, midi_events):
         # Write a recognisable monotonic signal: each output sample equals
         # the absolute frame number the plugin processed.
-        n = output_buffer.shape[1]
+        # output_buffer may be an AudioBuffer or a numpy ndarray (the
+        # renderer passes AudioBuffer; older tests pass numpy). Coerce
+        # via np.asarray for uniform handling -- AudioBuffer satisfies
+        # this via its __array__ hook (zero-copy view).
+        view = np.asarray(output_buffer)
+        n = view.shape[1]
         idx = np.arange(self._frame_counter, self._frame_counter + n,
                          dtype=np.float32)
-        output_buffer[:] = idx
+        # Broadcast across all channels.
+        view[:, :] = idx
         self._frame_counter += n
 
 

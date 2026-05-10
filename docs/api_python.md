@@ -1,5 +1,63 @@
 # Python API Reference
 
+## AudioBuffer
+
+`minihost.AudioBuffer` is the canonical container for audio data: planar
+float32, JUCE-backed, stdlib-only (numpy not required). Exposes the
+DLPack and `__array__` protocols, so it is accepted directly by every
+process method, by `numpy.asarray`, and by any other 2D float32
+c-contiguous buffer-protocol consumer.
+
+### Constructor
+
+```python
+AudioBuffer(channels: int, frames: int)
+```
+
+Allocates a `(channels, frames)` planar float32 buffer, zero-initialized.
+
+### Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `channels` | `int` | Number of channels |
+| `frames` | `int` | Number of frames per channel |
+| `shape` | `tuple[int, int]` | `(channels, frames)` -- matches numpy's `.shape` on 2D arrays |
+| `dtype` | `str` (class attr) | Always `"float32"` |
+
+### Indexing
+
+Numpy-style 2-axis indexing with deliberate limits:
+
+| Form | Returns | Notes |
+|------|---------|-------|
+| `buf[ch, frame]` | `float` | Both indices scalar |
+| `buf[ch_slice, frame_slice]` | `AudioBuffer` | New buffer, copy not view |
+| `buf[ch_slice, frame_slice] = scalar` | `None` | Scalar broadcast assignment |
+| `buf[ch_slice, frame_slice] = buf2` | `None` | Source must match exact shape |
+
+Negative indices supported. Strided slices (`step != 1`), fancy
+indexing, boolean indexing, Ellipsis, and single-axis `buf[ch]` raise
+`TypeError` directing to `.as_ndarray()`.
+
+### DSP Operations
+
+| Method | Description |
+|--------|-------------|
+| `clear(start=0, count=None)` | Zero a range (or whole buffer if no args) |
+| `apply_gain(gain)` | Multiply every sample by `gain` in place |
+| `magnitude(start=0, count=None)` | Peak absolute sample value across all channels in range |
+| `copy()` | Deep copy of the buffer |
+
+### numpy interop
+
+| Method | Description |
+|--------|-------------|
+| `as_ndarray()` | Return a numpy.ndarray view (zero-copy). Requires numpy installed; raises `ImportError` otherwise. |
+| `AudioBuffer.from_numpy(arr)` | Construct an AudioBuffer by copying a 2D float32 c-contiguous array (numpy ndarray, another AudioBuffer, etc.). |
+
+`numpy.asarray(buf)` and `np.asarray(buf)` work via `__array__` (zero-copy).
+
 ## Plugin
 
 Load and process audio through VST3, AudioUnit, or LV2 plugins.
@@ -44,13 +102,16 @@ Plugin(
 
 ### Audio Processing
 
+All audio inputs accept `AudioBuffer`, `numpy.ndarray`, or any 2D
+float32 c-contiguous buffer-protocol producer.
+
 | Method | Description |
 |--------|-------------|
-| `process(input, output)` | Process audio. Arrays shape: `(channels, frames)`, dtype: `float32` |
+| `process(input, output)` | Process audio. Buffers shape: `(channels, frames)`, dtype: float32 |
 | `process_midi(input, output, midi_in)` | Process with MIDI. Returns list of output MIDI events (max 256 per call) |
 | `process_auto(input, output, midi_in, param_changes)` | Process with sample-accurate automation and MIDI. Returns output MIDI (max 256) |
 | `process_sidechain(main_in, main_out, sidechain_in)` | Process with sidechain input |
-| `process_double(input, output)` | Process with 64-bit double precision. Arrays dtype: `float64` |
+| `process_double(input, output)` | Process with 64-bit double precision. Buffers dtype: `float64` (currently numpy-only) |
 
 MIDI events are tuples of `(sample_offset, status, data1, data2)`.
 Parameter changes are tuples of `(sample_offset, param_index, value)`.
@@ -209,7 +270,7 @@ When `capture=True`, the audio device opens in duplex mode: system audio input i
 | `create_virtual_midi_output(port_name)` | Create virtual MIDI output port |
 | `enable_input(capacity_frames=0)` | Enable ring buffer audio input. `capacity_frames=0` uses ~0.5s default |
 | `disable_input()` | Disable ring buffer audio input (revert to silence) |
-| `write_input(data)` | Write numpy array `(channels, frames)` into input ring buffer. Returns frames written. Thread-safe |
+| `write_input(data)` | Write `(channels, frames)` audio data into input ring buffer. Accepts AudioBuffer, numpy ndarray, or any 2D float32 c-contig buffer-protocol producer. Returns frames written. Thread-safe |
 
 ---
 
@@ -305,10 +366,12 @@ render_midi(
     dtype: type | None = None,
     tail_threshold: float = 1e-4,
     max_tail_seconds: float = 30.0,
-) -> np.ndarray
+    as_: type | None = None,           # AudioBuffer (default) or numpy.ndarray
+) -> AudioBuffer | np.ndarray
 ```
 
-Render MIDI to numpy array. Returns shape `(channels, total_samples)`.
+Render MIDI to a single buffer of shape `(channels, total_samples)`.
+Returns `AudioBuffer` by default; pass `as_=numpy.ndarray` for numpy.
 
 ```python
 render_midi_stream(
@@ -318,10 +381,12 @@ render_midi_stream(
     tail_seconds: float | str | None = None,
     tail_threshold: float = 1e-4,
     max_tail_seconds: float = 30.0,
-) -> Iterator[np.ndarray]
+    as_: type | None = None,           # AudioBuffer (default) or numpy.ndarray
+) -> Iterator[AudioBuffer | np.ndarray]
 ```
 
-Generator yielding audio blocks of shape `(channels, block_size)`.
+Generator yielding audio blocks of shape `(channels, n)` where `n <= block_size`.
+Yields `AudioBuffer` by default; pass `as_=numpy.ndarray` for numpy.
 
 ```python
 render_midi_to_file(
@@ -379,8 +444,8 @@ Stateful renderer for fine-grained control. Supports `tail_seconds="auto"`.
 
 | Method | Description |
 |--------|-------------|
-| `render_block()` | Render next block. Returns `ndarray` or `None` if finished |
-| `render_all(dtype=None)` | Render all remaining audio. Returns `ndarray` |
+| `render_block()` | Render next block. Returns `AudioBuffer` (or `None` if finished / fully consumed by latency-comp skip) |
+| `render_all(dtype=None, as_=None)` | Render all remaining audio. Returns `AudioBuffer` by default; pass `as_=numpy.ndarray` for numpy |
 | `reset()` | Reset renderer to beginning |
 
 For all rendering functions: `tail_seconds=None` uses the plugin's reported tail length (clamped to 2s default if 0 or >30s). `tail_seconds="auto"` enables auto-detection. A numeric value uses that exact duration.
@@ -394,23 +459,32 @@ Read and write audio files via miniaudio.
 ### Functions
 
 ```python
-read_audio(path: str | Path) -> tuple[np.ndarray, int]
+read_audio(
+    path: str | Path,
+    as_: type | None = None,           # AudioBuffer (default) or numpy.ndarray
+) -> tuple[AudioBuffer | np.ndarray, int]
 ```
 
-Read audio file. Returns `(data, sample_rate)` where data has shape `(channels, samples)`, dtype `float32`.
+Read audio file. Returns `(data, sample_rate)` where data has shape
+`(channels, samples)` and float32 dtype. Default container is
+`AudioBuffer`; pass `as_=numpy.ndarray` to receive a numpy array
+(requires numpy installed).
 
 Supported formats: WAV, FLAC, MP3, Vorbis.
 
 ```python
 write_audio(
     path: str | Path,
-    data: np.ndarray,
+    data: AudioBuffer | np.ndarray | Any,
     sample_rate: int,
     bit_depth: int = 24,
 ) -> None
 ```
 
-Write WAV file. Data shape: `(channels, samples)`. Bit depth 16 and 24 write integer PCM; 32 writes IEEE float.
+Write WAV or FLAC file. Data shape: `(channels, samples)`. Accepts
+`AudioBuffer`, numpy ndarray, or any 2D float32 c-contiguous
+buffer-protocol producer (DLPack-compatible). Bit depth 16 and 24 write
+integer PCM; 32 writes IEEE float.
 
 ```python
 get_audio_info(path: str | Path) -> dict
@@ -431,13 +505,61 @@ Get file metadata without decoding. Returns dict with keys: `channels`, `sample_
 
 ```python
 resample(
-    data: np.ndarray,
+    data: AudioBuffer | np.ndarray | Any,
     sample_rate_in: int,
     sample_rate_out: int,
-) -> np.ndarray
+) -> AudioBuffer | np.ndarray
 ```
 
-Resample audio data to a different sample rate. Input/output shape: `(channels, frames)`, dtype `float32`. Uses miniaudio's linear resampler with 4th-order low-pass anti-aliasing. Returns a copy when rates are equal.
+Resample audio data to a different sample rate. Input/output shape:
+`(channels, frames)`, float32. Accepts AudioBuffer, numpy ndarray, or
+any 2D float32 c-contiguous buffer-protocol producer. Return type
+matches the input type (AudioBuffer in -> AudioBuffer out;
+numpy.ndarray in -> numpy.ndarray out). Uses miniaudio's linear
+resampler with 4th-order low-pass anti-aliasing. Returns a copy when
+rates are equal.
+
+---
+
+## Offline Processing
+
+High-level helpers that collapse the typical block-iteration loop. See
+the `process_audio` / `process_audio_to_file` source for the exact
+contract; the headline form is:
+
+```python
+process_audio(
+    plugin_or_chain: Plugin | PluginChain,
+    audio: AudioBuffer | np.ndarray | Any,
+    tail_seconds: float = 0.0,
+    block_size: int | None = None,
+    compensate_latency: bool = True,
+) -> AudioBuffer
+```
+
+Process in-memory audio through a plugin or chain. Returns a new
+`AudioBuffer`. Handles latency compensation (renders extra
+`latency_samples` and trims the matching head from output) and tail
+rendering (input is zero-padded past the source by `tail_seconds`).
+
+```python
+process_audio_to_file(
+    plugin_or_chain: Plugin | PluginChain,
+    input_path: str | Path,
+    output_path: str | Path,
+    tail_seconds: float = 0.0,
+    block_size: int | None = None,
+    bit_depth: int = 24,
+    resample_to_plugin_rate: bool = True,
+    duplicate_to_stereo: bool = True,
+    compensate_latency: bool = True,
+) -> int
+```
+
+Read, process, and write in one call. Auto-resamples the input to the
+plugin's sample rate when they differ; auto-duplicates a mono source to
+match the plugin's expected channel count when it expects more.
+Returns the number of frames written.
 
 ---
 

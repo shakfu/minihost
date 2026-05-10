@@ -2,6 +2,28 @@
 
 Minihost is a headless, JUCE-based audio plugin host that supports VST3, AudioUnit, and LV2 plugins. It provides a C/C++ API for integration and a Python API powered by nanobind.
 
+## At a glance
+
+Process an input WAV through a chain of effect plugins and write the result:
+
+```python
+import minihost
+
+with (
+    minihost.Plugin("/path/to/delay.vst3", sample_rate=48000) as delay,
+    minihost.Plugin("/path/to/reverb.vst3", sample_rate=48000) as reverb,
+    minihost.PluginChain([delay, reverb]) as chain,
+):
+    minihost.process_audio_to_file(
+        chain, "in.wav", "out.wav",
+        tail_seconds=4.0,           # capture reverb tail
+    )
+```
+
+`process_audio_to_file` handles block iteration, latency compensation,
+sample-rate matching, channel layout, and tail rendering. See the
+[Python API](#python-api) section for lower-level control.
+
 ## Features
 
 - Load VST3 plugins (macOS, Windows, Linux)
@@ -9,6 +31,9 @@ Minihost is a headless, JUCE-based audio plugin host that supports VST3, AudioUn
 - Load LV2 plugins (macOS, Windows, Linux)
 - **Headless mode** (default) - no GUI dependencies, uses JUCE's `juce_audio_processors_headless` module
 - **Plugin chaining** - connect multiple plugins in series (synth -> reverb -> limiter)
+- **`AudioBuffer` -- the canonical audio container.** Planar float32, JUCE-backed, stdlib-only. Numpy-style 2-axis indexing (`buf[ch, frame_slice]`), JUCE DSP ops (`clear`, `apply_gain`, `magnitude`, `copy`), DLPack export so it's accepted directly by `Plugin.process` / `numpy.asarray` / PyTorch / etc.
+- **numpy is optional.** `pip install minihost` installs no Python runtime dependencies; the AudioBuffer API works without numpy. `pip install minihost[numpy]` enables numpy-typed APIs (`AudioBuffer.as_ndarray()`, `read_audio(as_=numpy.ndarray)`, accepting numpy arrays as inputs).
+- **High-level offline processing** -- `process_audio_to_file(plugin_or_chain, "in.wav", "out.wav")` collapses block iteration, latency compensation, sample-rate matching, and tail rendering into one call.
 - **Audio file I/O** via miniaudio + tflac -- read WAV/FLAC/MP3/Vorbis, write WAV (16/24/32-bit) and FLAC (16/24-bit)
 - **Sample rate conversion** via miniaudio resampler -- `minihost.resample()` API and `minihost resample` CLI subcommand
 - **Real-time audio playback** via miniaudio (cross-platform), with duplex capture mode for effect processing
@@ -271,19 +296,60 @@ minihost resample input.wav -o output.wav -r 96000 -y  # overwrite
 
 ## Python API
 
+Install:
+
 ```bash
-uv sync
+pip install minihost              # AudioBuffer-only API; no numpy required
+pip install minihost[numpy]       # adds numpy-typed return values + numpy input acceptance
 ```
 
+The default audio container is `minihost.AudioBuffer` (planar float32,
+JUCE-backed, stdlib-only). It supports DLPack so any C extension that
+takes a 2D float32 c-contiguous buffer (including all of minihost's
+process methods) accepts it directly. Numpy is fully supported when
+installed -- pass `as_=numpy.ndarray` to receive numpy arrays from
+`read_audio` / `render_midi`, or call `.as_ndarray()` on any AudioBuffer
+for a zero-copy numpy view.
+
+### Quick start: process a WAV file through a chain
+
 ```python
-import numpy as np
+import minihost
+
+with (
+    minihost.Plugin("/path/to/delay.vst3", sample_rate=48000) as delay,
+    minihost.Plugin("/path/to/reverb.vst3", sample_rate=48000) as reverb,
+    minihost.PluginChain([delay, reverb]) as chain,
+):
+    minihost.process_audio_to_file(
+        chain, "in.wav", "out.wav",
+        tail_seconds=4.0,           # capture reverb tail
+    )
+```
+
+`process_audio_to_file` handles block iteration, latency compensation,
+sample-rate matching (input is auto-resampled to the plugin's rate),
+mono-to-stereo channel duplication, and tail rendering. For in-memory
+data use `process_audio(plugin_or_chain, audio, tail_seconds=...)`,
+which returns an `AudioBuffer`.
+
+### Lower-level processing
+
+```python
 import minihost
 
 plugin = minihost.Plugin("/path/to/plugin.vst3", sample_rate=48000)
 
-input_audio = np.zeros((2, 512), dtype=np.float32)
-output_audio = np.zeros((2, 512), dtype=np.float32)
+# AudioBuffer is the default container. process accepts it directly via DLPack.
+input_audio = minihost.AudioBuffer(2, 512)
+output_audio = minihost.AudioBuffer(2, 512)
 plugin.process(input_audio, output_audio)
+
+# Numpy users can mix and match -- both accepted as inputs:
+import numpy as np                                       # requires minihost[numpy]
+input_np = np.zeros((2, 512), dtype=np.float32)
+plugin.process(input_np, output_audio)                   # numpy in -> AudioBuffer out
+output_np = output_audio.as_ndarray()                    # zero-copy numpy view
 ```
 
 ### Parameter Access by Name
@@ -378,7 +444,6 @@ Route system audio through an effect plugin using duplex mode or the ring buffer
 
 ```python
 import minihost
-import numpy as np
 import time
 
 plugin = minihost.Plugin("/path/to/reverb.vst3", sample_rate=48000)
@@ -388,15 +453,16 @@ with minihost.AudioDevice(plugin, capture=True) as audio:
     print("Processing system audio through effect... Ctrl+C to stop")
     time.sleep(10)
 
-# Option 2: Ring buffer (push audio from Python)
+# Option 2: Ring buffer (push audio from Python).
+# AudioBuffer slicing returns a new AudioBuffer; write_input accepts it
+# directly via DLPack -- no numpy required.
 audio = minihost.AudioDevice(plugin)
 audio.enable_input()  # ~0.5s ring buffer by default
 audio.start()
 
-# Write audio into the ring buffer (e.g., from a file or generator)
 data, sr = minihost.read_audio("guitar.wav")
 block_size = 512
-for i in range(0, data.shape[1], block_size):
+for i in range(0, data.frames, block_size):
     chunk = data[:, i:i+block_size]
     audio.write_input(chunk)
     time.sleep(block_size / sr * 0.9)  # pace to real time
@@ -464,11 +530,16 @@ with minihost.MidiIn.open_virtual("My Monitor", on_midi) as midi_in:
 ```python
 import minihost
 
-# Read audio files (WAV, FLAC, MP3, Vorbis)
+# Read audio files (WAV, FLAC, MP3, Vorbis).
+# Default container is AudioBuffer (planar float32, no numpy required).
 data, sample_rate = minihost.read_audio("input.wav")
-# data shape: (channels, samples), dtype: float32
+# data is an AudioBuffer of shape (channels, samples)
 
-# Write audio files
+# Pass as_=numpy.ndarray to get a numpy array instead (requires minihost[numpy]).
+import numpy as np
+data_np, sample_rate = minihost.read_audio("input.wav", as_=np.ndarray)
+
+# write_audio accepts AudioBuffer, numpy ndarray, or any DLPack/buffer-protocol producer.
 minihost.write_audio("output.wav", data, sample_rate, bit_depth=24)   # WAV (16/24/32-bit)
 minihost.write_audio("output.flac", data, sample_rate, bit_depth=24)  # FLAC (16/24-bit)
 
@@ -482,9 +553,11 @@ print(f"{info['channels']}ch, {info['sample_rate']}Hz, {info['duration']:.2f}s")
 ```python
 import minihost
 
-# Resample a numpy array
-data, sr = minihost.read_audio("input_44100.wav")  # 44.1kHz
-resampled = minihost.resample(data, 44100, 48000)   # -> 48kHz
+# Works on AudioBuffer (default), numpy ndarray, or any 2D float32
+# c-contig buffer-protocol producer. Return type matches the input type
+# (AudioBuffer in -> AudioBuffer out; numpy in -> numpy out).
+data, sr = minihost.read_audio("input_44100.wav")  # AudioBuffer @ 44.1kHz
+resampled = minihost.resample(data, 44100, 48000)   # -> 48kHz AudioBuffer
 minihost.write_audio("output_48000.wav", resampled, 48000)
 ```
 
@@ -518,23 +591,29 @@ for event in events:
 
 ### MIDI File Rendering
 
-Render MIDI files through plugins to produce audio output:
+Render MIDI files through plugins to produce audio output. Returns
+`AudioBuffer` by default; pass `as_=numpy.ndarray` for numpy:
 
 ```python
 import minihost
 
 plugin = minihost.Plugin("/path/to/synth.vst3", sample_rate=48000)
 
-# Render to numpy array
+# Render to AudioBuffer (default)
 audio = minihost.render_midi(plugin, "song.mid")
-print(f"Rendered {audio.shape[1] / 48000:.2f} seconds of audio")
+print(f"Rendered {audio.frames / 48000:.2f} seconds of audio")
 
-# Render directly to WAV file
+# Numpy variant
+import numpy as np
+audio_np = minihost.render_midi(plugin, "song.mid", as_=np.ndarray)
+
+# Render directly to WAV file (returns frame count)
 samples = minihost.render_midi_to_file(plugin, "song.mid", "output.wav", bit_depth=24)
 
-# Stream blocks for large files or real-time processing
+# Stream blocks for large files or real-time processing.
+# Each yielded block is an AudioBuffer; pass as_=numpy.ndarray to yield numpy instead.
 for block in minihost.render_midi_stream(plugin, "song.mid", block_size=512):
-    # Process each block (shape: channels, block_size)
+    # block.shape == (channels, n) where n <= block_size
     pass
 
 # Auto-detect reverb/delay tail (stops when output decays below -80 dB)
@@ -549,7 +628,7 @@ renderer = minihost.MidiRenderer(plugin, "song.mid")
 print(f"Duration: {renderer.duration_seconds:.2f}s")
 
 while not renderer.is_finished:
-    block = renderer.render_block()
+    block = renderer.render_block()   # returns AudioBuffer or None
     print(f"Progress: {renderer.progress:.1%}")
 ```
 
@@ -578,10 +657,9 @@ with minihost.AudioDevice(chain) as audio:
     audio.send_midi(0x80, 60, 0)    # Note off
     time.sleep(1)  # Let reverb tail fade
 
-# Offline processing
-import numpy as np
-input_audio = np.zeros((2, 512), dtype=np.float32)
-output_audio = np.zeros((2, 512), dtype=np.float32)
+# Offline processing -- AudioBuffer is the default container
+input_audio = minihost.AudioBuffer(2, 512)
+output_audio = minihost.AudioBuffer(2, 512)
 chain.process(input_audio, output_audio)
 
 # Process with MIDI (MIDI goes to first plugin)
@@ -598,8 +676,11 @@ param_changes = [
 chain.process_auto(input_audio, output_audio, midi_events, param_changes)
 
 # Render MIDI file through chain
-audio = minihost.render_midi(chain, "song.mid")
+audio = minihost.render_midi(chain, "song.mid")        # -> AudioBuffer
 minihost.render_midi_to_file(chain, "song.mid", "output.wav")
+
+# File-to-file processing through the chain (handles tail, latency, resample)
+minihost.process_audio_to_file(chain, "input.wav", "output.wav", tail_seconds=4.0)
 
 # Access individual plugins in chain
 for i in range(chain.num_plugins):

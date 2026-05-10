@@ -2,6 +2,8 @@
 
 Status: design proposal, not implemented. Lives outside the C ABI; intended as a pure-Python module on top of the existing bindings (`Plugin`, `PluginChain`, `audio_io`).
 
+> Note: this doc predates the `AudioBuffer` migration. The pseudocode below uses `np.ndarray` for edge buffers; the v1 implementation should use `minihost.AudioBuffer` (planar float32, JUCE-backed) to keep the buffer pool numpy-optional and consumable by `Plugin.process_auto` directly via DLPack.
+
 ## Goal
 
 Run a directed graph of plugin nodes offline (and eventually realtime) with sample-accurate parameter automation, so that a future graph UI has a stable execution model to target.

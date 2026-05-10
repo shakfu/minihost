@@ -41,9 +41,11 @@ def main() -> int:
             print(f"Not found: {path}", file=sys.stderr)
             return 1
 
-    with minihost.Plugin(DELAY_PATH, sample_rate=48000) as delay, \
-         minihost.Plugin(REVERB_PATH, sample_rate=48000) as reverb, \
-         minihost.PluginChain([delay, reverb]) as chain:
+    with (
+        minihost.Plugin(DELAY_PATH, sample_rate=48000) as delay,
+        minihost.Plugin(REVERB_PATH, sample_rate=48000) as reverb,
+        minihost.PluginChain([delay, reverb]) as chain,
+    ):
         frames = minihost.process_audio_to_file(
             chain,
             INPUT_PATH,

@@ -4,27 +4,23 @@ minihost - Python bindings for audio plugin hosting.
 A minimal audio plugin host library supporting VST3 and AudioUnit plugins.
 
 Example usage:
-    >>> import numpy as np
     >>> import minihost
     >>>
     >>> # Load a plugin
     >>> plugin = minihost.Plugin("/path/to/plugin.vst3", sample_rate=48000)
     >>>
-    >>> # Check plugin info
-    >>> print(f"Parameters: {plugin.num_params}")
-    >>> print(f"Latency: {plugin.latency_samples} samples")
-    >>>
-    >>> # Process audio
-    >>> input_audio = np.zeros((2, 512), dtype=np.float32)
-    >>> output_audio = np.zeros((2, 512), dtype=np.float32)
+    >>> # Process audio (AudioBuffer is the default container -- no numpy
+    >>> # required; install minihost[numpy] for numpy-typed APIs).
+    >>> input_audio = minihost.AudioBuffer(2, 512)
+    >>> output_audio = minihost.AudioBuffer(2, 512)
     >>> plugin.process(input_audio, output_audio)
     >>>
     >>> # Process with MIDI
     >>> midi_events = [(0, 0x90, 60, 100), (256, 0x80, 60, 0)]  # Note on/off
     >>> midi_out = plugin.process_midi(input_audio, output_audio, midi_events)
     >>>
-    >>> # Set transport for tempo-synced plugins
-    >>> plugin.set_transport(bpm=120.0, is_playing=True)
+    >>> # File-to-file processing through a chain
+    >>> minihost.process_audio_to_file(plugin, "in.wav", "out.wav")
     >>>
     >>> # Save/restore state
     >>> state = plugin.get_state()
@@ -72,6 +68,27 @@ from minihost.audio_io import (
     get_audio_info,
     resample,
 )
+
+# Wrap AudioBuffer.as_ndarray() to convert nanobind's "ModuleNotFoundError:
+# No module named 'numpy'" TypeError into a clear ImportError pointing at
+# the install-extra. Users who hit this haven't installed numpy and need
+# the friendlier message.
+_orig_as_ndarray = AudioBuffer.as_ndarray
+
+
+def _audiobuffer_as_ndarray_with_friendly_error(self):
+    try:
+        import numpy  # noqa: F401
+    except ImportError as e:
+        raise ImportError(
+            "AudioBuffer.as_ndarray() requires numpy. Install minihost "
+            "with the numpy extra: 'pip install minihost[numpy]'."
+        ) from e
+    return _orig_as_ndarray(self)
+
+
+AudioBuffer.as_ndarray = _audiobuffer_as_ndarray_with_friendly_error  # type: ignore[method-assign]
+
 
 from minihost.process import (
     process_audio,

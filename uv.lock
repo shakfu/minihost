@@ -592,7 +592,9 @@ wheels = [
 name = "minihost"
 version = "0.1.5"
 source = { editable = "." }
-dependencies = [
+
+[package.optional-dependencies]
+numpy = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
@@ -602,19 +604,23 @@ dev = [
     { name = "mkdocs" },
     { name = "mkdocs-material" },
     { name = "mypy" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pytest" },
     { name = "ruff" },
     { name = "twine" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "numpy", specifier = ">=1.20" }]
+requires-dist = [{ name = "numpy", marker = "extra == 'numpy'", specifier = ">=1.20" }]
+provides-extras = ["numpy"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "mkdocs", specifier = ">=1.6" },
     { name = "mkdocs-material", specifier = ">=9.5" },
     { name = "mypy", specifier = ">=1.19.1" },
+    { name = "numpy", specifier = ">=1.20" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "ruff", specifier = ">=0.14.14" },
     { name = "twine", specifier = ">=6.2.0" },

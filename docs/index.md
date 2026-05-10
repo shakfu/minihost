@@ -8,6 +8,9 @@ minihost provides a C API built on JUCE with Python bindings via nanobind. It bu
 
 - **Plugin formats**: VST3 (all platforms), AudioUnit (macOS), LV2 (all platforms)
 - **Headless mode**: no GUI dependencies, uses JUCE's `juce_audio_processors_headless`
+- **`AudioBuffer`**: planar float32 audio container, JUCE-backed, stdlib-only. DLPack-exported so it's accepted by any 2D float32 buffer-protocol consumer (`Plugin.process`, `numpy.asarray`, PyTorch, etc.) without explicit conversion.
+- **numpy is optional**: `pip install minihost` installs no Python runtime dependencies. `pip install minihost[numpy]` enables numpy-typed return values and numpy-array inputs.
+- **High-level offline processing**: `process_audio_to_file(chain, "in.wav", "out.wav")` collapses block iteration, latency compensation, sample-rate matching, and tail rendering into one call.
 - **Plugin chaining**: connect multiple plugins in series
 - **Real-time audio**: playback and capture via miniaudio, with duplex mode for effect processing
 - **Audio device selection**: enumerate and target specific playback/capture devices
@@ -32,16 +35,31 @@ uv sync
 make build
 ```
 
+Process a WAV file through a chain of effect plugins:
+
 ```python
 import minihost
-import numpy as np
 
-# Load a plugin
+with (
+    minihost.Plugin("/path/to/delay.vst3", sample_rate=48000) as delay,
+    minihost.Plugin("/path/to/reverb.vst3", sample_rate=48000) as reverb,
+    minihost.PluginChain([delay, reverb]) as chain,
+):
+    minihost.process_audio_to_file(
+        chain, "in.wav", "out.wav",
+        tail_seconds=4.0,           # capture reverb tail
+    )
+```
+
+Lower-level processing with `AudioBuffer`:
+
+```python
+import minihost
+
 plugin = minihost.Plugin("/path/to/plugin.vst3", sample_rate=48000)
 
-# Process audio
-input_audio = np.zeros((2, 512), dtype=np.float32)
-output_audio = np.zeros((2, 512), dtype=np.float32)
+input_audio = minihost.AudioBuffer(2, 512)
+output_audio = minihost.AudioBuffer(2, 512)
 plugin.process(input_audio, output_audio)
 
 # Real-time playback with MIDI
@@ -63,6 +81,6 @@ minihost resample input.wav -o output.wav -r 48000
 - JUCE 8.0.11+ (auto-downloaded)
 - Vendored C libraries: miniaudio, tflac, libremidi, midifile ([details](vendored.md))
 - Python bindings: nanobind, scikit-build-core, uv
-- Runtime: numpy
+- Runtime: no required Python dependencies. Install `minihost[numpy]` for numpy interop.
 
 See [Getting Started](getting_started.md) for full build instructions.

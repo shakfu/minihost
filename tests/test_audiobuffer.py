@@ -167,7 +167,7 @@ def test_copy_is_independent():
 
 def test_numpy_view_is_zero_copy():
     buf = AudioBuffer(2, 256)
-    view = buf.numpy()
+    view = buf.as_ndarray()
     view[0, 50] = 0.42
     assert buf[0, 50] == pytest.approx(0.42)
 
@@ -182,7 +182,7 @@ def test_from_numpy_round_trip():
 
 def test_audiobuffer_passes_directly_to_plugin_process():
     """The headline win: AudioBuffer is consumed by Plugin.process via DLPack
-    without an explicit .numpy() / .array conversion."""
+    without an explicit .as_ndarray() / .array conversion."""
     plugin_path = "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
     import os
     if not os.path.exists(plugin_path):

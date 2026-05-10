@@ -13,40 +13,59 @@ Both functions handle:
     default) the renderer feeds an extra ``latency_samples`` of input
     and discards the matching number of output samples, so the returned
     audio is time-aligned with the source.
+
+These functions accept ``AudioBuffer``, numpy ndarray, or any 2D float32
+c-contiguous buffer-protocol producer as input. numpy is not required
+for the AudioBuffer-only path; it is lazy-imported when needed (e.g.
+when the caller passes a numpy array).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Union
-
-import numpy as np
+from typing import TYPE_CHECKING, Any, Union, cast
 
 from minihost._core import AudioBuffer, Plugin, PluginChain
 from minihost.audio_io import read_audio, resample, write_audio
 
 if TYPE_CHECKING:
+    import numpy as np
     PluginOrChain = Union[Plugin, PluginChain]
 
 
-def _max_block_size(target: "PluginOrChain") -> int:
-    """Resolve the largest block size that target.process can accept."""
-    # Plugin exposes max_block_size only at construction time; PluginChain
-    # has no public max_block_size and falls back to the chain's internal
-    # 8192 cap (see minihost_chain.cpp). Use the conservative 512 default
-    # if neither is queryable.
+def _resolve_block_size(block_size: int | None) -> int:
+    if block_size is not None:
+        return int(block_size)
+    # Conservative default. Plugin.max_block_size isn't queryable
+    # post-construction; PluginChain has no public max_block_size.
     return 512
 
 
-def _resolve_block_size(target: "PluginOrChain", block_size: int | None) -> int:
-    if block_size is not None:
-        return int(block_size)
-    return _max_block_size(target)
+def _to_audiobuffer(audio: Any, in_ch_required: int) -> AudioBuffer:
+    """Coerce an input to an AudioBuffer (one copy if not already one)."""
+    if isinstance(audio, AudioBuffer):
+        if audio.channels < in_ch_required:
+            raise ValueError(
+                f"Source audio has {audio.channels} channel(s) but the "
+                f"chain requires at least {in_ch_required}."
+            )
+        return audio
+    # Anything else (numpy ndarray, etc.) -- delegate to AudioBuffer's
+    # buffer-protocol-based constructor. This requires numpy only if the
+    # input itself is numpy; AudioBuffer.from_numpy works for any 2D
+    # float32 c-contig source.
+    buf = AudioBuffer.from_numpy(audio)
+    if buf.channels < in_ch_required:
+        raise ValueError(
+            f"Source audio has {buf.channels} channel(s) but the chain "
+            f"requires at least {in_ch_required}."
+        )
+    return buf
 
 
 def process_audio(
     plugin_or_chain: "PluginOrChain",
-    audio: "AudioBuffer | np.ndarray",
+    audio: Any,
     tail_seconds: float = 0.0,
     block_size: int | None = None,
     compensate_latency: bool = True,
@@ -74,22 +93,13 @@ def process_audio(
         A new :class:`AudioBuffer` of shape
         ``(plugin.num_output_channels, source_frames + tail_frames)``.
     """
-    block = _resolve_block_size(plugin_or_chain, block_size)
+    block = _resolve_block_size(block_size)
     sample_rate = float(plugin_or_chain.sample_rate)
     in_ch_required = plugin_or_chain.num_input_channels
     out_ch = plugin_or_chain.num_output_channels
 
-    # Coerce input to a numpy view so we can slice rows / frames freely.
-    # AudioBuffer satisfies np.asarray via DLPack / __array__.
-    src = np.ascontiguousarray(audio, dtype=np.float32)
-    if src.ndim == 1:
-        src = src.reshape(1, -1)
-    if src.shape[0] < in_ch_required:
-        raise ValueError(
-            f"Source audio has {src.shape[0]} channel(s) but the chain "
-            f"requires at least {in_ch_required}."
-        )
-    src_frames = src.shape[1]
+    src = _to_audiobuffer(audio, in_ch_required)
+    src_frames = src.frames
     tail_frames = max(0, int(tail_seconds * sample_rate))
 
     latency = int(plugin_or_chain.latency_samples) if compensate_latency else 0
@@ -99,9 +109,8 @@ def process_audio(
     render_frames = out_frames + latency                # internal
 
     output = AudioBuffer(out_ch, out_frames)
-    out_view = output.numpy()
-    in_block = AudioBuffer(in_ch_required, block).numpy()
-    out_block = AudioBuffer(out_ch, block).numpy()
+    in_block = AudioBuffer(in_ch_required, block)
+    out_block = AudioBuffer(out_ch, block)
 
     skip_remaining = latency
     written = 0  # samples placed into output (post-skip)
@@ -110,18 +119,20 @@ def process_audio(
         n = min(block, render_frames - start)
 
         # Stage input: source if available, else silence.
-        in_block[:] = 0
+        in_block.clear()
         if start < src_frames:
             copy = min(n, src_frames - start)
             in_block[:in_ch_required, :copy] = src[:in_ch_required, start:start + copy]
 
-        # Process exactly `n` frames. If n < block, slice both buffers.
+        # Process exactly `n` frames. If n < block, allocate a partial-
+        # size buffer pair (avoids the plugin processing trailing zeros).
         if n == block:
             plugin_or_chain.process(in_block, out_block)
-            produced = out_block
+            produced: AudioBuffer = out_block
         else:
-            sub_in = np.ascontiguousarray(in_block[:, :n])
-            sub_out = np.zeros((out_ch, n), dtype=np.float32)
+            sub_in = AudioBuffer(in_ch_required, n)
+            sub_in[:in_ch_required, :n] = in_block[:in_ch_required, :n]
+            sub_out = AudioBuffer(out_ch, n)
             plugin_or_chain.process(sub_in, sub_out)
             produced = sub_out
 
@@ -130,17 +141,17 @@ def process_audio(
             skip_remaining -= n
             continue
         if skip_remaining > 0:
-            produced = produced[:, skip_remaining:]
+            produced = cast(AudioBuffer, produced[:, skip_remaining:])
             skip_remaining = 0
 
         # Append to output (clamped).
-        emit = produced.shape[1]
+        emit = produced.frames
         if written + emit > out_frames:
             emit = out_frames - written
             if emit <= 0:
                 break
-            produced = produced[:, :emit]
-        out_view[:, written:written + emit] = produced
+            produced = cast(AudioBuffer, produced[:, :emit])
+        output[:, written:written + emit] = produced
         written += emit
 
     return output
@@ -178,7 +189,7 @@ def process_audio_to_file(
     Returns:
         Number of frames written.
     """
-    audio, in_sr = read_audio(input_path)
+    audio, in_sr = read_audio(input_path)  # AudioBuffer, sr
     plugin_sr = int(plugin_or_chain.sample_rate)
 
     if in_sr != plugin_sr:
@@ -187,25 +198,32 @@ def process_audio_to_file(
                 f"Input is {in_sr} Hz but plugin is {plugin_sr} Hz. "
                 f"Pass resample_to_plugin_rate=True to convert automatically."
             )
-        audio = resample(audio, in_sr, plugin_sr)
+        audio = resample(audio, in_sr, plugin_sr)  # AudioBuffer in -> AudioBuffer out
 
     in_ch_required = plugin_or_chain.num_input_channels
-    src_arr = np.asarray(audio, dtype=np.float32)
-    if src_arr.shape[0] < in_ch_required:
+    src: AudioBuffer = audio if isinstance(audio, AudioBuffer) else AudioBuffer.from_numpy(audio)
+
+    if src.channels < in_ch_required:
         if not duplicate_to_stereo:
             raise ValueError(
-                f"Input has {src_arr.shape[0]} channel(s) but plugin needs "
+                f"Input has {src.channels} channel(s) but plugin needs "
                 f"{in_ch_required}. Pass duplicate_to_stereo=True to "
                 f"channel-duplicate automatically."
             )
-        # Duplicate the last channel to fill the missing channels.
-        last = src_arr[-1:, :]
-        extras = np.repeat(last, in_ch_required - src_arr.shape[0], axis=0)
-        src_arr = np.concatenate([src_arr, extras], axis=0)
+        # Build a fresh AudioBuffer with the required channel count and
+        # copy the last source channel into each missing slot.
+        expanded = AudioBuffer(in_ch_required, src.frames)
+        # Copy existing channels.
+        expanded[:src.channels, :] = src
+        # Duplicate the last channel into the remaining slots.
+        last = cast(AudioBuffer, src[src.channels - 1: src.channels, :])
+        for ch in range(src.channels, in_ch_required):
+            expanded[ch:ch + 1, :] = last
+        src = expanded
 
     output = process_audio(
         plugin_or_chain,
-        src_arr,
+        src,
         tail_seconds=tail_seconds,
         block_size=block_size,
         compensate_latency=compensate_latency,

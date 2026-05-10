@@ -3,7 +3,13 @@ name = "minihost"
 version = "0.1.5"
 description = "A minimal juce-based plugin host using nanobind"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.20"]
+# minihost has no required runtime Python dependencies. The default
+# AudioBuffer API and all plugin / file I/O functions work without numpy.
+# Install the [numpy] extra ('pip install minihost[numpy]') to get
+# numpy-typed return values from read_audio(as_=np.ndarray),
+# render_midi(as_=np.ndarray), AudioBuffer.numpy(), and to pass numpy
+# arrays as inputs to write_audio / resample / process_audio.
+dependencies = []
 readme = "README.md"
 license = "GPL-3.0-or-later"
 authors = [
@@ -39,6 +45,13 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 
+[project.optional-dependencies]
+# Install with: pip install minihost[numpy]
+# Enables numpy-typed APIs: read_audio(as_=np.ndarray),
+# render_midi(as_=np.ndarray), AudioBuffer.numpy(), and accepting numpy
+# arrays in write_audio / resample / process_audio.
+numpy = ["numpy>=1.20"]
+
 [project.scripts]
 minihost = "minihost.cli:main"
 
@@ -50,6 +63,10 @@ Issues = "https://github.com/shakfu/minihost/issues"
 [dependency-groups]
 dev = [
     "mypy>=1.19.1",
+    # numpy is an optional runtime dependency (see [project.optional-dependencies])
+    # but a required dev dependency: many tests verify the numpy interop paths
+    # (as_=np.ndarray, AudioBuffer.numpy(), np.asarray on AudioBuffer, etc.).
+    "numpy>=1.20",
     "pytest>=8.0",
     "ruff>=0.14.14",
     "twine>=6.2.0",

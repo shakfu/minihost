@@ -1,9 +1,16 @@
 """Type stubs for minihost._core native extension module."""
 
-from typing import Any, Callable, ClassVar
+from typing import Any, Callable, ClassVar, Union
 
 import numpy as np
 from numpy.typing import NDArray
+
+
+# Audio inputs to process / write_audio / etc. accept any 2D float32
+# c-contiguous buffer-protocol producer (AudioBuffer, numpy ndarray, and
+# others via DLPack). The type alias documents the contract; at runtime
+# the binding consumes whatever the buffer-protocol layer produces.
+AudioInput = Union["AudioBuffer", NDArray[np.float32]]
 
 
 class AudioBuffer:
@@ -26,7 +33,7 @@ class AudioBuffer:
     def apply_gain(self, gain: float) -> None: ...
     def magnitude(self, start: int | None = None, count: int | None = None) -> float: ...
     def copy(self) -> "AudioBuffer": ...
-    def numpy(self) -> NDArray[np.float32]: ...
+    def as_ndarray(self) -> NDArray[np.float32]: ...
     @classmethod
     def from_numpy(cls, array: Any) -> "AudioBuffer": ...
     def __array__(self, dtype: Any = None, copy: Any = None) -> NDArray[np.float32]: ...
@@ -143,27 +150,27 @@ class Plugin:
     def clear_transport(self) -> None: ...
     def process(
         self,
-        input: NDArray[np.float32],
-        output: NDArray[np.float32],
+        input: AudioInput,
+        output: AudioInput,
     ) -> None: ...
     def process_midi(
         self,
-        input: NDArray[np.float32],
-        output: NDArray[np.float32],
+        input: AudioInput,
+        output: AudioInput,
         midi_in: list[tuple[int, int, int, int]],
     ) -> list[tuple[int, int, int, int]]: ...
     def process_auto(
         self,
-        input: NDArray[np.float32],
-        output: NDArray[np.float32],
+        input: AudioInput,
+        output: AudioInput,
         midi_in: list[tuple[int, int, int, int]],
         param_changes: list[tuple[int, int, float]],
     ) -> list[tuple[int, int, int, int]]: ...
     def process_sidechain(
         self,
-        main_in: NDArray[np.float32],
-        main_out: NDArray[np.float32],
-        sidechain_in: NDArray[np.float32],
+        main_in: AudioInput,
+        main_out: AudioInput,
+        sidechain_in: AudioInput,
     ) -> None: ...
     def process_double(
         self,
@@ -192,19 +199,19 @@ class PluginChain:
     def set_non_realtime(self, non_realtime: bool) -> None: ...
     def process(
         self,
-        input: NDArray[np.float32],
-        output: NDArray[np.float32],
+        input: AudioInput,
+        output: AudioInput,
     ) -> None: ...
     def process_midi(
         self,
-        input: NDArray[np.float32],
-        output: NDArray[np.float32],
+        input: AudioInput,
+        output: AudioInput,
         midi_in: list[tuple[int, int, int, int]],
     ) -> list[tuple[int, int, int, int]]: ...
     def process_auto(
         self,
-        input: NDArray[np.float32],
-        output: NDArray[np.float32],
+        input: AudioInput,
+        output: AudioInput,
         midi_in: list[tuple[int, int, int, int]],
         param_changes: list[tuple[int, int, int, float]],
     ) -> list[tuple[int, int, int, int]]: ...
@@ -254,7 +261,7 @@ class AudioDevice:
     def send_midi(self, status: int, data1: int, data2: int) -> None: ...
     def enable_input(self, capacity_frames: int = 0) -> None: ...
     def disable_input(self) -> None: ...
-    def write_input(self, data: NDArray[np.float32]) -> int: ...
+    def write_input(self, data: AudioInput) -> int: ...
     @property
     def input_available(self) -> int: ...
     def __enter__(self) -> "AudioDevice": ...
@@ -360,13 +367,13 @@ def api_version_string() -> str:
     """Return the linked C library's ABI version as 'MAJOR.MINOR.PATCH'."""
     ...
 
-def audio_read(path: str) -> tuple[NDArray[np.float32], int]:
-    """Read an audio file. Returns (data, sample_rate) where data has shape (channels, frames)."""
+def audio_read(path: str) -> tuple["AudioBuffer", int]:
+    """Read an audio file. Returns (AudioBuffer, sample_rate) -- always AudioBuffer."""
     ...
 
 def audio_write(
     path: str,
-    data: NDArray[np.float32],
+    data: AudioInput,
     sample_rate: int,
     bit_depth: int = 24,
 ) -> None:
@@ -374,11 +381,11 @@ def audio_write(
     ...
 
 def audio_resample(
-    data: NDArray[np.float32],
+    data: AudioInput,
     sample_rate_in: int,
     sample_rate_out: int,
-) -> NDArray[np.float32]:
-    """Resample audio data. Input/output shape: (channels, frames)."""
+) -> "AudioBuffer":
+    """Resample audio data. Returns AudioBuffer regardless of input type."""
     ...
 
 def audio_get_file_info(path: str) -> dict[str, Any]:
