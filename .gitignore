@@ -1,6 +1,5 @@
 .DS_Store
 
-JUCE/
 build/
 dist/
 site/
@@ -10,6 +9,7 @@ __pycache__
 
 docs/changelog.md
 
+thirdparty/JUCE/
 
 # Prerequisites
 *.d

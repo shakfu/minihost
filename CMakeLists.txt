@@ -11,13 +11,13 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 11)
 
-# Allow JUCE_PATH to be set externally, default to ./JUCE
+# Allow JUCE_PATH to be set externally, default to ./thirdparty/JUCE
 if(NOT DEFINED JUCE_PATH)
-    set(JUCE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/JUCE")
+    set(JUCE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/JUCE")
 endif()
 
 if(NOT EXISTS "${JUCE_PATH}/CMakeLists.txt")
-    message(FATAL_ERROR "JUCE not found at ${JUCE_PATH}. Run ./scripts/download_juce.sh or set -DJUCE_PATH=/path/to/JUCE")
+    message(FATAL_ERROR "JUCE not found at ${JUCE_PATH}. Run 'python scripts/download_juce.py' or set -DJUCE_PATH=/path/to/JUCE")
 endif()
 
 add_subdirectory(${JUCE_PATH} ${CMAKE_CURRENT_BINARY_DIR}/JUCE EXCLUDE_FROM_ALL)

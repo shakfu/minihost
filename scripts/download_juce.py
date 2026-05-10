@@ -33,7 +33,7 @@ JUCE_PINNED_SHA = os.environ.get(
 JUCE_ALLOW_TAG = os.environ.get("JUCE_ALLOW_TAG", "").strip() in ("1", "true", "yes")
 SCRIPT_DIR = Path(__file__).parent.resolve()
 PROJECT_ROOT = SCRIPT_DIR.parent
-JUCE_DIR = Path(os.environ.get("JUCE_DIR", PROJECT_ROOT / "JUCE"))
+JUCE_DIR = Path(os.environ.get("JUCE_DIR", PROJECT_ROOT / "thirdparty" / "JUCE"))
 
 
 def download_file(url: str, dest: Path) -> None:

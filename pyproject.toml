@@ -75,5 +75,5 @@ build-backend = "scikit_build_core.build"
 [tool.scikit-build]
 wheel.packages = ["src/minihost"]
 wheel.exclude = ["**.cpp"]
-sdist.include = ["JUCE"]
+sdist.include = ["thirdparty/JUCE"]
 
