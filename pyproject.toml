@@ -3,12 +3,6 @@ name = "minihost"
 version = "0.1.5"
 description = "A minimal juce-based plugin host using nanobind"
 requires-python = ">=3.10"
-# minihost has no required runtime Python dependencies. The default
-# AudioBuffer API and all plugin / file I/O functions work without numpy.
-# Install the [numpy] extra ('pip install minihost[numpy]') to get
-# numpy-typed return values from read_audio(as_=np.ndarray),
-# render_midi(as_=np.ndarray), AudioBuffer.numpy(), and to pass numpy
-# arrays as inputs to write_audio / resample / process_audio.
 dependencies = []
 readme = "README.md"
 license = "GPL-3.0-or-later"

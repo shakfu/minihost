@@ -805,86 +805,69 @@ def _process_single_file(
 ):
     """Process a single audio file through a plugin. Returns 0 on success, 1 on error.
 
+    Thin wrapper around :func:`minihost.process_audio_to_file` that adds
+    the batch-mode invariants (sample-rate / channel-count consistency
+    across files) and translates exceptions into the int return contract
+    expected by :func:`_cmd_process_batch`.
+
     The plugin should already be loaded and configured with state/presets.
     If reset=True, plugin.reset() is called before processing.
     expected_sample_rate/expected_channels: validate input matches (for batch mode).
     allow_resample: if True, resample mismatched files instead of erroring.
     """
-    import numpy as np
-
-    from minihost.audio_io import read_audio, resample, write_audio
+    from minihost.audio_io import get_audio_info
 
     if reset:
         plugin.reset()
 
-    try:
-        data, sr = read_audio(input_path)
-    except Exception as e:
-        print(f"Error reading '{input_path}': {e}", file=sys.stderr)
-        return 1
+    # Pre-check the file's metadata for batch-mode invariants. This avoids
+    # decoding the entire file just to discover the SR or channel count
+    # disagrees with the batch baseline.
+    if expected_sample_rate is not None or expected_channels is not None:
+        try:
+            info = get_audio_info(input_path)
+        except Exception as e:
+            print(f"Error reading '{input_path}': {e}", file=sys.stderr)
+            return 1
 
-    in_ch = data.shape[0]
-    sample_rate = sr
-
-    if expected_sample_rate is not None and sr != expected_sample_rate:
-        if allow_resample:
-            data = resample(data, sr, expected_sample_rate)
-            sample_rate = expected_sample_rate
-        else:
+        if (expected_sample_rate is not None
+                and info["sample_rate"] != expected_sample_rate
+                and not allow_resample):
             print(
                 f"Error: Sample rate mismatch in '{input_path}': "
-                f"{sr} Hz (expected {expected_sample_rate} Hz)",
+                f"{info['sample_rate']} Hz (expected {expected_sample_rate} Hz)",
                 file=sys.stderr,
             )
             return 1
 
-    total_samples = data.shape[1]
+        if (expected_channels is not None
+                and info["channels"] != expected_channels):
+            print(
+                f"Error: Channel count mismatch in '{input_path}': "
+                f"{info['channels']} ch (expected {expected_channels} ch)",
+                file=sys.stderr,
+            )
+            return 1
 
-    if expected_channels is not None and in_ch != expected_channels:
-        print(
-            f"Error: Channel count mismatch in '{input_path}': "
-            f"{in_ch} ch (expected {expected_channels} ch)",
-            file=sys.stderr,
-        )
-        return 1
-
-    out_ch = (
-        args.out_channels if args.out_channels else max(plugin.num_output_channels, 2)
-    )
-    block_size = args.block_size
-    latency = plugin.latency_samples
-
-    # Pre-allocate output buffer
-    output_total = total_samples + latency
-    output_data = np.zeros((out_ch, output_total), dtype=np.float32)
-
-    # Pad input
-    main_input = data
-    if main_input.shape[1] < output_total:
-        padded = np.zeros((in_ch, output_total), dtype=np.float32)
-        padded[:, : main_input.shape[1]] = main_input
-        main_input = padded
-
-    # Process loop
-    for start in range(0, output_total, block_size):
-        end = min(start + block_size, output_total)
-        bsize = end - start
-        in_block = main_input[:, start:end].copy()
-        out_block = np.zeros((out_ch, bsize), dtype=np.float32)
-        plugin.process(in_block, out_block)
-        output_data[:, start:end] = out_block
-
-    # Latency compensation
-    if latency > 0:
-        output_data = output_data[:, latency:]
-    output_data = output_data[:, :total_samples]
-
-    # Write
     bit_depth = args.bit_depth if args.bit_depth else 24
     try:
-        write_audio(output_path, output_data, int(sample_rate), bit_depth=bit_depth)
-    except Exception as e:
-        print(f"Error writing '{output_path}': {e}", file=sys.stderr)
+        minihost.process_audio_to_file(
+            plugin,
+            input_path,
+            output_path,
+            tail_seconds=0.0,           # batch worker doesn't render tail
+            block_size=args.block_size,
+            bit_depth=bit_depth,
+            resample_to_plugin_rate=allow_resample,
+            duplicate_to_stereo=True,
+            compensate_latency=True,
+        )
+    except (FileNotFoundError, RuntimeError, ValueError, OSError) as e:
+        # process_audio_to_file raises on read errors, write errors, and
+        # rate-mismatch when resample_to_plugin_rate=False. Map all to
+        # the int return contract.
+        print(f"Error processing '{input_path}' -> '{output_path}': {e}",
+              file=sys.stderr)
         return 1
 
     return 0
