@@ -46,5 +46,6 @@ nav:
   - Python API: api_python.md
   - C API: api_c.md
   - Hosting Guide: hosting_guide.md
+  - Migration Guide: migration.md
   - Vendored Dependencies: vendored.md
   - Changelog: changelog.md

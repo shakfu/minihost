@@ -84,3 +84,8 @@ minihost resample input.wav -o output.wav -r 48000
 - Runtime: no required Python dependencies. Install `minihost[numpy]` for numpy interop.
 
 See [Getting Started](getting_started.md) for full build instructions.
+
+If you're upgrading from a previous version, see the
+[Migration Guide](migration.md) for the breaking changes (default
+return type of `read_audio` / `render_midi*`, numpy moved to an optional
+extra) and the one-keyword fixes to keep existing code working.

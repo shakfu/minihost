@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+> **Upgrading?** See [docs/migration.md](docs/migration.md) for the
+> breaking changes (default return type of `read_audio` / `render_midi*`
+> changed to `AudioBuffer`; numpy moved from a required dependency to
+> the `[numpy]` extra) and the one-keyword fixes to keep existing code
+> working.
+
 ### Added
 
 - **numpy is now an optional dependency** (BREAKING CHANGE for installs that relied on numpy being pulled in transitively). Moved from `dependencies` to `[project.optional-dependencies]` as `numpy`. `pip install minihost` no longer installs numpy; `pip install minihost[numpy]` does. The default API surface (`AudioBuffer`, `read_audio`, `write_audio`, `resample`, `process_audio`, `process_audio_to_file`, `render_midi`, `render_midi_stream`, `render_midi_to_file`, `MidiRenderer`, all `Plugin` / `PluginChain` process methods) works without numpy installed. numpy-typed code paths (`as_=numpy.ndarray`, `AudioBuffer.as_ndarray()`, `AudioBuffer.from_numpy()`, passing numpy arrays as inputs) lazy-import numpy on first use and raise a clear `ImportError` directing the user to `pip install minihost[numpy]` when it is absent. Required refactors: `_core.audio_read` / `_core.audio_resample` now return `AudioBuffer` directly (skipping the previous numpy detour); `audio_io.py`, `render.py`, and `process.py` lazy-import numpy and use AudioBuffer-native ops where possible (`AudioBuffer.clear` / `magnitude` / `__setitem__`) instead of `np.zeros` / `np.max(np.abs(...))` / numpy slice assignment. Internal `MidiRenderer` scratch buffers are now `AudioBuffer` instead of `np.ndarray`. New `tests/test_numpy_optional.py` runs a sub-Python process with numpy hidden via a meta-finder and exercises the AudioBuffer-only path end-to-end.
