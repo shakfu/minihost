@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import threading
 from typing import Optional
 import signal
 import sys
@@ -600,6 +601,69 @@ def _resolve_audio_device_arg(value, devices, kind):
     return matches[0]["index"]
 
 
+def _load_map_file(path: str, mapper) -> int:
+    """Load CC mappings from a JSON file into ``mapper``.
+
+    Format:
+        {
+          "mappings": [
+            {"channel": 0, "cc": 7,  "param": "Volume"},
+            {"channel": 0, "cc": 10, "param": "Pan", "value_range": [-1.0, 1.0]},
+            {"channel": 0, "cc": 74, "param": "Cutoff", "curve": "exp"}
+          ]
+        }
+
+    Required fields per entry: ``channel``, ``cc``, ``param``.
+    Optional fields: ``value_range`` (default ``[0.0, 1.0]``), ``curve``
+    (default ``"linear"``; one of ``linear``, ``exp``, ``log``).
+
+    Returns the number of mappings loaded. Raises ``ValueError`` on a
+    malformed file or unknown parameter name.
+    """
+    import json
+    with open(path) as f:
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"--map-file {path!r}: invalid JSON: {e}") from e
+
+    if not isinstance(data, dict) or "mappings" not in data:
+        raise ValueError(
+            f"--map-file {path!r}: must contain a 'mappings' array")
+    mappings = data["mappings"]
+    if not isinstance(mappings, list):
+        raise ValueError(
+            f"--map-file {path!r}: 'mappings' must be a list")
+
+    for i, entry in enumerate(mappings):
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"--map-file {path!r}: mappings[{i}] must be an object")
+        try:
+            channel = entry["channel"]
+            cc = entry["cc"]
+            param = entry["param"]
+        except KeyError as e:
+            raise ValueError(
+                f"--map-file {path!r}: mappings[{i}] missing required field {e}"
+            ) from None
+
+        vr_raw = entry.get("value_range", [0.0, 1.0])
+        if not (isinstance(vr_raw, (list, tuple)) and len(vr_raw) == 2):
+            raise ValueError(
+                f"--map-file {path!r}: mappings[{i}].value_range must be [lo, hi]"
+            )
+        value_range = (float(vr_raw[0]), float(vr_raw[1]))
+
+        curve = entry.get("curve", "linear")
+
+        # Delegates the channel/cc/curve/param-existence validation to map_cc.
+        mapper.map_cc(channel=int(channel), cc=int(cc), param=str(param),
+                      value_range=value_range, curve=str(curve))
+
+    return len(mappings)
+
+
 def _parse_map_spec(spec: str) -> tuple[int, int, str, tuple[float, float], str]:
     """Parse one --map argument string into (channel, cc, param, value_range, curve).
 
@@ -641,9 +705,139 @@ def _parse_map_spec(spec: str) -> tuple[int, int, str, tuple[float, float], str]
     return channel, cc, param, value_range, curve
 
 
+def _collect_play_midi_events(midi_file_path: str, sample_rate: float):
+    """Read a MIDI file and return (events, total_samples) where events is
+    a list of (sample_offset, status, data1, data2) sorted by sample_offset.
+
+    Reuses the helpers in ``minihost.render`` so tempo handling matches
+    the offline renderer.
+    """
+    from minihost.render import (
+        _build_tempo_map, _collect_midi_events, _event_to_midi_tuple,
+        _seconds_to_samples, _tick_to_seconds,
+    )
+    mf = minihost.MidiFile()
+    if not mf.load(midi_file_path):
+        raise RuntimeError(f"Failed to load MIDI file: {midi_file_path}")
+
+    tempo_map = _build_tempo_map(mf)
+    raw = _collect_midi_events(mf)
+    tpq = mf.ticks_per_quarter
+
+    events = []
+    last_sample = 0
+    for ev in raw:
+        seconds = _tick_to_seconds(ev["tick"], tempo_map, tpq)
+        sample_pos = _seconds_to_samples(seconds, sample_rate)
+        tup = _event_to_midi_tuple(ev, sample_pos)
+        if tup is not None:
+            events.append(tup)
+            if sample_pos > last_sample:
+                last_sample = sample_pos
+
+    events.sort(key=lambda t: t[0])
+    return events, last_sample
+
+
+# CC 123 = All Notes Off, sent on every channel at loop wrap to silence
+# any sustained notes from the previous iteration before re-triggering.
+_ALL_NOTES_OFF_CC = 123
+
+
+def _midi_loop_thread(audio, midi_file_path, sample_rate, stop_event):
+    """Schedule MIDI events from a file at wall-clock-correct times,
+    looping from the start when the file ends.
+
+    Calls ``audio.send_midi(status, data1, data2)`` for each event. Uses
+    ``time.monotonic()`` for pacing. Latency is bounded by the granularity
+    of ``stop_event.wait()`` (a few milliseconds), acceptable for musical
+    timing at typical buffer sizes.
+
+    The stop_event is checked between every event and during waits, so
+    Ctrl+C / SIGTERM is responsive.
+    """
+    try:
+        events, last_sample = _collect_play_midi_events(midi_file_path, sample_rate)
+    except (RuntimeError, FileNotFoundError) as e:
+        print(f"loop-midi: {e}", file=sys.stderr)
+        return
+    if not events:
+        return
+
+    # Loop length: extend slightly past the last event so the loop has a
+    # natural decay before retriggering.
+    loop_samples = last_sample + int(0.25 * sample_rate)
+
+    while not stop_event.is_set():
+        loop_start = time.monotonic()
+        for sample_pos, status, d1, d2 in events:
+            if stop_event.is_set():
+                return
+            target = loop_start + sample_pos / sample_rate
+            now = time.monotonic()
+            if target > now:
+                if stop_event.wait(target - now):
+                    return
+            audio.send_midi(int(status), int(d1), int(d2))
+
+        # Wait the remaining loop duration.
+        loop_end = loop_start + loop_samples / sample_rate
+        now = time.monotonic()
+        if loop_end > now:
+            if stop_event.wait(loop_end - now):
+                return
+
+        # Send All Notes Off on every channel before the next iteration.
+        # 0xB0..0xBF = CC on channels 0..15.
+        for ch in range(16):
+            audio.send_midi(0xB0 | ch, _ALL_NOTES_OFF_CC, 0)
+
+
+def _audio_loop_thread(audio, audio_file_path, sample_rate, stop_event):
+    """Feed audio file data into the AudioDevice's input ring buffer at
+    real-time pace, looping from the start when the file ends.
+
+    Caller must have already enabled the input ring buffer
+    (``audio.enable_input()``). The file is auto-resampled to the device's
+    sample rate.
+    """
+    try:
+        data, file_sr = minihost.read_audio(audio_file_path)
+    except (FileNotFoundError, RuntimeError) as e:
+        print(f"loop-audio: {e}", file=sys.stderr)
+        return
+
+    if int(file_sr) != int(sample_rate):
+        data = minihost.resample(data, int(file_sr), int(sample_rate))
+
+    block_size = 1024
+    # Pace at slightly less than real time so the ring buffer stays fed
+    # without overflowing (mirrors the README example).
+    block_period = (block_size / sample_rate) * 0.9
+
+    while not stop_event.is_set():
+        for start in range(0, data.frames, block_size):
+            if stop_event.is_set():
+                return
+            end = min(start + block_size, data.frames)
+            chunk = data[:, start:end]
+            audio.write_input(chunk)
+            if stop_event.wait(block_period):
+                return
+
+
 def cmd_play(args: argparse.Namespace) -> int:
     """Play plugin with real-time audio and MIDI."""
     capture = getattr(args, "input", False) or False
+    loop_midi_path = getattr(args, "loop_midi", None)
+    loop_audio_path = getattr(args, "loop_audio", None)
+
+    if loop_audio_path and capture:
+        print(
+            "Error: --loop-audio and --input both write to the input "
+            "ring buffer. Use one or the other.", file=sys.stderr,
+        )
+        return 1
 
     # Resolve audio device selection (index or name substring)
     playback_device_index = -1
@@ -692,8 +886,15 @@ def cmd_play(args: argparse.Namespace) -> int:
     # AudioDevice.send_midi so the user can still play notes.
     midi_mapper: Optional[minihost.MidiMapper] = None
     map_specs = getattr(args, "map", None) or []
-    if map_specs:
+    map_file = getattr(args, "map_file", None)
+    if map_specs or map_file:
         midi_mapper = minihost.MidiMapper(plugin)
+        if map_file:
+            try:
+                _load_map_file(map_file, midi_mapper)
+            except (ValueError, RuntimeError, FileNotFoundError) as e:
+                print(f"Error loading --map-file: {e}", file=sys.stderr)
+                return 1
         try:
             for spec in map_specs:
                 channel, cc, param, value_range, curve = _parse_map_spec(spec)
@@ -833,18 +1034,54 @@ def cmd_play(args: argparse.Namespace) -> int:
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
 
+    # If --loop-audio is set, prepare the input ring buffer before
+    # starting the audio device so the first block doesn't underrun.
+    if loop_audio_path:
+        try:
+            audio.enable_input()
+        except RuntimeError as e:
+            print(f"Error enabling input ring buffer: {e}", file=sys.stderr)
+            return 1
+        print(f"  Loop audio: {loop_audio_path}")
+    if loop_midi_path:
+        print(f"  Loop MIDI:  {loop_midi_path}")
+
     # Start audio
     audio.start()
     print("\nPlaying. Press Ctrl+C to stop.")
 
-    no_midi_in = args.midi is None and not args.virtual_midi
+    # Spawn loop-MIDI / loop-audio threads. They use a single stop_event
+    # so the main loop can break them out cleanly on Ctrl+C.
+    loop_stop = threading.Event()
+    loop_threads: list[threading.Thread] = []
+    if loop_midi_path:
+        t = threading.Thread(
+            target=_midi_loop_thread,
+            args=(audio, loop_midi_path, audio.sample_rate, loop_stop),
+            name="minihost-loop-midi", daemon=True,
+        )
+        t.start()
+        loop_threads.append(t)
+    if loop_audio_path:
+        t = threading.Thread(
+            target=_audio_loop_thread,
+            args=(audio, loop_audio_path, audio.sample_rate, loop_stop),
+            name="minihost-loop-audio", daemon=True,
+        )
+        t.start()
+        loop_threads.append(t)
+
+    no_midi_in = args.midi is None and not args.virtual_midi and not loop_midi_path
     no_midi_out = args.midi_out is None and not args.virtual_midi_out
-    if no_midi_in or no_midi_out or not capture:
+    has_audio_in = capture or bool(loop_audio_path)
+    if no_midi_in or no_midi_out or not has_audio_in:
         hints = []
-        if not capture:
-            hints.append("audio input (--input / -i)")
+        if not has_audio_in:
+            hints.append("audio input (--input / --loop-audio PATH)")
         if no_midi_in:
-            hints.append("MIDI input (--midi N / --virtual-midi NAME)")
+            hints.append(
+                "MIDI input (--midi N / --virtual-midi NAME / --loop-midi PATH)"
+            )
         if no_midi_out:
             hints.append("MIDI output (--midi-out N / --virtual-midi-out NAME)")
         print(f"(No {', '.join(hints)})")
@@ -855,6 +1092,11 @@ def cmd_play(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         pass
 
+    # Stop the loop threads first so they don't try to send_midi /
+    # write_input into a stopped device.
+    loop_stop.set()
+    for t in loop_threads:
+        t.join(timeout=2.0)
     audio.stop()
     if midi_in_handle is not None:
         midi_in_handle.close()
@@ -1722,6 +1964,36 @@ Examples:
             "is routed through Python; unmapped events are forwarded to the "
             "plugin so notes still play. "
             "Example: --map 0:74:Cutoff:0:1:exp"
+        ),
+    )
+    play_p.add_argument(
+        "--map-file",
+        type=str,
+        metavar="PATH",
+        help=(
+            "Load CC->parameter mappings from a JSON file. See the docs "
+            "for format. Combinable with --map (file first, then CLI args)."
+        ),
+    )
+    play_p.add_argument(
+        "--loop-midi",
+        type=str,
+        metavar="PATH",
+        help=(
+            "Play a MIDI file in a loop while playback runs. Events are "
+            "scheduled in real time on a Python thread; All Notes Off is "
+            "sent on every channel between iterations to silence sustained "
+            "notes. Combinable with --midi (live + file MIDI are merged)."
+        ),
+    )
+    play_p.add_argument(
+        "--loop-audio",
+        type=str,
+        metavar="PATH",
+        help=(
+            "Loop an audio file as the plugin's input. Auto-enables the "
+            "input ring buffer; the file is resampled to the device rate "
+            "if needed. For effect plugins. Mutually exclusive with --input."
         ),
     )
     play_p.set_defaults(func=cmd_play)

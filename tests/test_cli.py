@@ -674,6 +674,118 @@ class TestCmdPlayMapping:
         assert "--map requires --midi" in capsys.readouterr().err
 
 
+class TestLoadMapFile:
+    """Unit tests for the JSON --map-file parser."""
+
+    def setup_method(self):
+        from minihost.cli import _load_map_file
+        self._load = _load_map_file
+
+    def _mock_mapper(self, params):
+        mapper = MagicMock()
+        mapper._called_with = []
+
+        def map_cc(channel, cc, param, value_range, curve):
+            if param.lower() not in params:
+                raise RuntimeError(f"Parameter not found: '{param}'")
+            mapper._called_with.append((channel, cc, param, value_range, curve))
+
+        mapper.map_cc = MagicMock(side_effect=map_cc)
+        return mapper
+
+    def _write(self, tmp_path, payload):
+        import json
+        p = tmp_path / "map.json"
+        p.write_text(json.dumps(payload))
+        return str(p)
+
+    def test_minimal_three_field_mapping(self, tmp_path):
+        path = self._write(tmp_path, {
+            "mappings": [{"channel": 0, "cc": 7, "param": "Volume"}]
+        })
+        mapper = self._mock_mapper(["volume"])
+        n = self._load(path, mapper)
+        assert n == 1
+        assert mapper._called_with == [(0, 7, "Volume", (0.0, 1.0), "linear")]
+
+    def test_value_range_and_curve_applied(self, tmp_path):
+        path = self._write(tmp_path, {
+            "mappings": [
+                {"channel": 0, "cc": 10, "param": "Pan",
+                 "value_range": [-1.0, 1.0]},
+                {"channel": 0, "cc": 74, "param": "Cutoff", "curve": "exp"},
+            ]
+        })
+        mapper = self._mock_mapper(["pan", "cutoff"])
+        self._load(path, mapper)
+        assert mapper._called_with[0] == (0, 10, "Pan", (-1.0, 1.0), "linear")
+        assert mapper._called_with[1] == (0, 74, "Cutoff", (0.0, 1.0), "exp")
+
+    def test_invalid_json_raises(self, tmp_path):
+        p = tmp_path / "map.json"
+        p.write_text("{ this isn't json")
+        mapper = self._mock_mapper([])
+        with pytest.raises(ValueError, match="invalid JSON"):
+            self._load(str(p), mapper)
+
+    def test_missing_mappings_key_raises(self, tmp_path):
+        path = self._write(tmp_path, {"wrong_key": []})
+        mapper = self._mock_mapper([])
+        with pytest.raises(ValueError, match="must contain a 'mappings' array"):
+            self._load(path, mapper)
+
+    def test_mappings_not_a_list_raises(self, tmp_path):
+        path = self._write(tmp_path, {"mappings": "not a list"})
+        mapper = self._mock_mapper([])
+        with pytest.raises(ValueError, match="'mappings' must be a list"):
+            self._load(path, mapper)
+
+    def test_missing_required_field_raises(self, tmp_path):
+        path = self._write(tmp_path, {
+            "mappings": [{"channel": 0, "cc": 7}]   # no 'param'
+        })
+        mapper = self._mock_mapper(["volume"])
+        with pytest.raises(ValueError, match="missing required field"):
+            self._load(path, mapper)
+
+    def test_unknown_param_propagates(self, tmp_path):
+        path = self._write(tmp_path, {
+            "mappings": [{"channel": 0, "cc": 7, "param": "NotARealParam"}]
+        })
+        mapper = self._mock_mapper(["volume"])
+        with pytest.raises(RuntimeError, match="Parameter not found"):
+            self._load(path, mapper)
+
+    def test_bad_value_range_shape_raises(self, tmp_path):
+        path = self._write(tmp_path, {
+            "mappings": [{"channel": 0, "cc": 7, "param": "Volume",
+                          "value_range": [0.0]}]
+        })
+        mapper = self._mock_mapper(["volume"])
+        with pytest.raises(ValueError, match="value_range must be"):
+            self._load(path, mapper)
+
+
+class TestCmdPlayLoopFlags:
+    """Tests for --loop-audio / --input mutual exclusion."""
+
+    def test_loop_audio_and_input_mutually_exclusive(self, capsys):
+        args = argparse.Namespace(
+            plugin="/synth.vst3",
+            input=True,
+            midi=None,
+            virtual_midi=None,
+            midi_out=None,
+            virtual_midi_out=None,
+            sample_rate=48000,
+            block_size=512,
+            loop_audio="/some.wav",
+        )
+        ret = cmd_play(args)
+        assert ret == 1
+        assert "both write to the input ring buffer" in capsys.readouterr().err
+
+
 class TestCmdProcessErrors:
     def test_process_no_input_or_midi(self, capsys):
         """process requires at least one of --input or --midi-input."""

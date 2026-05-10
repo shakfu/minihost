@@ -40,6 +40,8 @@ sample-rate matching, channel layout, and tail rendering. See the
 - **Audio device selection** -- enumerate and target specific playback/capture devices (`minihost devices` CLI, `audio_get_playback_devices()` / `audio_get_capture_devices()` API, `--playback-device` / `--capture-device` on `minihost play`)
 - **Real-time audio input** -- lock-free ring buffer API (`write_input()`) and duplex capture (`capture=True`) for routing system audio through effects
 - **Real-time MIDI I/O** via libremidi (cross-platform)
+- **Control surface mapping** -- `minihost.MidiMapper` translates incoming MIDI CCs from a USB control surface (Launch Control / MIDIMix / nanoKONTROL / X-Touch / etc.) onto plugin parameters with optional value-range and curve (`linear`/`exp`/`log`); CLI: `minihost play --map "channel:cc:param[:lo:hi[:curve]]"` (repeatable) or `--map-file PATH` for saved JSON mappings.
+- **Looped sources for live tweaking** -- `minihost play --loop-midi PATH` loops a MIDI file through the plugin (with All Notes Off between iterations); `--loop-audio PATH` loops an audio file into the plugin's input ring buffer at real time. Useful for parameter exploration against a repeating pattern.
 - **Virtual MIDI ports** - create named ports that DAWs can connect to (macOS, Linux)
 - **Standalone MIDI input** - monitor raw MIDI messages without a plugin (`MidiIn` class)
 - **Batch processing** -- glob patterns and directory output for processing multiple files (`minihost process -i "*.wav" -o output/`)
@@ -252,6 +254,77 @@ minihost play /path/to/amp-sim.vst3 --input --midi 0  # with MIDI too
 minihost play /path/to/synth.vst3 --playback-device "BlackHole"
 minihost play /path/to/effect.vst3 --input --playback-device 0 --capture-device 1
 ```
+
+##### Map a control surface to plugin parameters
+
+`--map` wires incoming MIDI CCs from a USB control surface (Launch Control,
+MIDIMix, nanoKONTROL, X-Touch, etc.) onto plugin parameters. When set, MIDI
+is routed through Python via a `MidiMapper`; mapped CCs become parameter
+writes and unmapped events (notes, unmapped CCs) are forwarded to the plugin
+so notes still play. Format: `channel:cc:param[:lo:hi[:curve]]`. Curves:
+`linear` (default), `exp` (more resolution at low end), `log` (more
+resolution at high end).
+
+```bash
+# One mapping per --map flag, repeatable
+minihost play /path/to/synth.vst3 --midi 0 \
+  --map 0:7:Volume \
+  --map 0:10:Pan:-1:1 \
+  --map 0:74:Cutoff:0:1:exp
+```
+
+For a permanent setup, save the mappings to a JSON file once and load it
+with `--map-file`:
+
+```json
+{
+  "mappings": [
+    {"channel": 0, "cc": 7,  "param": "Volume"},
+    {"channel": 0, "cc": 10, "param": "Pan", "value_range": [-1.0, 1.0]},
+    {"channel": 0, "cc": 74, "param": "Cutoff", "curve": "exp"}
+  ]
+}
+```
+
+```bash
+minihost play /path/to/synth.vst3 --midi 0 \
+  --map-file ~/.config/minihost/launch_control.json
+```
+
+`--map` and `--map-file` are combinable -- the file loads first, CLI args
+append. Required JSON fields per entry: `channel`, `cc`, `param`. Optional:
+`value_range` (default `[0.0, 1.0]`), `curve` (default `"linear"`).
+
+##### Loop a MIDI or audio file as the source
+
+`--loop-midi` loops a MIDI file into a synth (or any plugin that accepts
+MIDI), useful for live-tweaking parameters against a repeating pattern.
+A Python thread schedules events at wall-clock-correct times; All Notes Off
+is sent on every channel between iterations to silence sustained notes.
+
+```bash
+# Loop a MIDI pattern through a synth while live-tweaking knobs
+minihost play /path/to/synth.vst3 \
+  --midi 0 \
+  --map 0:74:Cutoff:0:1:exp \
+  --loop-midi tests/_wav/test_pattern.mid
+```
+
+`--loop-audio` loops an audio file as the plugin's input, useful for
+testing effects against a known source without needing live audio. The
+ring buffer is auto-enabled; the file is resampled to the device rate if
+needed. Mutually exclusive with `--input`.
+
+```bash
+# Loop a guitar take into a reverb while turning the mix knob
+minihost play /path/to/reverb.vst3 \
+  --midi 0 \
+  --map 0:7:Mix \
+  --loop-audio guitar_dry.wav
+```
+
+Both loop flags can run alongside live MIDI input (the file's events and
+your live notes are merged into the plugin).
 
 #### `minihost process` - Process audio/MIDI offline
 
