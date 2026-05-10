@@ -46,15 +46,8 @@ construction, indexing, basic DSP ops, DLPack/numpy interop, and integrates
 with `read_audio` / `render_midi*` / `process_audio*` via the `as_=` selector.
 Items below are deliberate follow-ups that build on that base.
 
-- [ ] **Expose more JUCE AudioBuffer DSP ops on `minihost.AudioBuffer`** -- v1 exposes `clear`, `apply_gain`, `magnitude`, `copy`. JUCE provides additional in-place operations that map cleanly onto the same surface and would save users a `.numpy()` round-trip. Worth adding when real demand surfaces:
-  - `apply_gain_ramp(start, count, gain_start, gain_end)` -- linear gain ramp (declick, fade in/out without numpy)
-  - `add_from(dest_channel, dest_start, source_buffer, source_channel, source_start, count, gain=1.0)` -- mix into another buffer with optional gain
-  - `add_from_with_ramp(...)` -- ramped variant of the above
-  - `get_rms_level(channel, start, count)` -- per-channel RMS for level metering
-  - `reverse(channel, start, count)` -- in-place reverse for sample reversal effects
-  - `reverse_in_place()` -- whole-buffer convenience
-  - `apply_gain_per_channel(gains)` -- accept a list of per-channel gains in one call
-  Each is a 5-15 line nanobind binding mapped onto the existing `juce::AudioBuffer<float>` instance carried inside `MhAudioBuffer`. Add tests covering each (round-trip vs. numpy reference).
+<!-- Resolved: extended JUCE DSP ops shipped on AudioBuffer. See CHANGELOG. -->
+- [x] ~~**Expose more JUCE AudioBuffer DSP ops on `minihost.AudioBuffer`**~~ -- DONE. Added `apply_gain_ramp`, `apply_gain_per_channel`, `add_from`, `add_from_with_ramp`, `get_rms_level`, `reverse`, `reverse_channel`. (`reverse_in_place` from the original list became `reverse()` with optional `start` / `count`; the no-arg form is the whole-buffer convenience.) 19 tests in `tests/test_audiobuffer_dsp.py` verify each op against a numpy reference and exercise the bounds-checking error paths.
 - [ ] **Double-precision `AudioBufferD`** -- the v1 `AudioBuffer` is float32 only. `Plugin.process_double` still requires numpy float64 arrays for symmetry with the C++ double path. Add a parallel `MhAudioBufferD` wrapper around `juce::AudioBuffer<double>` and wire it into `process_double`. Same template/binding shape, just `<double>`. Decide whether to expose as `AudioBufferD` (separate class) or `AudioBuffer(channels, frames, dtype="float64")` (one class with a precision flag).
 - [ ] **Zero-copy channel-range slicing** -- `buf[k:m, :]` currently always copies (the v1 `__getitem__` rule was "slices return copies, not views" to keep semantics simple). Channel-range slices ARE contiguous in the planar layout, so a true zero-copy view is feasible without strided-view complexity. Add `AudioBuffer.channel_view(start, count)` returning a new `AudioBuffer` that aliases (rather than copies) a contiguous channel range of the parent. Frame slicing stays copy-only because that path requires strided views. Document the lifetime relationship and aliasing rules.
 - [ ] **`process_audio_stream(plugin_or_chain, audio, ...)` generator** -- mirror `render_midi_stream` for the audio-in case. Lets users write block-by-block to disk for very long renders without holding the full output in memory. Same `tail_seconds` / latency-compensation contract as `process_audio`.

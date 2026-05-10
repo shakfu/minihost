@@ -2197,6 +2197,152 @@ NB_MODULE(_core, m) {
              },
              "Return a deep copy of this buffer.")
 
+        // ---- Extended JUCE DSP ops ----
+        // Each is a thin wrapper over juce::AudioBuffer<float>'s
+        // corresponding method, with bounds-checking translated to
+        // ValueError.
+        .def("apply_gain_ramp",
+             [](MhAudioBuffer& self,
+                int start, int count,
+                float gain_start, float gain_end) {
+                 if (start < 0 || count < 0
+                     || start + count > self.frames()) {
+                     throw nb::value_error("apply_gain_ramp range out of bounds");
+                 }
+                 self.juce().applyGainRamp(start, count, gain_start, gain_end);
+             },
+             "start"_a, "count"_a, "gain_start"_a, "gain_end"_a,
+             "Apply a linear gain ramp from gain_start to gain_end across "
+             "[start, start+count) samples on all channels in place. "
+             "Useful for declicking, fade-in/fade-out without numpy.")
+        .def("apply_gain_per_channel",
+             [](MhAudioBuffer& self, const std::vector<float>& gains) {
+                 if ((int)gains.size() != self.channels()) {
+                     throw nb::value_error(
+                         ("gains length " + std::to_string(gains.size()) +
+                          " does not match channel count " +
+                          std::to_string(self.channels())).c_str());
+                 }
+                 for (int ch = 0; ch < self.channels(); ++ch) {
+                     self.juce().applyGain(ch, 0, self.frames(), gains[ch]);
+                 }
+             },
+             "gains"_a,
+             "Apply a per-channel gain in a single call. `gains` must be "
+             "a sequence of floats with length equal to the buffer's "
+             "channel count.")
+        .def("add_from",
+             [](MhAudioBuffer& self,
+                int dest_channel, int dest_start,
+                const MhAudioBuffer& source,
+                int source_channel, int source_start,
+                int count, float gain) {
+                 if (dest_channel < 0 || dest_channel >= self.channels()) {
+                     throw nb::value_error("dest_channel out of range");
+                 }
+                 if (source_channel < 0 || source_channel >= source.channels()) {
+                     throw nb::value_error("source_channel out of range");
+                 }
+                 if (count < 0 || dest_start < 0
+                     || dest_start + count > self.frames()) {
+                     throw nb::value_error("dest range out of bounds");
+                 }
+                 if (source_start < 0
+                     || source_start + count > source.frames()) {
+                     throw nb::value_error("source range out of bounds");
+                 }
+                 self.juce().addFrom(dest_channel, dest_start,
+                                     source.juce(),
+                                     source_channel, source_start,
+                                     count, gain);
+             },
+             "dest_channel"_a, "dest_start"_a, "source"_a,
+             "source_channel"_a, "source_start"_a, "count"_a,
+             "gain"_a = 1.0f,
+             "Mix `count` samples from "
+             "source[source_channel, source_start : source_start+count] into "
+             "self[dest_channel, dest_start : dest_start+count] in place, "
+             "scaled by `gain`. The destination range is overwritten as "
+             "dst[i] += gain * src[i].")
+        .def("add_from_with_ramp",
+             [](MhAudioBuffer& self,
+                int dest_channel, int dest_start,
+                const MhAudioBuffer& source,
+                int source_channel, int source_start,
+                int count, float gain_start, float gain_end) {
+                 if (dest_channel < 0 || dest_channel >= self.channels()) {
+                     throw nb::value_error("dest_channel out of range");
+                 }
+                 if (source_channel < 0 || source_channel >= source.channels()) {
+                     throw nb::value_error("source_channel out of range");
+                 }
+                 if (count < 0 || dest_start < 0
+                     || dest_start + count > self.frames()) {
+                     throw nb::value_error("dest range out of bounds");
+                 }
+                 if (source_start < 0
+                     || source_start + count > source.frames()) {
+                     throw nb::value_error("source range out of bounds");
+                 }
+                 const float* src_ptr =
+                     source.juce().getReadPointer(source_channel) + source_start;
+                 self.juce().addFromWithRamp(dest_channel, dest_start, src_ptr,
+                                              count, gain_start, gain_end);
+             },
+             "dest_channel"_a, "dest_start"_a, "source"_a,
+             "source_channel"_a, "source_start"_a, "count"_a,
+             "gain_start"_a, "gain_end"_a,
+             "Mix `count` samples from source with a linear gain ramp from "
+             "gain_start to gain_end into the named destination range "
+             "in place. Useful for ramped crossfades / mixes.")
+        .def("get_rms_level",
+             [](MhAudioBuffer& self, int channel,
+                int start, std::optional<int> count) {
+                 int n = count.value_or(self.frames() - start);
+                 if (channel < 0 || channel >= self.channels()) {
+                     throw nb::value_error("channel out of range");
+                 }
+                 if (start < 0 || n < 0 || start + n > self.frames()) {
+                     throw nb::value_error("get_rms_level range out of bounds");
+                 }
+                 return self.juce().getRMSLevel(channel, start, n);
+             },
+             "channel"_a, "start"_a = 0, "count"_a = nb::none(),
+             "Return the RMS level of `channel` over [start, start+count). "
+             "Defaults to the whole channel.")
+        .def("reverse",
+             [](MhAudioBuffer& self,
+                std::optional<int> start_opt,
+                std::optional<int> count_opt) {
+                 int start = start_opt.value_or(0);
+                 int n = count_opt.value_or(self.frames() - start);
+                 if (start < 0 || n < 0 || start + n > self.frames()) {
+                     throw nb::value_error("reverse range out of bounds");
+                 }
+                 self.juce().reverse(start, n);
+             },
+             "start"_a = nb::none(), "count"_a = nb::none(),
+             "Reverse sample order in place across all channels. Defaults "
+             "to the whole buffer. For a single-channel reverse use "
+             "reverse_channel().")
+        .def("reverse_channel",
+             [](MhAudioBuffer& self, int channel,
+                std::optional<int> start_opt,
+                std::optional<int> count_opt) {
+                 int start = start_opt.value_or(0);
+                 int n = count_opt.value_or(self.frames() - start);
+                 if (channel < 0 || channel >= self.channels()) {
+                     throw nb::value_error("channel out of range");
+                 }
+                 if (start < 0 || n < 0 || start + n > self.frames()) {
+                     throw nb::value_error("reverse range out of bounds");
+                 }
+                 self.juce().reverse(channel, start, n);
+             },
+             "channel"_a, "start"_a = nb::none(), "count"_a = nb::none(),
+             "Reverse a single channel's sample order in place over "
+             "[start, start+count). Defaults to the whole channel.")
+
         // ---- Buffer-protocol export (DLPack) ----
         // Allows Plugin.process(buf, out) etc. to consume AudioBuffer
         // directly without an explicit .as_ndarray() / memoryview conversion.
