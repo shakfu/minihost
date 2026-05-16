@@ -545,6 +545,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#device-enumeration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Device Enumeration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#audio-input-ring-buffer" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -660,6 +671,45 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#vst3-preset-functions-minihost_vstpreseth" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        VST3 Preset Functions (minihost_vstpreset.h)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="VST3 Preset Functions (minihost_vstpreset.h)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#structs_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Structs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#notes-on-mh_vstpreset_read_class_id_from_bundle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Notes on mh_vstpreset_read_class_id_from_bundle
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -683,6 +733,60 @@
     
   
     Hosting Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../migration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Migration Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../vendored/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Vendored Dependencies
   
 
     
@@ -866,6 +970,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#device-enumeration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Device Enumeration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#audio-input-ring-buffer" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -981,6 +1096,45 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#vst3-preset-functions-minihost_vstpreseth" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        VST3 Preset Functions (minihost_vstpreset.h)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="VST3 Preset Functions (minihost_vstpreset.h)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#structs_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Structs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#notes-on-mh_vstpreset_read_class_id_from_bundle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Notes on mh_vstpreset_read_class_id_from_bundle
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1026,6 +1180,10 @@
 <tr>
 <td><code>mh_close</code></td>
 <td>Unload a plugin</td>
+</tr>
+<tr>
+<td><code>mh_get_path</code></td>
+<td>Get the plugin file path passed to <code>mh_open</code> / <code>mh_open_ex</code></td>
 </tr>
 <tr>
 <td><code>mh_get_info</code></td>
@@ -1359,6 +1517,38 @@
 </tbody>
 </table>
 <p>Set <code>MH_AudioConfig.capture = 1</code> to open the device in duplex mode (system audio input routed through the plugin). The audio callback de-interleaves captured audio directly into the plugin's input buffers.</p>
+<p>Set <code>MH_AudioConfig.playback_device_index</code> / <code>capture_device_index</code> to a 0-based device index to target a specific audio device. Use <code>-1</code> (the default) to use the system default.</p>
+<h3 id="device-enumeration">Device Enumeration<a class="headerlink" href="#device-enumeration" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mh_audio_enumerate_playback_devices</code></td>
+<td>Fill an array of <code>MH_AudioDeviceInfo</code> with available playback devices. Returns count</td>
+</tr>
+<tr>
+<td><code>mh_audio_enumerate_capture_devices</code></td>
+<td>Fill an array of <code>MH_AudioDeviceInfo</code> with available capture devices. Returns count</td>
+</tr>
+</tbody>
+</table>
+<p><strong><code>MH_AudioDeviceInfo</code></strong> struct:</p>
+<ul>
+<li><code>char name[256]</code> -- device name (null-terminated)</li>
+<li><code>int is_default</code> -- <code>1</code> if this is the system default, else <code>0</code></li>
+</ul>
+<p>Typical usage:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">MH_AudioDeviceInfo</span><span class="w"> </span><span class="n">devices</span><span class="p">[</span><span class="mi">32</span><span class="p">];</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kt">int</span><span class="w"> </span><span class="n">count</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mh_audio_enumerate_playback_devices</span><span class="p">(</span><span class="n">devices</span><span class="p">,</span><span class="w"> </span><span class="mi">32</span><span class="p">);</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kt">int</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">count</span><span class="p">;</span><span class="w"> </span><span class="n">i</span><span class="o">++</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span><span class="n">printf</span><span class="p">(</span><span class="s">&quot;[%d]%s %s</span><span class="se">\n</span><span class="s">&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">i</span><span class="p">,</span><span class="w"> </span><span class="n">devices</span><span class="p">[</span><span class="n">i</span><span class="p">].</span><span class="n">is_default</span><span class="w"> </span><span class="o">?</span><span class="w"> </span><span class="s">&quot;*&quot;</span><span class="w"> </span><span class="o">:</span><span class="w"> </span><span class="s">&quot; &quot;</span><span class="p">,</span><span class="w"> </span><span class="n">devices</span><span class="p">[</span><span class="n">i</span><span class="p">].</span><span class="n">name</span><span class="p">);</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="p">}</span>
+</code></pre></div>
 <h3 id="audio-input-ring-buffer">Audio Input (Ring Buffer)<a class="headerlink" href="#audio-input-ring-buffer" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
@@ -1506,16 +1696,20 @@
 </tbody>
 </table>
 <h3 id="structs">Structs<a class="headerlink" href="#structs" title="Permanent link">&para;</a></h3>
-<p><strong><code>MH_AudioData</code></strong> -- returned by <code>mh_audio_read()</code>:
-- <code>float* data</code> -- interleaved float32 samples
-- <code>unsigned int channels</code>
-- <code>unsigned int frames</code>
-- <code>unsigned int sample_rate</code></p>
-<p><strong><code>MH_AudioFileInfo</code></strong> -- populated by <code>mh_audio_get_file_info()</code>:
-- <code>unsigned int channels</code>
-- <code>unsigned int sample_rate</code>
-- <code>unsigned long long frames</code>
-- <code>double duration</code></p>
+<p><strong><code>MH_AudioData</code></strong> -- returned by <code>mh_audio_read()</code>:</p>
+<ul>
+<li><code>float* data</code> -- interleaved float32 samples</li>
+<li><code>unsigned int channels</code></li>
+<li><code>unsigned int frames</code></li>
+<li><code>unsigned int sample_rate</code></li>
+</ul>
+<p><strong><code>MH_AudioFileInfo</code></strong> -- populated by <code>mh_audio_get_file_info()</code>:</p>
+<ul>
+<li><code>unsigned int channels</code></li>
+<li><code>unsigned int sample_rate</code></li>
+<li><code>unsigned long long frames</code></li>
+<li><code>double duration</code></li>
+</ul>
 <hr />
 <h2 id="plugin-chain-functions-minihost_chainh">Plugin Chain Functions (minihost_chain.h)<a class="headerlink" href="#plugin-chain-functions-minihost_chainh" title="Permanent link">&para;</a></h2>
 <table>
@@ -1664,6 +1858,85 @@
 </tr>
 </tbody>
 </table>
+<hr />
+<h2 id="vst3-preset-functions-minihost_vstpreseth">VST3 Preset Functions (minihost_vstpreset.h)<a class="headerlink" href="#vst3-preset-functions-minihost_vstpreseth" title="Permanent link">&para;</a></h2>
+<p>Portable Steinberg <code>.vstpreset</code> reader/writer with no external dependencies (little-endian packing built in). Callable from both C and C++.</p>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mh_vstpreset_read</code></td>
+<td>Read a <code>.vstpreset</code> file into an <code>MH_VstPreset</code> struct</td>
+</tr>
+<tr>
+<td><code>mh_vstpreset_write</code></td>
+<td>Write <code>class_id</code> + component/controller state blobs to a <code>.vstpreset</code> file</td>
+</tr>
+<tr>
+<td><code>mh_vstpreset_free</code></td>
+<td>Free heap-allocated state blobs inside an <code>MH_VstPreset</code> populated by <code>mh_vstpreset_read</code></td>
+</tr>
+<tr>
+<td><code>mh_vstpreset_read_class_id_from_bundle</code></td>
+<td>Read the processor FUID from a VST3 bundle's <code>Contents/Resources/moduleinfo.json</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="structs_1">Structs<a class="headerlink" href="#structs_1" title="Permanent link">&para;</a></h3>
+<p><strong><code>MH_VstPreset</code></strong> -- populated by <code>mh_vstpreset_read()</code>:</p>
+<ul>
+<li><code>char class_id[33]</code> -- 32-char FUID plus null terminator (<code>MH_VSTPRESET_CLASS_ID_LEN</code> = 32)</li>
+<li><code>void* component_state</code> -- processor (<code>Comp</code>) chunk, heap-allocated</li>
+<li><code>int component_size</code></li>
+<li><code>void* controller_state</code> -- controller (<code>Cont</code>) chunk, heap-allocated (may be <code>NULL</code>)</li>
+<li><code>int controller_size</code></li>
+</ul>
+<p>Typical usage:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="cp">#include</span><span class="w"> </span><span class="cpf">&quot;minihost_vstpreset.h&quot;</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="c1">// Read</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="n">MH_VstPreset</span><span class="w"> </span><span class="n">preset</span><span class="p">;</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="kt">char</span><span class="w"> </span><span class="n">err</span><span class="p">[</span><span class="mi">256</span><span class="p">];</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">mh_vstpreset_read</span><span class="p">(</span><span class="s">&quot;in.vstpreset&quot;</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">preset</span><span class="p">,</span><span class="w"> </span><span class="n">err</span><span class="p">,</span><span class="w"> </span><span class="k">sizeof</span><span class="p">(</span><span class="n">err</span><span class="p">)))</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="c1">// apply preset.component_state to plugin via mh_set_state(), etc.</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="n">mh_vstpreset_free</span><span class="p">(</span><span class="o">&amp;</span><span class="n">preset</span><span class="p">);</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="p">}</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="c1">// Auto-detect the processor FUID from the plugin bundle (no plugin</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="c1">// instantiation required). Works for any VST3 plugin built against</span>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="c1">// SDK 3.7.5 or newer (which ships moduleinfo.json in the bundle).</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="kt">char</span><span class="w"> </span><span class="n">class_id</span><span class="p">[</span><span class="n">MH_VSTPRESET_CLASS_ID_LEN</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mi">1</span><span class="p">];</span>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="n">mh_vstpreset_read_class_id_from_bundle</span><span class="p">(</span>
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">        </span><span class="s">&quot;/path/to/synth.vst3&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">class_id</span><span class="p">,</span><span class="w"> </span><span class="n">err</span><span class="p">,</span><span class="w"> </span><span class="k">sizeof</span><span class="p">(</span><span class="n">err</span><span class="p">)))</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">    </span><span class="n">fprintf</span><span class="p">(</span><span class="n">stderr</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;%s</span><span class="se">\n</span><span class="s">&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">err</span><span class="p">);</span>
+<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">    </span><span class="c1">// Legacy plugin: caller must supply class_id another way</span>
+<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">    </span><span class="c1">// (e.g., copy from an existing .vstpreset).</span>
+<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="p">}</span>
+<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a>
+<a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a><span class="c1">// Write</span>
+<a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a><span class="kt">int</span><span class="w"> </span><span class="n">state_size</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mh_get_state_size</span><span class="p">(</span><span class="n">plugin</span><span class="p">);</span>
+<a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a><span class="kt">void</span><span class="o">*</span><span class="w"> </span><span class="n">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">malloc</span><span class="p">(</span><span class="n">state_size</span><span class="p">);</span>
+<a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a><span class="n">mh_get_state</span><span class="p">(</span><span class="n">plugin</span><span class="p">,</span><span class="w"> </span><span class="n">state</span><span class="p">,</span><span class="w"> </span><span class="n">state_size</span><span class="p">);</span>
+<a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a><span class="n">mh_vstpreset_write</span><span class="p">(</span><span class="s">&quot;out.vstpreset&quot;</span><span class="p">,</span>
+<a id="__codelineno-1-27" name="__codelineno-1-27" href="#__codelineno-1-27"></a><span class="w">                   </span><span class="n">class_id</span><span class="p">,</span>
+<a id="__codelineno-1-28" name="__codelineno-1-28" href="#__codelineno-1-28"></a><span class="w">                   </span><span class="n">state</span><span class="p">,</span><span class="w"> </span><span class="n">state_size</span><span class="p">,</span>
+<a id="__codelineno-1-29" name="__codelineno-1-29" href="#__codelineno-1-29"></a><span class="w">                   </span><span class="nb">NULL</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w">  </span><span class="c1">// no separate controller state</span>
+<a id="__codelineno-1-30" name="__codelineno-1-30" href="#__codelineno-1-30"></a><span class="w">                   </span><span class="n">err</span><span class="p">,</span><span class="w"> </span><span class="k">sizeof</span><span class="p">(</span><span class="n">err</span><span class="p">));</span>
+<a id="__codelineno-1-31" name="__codelineno-1-31" href="#__codelineno-1-31"></a><span class="n">free</span><span class="p">(</span><span class="n">state</span><span class="p">);</span>
+</code></pre></div>
+<h3 id="notes-on-mh_vstpreset_read_class_id_from_bundle">Notes on <code>mh_vstpreset_read_class_id_from_bundle</code><a class="headerlink" href="#notes-on-mh_vstpreset_read_class_id_from_bundle" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Returns 1 on success and writes a 32-character uppercase hex FUID into <code>out_class_id</code> (which must be at least <code>MH_VSTPRESET_CLASS_ID_LEN + 1</code> bytes).</li>
+<li>Selects the first entry in the bundle's <code>Classes</code> array whose <code>Category</code> is <code>"Audio Module Class"</code> (the processor component, not the controller).</li>
+<li>Tolerates JSON5-style trailing commas, which appear in real-world bundles (e.g., Dexed, Strokes).</li>
+<li>Returns 0 with a descriptive error in <code>err_buf</code> for: missing <code>moduleinfo.json</code> (plugin predates VST3 SDK 3.7.5), file unreadable, file &gt; 1 MB, JSON malformed, no Audio Module Class entry, or CID not exactly 32 hex characters.</li>
+<li>VST3 only -- AudioUnit and LV2 plugins do not have <code>.vstpreset</code> files or moduleinfo.json.</li>
+</ul>
 
 
 

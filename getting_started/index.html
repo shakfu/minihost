@@ -580,6 +580,60 @@
   
   
     <li class="md-nav__item">
+      <a href="../migration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Migration Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../vendored/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Vendored Dependencies
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../changelog/" class="md-nav__link">
         
   
@@ -763,16 +817,17 @@
 <li>CMake 3.20+</li>
 <li>C++17 compiler</li>
 <li>JUCE framework (automatically downloaded if not present)</li>
+<li>Vendored C libraries: miniaudio, tflac, libremidi, midifile (see <a href="../vendored/">Vendored Dependencies</a>)</li>
 </ul>
 <h3 id="platform-specific">Platform-specific<a class="headerlink" href="#platform-specific" title="Permanent link">&para;</a></h3>
 <ul>
 <li><strong>macOS</strong>: Xcode command line tools</li>
 <li><strong>Windows</strong>: Visual Studio 2019+ or MinGW</li>
-<li><strong>Linux</strong>:
-  <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>libasound2-dev<span class="w"> </span>libfreetype-dev<span class="w"> </span>libfontconfig1-dev<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">    </span>libwebkit2gtk-4.1-dev<span class="w"> </span>libgtk-3-dev<span class="w"> </span>libgl-dev<span class="w"> </span>libcurl4-openssl-dev
-</code></pre></div></li>
+<li><strong>Linux</strong>:</li>
 </ul>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>libasound2-dev<span class="w"> </span>libfreetype-dev<span class="w"> </span>libfontconfig1-dev<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">    </span>libwebkit2gtk-4.1-dev<span class="w"> </span>libgtk-3-dev<span class="w"> </span>libgl-dev<span class="w"> </span>libcurl4-openssl-dev
+</code></pre></div>
 <h2 id="building">Building<a class="headerlink" href="#building" title="Permanent link">&para;</a></h2>
 <h3 id="python-bindings-recommended">Python Bindings (recommended)<a class="headerlink" href="#python-bindings-recommended" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/shakfu/minihost.git
