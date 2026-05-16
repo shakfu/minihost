@@ -34,7 +34,55 @@ struct MH_PluginChain
     std::vector<float*> autoChunkOut;
     std::vector<MH_MidiEvent> autoChunkMidiIn;
     std::vector<MH_MidiEvent> autoChunkMidiOut;
+
+    // Per-plugin dry/wet mix. Defaults to 1.0 (full wet).
+    // dry_storage[i] is non-empty only for plugins where in_ch == out_ch;
+    // for others, set_mix is rejected and mixes[i] stays at 1.0.
+    std::vector<float> mixes;
+    std::vector<int> plugin_in_ch;
+    std::vector<int> plugin_out_ch;
+    std::vector<std::vector<float>> dry_storage;
+    std::vector<std::vector<float*>> dry_ptrs;
 };
+
+// Snapshot the per-plugin input into dry_storage[i] so the post-process
+// dry-mix blend has the original signal. No-op for plugins without
+// allocated snapshot storage (in_ch != out_ch).
+static void snapshotDry(MH_PluginChain* chain, int i,
+                         const float* const* inputs, int nframes)
+{
+    if (chain->dry_storage[i].empty()) return;
+    int ch = chain->plugin_in_ch[i];
+    for (int c = 0; c < ch; ++c)
+    {
+        if (inputs && inputs[c])
+            std::memcpy(chain->dry_ptrs[i][c], inputs[c], sizeof(float) * nframes);
+        else
+            std::memset(chain->dry_ptrs[i][c], 0, sizeof(float) * nframes);
+    }
+}
+
+// Blend the plugin's wet output with its dry snapshot:
+//   out[c][n] = mix * out[c][n] + (1 - mix) * dry[c][n]
+// Skipped when mix is at its full-wet default or the plugin is
+// ineligible (no snapshot storage).
+static void applyMix(MH_PluginChain* chain, int i,
+                      float* const* outputs, int nframes)
+{
+    float mix = chain->mixes[i];
+    if (mix >= 1.0f) return;
+    if (chain->dry_storage[i].empty()) return;
+    int ch = chain->plugin_out_ch[i];
+    float dry_gain = 1.0f - mix;
+    for (int c = 0; c < ch; ++c)
+    {
+        if (!outputs[c]) continue;
+        const float* dry = chain->dry_ptrs[i][c];
+        float* wet = outputs[c];
+        for (int n = 0; n < nframes; ++n)
+            wet[n] = mix * wet[n] + dry_gain * dry[n];
+    }
+}
 
 static void setErr(char* buf, size_t n, const char* msg)
 {
@@ -129,6 +177,30 @@ MH_PluginChain* mh_chain_create(MH_Plugin** plugins, int num_plugins,
     chain->autoChunkMidiIn.reserve(256);
     chain->autoChunkMidiOut.resize(256);
 
+    // Per-plugin dry/wet mix state. Snapshot storage is only allocated
+    // for plugins where in_ch == out_ch (the eligibility rule for mix);
+    // all others stay at full-wet mix=1.0 forever.
+    chain->mixes.assign(num_plugins, 1.0f);
+    chain->plugin_in_ch.resize(num_plugins);
+    chain->plugin_out_ch.resize(num_plugins);
+    chain->dry_storage.resize(num_plugins);
+    chain->dry_ptrs.resize(num_plugins);
+    for (int i = 0; i < num_plugins; ++i)
+    {
+        int in_c = infos[i].num_input_ch;
+        int out_c = infos[i].num_output_ch;
+        chain->plugin_in_ch[i] = in_c;
+        chain->plugin_out_ch[i] = out_c;
+        if (in_c == out_c && in_c > 0)
+        {
+            chain->dry_storage[i].assign(in_c * chain->max_block_size, 0.0f);
+            chain->dry_ptrs[i].resize(in_c);
+            for (int c = 0; c < in_c; ++c)
+                chain->dry_ptrs[i][c] =
+                    chain->dry_storage[i].data() + c * chain->max_block_size;
+        }
+    }
+
     // Allocate intermediate buffers (n-1 buffers for n plugins)
     chain->intermediate_storage.resize(num_plugins - 1);
     chain->intermediate_ptrs.resize(num_plugins - 1);
@@ -191,21 +263,27 @@ int mh_chain_process_midi_io(MH_PluginChain* chain,
     // Special case: single plugin
     if (num_plugins == 1)
     {
-        return mh_process_midi_io(chain->plugins[0],
-                                  inputs, outputs, nframes,
-                                  midi_in, num_midi_in,
-                                  midi_out, midi_out_capacity, num_midi_out);
+        snapshotDry(chain, 0, inputs, nframes);
+        int r = mh_process_midi_io(chain->plugins[0],
+                                    inputs, outputs, nframes,
+                                    midi_in, num_midi_in,
+                                    midi_out, midi_out_capacity, num_midi_out);
+        if (!r) return 0;
+        applyMix(chain, 0, outputs, nframes);
+        return 1;
     }
 
     // Multi-plugin chain processing
 
     // Process first plugin with MIDI -> intermediate[0]
     float* const* first_output = chain->intermediate_ptrs[0].data();
+    snapshotDry(chain, 0, inputs, nframes);
     int result = mh_process_midi_io(chain->plugins[0],
                                     inputs, first_output, nframes,
                                     midi_in, num_midi_in,
                                     midi_out, midi_out_capacity, num_midi_out);
     if (!result) return 0;
+    applyMix(chain, 0, first_output, nframes);
 
     // Process middle plugins (no MIDI): intermediate[i-1] -> intermediate[i]
     for (int i = 1; i < num_plugins - 1; ++i)
@@ -233,8 +311,10 @@ int mh_chain_process_midi_io(MH_PluginChain* chain,
             }
         }
 
+        snapshotDry(chain, i, in_ptrs, nframes);
         result = mh_process(chain->plugins[i], in_ptrs, out_ptrs, nframes);
         if (!result) return 0;
+        applyMix(chain, i, out_ptrs, nframes);
     }
 
     // Process last plugin: intermediate[n-2] -> outputs
@@ -259,8 +339,11 @@ int mh_chain_process_midi_io(MH_PluginChain* chain,
         }
     }
 
+    snapshotDry(chain, num_plugins - 1, last_input, nframes);
     result = mh_process(chain->plugins[num_plugins - 1], last_input, outputs, nframes);
-    return result;
+    if (!result) return 0;
+    applyMix(chain, num_plugins - 1, outputs, nframes);
+    return 1;
 }
 
 int mh_chain_get_latency_samples(MH_PluginChain* chain)
@@ -478,4 +561,29 @@ double mh_chain_get_tail_seconds(MH_PluginChain* chain)
             max_tail = tail;
     }
     return max_tail;
+}
+
+int mh_chain_set_mix(MH_PluginChain* chain, int plugin_index, float mix)
+{
+    if (chain == nullptr) return 0;
+    if (plugin_index < 0 ||
+        plugin_index >= static_cast<int>(chain->plugins.size()))
+        return 0;
+    // Eligibility: matching in/out channel counts (storage was only
+    // allocated when in_ch == out_ch).
+    if (chain->dry_storage[plugin_index].empty())
+        return 0;
+    if (mix < 0.0f) mix = 0.0f;
+    if (mix > 1.0f) mix = 1.0f;
+    chain->mixes[plugin_index] = mix;
+    return 1;
+}
+
+float mh_chain_get_mix(MH_PluginChain* chain, int plugin_index)
+{
+    if (chain == nullptr) return -1.0f;
+    if (plugin_index < 0 ||
+        plugin_index >= static_cast<int>(chain->plugins.size()))
+        return -1.0f;
+    return chain->mixes[plugin_index];
 }

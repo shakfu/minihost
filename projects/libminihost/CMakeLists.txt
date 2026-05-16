@@ -5,6 +5,7 @@ option(MINIHOST_HEADLESS "Build without GUI dependencies (default ON)" ON)
 add_library(minihost STATIC
     minihost.cpp
     minihost_chain.cpp
+    minihost_graph.cpp
     minihost_vstpreset.c
 )
 

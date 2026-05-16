@@ -858,7 +858,7 @@ class TestCmdProcessErrors:
             non_realtime=False,
             bpm=None,
         )
-        mock_info = {"sample_rate": 48000}
+        mock_info = {"sample_rate": 48000, "channels": 2, "frames": 1000, "duration": 1000 / 48000}
         with (
             patch("os.path.exists", return_value=False),
             patch("minihost.audio_io.get_audio_info", return_value=mock_info),

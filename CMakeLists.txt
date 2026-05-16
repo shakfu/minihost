@@ -65,6 +65,7 @@ if(MINIHOST_INSTALL)
     install(FILES
         projects/libminihost/minihost.h
         projects/libminihost/minihost_chain.h
+        projects/libminihost/minihost_graph.h
         projects/libminihost/minihost_vstpreset.h
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/minihost)
 endif()

@@ -15,6 +15,7 @@
 
 #include "minihost.h"
 #include "minihost_chain.h"
+#include "minihost_graph.h"
 #include "minihost_audio.h"
 #include "minihost_audiofile.h"
 #include "minihost_midi.h"
@@ -238,6 +239,28 @@ public:
         // Pre-allocate the callback queues so the audio-thread trampoline
         // never has to allocate. capacity is preserved across poll_callbacks
         // by using clear() rather than swap() to drain.
+        cb_queue_.reserve(CB_QUEUE_CAPACITY);
+        dispatch_buffer_.reserve(CB_QUEUE_CAPACITY);
+    }
+
+    // Session-bound constructor: load via the session's shared
+    // AudioPluginFormatManager. Not exposed directly to Python; used
+    // by Session::open below.
+    Plugin(MH_Session* session, const std::string& path,
+           double sample_rate, int max_block_size,
+           int in_channels, int out_channels, int sidechain_channels)
+        : sample_rate_(sample_rate), max_block_size_(max_block_size)
+    {
+        char err[1024] = {0};
+        plugin_ = mh_session_open(session, path.c_str(),
+                                   sample_rate, max_block_size,
+                                   in_channels, out_channels,
+                                   sidechain_channels,
+                                   err, sizeof(err));
+        if (!plugin_) {
+            throw std::runtime_error(
+                std::string("Failed to open plugin via session: ") + err);
+        }
         cb_queue_.reserve(CB_QUEUE_CAPACITY);
         dispatch_buffer_.reserve(CB_QUEUE_CAPACITY);
     }
@@ -1132,6 +1155,34 @@ public:
         return plugin_refs_[index];
     }
 
+    // Per-plugin dry/wet mix
+    void set_mix(int plugin_index, float mix) {
+        if (plugin_index < 0 ||
+            plugin_index >= static_cast<int>(plugin_refs_.size())) {
+            throw std::runtime_error("Plugin index out of range");
+        }
+        if (mix < 0.0f || mix > 1.0f) {
+            throw std::runtime_error("mix must be in [0.0, 1.0]");
+        }
+        if (!mh_chain_set_mix(chain_, plugin_index, mix)) {
+            throw std::runtime_error(
+                "Plugin's input and output channel counts must match for "
+                "dry/wet mix to be enabled.");
+        }
+    }
+
+    float get_mix(int plugin_index) {
+        if (plugin_index < 0 ||
+            plugin_index >= static_cast<int>(plugin_refs_.size())) {
+            throw std::runtime_error("Plugin index out of range");
+        }
+        float v = mh_chain_get_mix(chain_, plugin_index);
+        if (v < 0.0f) {
+            throw std::runtime_error("Failed to get mix");
+        }
+        return v;
+    }
+
     // Process audio (no MIDI)
     void process(AudioArray input, AudioArray output) {
         int in_channels = static_cast<int>(input.shape(0));
@@ -1282,8 +1333,161 @@ private:
     MH_PluginChain* chain_ = nullptr;
     std::vector<Plugin*> plugin_refs_;  // Keep references to prevent plugins from being GC'd
 
-    // Allow AudioDevice to access raw chain pointer
+    // Allow AudioDevice and PluginGraph to access the raw chain pointer.
     friend class AudioDevice;
+    friend class PluginGraph;
+};
+
+
+// Python wrapper class for MH_PluginGraph
+class PluginGraph {
+public:
+    PluginGraph(int num_in_channels, int num_out_channels,
+                int max_block_size, double sample_rate)
+    {
+        char err[256] = {0};
+        graph_ = mh_graph_create(num_in_channels, num_out_channels,
+                                  max_block_size, sample_rate,
+                                  err, sizeof(err));
+        if (!graph_) {
+            throw std::runtime_error(
+                std::string("Failed to create plugin graph: ") + err);
+        }
+    }
+
+    ~PluginGraph() { close(); }
+
+    void close() {
+        if (graph_) {
+            mh_graph_close(graph_);
+            graph_ = nullptr;
+        }
+    }
+
+    PluginGraph(const PluginGraph&) = delete;
+    PluginGraph& operator=(const PluginGraph&) = delete;
+
+    PluginGraph& enter() { return *this; }
+    void exit(nb::object, nb::object, nb::object) { close(); }
+
+    int add_branch(PluginChain& chain, float gain) {
+        char err[256] = {0};
+        int idx = mh_graph_add_branch(graph_, chain.chain_, gain,
+                                       err, sizeof(err));
+        if (idx < 0) {
+            throw std::runtime_error(
+                std::string("Failed to add graph branch: ") + err);
+        }
+        branch_refs_.push_back(&chain);
+        return idx;
+    }
+
+    void set_branch_gain(int branch_index, float gain) {
+        if (!mh_graph_set_branch_gain(graph_, branch_index, gain)) {
+            throw std::runtime_error("Branch index out of range");
+        }
+    }
+
+    float get_branch_gain(int branch_index) {
+        float g = mh_graph_get_branch_gain(graph_, branch_index);
+        if (std::isnan(g)) {
+            throw std::runtime_error("Branch index out of range");
+        }
+        return g;
+    }
+
+    int num_branches() const {
+        return mh_graph_get_num_branches(graph_);
+    }
+
+    int num_input_channels() const {
+        return mh_graph_get_num_input_channels(graph_);
+    }
+
+    int num_output_channels() const {
+        return mh_graph_get_num_output_channels(graph_);
+    }
+
+    double get_sample_rate() const {
+        return mh_graph_get_sample_rate(graph_);
+    }
+
+    int max_block_size() const {
+        return mh_graph_get_max_block_size(graph_);
+    }
+
+    int latency_samples() const {
+        return mh_graph_get_latency_samples(graph_);
+    }
+
+    double tail_seconds() const {
+        return mh_graph_get_tail_seconds(graph_);
+    }
+
+    void process(AudioArray input, AudioArray output) {
+        int in_ch = static_cast<int>(input.shape(0));
+        int out_ch = static_cast<int>(output.shape(0));
+        int in_fr = static_cast<int>(input.shape(1));
+        int out_fr = static_cast<int>(output.shape(1));
+
+        validate_process_shape(in_ch, out_ch, in_fr, out_fr,
+                               mh_graph_get_num_input_channels(graph_),
+                               mh_graph_get_num_output_channels(graph_),
+                               mh_graph_get_max_block_size(graph_));
+
+        std::vector<const float*> in_ptrs(in_ch);
+        std::vector<float*> out_ptrs(out_ch);
+        for (int c = 0; c < in_ch; ++c)
+            in_ptrs[c] = input.data() + c * in_fr;
+        for (int c = 0; c < out_ch; ++c)
+            out_ptrs[c] = output.data() + c * out_fr;
+
+        if (!mh_graph_process(graph_, in_ptrs.data(), out_ptrs.data(), in_fr)) {
+            throw std::runtime_error("Graph process failed");
+        }
+    }
+
+private:
+    MH_PluginGraph* graph_ = nullptr;
+    std::vector<PluginChain*> branch_refs_;  // keep branches alive
+};
+
+
+// Python wrapper class for MH_Session.
+// The session holds one shared JUCE AudioPluginFormatManager and is
+// passed to mh_session_open / mh_session_probe / mh_session_scan_directory
+// so the format registration is paid once per session rather than once
+// per plugin call.
+class Session {
+public:
+    Session() {
+        char err[256] = {0};
+        session_ = mh_session_create(err, sizeof(err));
+        if (!session_) {
+            throw std::runtime_error(
+                std::string("Failed to create session: ") + err);
+        }
+    }
+
+    ~Session() { close(); }
+
+    void close() {
+        if (session_) {
+            mh_session_close(session_);
+            session_ = nullptr;
+        }
+    }
+
+    Session(const Session&) = delete;
+    Session& operator=(const Session&) = delete;
+
+    Session& enter() { return *this; }
+    void exit(nb::object, nb::object, nb::object) { close(); }
+
+    MH_Session* raw() const { return session_; }
+
+private:
+    MH_Session* session_ = nullptr;
 };
 
 
@@ -1914,6 +2118,77 @@ NB_MODULE(_core, m) {
     m.def("scan_directory", &scan_directory,
           nb::arg("directory_path"),
           "Scan a directory for plugins (VST3, AudioUnit). Returns list of plugin metadata dicts.");
+
+    // Session: shared format-manager state across loads/probes/scans.
+    nb::class_<Session>(m, "Session")
+        .def(nb::init<>(),
+             "Create a session that holds one shared JUCE "
+             "AudioPluginFormatManager. Subsequent open() / probe() / "
+             "scan_directory() calls on the session reuse that "
+             "manager, avoiding the per-call format registration cost. "
+             "Most useful for multi-plugin and directory-scanning "
+             "workflows.")
+        .def("open",
+             [](Session& self, const std::string& path,
+                double sample_rate, int max_block_size,
+                int in_channels, int out_channels,
+                int sidechain_channels) {
+                 return new Plugin(self.raw(), path, sample_rate,
+                                    max_block_size, in_channels,
+                                    out_channels, sidechain_channels);
+             },
+             nb::arg("path"),
+             nb::arg("sample_rate") = 48000.0,
+             nb::arg("max_block_size") = 512,
+             nb::arg("in_channels") = 2,
+             nb::arg("out_channels") = 2,
+             nb::arg("sidechain_channels") = 0,
+             nb::rv_policy::take_ownership,
+             "Load a plugin using the session's shared format manager. "
+             "Returns a Plugin. The returned Plugin does not depend on "
+             "the session post-construction; it is safe to close the "
+             "session while the Plugin remains in use.")
+        .def("probe",
+             [](Session& self, const std::string& path) {
+                 MH_PluginDesc desc;
+                 char err[1024] = {0};
+                 if (!mh_session_probe(self.raw(), path.c_str(), &desc,
+                                        err, sizeof(err))) {
+                     throw std::runtime_error(
+                         std::string("Session.probe failed: ") + err);
+                 }
+                 return plugin_desc_to_dict(desc);
+             },
+             nb::arg("path"),
+             "Probe a plugin using the session's shared format manager. "
+             "Returns the same dict shape as the module-level probe().")
+        .def("scan_directory",
+             [](Session& self, const std::string& directory_path) {
+                 std::vector<nb::dict> results;
+                 ScanContext ctx{&results};
+                 int n = mh_session_scan_directory(
+                     self.raw(), directory_path.c_str(),
+                     scan_callback, &ctx);
+                 if (n < 0) {
+                     throw std::runtime_error(
+                         "Session.scan_directory failed: " + directory_path);
+                 }
+                 nb::list out;
+                 for (const auto& d : results) out.append(d);
+                 return out;
+             },
+             nb::arg("directory_path"),
+             "Scan a directory for plugins using the session's shared "
+             "format manager. Returns the same list-of-dicts shape as "
+             "the module-level scan_directory().")
+        .def("close", &Session::close,
+             "Release the session's format manager. Idempotent. Plugins "
+             "previously created via Session.open remain valid (the "
+             "AudioPluginInstance is self-contained post-creation).")
+        .def("__enter__", &Session::enter, nb::rv_policy::reference)
+        .def("__exit__", [](Session& self, const nb::args&) {
+            self.close();
+        });
 
     // MIDI port enumeration
     m.def("midi_get_input_ports", &midi_get_input_ports,
@@ -2650,6 +2925,17 @@ NB_MODULE(_core, m) {
              nb::rv_policy::reference_internal,
              "Get a plugin from the chain by index")
 
+        // Per-plugin dry/wet mix
+        .def("set_mix", &PluginChain::set_mix,
+             nb::arg("plugin_index"), nb::arg("mix"),
+             "Set the dry/wet mix for a plugin in the chain. mix is "
+             "in [0.0, 1.0]: 1.0=full wet (default), 0.0=full dry "
+             "(plugin output bypassed), 0.5=equal blend. Raises if the "
+             "plugin's input and output channel counts differ.")
+        .def("get_mix", &PluginChain::get_mix,
+             nb::arg("plugin_index"),
+             "Get the current dry/wet mix for a plugin in the chain.")
+
         // Reset
         .def("reset", &PluginChain::reset,
              "Reset all plugins (clears delay lines, reverb tails, etc.)")
@@ -2679,6 +2965,54 @@ NB_MODULE(_core, m) {
              "remain owned by the caller (or by their own context managers).")
         .def("__enter__", &PluginChain::enter, nb::rv_policy::reference)
         .def("__exit__", [](PluginChain& self, const nb::args&) {
+            self.close();
+        });
+
+    // PluginGraph: parallel-branches-summed routing
+    nb::class_<PluginGraph>(m, "PluginGraph")
+        .def(nb::init<int, int, int, double>(),
+             nb::arg("num_in_channels"),
+             nb::arg("num_out_channels"),
+             nb::arg("max_block_size") = 8192,
+             nb::arg("sample_rate") = 48000.0,
+             "Create a plugin graph. All branches added later must "
+             "accept num_in_channels inputs and produce num_out_channels "
+             "outputs at sample_rate. Branches are processed in parallel "
+             "and their outputs summed (with per-branch gain) into the "
+             "graph's output.")
+        .def("add_branch", &PluginGraph::add_branch,
+             nb::arg("chain"), nb::arg("gain") = 1.0f,
+             nb::keep_alive<1, 2>(),
+             "Add a PluginChain branch with the given summing gain "
+             "(linear; default 1.0). The branch's input and output "
+             "channel counts must match the graph's. Returns the "
+             "branch index.")
+        .def("set_branch_gain", &PluginGraph::set_branch_gain,
+             nb::arg("branch_index"), nb::arg("gain"),
+             "Set a branch's summing gain.")
+        .def("get_branch_gain", &PluginGraph::get_branch_gain,
+             nb::arg("branch_index"),
+             "Get a branch's summing gain.")
+        .def_prop_ro("num_branches", &PluginGraph::num_branches,
+                     "Number of branches in the graph.")
+        .def_prop_ro("num_input_channels", &PluginGraph::num_input_channels)
+        .def_prop_ro("num_output_channels", &PluginGraph::num_output_channels)
+        .def_prop_ro("sample_rate", &PluginGraph::get_sample_rate)
+        .def_prop_ro("max_block_size", &PluginGraph::max_block_size)
+        .def_prop_ro("latency_samples", &PluginGraph::latency_samples,
+                     "Maximum latency across all branches (parallel "
+                     "branches do not accumulate latency).")
+        .def_prop_ro("tail_seconds", &PluginGraph::tail_seconds,
+                     "Maximum tail across all branches.")
+        .def("process", &PluginGraph::process,
+             nb::arg("input"), nb::arg("output"),
+             "Fan input to every branch, sum branch outputs (each "
+             "scaled by its gain) into output.")
+        .def("close", &PluginGraph::close,
+             "Release the graph's internal resources. Idempotent. "
+             "The underlying PluginChain branches are not closed.")
+        .def("__enter__", &PluginGraph::enter, nb::rv_policy::reference)
+        .def("__exit__", [](PluginGraph& self, const nb::args&) {
             self.close();
         });
 

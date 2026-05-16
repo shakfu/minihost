@@ -1,83 +1,100 @@
 # minihost TODO
 
-## Planned
+Tasks are ordered by **user-facing value**: things a user notices first or
+unblock workflows currently sit at the top; internal quality and style nits
+sit at the bottom.
 
-### Test Gaps
+## Tier 1 - High user value
 
-- [ ] **`MidiIn` tests** -- virtual MIDI port creation and real-time MIDI input have zero coverage. Use virtual ports, skip on unsupported platforms.
-- [ ] **`open_async()` tests** -- success path, error path, and timeout. Currently untested.
-- [ ] **Boundary/edge-case tests** -- `nframes=0`, empty MIDI lists, zero-channel plugins, `nframes=max_block_size`.
-- [ ] **Concurrent-access smoke test** -- at least one test for concurrent `mh_set_param` + `mh_process` from different threads to verify the claimed thread-safety model.
-- [ ] **Callback integration tests** -- test `poll_callbacks()` with real plugin-initiated callbacks (when `MINIHOST_TEST_PLUGIN` is set), not just mocks.
-- [ ] **Expand double-precision coverage** -- `process_double` is tested minimally (2 tests); should cover all process variants.
-- [ ] **Performance benchmarks** -- audio processing hot-path benchmarks to catch regressions. Low priority but useful as the codebase grows.
-- [ ] **Fuzz testing for VST3 preset parser** -- `read_vstpreset` with malformed/truncated input.
+All Tier 1 items from earlier passes have shipped: README rewrite,
+`--progress` / `--normalize` / `--chain`, the `process_audio_to_file`
+extension, dry/wet mix on `PluginChain`, and `PluginGraph`. See
+[Done](#done-recent). New high-impact ideas welcome.
 
-### Developer Experience
+## Tier 2 - Medium user value
 
-- [ ] **Incremental build support** -- `make test` currently forces a full rebuild via `uv sync --reinstall-package`. Add a `test-only` target or use file-based dependencies for faster development iteration.
-- [ ] **Cache JUCE in CI** -- JUCE is re-downloaded on every CI run (~30s). Cache via GitHub Actions cache.
+Real improvements but each affects a narrower slice of users, or is a
+"nice to have" on top of an already-working path. Ordered roughly by
+my read of effort-to-impact (highest leverage first). Tier 1 is
+empty for now; the top of Tier 2 is the natural promotion candidate
+if a Tier 1 slot needs filling.
+
+
+- [ ] **WAV metadata / BWF support** -- write timestamps, descriptions, and originator metadata into WAV `bext` / `smpl` chunks for film / broadcast workflows. miniaudio reads these (`projects/miniaudio/miniaudio.h:62011`); writing them is the gap. Niche audience but well-scoped and additive.
+
+- [ ] **Double-precision `AudioBufferD`** -- the v1 `AudioBuffer` is float32 only. `Plugin.process_double` still requires numpy float64. Add a parallel `MhAudioBufferD` wrapper around `juce::AudioBuffer<double>` and wire it in. Decide between `AudioBufferD` (separate class) vs. `AudioBuffer(channels, frames, dtype="float64")`. Completes the numpy-optional story for the double-precision processing path.
+
+
+- [ ] **Zero-copy channel-range slicing** -- `AudioBuffer.channel_view(start, count)` returning a new `AudioBuffer` that aliases (rather than copies) a contiguous channel range. Frame slicing stays copy-only (would need strided views). Niche optimization for patterns that repeatedly hand subsets of channels to processors.
+
+- [ ] **Parameter preset morphing** -- higher-level Python utility for interpolating between two parameter snapshots (A/B morph) using `get_state` / `set_state` and per-parameter access. Small utility; useful for sound-design exploration but not a workflow blocker today.
+
+- [ ] **Dynamic MIDI output buffer** -- make the 256-event MIDI output cap (`MIDI_OUT_CAPACITY` in `_core.cpp:127`) configurable at the Python level, or use a dynamically-sized buffer. Edge case: dense MIDI streams (e.g. MPE polyphonic aftertouch) can blow the cap; routine usage doesn't.
+
+- [ ] **DLPack interop verification with PyTorch / JAX** -- `MhAudioBuffer.__dlpack__` exists (`_core.cpp:2493`) but is unverified against the two consumers users actually care about. Add a smoke test (skipped via `importorskip` when frameworks absent), assert zero-copy aliasing for torch (mutate-on-one-side, observe-on-the-other), and add a one-paragraph "interop with other array libraries" section to the docs. ~2-3 hours; high visibility for ML-adjacent users; surfaces a real correctness question (does the stride layout actually round-trip without a hidden copy?).
+
+## Tier 3 - Internal quality
+
+Test coverage and developer-experience improvements. Important for keeping
+the project trustworthy, but no individual item is something an end user
+will perceive directly.
+
+### Test gaps (ordered: untested public surface first, then performance/fuzz)
+
+- [ ] **`open_async()` tests** -- success path, error path, and timeout. Currently untested on a public API (confirmed: zero grep hits in `tests/`).
+- [ ] **`MidiIn` tests** -- only an existence/export check today (`tests/test_minihost.py:48-52`). No virtual-port or real-input coverage. Skip gracefully on unsupported platforms.
+- [ ] **Callback integration tests** -- `poll_callbacks()` is exercised only indirectly via `test_concurrency.py`'s overflow scenario. Add real plugin-initiated callback tests (latency / param-info / program / non-param-state) when `MINIHOST_TEST_PLUGIN` is set.
+- [ ] **Boundary/edge-case tests** -- frame-count edges (`nframes=0`, `nframes=max_block_size`, `nframes > max_block_size`) and zero-channel plugins. (Channel-mismatch is already in `tests/test_channel_validation.py`; empty-MIDI-list paths are covered in `test_audio_processing.py:286`, `test_render_internals.py:207`, `test_minihost.py:1431` -- so this entry is now narrower than originally written.)
+- [ ] **Expand double-precision coverage** -- `process_double` has ~5 tests today (2 in `test_minihost.py`, 3 in `test_rt_allocations.py`); they cover the bare process call and RT-allocations. Missing: `process_midi_double`, `process_auto_double`, sidechain-double, and chain-process-double if applicable.
+- [ ] **Fuzz testing for VST3 preset parser** -- `read_vstpreset` with malformed / truncated input.
+- [ ] **Performance benchmarks** -- audio processing hot-path benchmarks to catch regressions.
+
+### Developer experience
+
 - [ ] **CI integration test plugin** -- a lightweight JUCE-built pass-through plugin checked into the repo so integration tests (~30% of suite, currently skipped in CI) can run everywhere.
+- [ ] **Incremental build support** -- `make test` currently forces a full rebuild via `uv sync --reinstall-package`. Add a `test-only` target or file-based dependencies.
+- [ ] **Cache JUCE in CI** -- JUCE is re-downloaded on every CI run (~30s). Cache via GitHub Actions cache.
 
-### Lower priority
+### Internal consistency
 
-- [ ] **Parameter preset morphing** - Higher-level Python utility for interpolating between two parameter snapshots (A/B morph) using `get_state`/`set_state` and per-parameter access
-<!-- Resolved: numpy is now an optional dependency. See CHANGELOG [Unreleased] / Added. -->
-- [x] ~~**Should numpy be a hard dependency?**~~ -- DONE. numpy moved to `[project.optional-dependencies].numpy`. Default install no longer pulls it in; the AudioBuffer-only path works without numpy; numpy-typed paths lazy-import and raise a clear ImportError when absent. See `tests/test_numpy_optional.py` for the regression test.
+- [ ] **`_tick_to_seconds` optimization** (`render.py:63`) -- use binary search or a running accumulator instead of linear scan for large MIDI files with many tempo changes (currently `O(n*m)`).
 
-## Feature Ideas
+## Tier 4 - Style / minor code quality
 
-### High impact
+- [ ] `projects/libminihost/minihost.cpp:1055-1056`: `jmax(1, inst->getTotal{In,Out}putChannels())` forces minimum 1 input *and* output channel. Synthesizers with 0 inputs get unnecessary buffer allocation; effects with 0 outputs (rare) get the same.
+- [ ] `src/minihost/render.py:421`: `self._out_channels = max(plugin.num_output_channels, 2)` hardcodes stereo minimum output. Should use the plugin's actual channel count for mono plugins.
 
-- [ ] **AIFF and OGG/Vorbis write support** - Extend `mh_audio_write()` beyond WAV/FLAC to cover compressed output formats for web and game audio pipelines
+## Done (recent)
 
-### Medium impact
+This section tracks the current development wave. Older work
+(0.1.6-era: numpy-optional, MIDI CC mapping, extended DSP ops, batch
+path delegation, migration guide, etc.) lives in
+[CHANGELOG.md](CHANGELOG.md) -- this list is a working summary, not an
+archive.
 
-<!-- Resolved: --map flag wired in to cmd_play. See CHANGELOG. -->
-- [x] ~~**MIDI CC-to-parameter mapping in `play` command**~~ -- DONE. `minihost play --map "channel:cc:param[:lo:hi[:curve]]"` (repeatable) builds a `MidiMapper`, routes the MIDI input through it, and forwards unmapped events to the plugin via `AudioDevice.send_midi`. Library piece is `minihost.MidiMapper`; CLI parser is `_parse_map_spec` in `cli.py`. 10 tests in `tests/test_cli.py::TestParseMapSpec` and `::TestCmdPlayMapping`.
-- [ ] **Dry/wet mix on PluginChain** - Per-plugin mix knob in chain (`mh_chain_set_mix(chain, plugin_index, 0.5f)`) for parallel compression, reverb blending, etc. without manual buffer management
-- [ ] **Plugin graph / parallel routing** - A `PluginGraph` allowing parallel branches (dry + wet summed) beyond the serial-only `PluginChain`, for more complex mixing scenarios
-- [ ] **Session/engine object** -- share the JUCE `AudioPluginFormatManager` across plugin loads, reducing overhead for multi-plugin workflows and plugin scanning. Currently each `mh_open` creates its own format manager.
-- [ ] **Dynamic MIDI output buffer** -- make the 256-event MIDI output cap configurable at the Python level, or use a dynamically-sized buffer.
-
-### AudioBuffer migration follow-ups
-
-The initial AudioBuffer migration (see CHANGELOG `[Unreleased]`) covers
-construction, indexing, basic DSP ops, DLPack/numpy interop, and integrates
-with `read_audio` / `render_midi*` / `process_audio*` via the `as_=` selector.
-Items below are deliberate follow-ups that build on that base.
-
-<!-- Resolved: extended JUCE DSP ops shipped on AudioBuffer. See CHANGELOG. -->
-- [x] ~~**Expose more JUCE AudioBuffer DSP ops on `minihost.AudioBuffer`**~~ -- DONE. Added `apply_gain_ramp`, `apply_gain_per_channel`, `add_from`, `add_from_with_ramp`, `get_rms_level`, `reverse`, `reverse_channel`. (`reverse_in_place` from the original list became `reverse()` with optional `start` / `count`; the no-arg form is the whole-buffer convenience.) 19 tests in `tests/test_audiobuffer_dsp.py` verify each op against a numpy reference and exercise the bounds-checking error paths.
-- [ ] **Double-precision `AudioBufferD`** -- the v1 `AudioBuffer` is float32 only. `Plugin.process_double` still requires numpy float64 arrays for symmetry with the C++ double path. Add a parallel `MhAudioBufferD` wrapper around `juce::AudioBuffer<double>` and wire it into `process_double`. Same template/binding shape, just `<double>`. Decide whether to expose as `AudioBufferD` (separate class) or `AudioBuffer(channels, frames, dtype="float64")` (one class with a precision flag).
-- [ ] **Zero-copy channel-range slicing** -- `buf[k:m, :]` currently always copies (the v1 `__getitem__` rule was "slices return copies, not views" to keep semantics simple). Channel-range slices ARE contiguous in the planar layout, so a true zero-copy view is feasible without strided-view complexity. Add `AudioBuffer.channel_view(start, count)` returning a new `AudioBuffer` that aliases (rather than copies) a contiguous channel range of the parent. Frame slicing stays copy-only because that path requires strided views. Document the lifetime relationship and aliasing rules.
-- [ ] **`process_audio_stream(plugin_or_chain, audio, ...)` generator** -- mirror `render_midi_stream` for the audio-in case. Lets users write block-by-block to disk for very long renders without holding the full output in memory. Same `tail_seconds` / latency-compensation contract as `process_audio`.
-- [ ] **`process_audio` in-place mode** -- when `input.channels == output.channels`, allow `process_audio(plugin, audio, in_place=True)` to skip allocating a separate output buffer and write into the input. Saves one buffer's worth of memory for the common stereo-in / stereo-out case.
-- [ ] **MidiRenderer's internal buffers as AudioBuffer** -- `MidiRenderer._input_buffer` and `_output_buffer` are still numpy ndarrays (slicing is easier in numpy). Migrate to `AudioBuffer` for internal consistency. Lowest priority; current code works and the per-block conversion is already cheap.
-<!-- Resolved (partial): batch worker now delegates. See CHANGELOG. -->
-- [x] ~~**Convert `minihost process` CLI to use `process_audio_to_file`**~~ -- DONE for the batch path (`_process_single_file` in `cli.py`); ~70 lines of bespoke loop replaced with one delegation. The non-batch `cmd_process` path is **intentionally not converted** because it carries MIDI / sidechain / automation / transport features that `process_audio_to_file` doesn't expose. To finish the conversion later: extend `process_audio_to_file` (or add a richer helper) to accept MIDI events, automation, sidechain input, and BPM transport -- those features then collapse the remaining ~80 lines of `cmd_process`.
-- [ ] **Update README to lead with `AudioBuffer` + `process_audio_to_file`** -- the README's current Quick Start examples predate both APIs. New canonical example: load a chain, call `process_audio_to_file` (5 lines total). Move the manual block-loop example to a "Lower-level API" subsection for users who need it.
-<!-- Resolved: docs/migration.md shipped. -->
-- [x] ~~**Migration / breaking-changes guide**~~ -- DONE. `docs/migration.md` covers the breaking changes (default return type of `read_audio` / `render_midi*`, numpy moved to `[numpy]` extra), the one-keyword fix, the recommended new patterns, an "if X then Y" table, AudioBuffer semantic differences from numpy, and pointers to `process_audio_to_file` / `MidiMapper` / `--loop-*` flags. Linked from `docs/index.md`, the CHANGELOG `[Unreleased]` header, and the mkdocs nav.
-- [ ] **DLPack interop verification with PyTorch / JAX** -- `MhAudioBuffer.__dlpack__` should make `AudioBuffer` consumable by any framework that accepts DLPack (PyTorch via `torch.from_dlpack(buf)`, JAX via `jax.dlpack.from_dlpack`). Smoke-test this and add a one-paragraph "interop with other array libraries" section to the docs. Frees users to flow audio through ML pipelines without going through numpy.
-- [ ] **Output normalization** - `--normalize` flag on `process` / `render_midi_to_file` for peak or LUFS normalization
-- [ ] **Progress reporting in CLI** - Surface `MidiRenderer.progress` in the `process` command (progress bar or `--progress` flag) for long renders
-- [ ] **Declarative chain definitions** - JSON/YAML chain config files for reproducible rendering pipelines (plugin paths, params, presets per slot)
-- [ ] **WAV metadata / BWF support** - Write timestamps, descriptions, and originator metadata into WAV `bext`/`smpl` chunks for film/broadcast workflows
-- [ ] **`_tick_to_seconds` optimization** -- use binary search or a running accumulator instead of linear scan for large MIDI files with many tempo changes (currently `O(n*m)`)
-
-### Style / minor code quality
-
-- [ ] `minihost.cpp`: `jmax(1, inst->getTotalNumInputChannels())` forces minimum 1 input channel. Synthesizers with 0 inputs get unnecessary buffer allocation.
-- [ ] `vstpreset.py:230`: `assert len(header) == _HEADER_SIZE` is stripped by `python -O`. Should be a proper check.
-- [ ] `render.py:255`: `max(plugin.num_output_channels, 2)` hardcodes stereo minimum output. Should use actual channel count for mono plugins.
+- [x] **`process_audio` in-place mode** -- `process_audio(plugin, audio, in_place=True)` writes output into the input buffer instead of allocating a new one (for the stereo-in / stereo-out case). Requires AudioBuffer input, matching I/O channel counts, no tail. Existing loop is already safe because each input block is snapshotted into a scratch buffer before any output write. Returns the same buffer object as `audio`. 6 tests in `tests/test_in_place_and_session.py`.
+- [x] **`minihost.Session`** -- shared `AudioPluginFormatManager` across loads/probes/scans. New C API in `projects/libminihost/minihost.{h,cpp}`: `mh_session_create` / `mh_session_close` / `mh_session_open` / `mh_session_probe` / `mh_session_scan_directory`. Python: `minihost.Session()` with `open()` / `probe()` / `scan_directory()` methods. Refactor: removed the per-plugin `AudioPluginFormatManager fm` field from `MH_Plugin` (the manager was only used at construction); `mh_open_ex` now constructs a local manager; session-bound entries reuse the session's. Plugins survive the session that created them (AudioPluginInstance is self-contained post-creation). 8 tests in `tests/test_in_place_and_session.py`.
+- [x] **`process_audio_stream(plugin_or_chain, audio, ...)` generator** -- mirrors `render_midi_stream` for the audio-in case. Yields user-visible blocks (post-latency-comp, post-trim) so concatenating every yielded block reproduces `process_audio`'s return value. Same kwargs (`midi=`, `sidechain=`, `param_changes=`, `bpm=`, synth-mode `audio=None`); `normalize=` is intentionally absent (peak normalization needs the full output). `as_=numpy.ndarray` selector matches `render_midi_stream`. Implementation factored both `process_audio` and the streamer onto a shared `_prepare_render` + `_iter_blocks` (yields independent copies for the streaming case via `copy=True`; `process_audio` passes `copy=False` since it memcpys into a pre-allocated buffer). 9 tests in `tests/test_process_audio_stream.py`.
+- [x] **Dry/wet mix on `PluginChain`** -- `chain.set_mix(plugin_index, mix)` / `get_mix(plugin_index)`; `mix` in `[0, 1]` with 1.0=full wet (default), 0.0=full dry, 0.5=equal blend. Plugin's input and output channel counts must match (else `set_mix` raises). Applied to all chain process variants. Allocation-free on the audio thread.
+- [x] **`PluginGraph` parallel-branches-summed** -- new type for parallel routing. Fans input to N branches, sums their outputs with per-branch gain. Muted branches (gain=0) skip processing entirely. C API in `projects/libminihost/minihost_graph.{h,cpp}`; Python `minihost.PluginGraph`. 20 tests in `tests/test_chain_mix_and_graph.py`.
+- [x] **`process_audio_to_file` absorbs the rest of `cmd_process`** -- new kwargs `midi=`, `sidechain=`, `param_changes=`, `bpm=`, `audio=None` for synth mode. `cmd_process` collapsed from ~410 to ~200 lines and delegates the block loop, MIDI/sidechain/automation routing, latency comp, normalize, and write to the library. 18 new tests.
+- [x] **CLI `--progress` / `--normalize` / `--chain`** -- progress bar on stderr, peak normalization with dBFS target, and declarative chain loading from JSON/YAML. Library hooks on `process_audio` / `process_audio_to_file` / `render_midi_to_file`. New `src/minihost/chain.py` with `_OwningPluginChain` subclass to keep plugin refs alive. 12 new tests.
+- [x] **README leads with new API** -- Quick Start uses `process_audio_to_file`; manual block-loop demoted to a "Lower-level processing" subsection.
+- [x] **MidiRenderer internal buffers are `AudioBuffer`** (was Tier 3; confirmed already shipped at `render.py:487-488`).
+- [x] **Concurrent-access smoke test** -- already in `tests/test_concurrency.py::test_set_param_does_not_crash_concurrent_process` (was Tier 3; confirmed already shipped).
+- [x] **vstpreset.py debug-stripped assert** -- the original line is gone (was Tier 4; confirmed already shipped).
 
 ## Non-goals
 
-Intentionally omitted for headless/server use:
+Intentionally omitted for headless / server use:
 
 - Editor window management
 - GUI hosting
 - Preset browser UI
 - MIDI learn
-- Plugin shell/multi-instrument handling
+- Plugin shell / multi-instrument handling
+- Compressed-output writers (AIFF, OGG/Vorbis, MP3, Opus, AAC). WAV
+  + FLAC cover archival / intermediate / lossless. Compressed delivery
+  is downstream of rendering -- pipe a WAV through `ffmpeg`, which
+  ships better, more current encoders for every target format than
+  anything we'd vendor.

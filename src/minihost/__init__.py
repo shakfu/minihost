@@ -31,6 +31,8 @@ from minihost._core import (
     AudioBuffer,
     Plugin,
     PluginChain,
+    PluginGraph,
+    Session,
     AudioDevice,
     MidiFile,
     MidiIn,
@@ -94,8 +96,11 @@ from minihost.control import MidiMapper
 
 from minihost.process import (
     process_audio,
+    process_audio_stream,
     process_audio_to_file,
 )
+
+from minihost.chain import load_chain
 
 from minihost.automation import (
     find_param_by_name,
@@ -118,6 +123,8 @@ __all__ = [
     "AudioBuffer",
     "Plugin",
     "PluginChain",
+    "PluginGraph",
+    "Session",
     "AudioDevice",
     "MidiFile",
     "MidiIn",
@@ -142,7 +149,10 @@ __all__ = [
     "resample",
     # Audio processing
     "process_audio",
+    "process_audio_stream",
     "process_audio_to_file",
+    # Declarative chains
+    "load_chain",
     # Control surface mapping
     "MidiMapper",
     # Async loading
@@ -174,4 +184,4 @@ __all__ = [
     "MH_API_VERSION_NUMBER",
     "MH_API_VERSION_STRING",
 ]
-__version__ = "0.1.6"
+__version__ = "0.1.7"

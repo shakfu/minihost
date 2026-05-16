@@ -169,7 +169,12 @@ struct MH_Listener : public AudioProcessorListener
 
 struct MH_Plugin
 {
-    AudioPluginFormatManager fm;
+    // No persistent AudioPluginFormatManager here. The manager is only
+    // needed during construction (to discover the plugin's
+    // PluginDescription and instantiate it) and can be discarded
+    // afterwards -- the AudioPluginInstance is self-contained. Open
+    // paths construct a local manager (mh_open_ex) or reuse one
+    // belonging to an MH_Session (mh_session_open).
     std::unique_ptr<AudioPluginInstance> inst;
     MH_PlayHead playHead;
     MH_Listener listener;
@@ -198,14 +203,16 @@ struct MH_Plugin
     MH_Plugin()
     {
         listener.owner = this;
-        fm.addFormat(std::make_unique<VST3Format>());
-       #if JUCE_MAC
-        fm.addFormat(std::make_unique<AUFormat>());
-       #endif
-       #if JUCE_PLUGINHOST_LV2
-        fm.addFormat(std::make_unique<LV2Format>());
-       #endif
     }
+};
+
+// Session owns one AudioPluginFormatManager and reuses it across calls.
+// Protected by a mutex because JUCE's AudioPluginFormatManager is not
+// internally thread-safe.
+struct MH_Session
+{
+    std::mutex mtx;
+    AudioPluginFormatManager fm;
 };
 
 static void setErr(char* buf, size_t n, const String& msg)
@@ -988,14 +995,17 @@ extern "C" int mh_get_bus_info(MH_Plugin* p, int is_input, int bus_index, MH_Bus
     return 1;
 }
 
-extern "C" MH_Plugin* mh_open_ex(const char* plugin_path,
-                                 double sample_rate,
-                                 int max_block_size,
-                                 int main_in_ch,
-                                 int main_out_ch,
-                                 int sidechain_in_ch,
-                                 char* err_buf,
-                                 size_t err_buf_size)
+// Plugin-construction core. Takes an already-initialized format manager
+// (caller's responsibility) so a session can pass its shared manager.
+static MH_Plugin* createPluginWithFm(AudioPluginFormatManager& fm,
+                                      const char* plugin_path,
+                                      double sample_rate,
+                                      int max_block_size,
+                                      int main_in_ch,
+                                      int main_out_ch,
+                                      int sidechain_in_ch,
+                                      char* err_buf,
+                                      size_t err_buf_size)
 {
     if (plugin_path == nullptr || plugin_path[0] == '\0')
     {
@@ -1017,7 +1027,7 @@ extern "C" MH_Plugin* mh_open_ex(const char* plugin_path,
 
     PluginDescription desc;
     String err;
-    if (! findFirstTypeForFile(p->fm, f, desc, err))
+    if (! findFirstTypeForFile(fm, f, desc, err))
     {
         setErr(err_buf, err_buf_size, err);
         return nullptr;
@@ -1025,7 +1035,7 @@ extern "C" MH_Plugin* mh_open_ex(const char* plugin_path,
 
     String createErr;
     std::unique_ptr<AudioPluginInstance> inst(
-        p->fm.createPluginInstance(desc, sample_rate, max_block_size, createErr)
+        fm.createPluginInstance(desc, sample_rate, max_block_size, createErr)
     );
 
     if (! inst)
@@ -1070,6 +1080,25 @@ extern "C" MH_Plugin* mh_open_ex(const char* plugin_path,
     p->inst = std::move(inst);
     p->inst->addListener(&p->listener);
     return p.release();
+}
+
+extern "C" MH_Plugin* mh_open_ex(const char* plugin_path,
+                                 double sample_rate,
+                                 int max_block_size,
+                                 int main_in_ch,
+                                 int main_out_ch,
+                                 int sidechain_in_ch,
+                                 char* err_buf,
+                                 size_t err_buf_size)
+{
+    // Non-session entry point: build a one-shot format manager local
+    // to this call. Callers wanting to amortize the registration cost
+    // across many loads should use mh_session_open instead.
+    AudioPluginFormatManager fm;
+    initFormatManager(fm);
+    return createPluginWithFm(fm, plugin_path, sample_rate, max_block_size,
+                               main_in_ch, main_out_ch, sidechain_in_ch,
+                               err_buf, err_buf_size);
 }
 
 extern "C" int mh_process_sidechain(MH_Plugin* p,
@@ -1561,5 +1590,125 @@ extern "C" int mh_open_async(const char* plugin_path,
 
     loadThread.detach();
     return 1;
+}
+
+// ---------------------------------------------------------------------------
+// Session entry points
+// ---------------------------------------------------------------------------
+
+// Internal: factored out of mh_scan_directory so the session variant
+// can pass its own format manager.
+static int scanDirectoryWithFm(AudioPluginFormatManager& fm,
+                                const char* directory_path,
+                                MH_ScanCallback callback,
+                                void* user_data)
+{
+    if (!directory_path || directory_path[0] == '\0' || !callback)
+        return -1;
+
+    File dir(String::fromUTF8(directory_path));
+    if (!dir.exists() || !dir.isDirectory())
+        return -1;
+
+    int count = 0;
+    Array<File> pluginFiles;
+
+    dir.findChildFiles(pluginFiles, File::findDirectories, true, "*.vst3");
+   #if JUCE_MAC
+    dir.findChildFiles(pluginFiles, File::findDirectories, true, "*.component");
+   #endif
+   #if JUCE_PLUGINHOST_LV2
+    dir.findChildFiles(pluginFiles, File::findDirectories, true, "*.lv2");
+   #endif
+
+    for (const auto& pluginFile : pluginFiles)
+    {
+        MH_PluginDesc desc;
+        char errBuf[256];
+
+        if (probeWithFm(fm, pluginFile.getFullPathName().toRawUTF8(),
+                         &desc, errBuf, sizeof(errBuf)))
+        {
+            std::snprintf(desc.path, sizeof(desc.path), "%s",
+                          pluginFile.getFullPathName().toRawUTF8());
+            callback(&desc, user_data);
+            ++count;
+        }
+    }
+
+    return count;
+}
+
+extern "C" MH_Session* mh_session_create(char* err_buf, size_t err_buf_size)
+{
+    try
+    {
+        std::unique_ptr<MH_Session> s(new MH_Session());
+        initFormatManager(s->fm);
+        return s.release();
+    }
+    catch (const std::exception& e)
+    {
+        setErr(err_buf, err_buf_size,
+               String("mh_session_create failed: ") + e.what());
+        return nullptr;
+    }
+}
+
+extern "C" void mh_session_close(MH_Session* session)
+{
+    // Plugins previously created via this session do not reference
+    // the format manager (the AudioPluginInstance is self-contained
+    // post-creation), so closing the session is safe even while
+    // plugins remain in use.
+    if (session) delete session;
+}
+
+extern "C" MH_Plugin* mh_session_open(MH_Session* session,
+                                       const char* plugin_path,
+                                       double sample_rate,
+                                       int max_block_size,
+                                       int main_in_ch,
+                                       int main_out_ch,
+                                       int sidechain_in_ch,
+                                       char* err_buf,
+                                       size_t err_buf_size)
+{
+    if (!session)
+    {
+        setErr(err_buf, err_buf_size, "session is null");
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> lock(session->mtx);
+    return createPluginWithFm(session->fm, plugin_path,
+                               sample_rate, max_block_size,
+                               main_in_ch, main_out_ch, sidechain_in_ch,
+                               err_buf, err_buf_size);
+}
+
+extern "C" int mh_session_probe(MH_Session* session,
+                                 const char* plugin_path,
+                                 MH_PluginDesc* out_desc,
+                                 char* err_buf,
+                                 size_t err_buf_size)
+{
+    if (!session)
+    {
+        setErr(err_buf, err_buf_size, "session is null");
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(session->mtx);
+    return probeWithFm(session->fm, plugin_path, out_desc,
+                        err_buf, err_buf_size);
+}
+
+extern "C" int mh_session_scan_directory(MH_Session* session,
+                                          const char* directory_path,
+                                          MH_ScanCallback callback,
+                                          void* user_data)
+{
+    if (!session) return -1;
+    std::lock_guard<std::mutex> lock(session->mtx);
+    return scanDirectoryWithFm(session->fm, directory_path, callback, user_data);
 }
 

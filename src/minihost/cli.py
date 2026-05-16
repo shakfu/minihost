@@ -27,6 +27,41 @@ import time
 import minihost
 
 
+class _ProgressBar:
+    """Simple stderr progress bar driven by an (current, total) callback.
+
+    Disabled when ``enabled`` is False. ``__call__`` matches the
+    ``progress_callback`` signature used by
+    :func:`minihost.process_audio` / :func:`minihost.render_midi_to_file`,
+    so an instance can be passed directly.
+    """
+
+    def __init__(self, label: str, enabled: bool):
+        self._label = label
+        self._enabled = bool(enabled)
+        self._last_pct = -1
+        self._finished = False
+
+    def __call__(self, current: int, total: int) -> None:
+        if not self._enabled or total <= 0:
+            return
+        pct = min(100, int(100 * current / total))
+        if pct == self._last_pct:
+            return
+        self._last_pct = pct
+        bar_len = 30
+        filled = int(bar_len * current / total)
+        bar = "#" * filled + "-" * (bar_len - filled)
+        sys.stderr.write(f"\r  {self._label} [{bar}] {pct:3d}%")
+        sys.stderr.flush()
+
+    def finish(self) -> None:
+        if self._enabled and not self._finished:
+            sys.stderr.write("\n")
+            sys.stderr.flush()
+            self._finished = True
+
+
 def cmd_scan(args: argparse.Namespace) -> int:
     """Scan directory for plugins."""
     try:
@@ -1207,6 +1242,10 @@ def _process_single_file(
             return 1
 
     bit_depth = args.bit_depth if args.bit_depth else 24
+    progress = _ProgressBar(
+        os.path.basename(input_path),
+        enabled=getattr(args, "progress", False),
+    )
     try:
         minihost.process_audio_to_file(
             plugin,
@@ -1218,7 +1257,10 @@ def _process_single_file(
             resample_to_plugin_rate=allow_resample,
             duplicate_to_stereo=True,
             compensate_latency=True,
+            normalize=getattr(args, "normalize", None),
+            progress_callback=progress,
         )
+        progress.finish()
     except (FileNotFoundError, RuntimeError, ValueError, OSError) as e:
         # process_audio_to_file raises on read errors, write errors, and
         # rate-mismatch when resample_to_plugin_rate=False. Map all to
@@ -1243,34 +1285,47 @@ def _cmd_process_batch(args, input_files):
         print(f"Error reading '{input_files[0]}': {e}", file=sys.stderr)
         return 1
 
-    # Load plugin once
-    try:
-        plugin = minihost.Plugin(
-            args.plugin,
-            sample_rate=sample_rate,
-            max_block_size=args.block_size,
-            in_channels=in_channels,
-        )
-    except RuntimeError as e:
-        print(f"Error loading plugin: {e}", file=sys.stderr)
-        return 1
+    # Load plugin (or chain) once
+    chain_spec = getattr(args, "chain", None)
+    using_chain = chain_spec is not None
+    if using_chain:
+        try:
+            plugin = minihost.load_chain(
+                chain_spec,
+                sample_rate=sample_rate,
+                block_size=args.block_size,
+            )
+        except (FileNotFoundError, ValueError, ImportError, RuntimeError) as e:
+            print(f"Error loading chain spec: {e}", file=sys.stderr)
+            return 1
+    else:
+        try:
+            plugin = minihost.Plugin(
+                args.plugin,
+                sample_rate=sample_rate,
+                max_block_size=args.block_size,
+                in_channels=in_channels,
+            )
+        except RuntimeError as e:
+            print(f"Error loading plugin: {e}", file=sys.stderr)
+            return 1
 
-    # Load state / preset
-    if args.state:
+    # Load state / preset (skipped when using a chain spec)
+    if not using_chain and args.state:
         try:
             with open(args.state, "rb") as f:
                 plugin.set_state(f.read())
         except Exception as e:
             print(f"Warning: Could not load state: {e}", file=sys.stderr)
 
-    if args.vstpreset:
+    if not using_chain and args.vstpreset:
         try:
             _load_vstpreset(plugin, args.vstpreset)
         except (FileNotFoundError, ValueError, RuntimeError) as e:
             print(f"Error loading .vstpreset: {e}", file=sys.stderr)
             return 1
 
-    if args.preset is not None:
+    if not using_chain and args.preset is not None:
         if args.preset < 0 or args.preset >= plugin.num_programs:
             print(
                 f"Error: Preset {args.preset} out of range (0-{plugin.num_programs - 1})",
@@ -1280,7 +1335,7 @@ def _cmd_process_batch(args, input_files):
         plugin.program = args.preset
 
     # Apply --param static overrides
-    if args.param:
+    if not using_chain and args.param:
         from minihost.automation import parse_param_arg
 
         for param_str in args.param:
@@ -1291,16 +1346,19 @@ def _cmd_process_batch(args, input_files):
                 print(f"Error parsing --param: {e}", file=sys.stderr)
                 return 1
 
-    if args.non_realtime:
+    if not using_chain and args.non_realtime:
         plugin.non_realtime = True
 
-    if args.bpm:
+    if not using_chain and args.bpm:
         plugin.set_transport(bpm=args.bpm, is_playing=True)
 
-    # Save initial state for reset between files
-    initial_state = plugin.get_state()
+    # Save initial state for reset between files. Chains don't expose
+    # get_state, so skip the snapshot -- the chain spec is the canonical
+    # initial state and per-file reset is handled by the inner plugins.
+    initial_state = plugin.get_state() if not using_chain else None
 
-    print(f"Batch processing {len(input_files)} file(s) through {args.plugin}")
+    label = chain_spec if using_chain else args.plugin
+    print(f"Batch processing {len(input_files)} file(s) through {label}")
     print(f"  Output directory: {args.output}")
 
     failed = 0
@@ -1314,9 +1372,12 @@ def _cmd_process_batch(args, input_files):
             )
             continue
 
-        # Reset plugin state between files
-        plugin.reset()
-        plugin.set_state(initial_state)
+        # Reset plugin state between files. PluginChain doesn't expose
+        # reset/set_state; each inner plugin is expected to recover via
+        # its own DSP reset on the first audio block.
+        if not using_chain:
+            plugin.reset()
+            plugin.set_state(initial_state)
 
         ret = _process_single_file(
             plugin,
@@ -1373,11 +1434,54 @@ def _is_batch_output(output_path):
 
 
 def cmd_process(args: argparse.Namespace) -> int:
-    """Process audio file through plugin (offline)."""
-    import numpy as np
+    """Process audio file through plugin (offline).
 
-    from minihost.audio_io import get_audio_info, read_audio, write_audio
+    Thin shim over :func:`minihost.process_audio_to_file`. CLI-specific
+    work (arg validation, glob expansion, batch routing, plugin
+    construction, state/preset loading, summary printing) stays here;
+    block iteration, MIDI/sidechain/automation routing, latency
+    compensation, normalization, and write live in the library.
+    """
+    from minihost.audio_io import get_audio_info
     from minihost.automation import parse_automation_file, parse_param_arg
+
+    # --- Validate --chain vs single-plugin flags ---
+    chain_spec = getattr(args, "chain", None)
+    using_chain = chain_spec is not None
+    if using_chain:
+        if args.plugin:
+            print(
+                "Error: positional 'plugin' is not permitted with --chain; "
+                "the spec lists the plugins.",
+                file=sys.stderr,
+            )
+            return 1
+        conflicting = [
+            ("--state", args.state),
+            ("--vstpreset", args.vstpreset),
+            ("--preset", args.preset),
+            ("--param", args.param),
+            ("--param-file", args.param_file),
+            ("--out-channels", args.out_channels),
+            ("--bpm", args.bpm),
+            ("--non-realtime", args.non_realtime),
+        ]
+        rejected = [name for name, val in conflicting
+                    if val not in (None, [], False)]
+        if rejected:
+            print(
+                f"Error: {', '.join(rejected)} cannot be combined with "
+                f"--chain (the spec is the source of truth).",
+                file=sys.stderr,
+            )
+            return 1
+    else:
+        if not args.plugin:
+            print(
+                "Error: provide a plugin path or use --chain.",
+                file=sys.stderr,
+            )
+            return 1
 
     # --- Expand globs in input file list ---
     raw_inputs = args.input or []
@@ -1394,8 +1498,6 @@ def cmd_process(args: argparse.Namespace) -> int:
         return 1
 
     # --- Detect batch mode ---
-    # Batch mode: output is a directory, input has glob patterns, no MIDI.
-    # Multiple explicit -i args without globs are treated as main + sidechain (not batch).
     has_globs = any(any(c in p for c in "*?[") for p in raw_inputs)
     batch_mode = (
         has_audio_input
@@ -1424,76 +1526,78 @@ def cmd_process(args: argparse.Namespace) -> int:
         )
         return 1
 
-    # Detect sample rate from first audio input, or use CLI default
-    detected_sample_rate = args.sample_rate
+    # Detect sample rate + main-input channel count from first audio
+    # file. The plugin needs both at construction time.
+    sample_rate = int(args.sample_rate)
+    main_in_ch = 2
+    sidechain_path: str | None = None
+    sidechain_ch = 0
+
     if has_audio_input:
         try:
             first_info = get_audio_info(input_files[0])
-            detected_sample_rate = first_info["sample_rate"]
         except Exception as e:
             print(f"Error reading input file: {e}", file=sys.stderr)
             return 1
+        sample_rate = int(first_info["sample_rate"])
+        main_in_ch = int(first_info["channels"])
 
-    sample_rate = int(detected_sample_rate)
-
-    # Read all audio inputs
-    no_resample = getattr(args, "no_resample", False)
-    audio_inputs = []
-    if has_audio_input:
-        for i, inp_path in enumerate(input_files):
+        if len(input_files) > 1:
+            sidechain_path = input_files[1]
             try:
-                data, sr = read_audio(inp_path)
+                sc_info = get_audio_info(sidechain_path)
             except Exception as e:
-                print(f"Error reading input '{inp_path}': {e}", file=sys.stderr)
+                print(f"Error reading sidechain '{sidechain_path}': {e}",
+                      file=sys.stderr)
                 return 1
-            if sr != sample_rate:
-                if no_resample:
-                    print(
-                        f"Error: Sample rate mismatch: '{inp_path}' is {sr} Hz, "
-                        f"expected {sample_rate} Hz (from first input).",
-                        file=sys.stderr,
-                    )
-                    return 1
-                from minihost.audio_io import resample
+            sidechain_ch = int(sc_info["channels"])
 
-                print(f"  Resampling '{inp_path}': {sr} Hz -> {sample_rate} Hz")
-                data = resample(data, sr, sample_rate)
-            audio_inputs.append(data)
-
-    # --- Load plugin ---
-    main_in_ch = audio_inputs[0].shape[0] if audio_inputs else 2
-    sidechain_in = audio_inputs[1] if len(audio_inputs) > 1 else None
-    sidechain_ch = sidechain_in.shape[0] if sidechain_in is not None else 0
-    out_channels = args.out_channels
-
-    try:
-        plugin = minihost.Plugin(
-            args.plugin,
-            sample_rate=sample_rate,
-            max_block_size=args.block_size,
-            in_channels=main_in_ch,
-            out_channels=out_channels if out_channels else 2,
-            sidechain_channels=sidechain_ch,
-        )
-    except RuntimeError as e:
-        print(f"Error loading plugin: {e}", file=sys.stderr)
-        return 1
+    # --- Load plugin (or chain) ---
+    if using_chain:
+        if sidechain_path is not None:
+            print(
+                "Error: sidechain input is not supported with --chain "
+                "(PluginChain has no sidechain process method).",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            plugin = minihost.load_chain(
+                chain_spec,
+                sample_rate=sample_rate,
+                block_size=args.block_size,
+            )
+        except (FileNotFoundError, ValueError, ImportError, RuntimeError) as e:
+            print(f"Error loading chain spec: {e}", file=sys.stderr)
+            return 1
+    else:
+        try:
+            plugin = minihost.Plugin(
+                args.plugin,
+                sample_rate=sample_rate,
+                max_block_size=args.block_size,
+                in_channels=main_in_ch,
+                out_channels=args.out_channels if args.out_channels else 2,
+                sidechain_channels=sidechain_ch,
+            )
+        except RuntimeError as e:
+            print(f"Error loading plugin: {e}", file=sys.stderr)
+            return 1
 
     out_ch = (
         args.out_channels if args.out_channels else max(plugin.num_output_channels, 2)
     )
 
     # --- Load state / preset ---
-    if args.state:
+    if not using_chain and args.state:
         try:
             with open(args.state, "rb") as f:
-                state_data = f.read()
-            plugin.set_state(state_data)
+                plugin.set_state(f.read())
             print(f"Loaded state from {args.state}")
         except Exception as e:
             print(f"Warning: Could not load state: {e}", file=sys.stderr)
 
-    if args.vstpreset:
+    if not using_chain and args.vstpreset:
         try:
             _load_vstpreset(plugin, args.vstpreset)
             print(f"Loaded .vstpreset from {args.vstpreset}")
@@ -1501,7 +1605,7 @@ def cmd_process(args: argparse.Namespace) -> int:
             print(f"Error loading .vstpreset: {e}", file=sys.stderr)
             return 1
 
-    if args.preset is not None:
+    if not using_chain and args.preset is not None:
         if args.preset < 0 or args.preset >= plugin.num_programs:
             print(
                 f"Error: Preset {args.preset} out of range (0-{plugin.num_programs - 1})",
@@ -1511,52 +1615,43 @@ def cmd_process(args: argparse.Namespace) -> int:
         plugin.program = args.preset
         print(f"Loaded preset [{args.preset}]: {plugin.get_program_name(args.preset)}")
 
-    # --- Non-realtime mode ---
-    if args.non_realtime:
+    if not using_chain and args.non_realtime:
         plugin.non_realtime = True
 
-    # --- Determine total length ---
-    midi_events = []
-    if has_midi_input:
+    # --- Resolve param_changes (CLI + automation file -> 3-tuples) ---
+    # The automation parser needs an upper bound on total_samples; peek
+    # the audio file's frame count or load MIDI events to get one.
+    total_samples_hint: int | None = None
+    if has_audio_input:
+        total_samples_hint = int(first_info["frames"])
+    elif has_midi_input:
         try:
-            midi_events, midi_max_sample = _load_midi_events(midi_path, sample_rate)
+            _events, _max = _load_midi_events(midi_path, sample_rate)
         except RuntimeError as e:
             print(f"Error loading MIDI: {e}", file=sys.stderr)
             return 1
+        total_samples_hint = _max + int(args.tail * sample_rate)
 
-    if has_audio_input:
-        total_samples = audio_inputs[0].shape[1]
-    elif has_midi_input:
-        # Synth mode: MIDI only, add tail for reverb/delay decay
-        tail_seconds = args.tail
-        total_samples = midi_max_sample + int(tail_seconds * sample_rate)
-    else:
-        total_samples = 0
-
-    if total_samples == 0:
+    if not total_samples_hint:
         print("Error: No audio or MIDI input data to process.", file=sys.stderr)
         return 1
 
-    # --- Parse automation ---
-    param_changes = []
-
-    # From automation file
-    if args.param_file:
+    param_changes: list[tuple[int, int, float]] = []
+    if not using_chain and args.param_file:
         try:
             param_changes = parse_automation_file(
                 args.param_file,
                 plugin,
                 sample_rate,
-                total_samples,
+                total_samples_hint,
                 block_size=args.block_size,
             )
         except (FileNotFoundError, ValueError) as e:
             print(f"Error loading automation file: {e}", file=sys.stderr)
             return 1
 
-    # From --param CLI args (these override / add to file)
-    param_overrides = {}
-    if args.param:
+    param_overrides: dict[int, float] = {}
+    if not using_chain and args.param:
         for param_str in args.param:
             try:
                 param_idx, value = parse_param_arg(param_str, plugin)
@@ -1570,146 +1665,67 @@ def cmd_process(args: argparse.Namespace) -> int:
                 )
             param_overrides[param_idx] = value
 
-    # Apply CLI param overrides: set as static values at sample 0.
-    # If automation file also sets the same param, warn and remove those entries.
     if param_overrides:
-        overridden_indices = set(param_overrides.keys())
-        file_params_overridden = {
-            idx for (_, idx, _) in param_changes if idx in overridden_indices
-        }
-        if file_params_overridden:
+        overridden = set(param_overrides.keys())
+        file_overridden = {idx for (_, idx, _) in param_changes if idx in overridden}
+        if file_overridden:
             print(
                 f"Warning: --param overrides automation file for "
-                f"{len(file_params_overridden)} parameter(s)",
+                f"{len(file_overridden)} parameter(s)",
                 file=sys.stderr,
             )
-            param_changes = [
-                (s, i, v) for (s, i, v) in param_changes if i not in overridden_indices
-            ]
+            param_changes = [(s, i, v) for (s, i, v) in param_changes
+                             if i not in overridden]
         for param_idx, value in param_overrides.items():
             param_changes.append((0, param_idx, value))
         param_changes.sort(key=lambda x: x[0])
 
-    # --- Set transport ---
-    if args.bpm:
-        plugin.set_transport(bpm=args.bpm, is_playing=True)
-
     # --- Print summary ---
     latency = plugin.latency_samples
-    print(f"Plugin: {args.plugin}")
+    print(f"Plugin: {chain_spec if using_chain else args.plugin}")
     print(f"  Sample rate: {sample_rate} Hz")
     print(f"  Block size:  {args.block_size}")
     print(f"  Latency:     {latency} samples")
     if has_audio_input:
-        print(f"  Input:       {main_in_ch} ch, {total_samples} samples")
-        if sidechain_in is not None:
-            print(f"  Sidechain:   {sidechain_ch} ch")
+        print(f"  Input:       {main_in_ch} ch, {total_samples_hint} samples")
+        if sidechain_path is not None:
+            print(f"  Sidechain:   {sidechain_ch} ch ({sidechain_path})")
     if has_midi_input:
-        print(f"  MIDI events: {len(midi_events)}")
+        print(f"  MIDI:        {midi_path}")
     if param_changes:
         print(f"  Automation:  {len(param_changes)} param change(s)")
     print(f"  Output:      {out_ch} ch -> {args.output}")
 
-    # --- Process loop ---
-    block_size = args.block_size
-    has_automation = len(param_changes) > 0
-    has_sidechain = sidechain_in is not None
+    # --- Delegate to library ---
+    progress = _ProgressBar("processing", enabled=getattr(args, "progress", False))
+    tail_seconds = args.tail if (has_midi_input and not has_audio_input) else 0.0
+    bit_depth = args.bit_depth if args.bit_depth is not None else 24
 
-    # Pre-allocate output buffer (total_samples + latency for compensation)
-    output_total = total_samples + latency
-    output_data = np.zeros((out_ch, output_total), dtype=np.float32)
-
-    # Prepare input data (zero-padded if needed)
-    if has_audio_input:
-        main_input = audio_inputs[0]
-        # Pad to output_total length
-        if main_input.shape[1] < output_total:
-            padded = np.zeros((main_in_ch, output_total), dtype=np.float32)
-            padded[:, : main_input.shape[1]] = main_input
-            main_input = padded
-    else:
-        main_input = np.zeros((main_in_ch, output_total), dtype=np.float32)
-
-    if has_sidechain:
-        assert sidechain_in is not None
-        if sidechain_in.shape[1] < output_total:
-            sc_padded = np.zeros((sidechain_ch, output_total), dtype=np.float32)
-            sc_padded[:, : sidechain_in.shape[1]] = sidechain_in
-            sidechain_in = sc_padded
-
-    # Build per-block event indices for MIDI and automation
-    midi_idx = 0
-    auto_idx = 0
-
-    for start in range(0, output_total, block_size):
-        end = min(start + block_size, output_total)
-        bsize = end - start
-
-        in_block = main_input[:, start:end].copy()
-        out_block = np.zeros((out_ch, bsize), dtype=np.float32)
-
-        # Collect MIDI events for this block
-        block_midi = []
-        while midi_idx < len(midi_events):
-            sample_pos = midi_events[midi_idx][0]
-            if sample_pos >= end:
-                break
-            offset = max(0, min(sample_pos - start, bsize - 1))
-            ev = midi_events[midi_idx]
-            block_midi.append((offset, ev[1], ev[2], ev[3]))
-            midi_idx += 1
-
-        # Collect automation changes for this block
-        block_auto = []
-        while auto_idx < len(param_changes):
-            sample_pos = param_changes[auto_idx][0]
-            if sample_pos >= end:
-                break
-            offset = max(0, min(sample_pos - start, bsize - 1))
-            ac = param_changes[auto_idx]
-            block_auto.append((offset, ac[1], ac[2]))
-            auto_idx += 1
-
-        # Choose processing path
-        if has_sidechain:
-            assert sidechain_in is not None
-            sc_block = sidechain_in[:, start:end].copy()
-            # Apply any static param changes before processing
-            for _, param_idx, value in block_auto:
-                plugin.set_param(param_idx, value)
-            plugin.process_sidechain(in_block, out_block, sc_block)
-        elif has_automation or block_auto:
-            plugin.process_auto(in_block, out_block, block_midi, block_auto)
-        elif block_midi:
-            plugin.process_midi(in_block, out_block, block_midi)
-        else:
-            plugin.process(in_block, out_block)
-
-        output_data[:, start:end] = out_block
-
-    # --- Latency compensation ---
-    if latency > 0:
-        output_data = output_data[:, latency:]
-    else:
-        output_data = output_data[:, :total_samples]
-
-    # Trim to original length
-    output_data = output_data[:, :total_samples]
-
-    # --- Determine bit depth ---
-    bit_depth = args.bit_depth
-    if bit_depth is None:
-        bit_depth = 24
-
-    # --- Write output ---
     try:
-        write_audio(args.output, output_data, sample_rate, bit_depth=bit_depth)
-    except Exception as e:
-        print(f"Error writing output: {e}", file=sys.stderr)
+        frames_written = minihost.process_audio_to_file(
+            plugin,
+            input_path=input_files[0] if has_audio_input else None,
+            output_path=args.output,
+            tail_seconds=tail_seconds,
+            block_size=args.block_size,
+            bit_depth=bit_depth,
+            resample_to_plugin_rate=not getattr(args, "no_resample", False),
+            compensate_latency=True,
+            normalize=getattr(args, "normalize", None),
+            progress_callback=progress,
+            midi=midi_path if has_midi_input else None,
+            sidechain=sidechain_path,
+            param_changes=param_changes or None,
+            bpm=(args.bpm if (not using_chain and args.bpm) else None),
+        )
+    except (FileNotFoundError, ValueError, RuntimeError, OSError) as e:
+        progress.finish()
+        print(f"Error: {e}", file=sys.stderr)
         return 1
+    progress.finish()
 
-    duration = total_samples / sample_rate
-    print(f"Wrote {total_samples} samples ({duration:.2f}s) to {args.output}")
+    duration = frames_written / sample_rate
+    print(f"Wrote {frames_written} samples ({duration:.2f}s) to {args.output}")
     return 0
 
 
@@ -2023,7 +2039,21 @@ Examples:
   minihost process /path/to/compressor.vst3 -i main.wav -i sidechain.wav -o output.wav
 """,
     )
-    process_p.add_argument("plugin", help="Path to plugin")
+    process_p.add_argument(
+        "plugin",
+        nargs="?",
+        default=None,
+        help="Path to plugin (omit when using --chain)",
+    )
+    process_p.add_argument(
+        "--chain",
+        metavar="SPEC",
+        default=None,
+        help="Load a declarative plugin chain from a JSON or YAML spec "
+             "file (see minihost.load_chain). When set, --state / "
+             "--vstpreset / --preset / --param / --param-file are not "
+             "permitted -- the spec is the source of truth.",
+    )
     process_p.add_argument(
         "-o",
         "--output",
@@ -2101,6 +2131,22 @@ Examples:
         "--no-resample",
         action="store_true",
         help="Error on sample rate mismatch instead of resampling",
+    )
+    process_p.add_argument(
+        "--progress",
+        action="store_true",
+        help="Print a progress bar on stderr during processing",
+    )
+    process_p.add_argument(
+        "--normalize",
+        nargs="?",
+        type=float,
+        default=None,
+        const=0.0,
+        metavar="dBFS",
+        help="Peak-normalize the output to the given dBFS target "
+             "(0 dBFS = full scale; -1.0 = 1 dB headroom). With no "
+             "argument, defaults to 0 dBFS.",
     )
     process_p.set_defaults(func=cmd_process)
 

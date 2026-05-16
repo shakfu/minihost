@@ -135,6 +135,30 @@ int mh_chain_process_auto(MH_PluginChain* chain,
 // Note: This is the max, not sum, since tails overlap temporally.
 double mh_chain_get_tail_seconds(MH_PluginChain* chain);
 
+// Per-plugin dry/wet mix.
+// mix is clamped to [0.0, 1.0]:
+//   1.0 (default) = full wet (plugin output passes through unchanged)
+//   0.0           = full dry (plugin output is bypassed; the plugin's
+//                   input is forwarded to the next stage instead)
+//   0.5           = equal blend
+//
+// Restriction: a plugin's input and output channel counts must match
+// for mix to be enabled (the dry signal needs to align with the wet
+// signal channel-for-channel). Plugins where in_ch != out_ch are
+// permanently locked at mix=1.0; set_mix returns 0 in that case.
+//
+// Applied to all chain process variants (mh_chain_process,
+// mh_chain_process_midi_io, mh_chain_process_auto).
+//
+// Returns 1 on success, 0 on failure (NULL chain, index out of range,
+// non-matching channel counts).
+int mh_chain_set_mix(MH_PluginChain* chain, int plugin_index, float mix);
+
+// Get the current mix value for a plugin in the chain.
+// Returns the mix value [0.0, 1.0] on success, or -1.0 on failure
+// (NULL chain or index out of range).
+float mh_chain_get_mix(MH_PluginChain* chain, int plugin_index);
+
 #ifdef __cplusplus
 }
 #endif

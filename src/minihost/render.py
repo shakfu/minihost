@@ -8,7 +8,7 @@ provided.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Iterator, Optional, Union, cast
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Optional, Union, cast
 
 if TYPE_CHECKING:
     import numpy as np
@@ -277,6 +277,8 @@ def render_midi_to_file(
     bit_depth: int = 24,
     tail_threshold: float = _AUTO_TAIL_THRESHOLD,
     max_tail_seconds: float = _AUTO_TAIL_MAX_SECONDS,
+    normalize: Optional[float] = None,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> int:
     """Render MIDI file through plugin or chain and write to audio file.
 
@@ -290,6 +292,10 @@ def render_midi_to_file(
         bit_depth: Output bit depth (16, 24, or 32 for float)
         tail_threshold: Peak amplitude threshold for auto-tail detection (linear).
         max_tail_seconds: Maximum tail duration for auto mode (safety cap).
+        normalize: If not None, peak-normalize the rendered audio to this
+            target in dBFS (0.0 = full scale).
+        progress_callback: Optional callable ``(rendered_frames,
+            total_frames)`` invoked once per block.
 
     Returns:
         Number of samples written
@@ -340,9 +346,19 @@ def render_midi_to_file(
             block = cast(AudioBuffer, block[:, :n])
         audio[:, written:written + n] = block
         written += n
+        if progress_callback is not None:
+            progress_callback(min(written, total), total)
 
     if written < total:
         audio = cast(AudioBuffer, audio[:, :written])  # trim
+
+    if progress_callback is not None:
+        progress_callback(audio.frames, audio.frames)
+
+    if normalize is not None:
+        from minihost.process import _normalize_peak
+        _normalize_peak(audio, float(normalize))
+
     write_audio(output_path, audio, sample_rate, bit_depth=bit_depth)
     return written
 

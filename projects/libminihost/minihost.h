@@ -497,6 +497,56 @@ int mh_open_async(const char* plugin_path,
                   MH_LoadCallback callback,
                   void* user_data);
 
+// ---------------------------------------------------------------------------
+// Session: shared plugin-format-manager state across loads/probes/scans
+// ---------------------------------------------------------------------------
+//
+// A session holds one JUCE AudioPluginFormatManager and reuses it
+// across many mh_session_* calls. The non-session entry points
+// (mh_open, mh_probe, mh_scan_directory) each construct and register
+// formats internally on every call; for multi-plugin and
+// directory-scanning workflows this is wasteful.
+//
+// All non-session entry points continue to work unchanged.
+//
+// Sessions are thread-safe for concurrent use of mh_session_open /
+// mh_session_probe / mh_session_scan_directory from multiple threads
+// against the same session (internal lock).
+typedef struct MH_Session MH_Session;
+
+// Create a session. Returns NULL on failure.
+MH_Session* mh_session_create(char* err_buf, size_t err_buf_size);
+
+// Close the session and release its format manager.
+// Does NOT close plugins previously created with mh_session_open --
+// they remain valid (the plugin owns its own state once loaded).
+void mh_session_close(MH_Session* session);
+
+// Load a plugin using the session's format manager. Same semantics as
+// mh_open_ex but reuses the session's pre-initialized formats.
+MH_Plugin* mh_session_open(MH_Session* session,
+                            const char* plugin_path,
+                            double sample_rate,
+                            int max_block_size,
+                            int main_in_ch,
+                            int main_out_ch,
+                            int sidechain_in_ch,
+                            char* err_buf,
+                            size_t err_buf_size);
+
+// Probe a plugin file using the session's format manager.
+int mh_session_probe(MH_Session* session,
+                      const char* plugin_path,
+                      MH_PluginDesc* desc,
+                      char* err_buf,
+                      size_t err_buf_size);
+
+// Scan a directory for plugins using the session's format manager.
+int mh_session_scan_directory(MH_Session* session,
+                               const char* directory_path,
+                               MH_ScanCallback callback,
+                               void* user_data);
+
 #ifdef __cplusplus
 }
 #endif
