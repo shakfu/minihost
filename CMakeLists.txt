@@ -47,6 +47,13 @@ if(NOT DEFINED SKBUILD)
     add_subdirectory(projects/minihost_cpp)
 endif()
 
+# Desktop GUI application (stub). Opt-in via -DMINIHOST_BUILD_DESKTOP=ON;
+# requires MINIHOST_HEADLESS=OFF. See docs/dev/desktop_app.md.
+option(MINIHOST_BUILD_DESKTOP "Build the minihost_desktop GUI application" OFF)
+if(MINIHOST_BUILD_DESKTOP)
+    add_subdirectory(projects/minihost_desktop)
+endif()
+
 if(MINIHOST_INSTALL)
     include(GNUInstallDirs)
 

@@ -4,6 +4,10 @@ Tasks are ordered by **user-facing value**: things a user notices first or
 unblock workflows currently sit at the top; internal quality and style nits
 sit at the bottom.
 
+Desktop app work is tracked separately in
+[docs/dev/desktop_app_todo.md](docs/dev/desktop_app_todo.md) (design:
+[docs/dev/desktop_app.md](docs/dev/desktop_app.md)).
+
 ## Tier 1 - High user value
 
 All Tier 1 items from earlier passes have shipped: README rewrite,
