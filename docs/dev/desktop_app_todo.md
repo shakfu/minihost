@@ -56,11 +56,11 @@ revisiting before further investment.
   stub `main.cpp` (exits immediately) and CMakeLists linking
   `minihost_gui`. Top-level `CMakeLists.txt` adds it via
   `add_subdirectory` guarded by `MINIHOST_BUILD_DESKTOP` (default OFF).
-- [ ] **Split `libminihost_audio`** into `minihost_audio` (links
-  headless `minihost`) and `minihost_audio_gui` (links `minihost_gui`),
-  mirroring the libminihost split. Blocking: the desktop needs audio
-  file / device I/O. Currently the desktop links neither audio
-  variant.
+- [x] **Split `libminihost_audio`** into sibling `minihost_audio`
+  (PUBLIC-links headless `minihost`) and `minihost_audio_gui` (PUBLIC-
+  links `minihost_gui`). Desktop links `minihost_audio_gui`. Python
+  wheel and CLI tools continue to link `minihost_audio` unchanged
+  (576 tests pass).
 - [ ] **MainWindow + menu bar.** File / Edit / View / Render menus,
   no-op handlers wired but unimplemented.
 - [ ] **`ProjectModel`** observable type owning the graph state. All

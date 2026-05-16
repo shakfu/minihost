@@ -29,13 +29,9 @@ target_include_directories(minihost_desktop PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-# TODO(Phase 1): minihost_audio is currently omitted because its PUBLIC
-# link on `minihost` (headless) would collide with `minihost_gui` here
-# (overlapping mh_* symbols). Once the desktop needs audio file or
-# device I/O, split minihost_audio the same way libminihost was split
-# (sibling `minihost_audio_gui` linked against `minihost_gui`).
 target_link_libraries(minihost_desktop PRIVATE
     minihost_gui
+    minihost_audio_gui
     juce::juce_core
     juce::juce_data_structures
     juce::juce_events
