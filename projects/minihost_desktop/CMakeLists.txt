@@ -23,6 +23,9 @@ endif()
 
 add_executable(minihost_desktop
     src/main.cpp
+    src/project.cpp
+    src/canvas.cpp
+    src/live.cpp
 )
 
 target_include_directories(minihost_desktop PRIVATE

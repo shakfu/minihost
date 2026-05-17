@@ -22,6 +22,7 @@ set(_minihost_sources
     minihost.cpp
     minihost_chain.cpp
     minihost_graph.cpp
+    minihost_graph_v2.cpp
     minihost_vstpreset.c
 )
 

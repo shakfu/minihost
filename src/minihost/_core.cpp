@@ -4,6 +4,7 @@
 #include <nanobind/stl/optional.h>
 #include <nanobind/ndarray.h>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <stdexcept>
 #include <cstring>
@@ -16,6 +17,7 @@
 #include "minihost.h"
 #include "minihost_chain.h"
 #include "minihost_graph.h"
+#include "minihost_graph_v2.h"
 #include "minihost_audio.h"
 #include "minihost_audiofile.h"
 #include "minihost_midi.h"
@@ -1040,6 +1042,7 @@ private:
     // Allow AudioDevice and PluginChain to access raw plugin pointer
     friend class AudioDevice;
     friend class PluginChain;
+    friend class GraphV2;
 };
 
 
@@ -1450,6 +1453,197 @@ public:
 private:
     MH_PluginGraph* graph_ = nullptr;
     std::vector<PluginChain*> branch_refs_;  // keep branches alive
+};
+
+
+// Python wrapper class for MH_GraphV2 (general-DAG executor).
+// Plugin refs are kept alive via plugin_refs_; add_plugin also uses
+// nb::keep_alive at the binding to tie the Plugin Python object's
+// lifetime to this graph.
+class GraphV2 {
+public:
+    GraphV2(int max_block_size, double sample_rate)
+    {
+        char err[256] = {0};
+        graph_ = mh_graph_v2_create(max_block_size, sample_rate,
+                                    err, sizeof(err));
+        if (!graph_)
+            throw std::runtime_error(
+                std::string("Failed to create GraphV2: ") + err);
+    }
+
+    ~GraphV2() { close(); }
+
+    void close() {
+        if (graph_) {
+            mh_graph_v2_close(graph_);
+            graph_ = nullptr;
+        }
+    }
+
+    GraphV2(const GraphV2&) = delete;
+    GraphV2& operator=(const GraphV2&) = delete;
+
+    GraphV2& enter() { return *this; }
+    void exit(nb::object, nb::object, nb::object) { close(); }
+
+    int add_plugin(Plugin& p) {
+        char err[256] = {0};
+        int id = mh_graph_v2_add_plugin(graph_, p.plugin_,
+                                        err, sizeof(err));
+        if (id < 0)
+            throw std::runtime_error(
+                std::string("add_plugin failed: ") + err);
+        plugin_refs_.push_back(&p);
+        return id;
+    }
+
+    int add_input(int channels) {
+        char err[256] = {0};
+        int id = mh_graph_v2_add_input(graph_, channels,
+                                       err, sizeof(err));
+        if (id < 0)
+            throw std::runtime_error(
+                std::string("add_input failed: ") + err);
+        return id;
+    }
+
+    int add_output(int channels) {
+        char err[256] = {0};
+        int id = mh_graph_v2_add_output(graph_, channels,
+                                        err, sizeof(err));
+        if (id < 0)
+            throw std::runtime_error(
+                std::string("add_output failed: ") + err);
+        return id;
+    }
+
+    int add_mix(int num_inputs, int channels) {
+        char err[256] = {0};
+        int id = mh_graph_v2_add_mix(graph_, num_inputs, channels,
+                                     err, sizeof(err));
+        if (id < 0)
+            throw std::runtime_error(
+                std::string("add_mix failed: ") + err);
+        return id;
+    }
+
+    void connect(int src, int dst, int dst_port) {
+        char err[256] = {0};
+        if (!mh_graph_v2_connect(graph_, src, 0, dst, dst_port,
+                                 err, sizeof(err)))
+            throw std::runtime_error(
+                std::string("connect failed: ") + err);
+    }
+
+    void set_mix_gain(int mix_node, int input_index, float gain) {
+        if (!mh_graph_v2_set_mix_gain(graph_, mix_node, input_index, gain))
+            throw std::runtime_error(
+                "set_mix_gain failed (bad node or input index)");
+    }
+
+    void compile() {
+        char err[256] = {0};
+        if (!mh_graph_v2_compile(graph_, err, sizeof(err)))
+            throw std::runtime_error(
+                std::string("compile failed: ") + err);
+    }
+
+    // Stage parameter automation for a plugin node. `changes` is a
+    // list of (sample_offset, param_index, value) tuples; cleared
+    // after the next render_block call.
+    void set_node_automation(int node_id, nb::list changes) {
+        // Copy into a scratch vector that outlives this Python call;
+        // the graph reads it during the next render_block.
+        auto& buf = autos_scratch_[node_id];
+        buf.clear();
+        for (auto item : changes) {
+            auto t = nb::cast<nb::tuple>(item);
+            if (t.size() != 3)
+                throw std::runtime_error(
+                    "automation entry must be a 3-tuple "
+                    "(sample_offset, param_index, value)");
+            MH_ParamChange c{};
+            c.sample_offset = nb::cast<int>  (t[0]);
+            c.param_index   = nb::cast<int>  (t[1]);
+            c.value         = nb::cast<float>(t[2]);
+            buf.push_back(c);
+        }
+        if (!mh_graph_v2_set_node_automation(
+                graph_, node_id,
+                buf.empty() ? nullptr : buf.data(),
+                (int) buf.size()))
+            throw std::runtime_error(
+                "set_node_automation failed (bad node id)");
+    }
+
+    // Takes a list of 2D float32 ndarrays (one per input node, one
+    // per output node), shape (channels, nframes). All output arrays
+    // and all input arrays must share the same nframes value, and
+    // each array's channel count must match its node's declared
+    // count (validated by mh_graph_v2_render_block).
+    void render_block(nb::list inputs, nb::list outputs, int nframes) {
+        const int num_in  = mh_graph_v2_num_input_nodes(graph_);
+        const int num_out = mh_graph_v2_num_output_nodes(graph_);
+        if ((int) inputs.size() != num_in)
+            throw std::runtime_error(
+                "inputs list length does not match num_input_nodes");
+        if ((int) outputs.size() != num_out)
+            throw std::runtime_error(
+                "outputs list length does not match num_output_nodes");
+
+        // Build per-node channel pointer tables. Each entry is a
+        // vector<const float*> (input) or vector<float*> (output)
+        // and we collect their .data() pointers into top-level
+        // vectors that we pass to the C API.
+        std::vector<std::vector<const float*>> in_ptrs_per_node(num_in);
+        std::vector<std::vector<float*>>       out_ptrs_per_node(num_out);
+        std::vector<const float* const*>       in_top(num_in);
+        std::vector<float* const*>             out_top(num_out);
+
+        for (int i = 0; i < num_in; ++i) {
+            auto arr = nb::cast<AudioArray>(inputs[i]);
+            const int ch = static_cast<int>(arr.shape(0));
+            const int fr = static_cast<int>(arr.shape(1));
+            if (fr < nframes)
+                throw std::runtime_error(
+                    "input array has fewer frames than nframes");
+            in_ptrs_per_node[i].resize(ch);
+            for (int c = 0; c < ch; ++c)
+                in_ptrs_per_node[i][c] = arr.data() + (size_t) c * fr;
+            in_top[i] = in_ptrs_per_node[i].data();
+        }
+        for (int i = 0; i < num_out; ++i) {
+            auto arr = nb::cast<AudioArray>(outputs[i]);
+            const int ch = static_cast<int>(arr.shape(0));
+            const int fr = static_cast<int>(arr.shape(1));
+            if (fr < nframes)
+                throw std::runtime_error(
+                    "output array has fewer frames than nframes");
+            out_ptrs_per_node[i].resize(ch);
+            for (int c = 0; c < ch; ++c)
+                out_ptrs_per_node[i][c] = arr.data() + (size_t) c * fr;
+            out_top[i] = out_ptrs_per_node[i].data();
+        }
+
+        if (!mh_graph_v2_render_block(graph_,
+                                      in_top.data(),  num_in,
+                                      out_top.data(), num_out,
+                                      nframes))
+            throw std::runtime_error("render_block failed");
+    }
+
+    int num_nodes()        const { return mh_graph_v2_num_nodes(graph_); }
+    int num_input_nodes()  const { return mh_graph_v2_num_input_nodes(graph_); }
+    int num_output_nodes() const { return mh_graph_v2_num_output_nodes(graph_); }
+    bool is_compiled()     const { return mh_graph_v2_is_compiled(graph_) != 0; }
+
+private:
+    MH_GraphV2* graph_ = nullptr;
+    std::vector<Plugin*> plugin_refs_;
+    // Per-node automation scratch buffers that outlive Python call
+    // boundaries (the graph borrows pointers during render_block).
+    std::unordered_map<int, std::vector<MH_ParamChange>> autos_scratch_;
 };
 
 
@@ -3013,6 +3207,73 @@ NB_MODULE(_core, m) {
              "The underlying PluginChain branches are not closed.")
         .def("__enter__", &PluginGraph::enter, nb::rv_policy::reference)
         .def("__exit__", [](PluginGraph& self, const nb::args&) {
+            self.close();
+        });
+
+    // GraphV2: general-DAG executor with input/output/mix built-ins.
+    nb::class_<GraphV2>(m, "GraphV2")
+        .def(nb::init<int, double>(),
+             nb::arg("max_block_size"),
+             nb::arg("sample_rate"),
+             "Create a general-DAG graph executor. After adding plugin/"
+             "input/output/mix nodes and connecting them, call compile() "
+             "before render_block(). max_block_size is the largest "
+             "frame count accepted by render_block; sample_rate is the "
+             "rate every plugin node must have been opened at.")
+        .def("add_plugin", &GraphV2::add_plugin,
+             nb::arg("plugin"),
+             nb::keep_alive<1, 2>(),
+             "Add a plugin node. The graph keeps a reference to the "
+             "Plugin so it cannot be garbage-collected while the graph "
+             "is alive. Returns the new node id.")
+        .def("add_input", &GraphV2::add_input,
+             nb::arg("channels"),
+             "Add an input node producing `channels` channels from a "
+             "caller-supplied buffer at render time. Returns node id.")
+        .def("add_output", &GraphV2::add_output,
+             nb::arg("channels"),
+             "Add an output node consuming `channels` channels into a "
+             "caller-supplied buffer at render time. Returns node id.")
+        .def("add_mix", &GraphV2::add_mix,
+             nb::arg("num_inputs"), nb::arg("channels"),
+             "Add a mix node summing `num_inputs` inputs (each "
+             "`channels` channels, gain 1.0 by default) into one "
+             "`channels`-channel output. Returns node id.")
+        .def("connect", &GraphV2::connect,
+             nb::arg("src"), nb::arg("dst"), nb::arg("dst_port") = 0,
+             "Connect src.out -> dst.in[dst_port]. dst_port is 0 "
+             "except for mix nodes, where it selects one of "
+             "num_inputs slots. Channel counts must match. Fan-out "
+             "from a source is allowed; fan-in requires a mix node.")
+        .def("set_mix_gain", &GraphV2::set_mix_gain,
+             nb::arg("mix_node"), nb::arg("input_index"), nb::arg("gain"),
+             "Set the per-input gain (linear, default 1.0) on a mix "
+             "node. Callable before or after compile.")
+        .def("compile", &GraphV2::compile,
+             "Validate topology, build the schedule, and allocate the "
+             "per-node buffer pool. After compile, no further add_* / "
+             "connect calls are permitted.")
+        .def("render_block", &GraphV2::render_block,
+             nb::arg("inputs"), nb::arg("outputs"), nb::arg("nframes"),
+             "Render one block. inputs is a list of float32 arrays "
+             "shape (channels, nframes), one per input node in the "
+             "order add_input was called; outputs is the same for "
+             "output nodes. nframes must be <= max_block_size.")
+        .def("set_node_automation", &GraphV2::set_node_automation,
+             nb::arg("node_id"), nb::arg("changes"),
+             "Stage sample-accurate parameter automation for a plugin "
+             "node. `changes` is a list of "
+             "(sample_offset, param_index, value) tuples. Cleared "
+             "after the next render_block call.")
+        .def_prop_ro("num_nodes",        &GraphV2::num_nodes)
+        .def_prop_ro("num_input_nodes",  &GraphV2::num_input_nodes)
+        .def_prop_ro("num_output_nodes", &GraphV2::num_output_nodes)
+        .def_prop_ro("is_compiled",      &GraphV2::is_compiled)
+        .def("close", &GraphV2::close,
+             "Release the graph's internal resources. Idempotent. "
+             "Plugin nodes are not closed.")
+        .def("__enter__", &GraphV2::enter, nb::rv_policy::reference)
+        .def("__exit__", [](GraphV2& self, const nb::args&) {
             self.close();
         });
 

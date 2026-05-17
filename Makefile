@@ -3,7 +3,7 @@
 
 .PHONY: all juce cli sync build rebuild test wheel sdist clean distclean help \
 		check publish-test publish lint format typecheck qa \
-		docs docs-serve docs-deploy
+		docs docs-serve docs-deploy run-desktop
 
 # Default target - build Python bindings
 all: build
@@ -30,6 +30,9 @@ rebuild: build
 # Run Python tests
 test: build
 	@uv run pytest tests/ -v
+
+run-desktop:
+	@./build/projects/minihost_desktop/minihost_desktop.app/Contents/MacOS/minihost_desktop
 
 # Run lint
 lint:

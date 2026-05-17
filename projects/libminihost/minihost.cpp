@@ -323,6 +323,12 @@ extern "C" const char* mh_get_path(const MH_Plugin* p)
     return p->path.c_str();
 }
 
+extern "C" void* mh_get_juce_processor(MH_Plugin* p)
+{
+    if (!p || !p->inst) return nullptr;
+    return static_cast<juce::AudioProcessor*>(p->inst.get());
+}
+
 extern "C" int mh_get_info(MH_Plugin* p, MH_Info* out_info)
 {
     if (!p || !out_info || !p->inst) return 0;

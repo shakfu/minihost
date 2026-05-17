@@ -207,6 +207,24 @@ void mh_close(MH_Plugin* p);
 // Owned by the MH_Plugin; valid until mh_close. Returns "" for NULL.
 const char* mh_get_path(const MH_Plugin* p);
 
+// Escape hatch for GUI hosts: returns the underlying juce::AudioProcessor*
+// as an opaque pointer. Typed as void* so this header stays valid C and
+// translation units that don't link JUCE are unaffected. The desktop app
+// (which does link JUCE) casts the result back to juce::AudioProcessor*
+// to obtain an AudioProcessorEditor and hand it to a DocumentWindow.
+//
+// Lifetime: pointer is owned by the MH_Plugin; do not delete. Valid
+// until mh_close. Returns NULL for NULL input.
+//
+// Threading: see the file-level threading notes. The caller is
+// responsible for not using the returned pointer concurrently with
+// mh_close. Calls that go through the JUCE AudioProcessor API
+// (parameter writes, editor creation, etc.) do not coordinate with
+// libminihost's internal mutex -- editor edits reach the audio thread
+// through JUCE's own parameter machinery, which libminihost already
+// listens to via mh_register_param_listener.
+void* mh_get_juce_processor(MH_Plugin* p);
+
 int mh_get_info(MH_Plugin* p, MH_Info* out_info);
 
 // Non-interleaved buffers: inputs[ch][nframes], outputs[ch][nframes]

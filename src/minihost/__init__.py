@@ -32,6 +32,7 @@ from minihost._core import (
     Plugin,
     PluginChain,
     PluginGraph,
+    GraphV2,
     Session,
     AudioDevice,
     MidiFile,
@@ -102,6 +103,14 @@ from minihost.process import (
 
 from minihost.chain import load_chain
 
+from minihost.project import (
+    LoadedProject,
+    ProjectError,
+    load_project,
+    save_project,
+    render_project,
+)
+
 from minihost.automation import (
     find_param_by_name,
     parse_param_arg,
@@ -124,6 +133,7 @@ __all__ = [
     "Plugin",
     "PluginChain",
     "PluginGraph",
+    "GraphV2",
     "Session",
     "AudioDevice",
     "MidiFile",
@@ -153,6 +163,12 @@ __all__ = [
     "process_audio_to_file",
     # Declarative chains
     "load_chain",
+    # Project files (graph executor v2)
+    "LoadedProject",
+    "ProjectError",
+    "load_project",
+    "save_project",
+    "render_project",
     # Control surface mapping
     "MidiMapper",
     # Async loading

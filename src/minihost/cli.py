@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from pathlib import Path
 import threading
 from typing import Optional
 import signal
@@ -1729,6 +1730,41 @@ def cmd_process(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_render(args: argparse.Namespace) -> int:
+    """Render a project JSON file to its declared output sinks."""
+    import minihost
+
+    project_path = Path(args.project)
+    if not project_path.exists():
+        print(f"Error: project file not found: {project_path}", file=sys.stderr)
+        return 1
+
+    progress = None
+    if args.progress:
+        def progress(done: int, total: int) -> None:
+            pct = 100.0 * done / max(1, total)
+            print(f"\r  {done}/{total} frames ({pct:5.1f}%)",
+                  end="", file=sys.stderr, flush=True)
+
+    try:
+        result = minihost.render_project(
+            project_path, progress_callback=progress,
+        )
+    except minihost.ProjectError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except FileNotFoundError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    if args.progress:
+        print(file=sys.stderr)
+
+    for node in result.outputs:
+        print(f"wrote {node.sink}", file=sys.stderr)
+    return 0
+
+
 def cmd_resample(args: argparse.Namespace) -> int:
     """Resample an audio file to a different sample rate."""
     from minihost.audio_io import read_audio, resample, write_audio
@@ -2178,6 +2214,18 @@ Examples:
         "-y", "--overwrite", action="store_true", help="Overwrite output if it exists"
     )
     resample_p.set_defaults(func=cmd_resample)
+
+    # render (graph project)
+    render_p = subparsers.add_parser(
+        "render",
+        help="Render a project file (graph executor v2) to its output sinks",
+    )
+    render_p.add_argument("project", help="Path to project.json")
+    render_p.add_argument(
+        "--progress", action="store_true",
+        help="Print render progress to stderr.",
+    )
+    render_p.set_defaults(func=cmd_render)
 
     args = parser.parse_args()
 
