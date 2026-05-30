@@ -24,6 +24,8 @@
 #include "project.h"
 #include "rt_param_queue.h"
 
+#include "minihost_midi.h"
+
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_audio_processors/juce_audio_processors.h>
 
@@ -33,8 +35,7 @@
 
 namespace minihost_desktop {
 
-class LiveEngine : public juce::AudioIODeviceCallback,
-                   private juce::MidiInputCallback
+class LiveEngine : public juce::AudioIODeviceCallback
 {
 public:
     LiveEngine();
@@ -50,6 +51,14 @@ public:
     bool isRunning() const noexcept { return running_.load(); }
 
     juce::AudioDeviceManager& deviceManager() noexcept { return dm_; }
+
+    // Currently-loaded live project, or nullptr if not running.
+    // Valid only on the GUI thread; both start()/stop() and the
+    // returned pointer's consumers live there, so no locking is
+    // required as long as callers don't stash the pointer across
+    // event-loop iterations without re-checking.
+    project::LoadedProject* loadedProject() noexcept
+    { return compiled_.get(); }
 
     // Settings persistence. The desktop app calls these on startup
     // and shutdown to remember the user's device / MIDI choice
@@ -90,12 +99,16 @@ public:
     long long loopEnd()     const noexcept { return loop_end_.load();   }
     bool      loopEnabled() const noexcept { return loop_enabled_.load(); }
 
-    // MIDI input device selection. Pass a JUCE MidiDeviceInfo
-    // identifier (from juce::MidiInput::getAvailableDevices()) or an
-    // empty string to disable MIDI input. Safe to call at any time.
-    void setMidiInputDevice(const juce::String& identifier);
+    // MIDI input device selection. Pass a MIDI port name (as returned
+    // by mh_midi_get_input_name / mh_midi_enumerate_inputs) or an empty
+    // string to disable MIDI input. Safe to call at any time.
+    //
+    // The port name is matched against the system's current MIDI input
+    // ports; if no match is found, MIDI input is left disabled and an
+    // error is logged.
+    void setMidiInputDevice(const juce::String& port_name);
     juce::String midiInputDevice() const noexcept
-    { return midi_input_identifier_; }
+    { return midi_input_port_name_; }
 
     // Test hook: drain pending commands synchronously, applying them
     // to the live engine's plugins. The real audio callback drains
@@ -157,11 +170,12 @@ private:
     RtParamQueue<1024>                             param_queue_;
 
     // ----- MIDI input ----- //
-    // Receives from the system MIDI thread, drained by the audio
-    // thread. Backed by a small lock-free ring; overflow drops new
-    // events.
-    void handleIncomingMidiMessage(juce::MidiInput* /*source*/,
-                                   const juce::MidiMessage& message) override;
+    // Receives from the libremidi MIDI thread (via mh_midi_in_open),
+    // drained by the audio thread. Backed by a small lock-free ring;
+    // overflow drops new events.
+    static void midiCallback(const unsigned char* data, size_t len,
+                             void* user_data);
+    void pushIncomingMidi(const unsigned char* data, size_t len);
 
     struct MidiSlot {
         MH_MidiEvent ev;
@@ -175,8 +189,8 @@ private:
     // Scratch buffer for staging drained MIDI before render_block.
     std::vector<MH_MidiEvent>                      midi_scratch_;
 
-    std::unique_ptr<juce::MidiInput>               midi_input_;
-    juce::String                                   midi_input_identifier_;
+    MH_MidiIn*                                     midi_in_ = nullptr;
+    juce::String                                   midi_input_port_name_;
 
     // Drains the queue and applies up to `max` commands to live
     // plugin nodes. Called from the audio thread (and from

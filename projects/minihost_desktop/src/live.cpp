@@ -12,45 +12,73 @@ LiveEngine::LiveEngine() {}
 LiveEngine::~LiveEngine()
 {
     stop();
-    setMidiInputDevice({});  // closes any open MidiInput
+    setMidiInputDevice({});  // closes any open mh_midi_in
 }
 
-void LiveEngine::setMidiInputDevice(const juce::String& identifier)
+void LiveEngine::setMidiInputDevice(const juce::String& port_name)
 {
     // Tear down any existing input.
-    if (midi_input_)
+    if (midi_in_)
     {
-        midi_input_->stop();
-        midi_input_.reset();
+        mh_midi_in_close(midi_in_);
+        midi_in_ = nullptr;
     }
-    midi_input_identifier_ = identifier;
-    if (identifier.isEmpty()) return;
+    midi_input_port_name_ = port_name;
+    if (port_name.isEmpty()) return;
 
-    midi_input_ = juce::MidiInput::openDevice(identifier, this);
-    if (midi_input_)
-        midi_input_->start();
-    else
+    // Look up the port index by name. libremidi indices are not stable
+    // across sessions (devices come and go), so we re-resolve every
+    // time. If the device is not present, leave MIDI disabled.
+    const int n = mh_midi_get_num_inputs();
+    int found = -1;
+    char buf[256];
+    for (int i = 0; i < n; ++i)
+    {
+        if (mh_midi_get_input_name(i, buf, sizeof(buf))
+            && port_name == juce::String::fromUTF8(buf))
+        {
+            found = i;
+            break;
+        }
+    }
+    if (found < 0)
+    {
         std::fprintf(stderr,
-            "MIDI input open failed for '%s'\n",
-            identifier.toRawUTF8());
+            "MIDI input port '%s' not found among %d available ports\n",
+            port_name.toRawUTF8(), n);
+        return;
+    }
+
+    char err[256] = {0};
+    midi_in_ = mh_midi_in_open(found, &LiveEngine::midiCallback, this,
+                               err, sizeof(err));
+    if (!midi_in_)
+        std::fprintf(stderr,
+            "MIDI input open failed for '%s': %s\n",
+            port_name.toRawUTF8(), err);
 }
 
-void LiveEngine::handleIncomingMidiMessage(juce::MidiInput* /*source*/,
-                                           const juce::MidiMessage& m)
+void LiveEngine::midiCallback(const unsigned char* data, size_t len,
+                              void* user_data)
+{
+    if (user_data == nullptr) return;
+    static_cast<LiveEngine*>(user_data)->pushIncomingMidi(data, len);
+}
+
+void LiveEngine::pushIncomingMidi(const unsigned char* data, size_t len)
 {
     // Convert to MH_MidiEvent. We only forward 1-3 byte channel
     // messages; SysEx and longer streams are dropped (the v1 contract
     // mirrors what mh_process_midi accepts).
-    if (m.getRawDataSize() > 3) return;
+    if (len == 0 || len > 3) return;
     MH_MidiEvent ev{};
-    const auto* raw = m.getRawData();
     ev.sample_offset = 0;        // anchored to start of next block
-    if (m.getRawDataSize() >= 1) ev.status = raw[0];
-    if (m.getRawDataSize() >= 2) ev.data1  = raw[1];
-    if (m.getRawDataSize() >= 3) ev.data2  = raw[2];
+    if (len >= 1) ev.status = data[0];
+    if (len >= 2) ev.data1  = data[1];
+    if (len >= 3) ev.data2  = data[2];
 
-    // SPSC ring push (single-producer here: the OS MIDI thread is the
-    // only writer for a given MidiInput).
+    // SPSC ring push (single-producer here: libremidi calls this on a
+    // dedicated MIDI thread per port).
     const auto head = midi_head_.load(std::memory_order_relaxed);
     const auto next = (head + 1) % kMidiRingCapacity;
     if (next == midi_tail_.load(std::memory_order_acquire))
@@ -70,8 +98,13 @@ void LiveEngine::loadSettingsFromXml(const juce::String& xml)
         dm_.initialise(0, 2, audio, /*selectDefaultDeviceOnFailure=*/true);
     if (auto* midi  = root->getChildByName("midi_input"))
     {
-        const auto id = midi->getStringAttribute("identifier");
-        if (id.isNotEmpty()) setMidiInputDevice(id);
+        // Preferred attribute is `port_name`. We tolerate legacy
+        // `identifier` values (written by older builds that used JUCE
+        // MidiInput identifiers) by treating them as port names; if
+        // they no longer match a real port, MIDI just stays disabled.
+        auto name = midi->getStringAttribute("port_name");
+        if (name.isEmpty()) name = midi->getStringAttribute("identifier");
+        if (name.isNotEmpty()) setMidiInputDevice(name);
     }
 }
 
@@ -81,7 +114,7 @@ juce::String LiveEngine::saveSettingsAsXml() const
     if (auto audio = dm_.createStateXml())
         root.addChildElement(audio.release());
     auto* midi = new juce::XmlElement("midi_input");
-    midi->setAttribute("identifier", midi_input_identifier_);
+    midi->setAttribute("port_name", midi_input_port_name_);
     root.addChildElement(midi);
     return root.toString();
 }
@@ -112,20 +145,51 @@ bool LiveEngine::start(const juce::File& project_file, juce::String& error)
 
     cb_block_size_ = compiled_->doc.block_size;
 
+    // If the project has device_input nodes, ensure the audio device
+    // is open with at least that many input channels. JUCE's default
+    // init is 0 inputs; we widen the setup only when needed and leave
+    // the user's other choices (device, sr, buf) intact.
+    int needed_in_ch = 0;
+    for (const auto& di : compiled_->doc.device_inputs)
+        needed_in_ch = std::max(needed_in_ch, di.channels);
+    if (needed_in_ch > 0)
+    {
+        auto setup = dm_.getAudioDeviceSetup();
+        const int have = setup.inputChannels.countNumberOfSetBits();
+        if (have < needed_in_ch)
+        {
+            setup.inputChannels.clear();
+            setup.inputChannels.setRange(0, needed_in_ch, true);
+            setup.useDefaultInputChannels = false;
+            const auto err = dm_.setAudioDeviceSetup(setup, /*treatAsChosen=*/true);
+            if (err.isNotEmpty())
+                std::fprintf(stderr,
+                    "audio device input setup failed: %s\n",
+                    err.toRawUTF8());
+        }
+    }
+
     // Pre-allocate input/output buffer storage + pointer tables.
+    // File-source inputs come first, then device_inputs -- matches the
+    // loader's add-order. Both are zero-filled here; per-block the
+    // audio callback overwrites device_input slots with the live
+    // device input channels, while file-source slots stay silent
+    // (their WAV data is only staged during file rendering).
     in_planar_.clear();
     in_ch_ptrs_.clear();
     in_top_ptrs_.clear();
-    for (const auto& in : compiled_->doc.inputs)
-    {
-        std::vector<float> buf((size_t) in.channels
+    auto pushIn = [&](int channels) {
+        std::vector<float> buf((size_t) channels
                                * (size_t) cb_block_size_, 0.0f);
-        std::vector<const float*> ptrs((size_t) in.channels);
-        for (int c = 0; c < in.channels; ++c)
+        std::vector<const float*> ptrs((size_t) channels);
+        for (int c = 0; c < channels; ++c)
             ptrs[(size_t) c] = buf.data() + (size_t) c * cb_block_size_;
         in_planar_.push_back(std::move(buf));
         in_ch_ptrs_.push_back(std::move(ptrs));
-    }
+    };
+    for (const auto& in : compiled_->doc.inputs)        pushIn(in.channels);
+    for (const auto& di : compiled_->doc.device_inputs) pushIn(di.channels);
+    for (const auto& mn : compiled_->doc.metronomes)    pushIn(mn.channels);
     in_top_ptrs_.resize(in_ch_ptrs_.size());
     for (size_t i = 0; i < in_ch_ptrs_.size(); ++i)
         in_top_ptrs_[i] = in_ch_ptrs_[i].data();
@@ -133,25 +197,65 @@ bool LiveEngine::start(const juce::File& project_file, juce::String& error)
     out_planar_.clear();
     out_ch_ptrs_.clear();
     out_top_ptrs_.clear();
-    for (const auto& on : compiled_->doc.outputs)
-    {
-        std::vector<float> buf((size_t) on.channels
+    // File-sink outputs come first, then device_outputs -- ordering
+    // matches the loader. LiveEngine writes file-sink buffers nowhere
+    // (file rendering is a separate path); they're allocated so the
+    // graph has somewhere to write each block.
+    auto pushOut = [&](int channels) {
+        std::vector<float> buf((size_t) channels
                                * (size_t) cb_block_size_, 0.0f);
-        std::vector<float*> ptrs((size_t) on.channels);
-        for (int c = 0; c < on.channels; ++c)
+        std::vector<float*> ptrs((size_t) channels);
+        for (int c = 0; c < channels; ++c)
             ptrs[(size_t) c] = buf.data() + (size_t) c * cb_block_size_;
         out_planar_.push_back(std::move(buf));
         out_ch_ptrs_.push_back(std::move(ptrs));
-    }
+    };
+    for (const auto& on : compiled_->doc.outputs)        pushOut(on.channels);
+    for (const auto& dn : compiled_->doc.device_outputs) pushOut(dn.channels);
+    for (const auto& mn : compiled_->doc.meters)         pushOut(mn.channels);
     out_top_ptrs_.resize(out_ch_ptrs_.size());
     for (size_t i = 0; i < out_ch_ptrs_.size(); ++i)
         out_top_ptrs_[i] = out_ch_ptrs_[i].data();
 
-    if (compiled_->doc.outputs.empty())
+    if (out_planar_.empty())
     {
         error = "project has no output nodes; nothing to play live";
         compiled_.reset();
         return false;
+    }
+
+    // One-shot diagnostic so silent-output debugging has a starting
+    // point: log the graph shape, audio device state, and per-node
+    // role at the moment the engine attaches its callback.
+    {
+        auto* dev = dm_.getCurrentAudioDevice();
+        std::fprintf(stderr,
+            "[live] start: plugins=%d audio_in_bufs=%d audio_out_bufs=%d "
+            "midi_input_nodes=%zu device_outs=%zu metronomes=%zu\n",
+            (int) compiled_->plugins.size(),
+            (int) in_planar_.size(),
+            (int) out_planar_.size(),
+            compiled_->midi_input_node_ids.size(),
+            compiled_->device_output_buffer_indices.size(),
+            compiled_->metronome_buffer_indices.size());
+        if (dev != nullptr)
+        {
+            std::fprintf(stderr,
+                "[live] audio device='%s' type='%s' "
+                "sr=%.1f buf=%d in_ch=%d out_ch=%d\n",
+                dev->getName().toRawUTF8(),
+                dev->getTypeName().toRawUTF8(),
+                dev->getCurrentSampleRate(),
+                dev->getCurrentBufferSizeSamples(),
+                dev->getActiveInputChannels().countNumberOfSetBits(),
+                dev->getActiveOutputChannels().countNumberOfSetBits());
+        }
+        else
+        {
+            std::fprintf(stderr,
+                "[live] WARNING: no current audio device -- "
+                "callback will fire but produce no sound\n");
+        }
     }
 
     dm_.addAudioCallback(this);
@@ -240,8 +344,8 @@ int LiveEngine::drainParamWrites_(int max)
 }
 
 void LiveEngine::audioDeviceIOCallbackWithContext(
-    const float* const* /*inputChannelData*/,
-    int /*numInputChannels*/,
+    const float* const* inputChannelData,
+    int numInputChannels,
     float* const* outputChannelData,
     int numOutputChannels,
     int numSamples,
@@ -329,35 +433,119 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
             }
             midi_tail_.store(t, std::memory_order_release);
         }
-        // Stage the drained events on every plugin node that opted
-        // into MIDI input.
+        // Stage the drained events on every MIDI_INPUT node in the
+        // project. Routing within the graph (MIDI edges) fans the
+        // events out to plugins. Legacy receives_midi projects get a
+        // synthesized MIDI_INPUT node at load time (see project.cpp
+        // migration), so a single staging path covers both formats.
         if (!midi_scratch_.empty() && compiled_ != nullptr)
         {
             auto* graph = compiled_->graph->handle();
-            for (int i = 0; i < (int) compiled_->doc.plugins.size(); ++i)
-            {
-                if (!compiled_->doc.plugins[(size_t) i].receives_midi)
-                    continue;
-                const int node_id
-                    = (int) compiled_->doc.inputs.size() + i;
-                mh_graph_v2_set_node_midi(
-                    graph, node_id,
+            for (MH_NodeId nid : compiled_->midi_input_node_ids)
+                mh_graph_v2_set_midi_input_events(
+                    graph, nid,
                     midi_scratch_.data(),
                     (int) midi_scratch_.size());
+
+            static std::atomic<bool> logged_midi{false};
+            if (!logged_midi.load(std::memory_order_relaxed))
+            {
+                const auto& ev = midi_scratch_.front();
+                std::fprintf(stderr,
+                    "[live] first MIDI event reached engine: "
+                    "status=0x%02X d1=%d d2=%d (staged into %zu MIDI_INPUT nodes)\n",
+                    (unsigned) ev.status, (int) ev.data1, (int) ev.data2,
+                    compiled_->midi_input_node_ids.size());
+                logged_midi.store(true, std::memory_order_relaxed);
             }
         }
 
-        // Feed silence to all input nodes (v1 live contract).
+        // Stage input buffers for this block:
+        //   - File-source inputs (compiled_->doc.inputs): silence (their
+        //     WAV data is only consumed by file rendering, not live).
+        //   - device_input nodes: copy from inputChannelData. Extra
+        //     graph channels (beyond what the device supplies) get
+        //     silence; extra device channels are ignored. Multiple
+        //     device_input nodes share the same device channels (each
+        //     consumer sees the same live signal).
         for (auto& buf : in_planar_)
             std::memset(buf.data(), 0,
                         (size_t) n * (size_t) (buf.size() / (size_t) cb_block_size_)
                                    * sizeof(float));
+        for (size_t k = 0;
+             k < compiled_->device_input_buffer_indices.size(); ++k)
+        {
+            const int buf_i = compiled_->device_input_buffer_indices[k];
+            const auto& spec = compiled_->doc.device_inputs[k];
+            float* base = in_planar_[(size_t) buf_i].data();
+            for (int c = 0; c < spec.channels; ++c)
+            {
+                if (c < numInputChannels
+                    && inputChannelData != nullptr
+                    && inputChannelData[c] != nullptr)
+                {
+                    float* dst = base + (size_t) c * cb_block_size_;
+                    std::memcpy(dst,
+                                inputChannelData[c] + offset,
+                                (size_t) n * sizeof(float));
+                }
+                // else: already zero-filled above.
+            }
+        }
+
+        // Transport-driven generators: metronome clicks (audio) and
+        // MIDI clock ticks. Both ride on the LiveEngine's transport
+        // state (bpm + playing + position), so they must run after
+        // the transport-info push earlier in the block and before
+        // renderBlock consumes the inputs / staged MIDI.
+        {
+            const long long ti_pos = transport_pos_samples_;
+            const double    ti_bpm = transport_bpm_.load();
+            const bool      playing = transport_playing_.load();
+            const double    sr =
+                compiled_ ? (double) compiled_->doc.sample_rate : 48000.0;
+            compiled_->renderMetronomes(in_planar_, cb_block_size_, n,
+                                        ti_pos, sr, ti_bpm, playing);
+            compiled_->stageMidiClocks(compiled_->graph->handle(),
+                                       n, ti_pos, sr, ti_bpm, playing);
+        }
 
         try {
             compiled_->graph->renderBlock(
                 in_top_ptrs_.data(),  (int) in_top_ptrs_.size(),
                 out_top_ptrs_.data(), (int) out_top_ptrs_.size(),
                 n);
+            // Surface per-channel peak from each meter node's buffer
+            // to the GUI via lock-free atomics. Cheap; we already
+            // touched these samples in the graph.
+            compiled_->updateMeters(out_top_ptrs_.data(), n);
+
+            // One-shot diagnostic: log the first block whose output
+            // buffer contains a non-zero sample, and separately log
+            // the first staged MIDI events. Helps confirm whether
+            // audio is being produced at all and whether MIDI is
+            // reaching the engine. Not RT-safe in the strictest
+            // sense (fprintf can lock); kept guarded by static
+            // flags so each fires at most once per app run.
+            static std::atomic<bool> logged_audio{false};
+            if (!logged_audio.load(std::memory_order_relaxed))
+            {
+                bool any_nonzero = false;
+                for (size_t bi = 0;
+                     bi < out_planar_.size() && !any_nonzero; ++bi)
+                {
+                    const auto& buf = out_planar_[bi];
+                    for (size_t s = 0; s < buf.size(); ++s)
+                        if (buf[s] != 0.0f) { any_nonzero = true; break; }
+                }
+                if (any_nonzero)
+                {
+                    std::fprintf(stderr,
+                        "[live] first non-silent block produced "
+                        "(plugin chain is generating audio)\n");
+                    logged_audio.store(true, std::memory_order_relaxed);
+                }
+            }
         } catch (...) {
             // Anything throwing on the audio thread means stop now.
             for (int c = 0; c < numOutputChannels; ++c)
@@ -369,10 +557,37 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
             return;
         }
 
-        // Copy output node 0 to the device output. Map by index;
-        // silence any device channels beyond the graph's count, drop
-        // any graph channels beyond the device's count.
-        if (!out_planar_.empty())
+        // Route to the device output. If the project has any
+        // device_output nodes, sum them per-channel (extra device
+        // channels are silenced; extra graph channels are dropped).
+        // Otherwise fall back to the legacy "first file-sink output
+        // doubles as the live speaker output" rule for back-compat
+        // with projects authored before device_output existed.
+        const auto& dev_idx = compiled_->device_output_buffer_indices;
+        if (!dev_idx.empty())
+        {
+            // Per-device-channel mix-and-copy.
+            for (int c = 0; c < numOutputChannels; ++c)
+            {
+                float* dst = outputChannelData[c];
+                if (dst == nullptr) continue;
+                std::memset(dst + offset, 0,
+                            (size_t) n * sizeof(float));
+                for (int buf_i : dev_idx)
+                {
+                    const auto& spec = compiled_->doc.device_outputs[
+                        (size_t) (buf_i
+                            - (int) compiled_->doc.outputs.size())];
+                    if (c >= spec.channels) continue;
+                    const float* src
+                        = out_planar_[(size_t) buf_i].data()
+                          + (size_t) c * cb_block_size_;
+                    float* d = dst + offset;
+                    for (int i = 0; i < n; ++i) d[i] += src[i];
+                }
+            }
+        }
+        else if (!compiled_->doc.outputs.empty() && !out_planar_.empty())
         {
             const int graph_ch = compiled_->doc.outputs[0].channels;
             for (int c = 0; c < numOutputChannels; ++c)

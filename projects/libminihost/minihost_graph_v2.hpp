@@ -109,6 +109,101 @@ public:
             throw std::runtime_error("set_mix_gain failed (bad node/index)");
     }
 
+    NodeId addPickChannel(int in_channels, int channel_index)
+    {
+        char err[kErrLen] = {0};
+        const NodeId id = mh_graph_v2_add_pick_channel(
+            g_, in_channels, channel_index, err, sizeof(err));
+        if (id < 0) throwErr("add_pick_channel", err);
+        return id;
+    }
+
+    NodeId addMergeChannels(int out_channels)
+    {
+        char err[kErrLen] = {0};
+        const NodeId id = mh_graph_v2_add_merge_channels(
+            g_, out_channels, err, sizeof(err));
+        if (id < 0) throwErr("add_merge_channels", err);
+        return id;
+    }
+
+    NodeId addMidiProcessor(MH_MidiProcessorParams params)
+    {
+        char err[kErrLen] = {0};
+        const NodeId id = mh_graph_v2_add_midi_processor(
+            g_, params, err, sizeof(err));
+        if (id < 0) throwErr("add_midi_processor", err);
+        return id;
+    }
+
+    bool setMidiProcessorParams(NodeId node, MH_MidiProcessorParams params)
+    {
+        return mh_graph_v2_set_midi_processor_params(g_, node, params) != 0;
+    }
+
+    NodeId addMidiMerge(int num_inputs)
+    {
+        char err[kErrLen] = {0};
+        const NodeId id = mh_graph_v2_add_midi_merge(
+            g_, num_inputs, err, sizeof(err));
+        if (id < 0) throwErr("add_midi_merge", err);
+        return id;
+    }
+
+    void connectMidiPort(NodeId src, NodeId dst, int dst_port)
+    {
+        char err[kErrLen] = {0};
+        if (!mh_graph_v2_connect_midi_port(g_, src, dst, dst_port,
+                                            err, sizeof(err)))
+            throwErr("connect_midi_port", err);
+    }
+
+    NodeId addMidiInput()
+    {
+        char err[kErrLen] = {0};
+        const NodeId id = mh_graph_v2_add_midi_input(g_, err, sizeof(err));
+        if (id < 0) throwErr("add_midi_input", err);
+        return id;
+    }
+
+    NodeId addMidiOutput()
+    {
+        char err[kErrLen] = {0};
+        const NodeId id = mh_graph_v2_add_midi_output(g_, err, sizeof(err));
+        if (id < 0) throwErr("add_midi_output", err);
+        return id;
+    }
+
+    void connectMidi(NodeId src, NodeId dst)
+    {
+        char err[kErrLen] = {0};
+        if (!mh_graph_v2_connect_midi(g_, src, dst, err, sizeof(err)))
+            throwErr("connect_midi", err);
+    }
+
+    bool setMidiInputEvents(NodeId node,
+                            const MH_MidiEvent* events, int num_events)
+    {
+        return mh_graph_v2_set_midi_input_events(
+                   g_, node, events, num_events) != 0;
+    }
+
+    bool setNodeMidi(NodeId node,
+                     const MH_MidiEvent* events, int num_events)
+    {
+        return mh_graph_v2_set_node_midi(
+                   g_, node, events, num_events) != 0;
+    }
+
+    int getMidiOutputEvents(NodeId node,
+                            MH_MidiEvent* out_buf, int capacity)
+    {
+        int n = 0;
+        if (!mh_graph_v2_get_midi_output_events(
+                g_, node, out_buf, capacity, &n)) return -1;
+        return n;
+    }
+
     void compile()
     {
         char err[kErrLen] = {0};

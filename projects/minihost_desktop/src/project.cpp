@@ -3,6 +3,7 @@
 #include "project.h"
 
 #include "minihost_audiofile.h"
+#include "node_registry.h"
 
 #include <juce_core/juce_core.h>
 
@@ -95,6 +96,163 @@ void interleave(const std::vector<std::vector<float>>& planar,
 
 } // namespace
 
+void LoadedProject::updateMeters(float* const* const* out_buffers, int nframes)
+{
+    for (size_t m = 0; m < meter_states.size(); ++m)
+    {
+        const int buf_i = meter_buffer_indices[m];
+        auto* state = meter_states[m].get();
+        float* const* chans = out_buffers[(size_t) buf_i];
+        const int n_ch = (int) state->peak.size();
+        for (int c = 0; c < n_ch; ++c)
+        {
+            const float* src = chans[c];
+            float peak = 0.0f;
+            for (int i = 0; i < nframes; ++i)
+            {
+                const float a = std::fabs(src[i]);
+                if (a > peak) peak = a;
+            }
+            state->peak[(size_t) c].store(peak, std::memory_order_relaxed);
+        }
+    }
+}
+
+void LoadedProject::renderMetronomes(std::vector<std::vector<float>>& planar_inputs,
+                                     int block_size,
+                                     int nframes,
+                                     long long pos_samples,
+                                     double sr, double bpm, bool playing)
+{
+    if (metronome_buffer_indices.empty()) return;
+    const double samples_per_beat = (bpm > 0.0)
+        ? sr * 60.0 / bpm : 0.0;
+
+    for (size_t m = 0; m < metronome_buffer_indices.size(); ++m)
+    {
+        const int buf_i = metronome_buffer_indices[m];
+        const auto& spec = doc.metronomes[m];
+        auto& st = metronome_states[m];
+        float* base = planar_inputs[(size_t) buf_i].data();
+        auto chan = [&](int c) -> float* {
+            return base + (size_t) c * (size_t) block_size;
+        };
+
+        // Always zero-fill first; clicks paint over silence.
+        for (int c = 0; c < spec.channels; ++c)
+            std::memset(chan(c), 0, (size_t) nframes * sizeof(float));
+
+        if (!playing || samples_per_beat <= 0.0)
+        {
+            st.phase_samples = -1;
+            continue;
+        }
+
+        // Click envelope parameters (sample-accurate).
+        const double  decay_samples = (double) spec.decay_ms * 0.001 * sr;
+        const double  w_rad         = 2.0 * 3.14159265358979323846
+                                          * (double) spec.freq_hz / sr;
+        const int     click_len     = (int) std::ceil(decay_samples * 6.0);
+        const float   gain          = spec.gain;
+
+        auto render_click = [&](int start_off, int sample_in_click_start) {
+            const int end = std::min(nframes, start_off + click_len
+                                              - sample_in_click_start);
+            for (int i = start_off; i < end; ++i)
+            {
+                const int k = sample_in_click_start + (i - start_off);
+                const float env = (float) std::exp(-(double) k / decay_samples);
+                const float v   = gain * env
+                    * (float) std::sin(w_rad * (double) k);
+                for (int c = 0; c < spec.channels; ++c)
+                    chan(c)[i] += v;
+            }
+            // Return how many samples of click remain after the block.
+            const int produced = end - start_off;
+            const int total_consumed = sample_in_click_start + produced;
+            if (total_consumed >= click_len) return -1;
+            // If we ran out of block before the click finished, carry
+            // its phase forward.
+            return total_consumed;
+        };
+
+        // 1. Continue any click in flight from a previous block.
+        if (st.phase_samples >= 0)
+            st.phase_samples = render_click(0, st.phase_samples);
+
+        // 2. Find beat onsets that fall within this block and start
+        //    clicks at them. Use 64-bit math throughout.
+        const long long first_beat_idx = (long long) std::ceil(
+            (double) pos_samples / samples_per_beat);
+        for (long long b = first_beat_idx; ; ++b)
+        {
+            const long long beat_pos
+                = (long long) std::llround((double) b * samples_per_beat);
+            const long long off = beat_pos - pos_samples;
+            if (off < 0)         continue;
+            if (off >= nframes)  break;
+            // Starting a new click overrides any in-flight one (rare
+            // unless decay_ms approaches samples_per_beat).
+            st.phase_samples = render_click((int) off, 0);
+        }
+    }
+}
+
+void LoadedProject::stageMidiClocks(MH_GraphV2* g_handle,
+                                    int nframes,
+                                    long long pos_samples,
+                                    double sr, double bpm, bool playing)
+{
+    if (midi_clock_node_ids.empty()) return;
+    const double samples_per_tick = (bpm > 0.0)
+        ? sr * 60.0 / (bpm * 24.0) : 0.0;
+
+    for (size_t m = 0; m < midi_clock_node_ids.size(); ++m)
+    {
+        auto& buf  = midi_clock_event_buffers[m];
+        auto& st   = midi_clock_states[m];
+        buf.clear();
+
+        // Transport-edge events: Start (0xFA) on rising edge,
+        // Stop (0xFC) on falling edge. Sample offset 0.
+        if (playing && !st.was_playing)
+        {
+            MH_MidiEvent e{}; e.sample_offset = 0; e.status = 0xFA;
+            buf.push_back(e);
+        }
+        else if (!playing && st.was_playing)
+        {
+            MH_MidiEvent e{}; e.sample_offset = 0; e.status = 0xFC;
+            buf.push_back(e);
+        }
+        st.was_playing = playing;
+
+        // 24-PPQN clock ticks while playing.
+        if (playing && samples_per_tick > 0.0)
+        {
+            const long long first_tick = (long long) std::ceil(
+                (double) pos_samples / samples_per_tick);
+            for (long long t = first_tick; ; ++t)
+            {
+                const long long tick_pos = (long long) std::llround(
+                    (double) t * samples_per_tick);
+                const long long off = tick_pos - pos_samples;
+                if (off < 0)        continue;
+                if (off >= nframes) break;
+                MH_MidiEvent e{};
+                e.sample_offset = (int) off;
+                e.status        = 0xF8;
+                buf.push_back(e);
+            }
+        }
+
+        mh_graph_v2_set_midi_input_events(
+            g_handle, midi_clock_node_ids[m],
+            buf.empty() ? nullptr : buf.data(),
+            (int) buf.size());
+    }
+}
+
 LoadedProject::~LoadedProject()
 {
     // Destroy the graph first so its plugin-node references release
@@ -149,66 +307,17 @@ ProjectDocument parseProjectFile(const juce::File& path)
         if (!ids.insert(id.toStdString()).second)
             throwErr("duplicate node id: " + id);
 
-        if (kind == "input")
+        const auto* entry = findKind(kind);
+        if (entry != nullptr)
         {
-            InputNodeSpec s;
-            s.id       = id;
-            s.channels = requireInt(n, "channels");
-            const auto rel = requireString(n, "source");
-            s.source   = project_dir.getChildFile(rel);
-            out.inputs.push_back(std::move(s));
-        }
-        else if (kind == "output")
-        {
-            OutputNodeSpec s;
-            s.id       = id;
-            s.channels = requireInt(n, "channels");
-            const auto rel = requireString(n, "sink");
-            s.sink     = project_dir.getChildFile(rel);
-            if (n.getDynamicObject()->hasProperty("bit_depth"))
-                s.bit_depth = (int) n["bit_depth"];
-            out.outputs.push_back(std::move(s));
-        }
-        else if (kind == "plugin")
-        {
-            PluginNodeSpec s;
-            s.id   = id;
-            s.path = juce::File(requireString(n, "path"));
-            if (n.getDynamicObject()->hasProperty("state_b64"))
-            {
-                auto v = n["state_b64"];
-                if (!v.isVoid() && v.isString())
-                    s.state_b64 = v.toString();
+            try {
+                entry->parse(n, id, out, project_dir);
+            } catch (const ProjectError& e) {
+                // Re-prepend the kind so error messages remain
+                // localizable to the failing node.
+                throw ProjectError(
+                    (kind + " " + id + ": " + e.what()).toStdString());
             }
-            if (n.getDynamicObject()->hasProperty("receives_midi"))
-            {
-                auto v = n["receives_midi"];
-                if (v.isBool() || v.isInt() || v.isInt64())
-                    s.receives_midi = ((bool) v);
-            }
-            out.plugins.push_back(std::move(s));
-        }
-        else if (kind == "mix")
-        {
-            MixNodeSpec s;
-            s.id         = id;
-            s.num_inputs = requireInt(n, "num_inputs");
-            s.channels   = requireInt(n, "channels");
-            s.gains.assign((size_t) s.num_inputs, 1.0f);
-            if (n.getDynamicObject()->hasProperty("gains"))
-            {
-                auto v = n["gains"];
-                if (v.isArray())
-                {
-                    const auto& arr = *v.getArray();
-                    if ((int) arr.size() != s.num_inputs)
-                        throwErr("mix " + id + ": gains length does not "
-                                 "match num_inputs");
-                    for (int i = 0; i < s.num_inputs; ++i)
-                        s.gains[(size_t) i] = (float) (double) arr[i];
-                }
-            }
-            out.mixes.push_back(std::move(s));
         }
         else
         {
@@ -216,8 +325,13 @@ ProjectDocument parseProjectFile(const juce::File& path)
         }
     }
 
-    if (out.outputs.empty())
-        throwErr("project has no output nodes");
+    // Project must have at least one audio destination. File renders
+    // require an OutputNodeSpec (file sink); live playback can use
+    // a DeviceOutputNodeSpec instead. The stricter file-render
+    // requirement is checked separately in renderProject.
+    if (out.outputs.empty() && out.device_outputs.empty())
+        throwErr("project has no output nodes "
+                 "(needs at least one file 'output' or 'device_output')");
 
     auto edges = requireArray(doc, "edges");
     for (const auto& e : edges)
@@ -228,6 +342,14 @@ ProjectDocument parseProjectFile(const juce::File& path)
         es.dst      = requireString(e, "dst");
         if (e.getDynamicObject()->hasProperty("dst_port"))
             es.dst_port = (int) e["dst_port"];
+        if (e.getDynamicObject()->hasProperty("kind"))
+        {
+            const auto k = e["kind"].toString();
+            if      (k == "audio") es.kind = EdgeKind::Audio;
+            else if (k == "midi")  es.kind = EdgeKind::Midi;
+            else throwErr("edge kind must be \"audio\" or \"midi\": "
+                           + k);
+        }
         out.edges.push_back(std::move(es));
     }
 
@@ -239,10 +361,12 @@ ProjectDocument parseProjectFile(const juce::File& path)
         if (layout_var.isObject())
         {
             std::unordered_set<std::string> known;
-            for (const auto& n : out.inputs)  known.insert(n.id.toStdString());
-            for (const auto& n : out.plugins) known.insert(n.id.toStdString());
-            for (const auto& n : out.mixes)   known.insert(n.id.toStdString());
-            for (const auto& n : out.outputs) known.insert(n.id.toStdString());
+            for (const auto& entry : nodeRegistry())
+            {
+                const int c = entry.count(out);
+                for (int k = 0; k < c; ++k)
+                    known.insert(entry.id_at(out, k).toStdString());
+            }
 
             auto* dyn = layout_var.getDynamicObject();
             for (const auto& kv : dyn->getProperties())
@@ -274,47 +398,15 @@ void saveProjectFile(const juce::File& path, const ProjectDocument& doc)
         root->setProperty("duration_seconds", *doc.duration_seconds);
 
     juce::Array<juce::var> nodes;
-    auto pushNode = [&](juce::DynamicObject* obj, const juce::String& kind,
-                        const juce::String& id) {
-        obj->setProperty("id",   id);
-        obj->setProperty("kind", kind);
-        nodes.add(juce::var(obj));
-    };
-    for (const auto& n : doc.inputs)
-    {
-        auto* o = new juce::DynamicObject();
-        o->setProperty("channels", n.channels);
-        o->setProperty("source",   n.source.getFullPathName());
-        pushNode(o, "input", n.id);
-    }
-    for (const auto& n : doc.plugins)
-    {
-        auto* o = new juce::DynamicObject();
-        o->setProperty("path", n.path.getFullPathName());
-        if (n.state_b64.isNotEmpty())
-            o->setProperty("state_b64", n.state_b64);
-        if (!n.receives_midi)   // serialize the non-default explicitly
-            o->setProperty("receives_midi", false);
-        pushNode(o, "plugin", n.id);
-    }
-    for (const auto& n : doc.mixes)
-    {
-        auto* o = new juce::DynamicObject();
-        o->setProperty("num_inputs", n.num_inputs);
-        o->setProperty("channels",   n.channels);
-        juce::Array<juce::var> gains;
-        for (float g : n.gains) gains.add((double) g);
-        o->setProperty("gains", gains);
-        pushNode(o, "mix", n.id);
-    }
-    for (const auto& n : doc.outputs)
-    {
-        auto* o = new juce::DynamicObject();
-        o->setProperty("channels",  n.channels);
-        o->setProperty("sink",      n.sink.getFullPathName());
-        o->setProperty("bit_depth", n.bit_depth);
-        pushNode(o, "output", n.id);
-    }
+    NodeKindEntry::PushNodeFn pushNode =
+        [&](juce::DynamicObject* obj, const juce::String& kind,
+            const juce::String& id) {
+            obj->setProperty("id",   id);
+            obj->setProperty("kind", kind);
+            nodes.add(juce::var(obj));
+        };
+    for (const auto& entry : nodeRegistry())
+        entry.serialize_all(doc, pushNode);
     root->setProperty("nodes", nodes);
 
     juce::Array<juce::var> edges;
@@ -323,7 +415,19 @@ void saveProjectFile(const juce::File& path, const ProjectDocument& doc)
         auto* o = new juce::DynamicObject();
         o->setProperty("src", e.src);
         o->setProperty("dst", e.dst);
-        o->setProperty("dst_port", e.dst_port);
+        if (e.kind == EdgeKind::Midi)
+        {
+            o->setProperty("kind", juce::String("midi"));
+            // dst_port is meaningful for MIDI edges only when the
+            // dst is a midi_merge. Emit it whenever non-zero.
+            if (e.dst_port != 0)
+                o->setProperty("dst_port", e.dst_port);
+        }
+        else
+        {
+            // Audio is the default; emit dst_port only.
+            o->setProperty("dst_port", e.dst_port);
+        }
         edges.add(juce::var(o));
     }
     root->setProperty("edges", edges);
@@ -391,7 +495,12 @@ std::unique_ptr<LoadedProject> loadProject(const juce::File& path)
         loaded->input_frames.push_back((int) ad->frames);
     }
 
-    // Compute render length.
+    // Compute render length. Only meaningful for file rendering;
+    // live playback runs until the user stops it and ignores
+    // duration_frames. If we can't derive a length (no file inputs
+    // and no explicit duration_seconds), leave it at 0 -- live mode
+    // will work fine and renderProject enforces its own non-zero
+    // requirement before writing files.
     if (doc.duration_seconds.has_value())
     {
         loaded->duration_frames = (int) std::lround(
@@ -405,8 +514,7 @@ std::unique_ptr<LoadedProject> loadProject(const juce::File& path)
     }
     else
     {
-        throwErr("project has no input nodes and no duration_seconds; "
-                 "cannot determine render length");
+        loaded->duration_frames = 0;
     }
 
     // Open plugins.
@@ -440,22 +548,17 @@ std::unique_ptr<LoadedProject> loadProject(const juce::File& path)
     auto& g = *loaded->graph;
 
     std::unordered_map<std::string, minihost::GraphV2::NodeId> id_to_node;
-    for (const auto& in : doc.inputs)
-        id_to_node[in.id.toStdString()] = g.addInput(in.channels);
-    for (size_t i = 0; i < doc.plugins.size(); ++i)
+    // Single dispatch: walk every kind in canonical registry order
+    // and let the entry's load_one translate its specs into graph
+    // nodes (and record any side effects on LoadedProject). The
+    // registry order is what defines input_buffers / output_buffers
+    // ordering for the resulting graph -- see node_registry.cpp.
+    for (const auto& entry : nodeRegistry())
     {
-        const auto& pl = doc.plugins[i];
-        id_to_node[pl.id.toStdString()] = g.addPlugin(loaded->plugins[i]);
+        const int c = entry.count(doc);
+        for (int i = 0; i < c; ++i)
+            entry.load_one(doc, i, g, id_to_node, *loaded);
     }
-    for (const auto& mx : doc.mixes)
-    {
-        auto nid = g.addMix(mx.num_inputs, mx.channels);
-        for (int i = 0; i < mx.num_inputs; ++i)
-            g.setMixGain(nid, i, mx.gains[(size_t) i]);
-        id_to_node[mx.id.toStdString()] = nid;
-    }
-    for (const auto& on : doc.outputs)
-        id_to_node[on.id.toStdString()] = g.addOutput(on.channels);
 
     for (const auto& e : doc.edges)
     {
@@ -465,7 +568,37 @@ std::unique_ptr<LoadedProject> loadProject(const juce::File& path)
             throwErr("edge references unknown src id: " + e.src);
         if (dst_it == id_to_node.end())
             throwErr("edge references unknown dst id: " + e.dst);
-        g.connect(src_it->second, dst_it->second, e.dst_port);
+        if (e.kind == EdgeKind::Midi)
+            // dst_port is reused for MIDI edges so that merges with
+            // multiple inputs can be addressed. Single-port consumers
+            // accept only dst_port == 0; the graph compiler enforces
+            // this at compile time.
+            g.connectMidiPort(src_it->second, dst_it->second,
+                              e.dst_port);
+        else
+            g.connect(src_it->second, dst_it->second, e.dst_port);
+    }
+
+    // Legacy migration: pre-MIDI-routing projects expressed live MIDI
+    // fan-out via PluginNodeSpec::receives_midi. If the loaded document
+    // has no midi_inputs but at least one plugin opts in, synthesize a
+    // MIDI_INPUT node and connect it to those plugins so live MIDI
+    // continues to drive them through the new routing path. The
+    // ProjectDocument is left unchanged on disk; the migration only
+    // affects the in-memory graph.
+    if (doc.midi_inputs.empty())
+    {
+        std::vector<std::string> recvs;
+        for (const auto& pl : doc.plugins)
+            if (pl.receives_midi)
+                recvs.push_back(pl.id.toStdString());
+        if (!recvs.empty())
+        {
+            auto mi_node = g.addMidiInput();
+            loaded->midi_input_node_ids.push_back(mi_node);
+            for (const auto& pid : recvs)
+                g.connectMidi(mi_node, id_to_node[pid]);
+        }
     }
 
     g.compile();
@@ -479,17 +612,44 @@ bool renderProject(LoadedProject& proj,
                    const RenderOptions& options)
 {
     const auto& doc = proj.doc;
+    if (doc.outputs.empty())
+    {
+        error = "project has no file 'output' nodes -- file rendering "
+                "needs at least one OutputNodeSpec (a device_output "
+                "alone is for live playback, not file writing)";
+        return false;
+    }
+    if (proj.duration_frames <= 0)
+    {
+        error = "cannot determine render length -- the project needs "
+                "either an `input` node (length derived from the file) "
+                "or an explicit `duration_seconds` field at the top level";
+        return false;
+    }
     const int block = doc.block_size;
     const int total = proj.duration_frames;
 
-    // Pre-allocate scratch buffers (per input node, per output node).
-    std::vector<std::vector<float>>  in_planar(proj.doc.inputs.size());
-    std::vector<std::vector<const float*>> in_ch_ptrs(proj.doc.inputs.size());
-    std::vector<const float* const*> in_top_ptrs(proj.doc.inputs.size());
-
-    for (size_t i = 0; i < proj.doc.inputs.size(); ++i)
+    // Input buffer table covers file-source inputs (staged from
+    // decoded WAV/FLAC data per block), device_input nodes (live
+    // only; file render keeps them silent), and metronome nodes
+    // (live only; same). Ordering matches the loader: file inputs
+    // first, then device_inputs, then metronomes.
+    const size_t n_file_in  = proj.doc.inputs.size();
+    const size_t n_dev_in   = proj.doc.device_inputs.size();
+    const size_t n_met_in   = proj.doc.metronomes.size();
+    const size_t n_audio_in = n_file_in + n_dev_in + n_met_in;
+    std::vector<std::vector<float>>  in_planar(n_audio_in);
+    std::vector<std::vector<const float*>> in_ch_ptrs(n_audio_in);
+    std::vector<const float* const*> in_top_ptrs(n_audio_in);
+    auto in_ch_at = [&](size_t i) -> int {
+        if (i < n_file_in) return proj.doc.inputs[i].channels;
+        if (i < n_file_in + n_dev_in)
+            return proj.doc.device_inputs[i - n_file_in].channels;
+        return proj.doc.metronomes[i - n_file_in - n_dev_in].channels;
+    };
+    for (size_t i = 0; i < n_audio_in; ++i)
     {
-        const int ch = proj.doc.inputs[i].channels;
+        const int ch = in_ch_at(i);
         in_planar[i].assign((size_t) ch * (size_t) block, 0.0f);
         in_ch_ptrs[i].resize((size_t) ch);
         for (int c = 0; c < ch; ++c)
@@ -498,12 +658,27 @@ bool renderProject(LoadedProject& proj,
         in_top_ptrs[i] = in_ch_ptrs[i].data();
     }
 
-    std::vector<std::vector<float>>  out_planar(proj.doc.outputs.size());
-    std::vector<std::vector<float*>> out_ch_ptrs(proj.doc.outputs.size());
-    std::vector<float* const*>       out_top_ptrs(proj.doc.outputs.size());
-    for (size_t i = 0; i < proj.doc.outputs.size(); ++i)
+    // Output buffer table covers file-sink outputs (written to disk
+    // via the accumulator below), device_output nodes (scratch only;
+    // samples discarded in file render), and meter nodes (scratch
+    // only; live peak capture is skipped during file render). Order
+    // matches the loader.
+    const size_t n_file_out   = proj.doc.outputs.size();
+    const size_t n_dev_out    = proj.doc.device_outputs.size();
+    const size_t n_meters_out = proj.doc.meters.size();
+    const size_t n_audio_out  = n_file_out + n_dev_out + n_meters_out;
+    std::vector<std::vector<float>>  out_planar(n_audio_out);
+    std::vector<std::vector<float*>> out_ch_ptrs(n_audio_out);
+    std::vector<float* const*>       out_top_ptrs(n_audio_out);
+    auto out_ch_at = [&](size_t i) -> int {
+        if (i < n_file_out) return proj.doc.outputs[i].channels;
+        if (i < n_file_out + n_dev_out)
+            return proj.doc.device_outputs[i - n_file_out].channels;
+        return proj.doc.meters[i - n_file_out - n_dev_out].channels;
+    };
+    for (size_t i = 0; i < n_audio_out; ++i)
     {
-        const int ch = proj.doc.outputs[i].channels;
+        const int ch = out_ch_at(i);
         out_planar[i].assign((size_t) ch * (size_t) block, 0.0f);
         out_ch_ptrs[i].resize((size_t) ch);
         for (int c = 0; c < ch; ++c)
@@ -551,9 +726,9 @@ bool renderProject(LoadedProject& proj,
 
         try {
             proj.graph->renderBlock(in_top_ptrs.data(),
-                                    (int) proj.doc.inputs.size(),
+                                    (int) n_audio_in,
                                     out_top_ptrs.data(),
-                                    (int) proj.doc.outputs.size(),
+                                    (int) n_audio_out,
                                     n);
         } catch (const std::exception& e) {
             error = juce::String("render_block failed: ") + e.what();

@@ -3,6 +3,7 @@
 #include "canvas.h"
 
 #include "minihost_audiofile.h"
+#include "node_registry.h"
 
 #include <algorithm>
 #include <unordered_set>
@@ -13,9 +14,7 @@ namespace {
 
 juce::Colour kindColour(const juce::String& kind)
 {
-    if (kind == "input")  return juce::Colour(0xff3a6f99);
-    if (kind == "output") return juce::Colour(0xff8e4a3a);
-    if (kind == "mix")    return juce::Colour(0xff5c7a3a);
+    if (const auto* entry = findKind(kind)) return entry->colour;
     /* plugin */          return juce::Colour(0xff404040);
 }
 
@@ -44,36 +43,24 @@ void CanvasComponent::rebuildLayout()
     edges_.clear();
     if (doc_ == nullptr) return;
 
-    auto addNode = [&](const juce::String& id, const juce::String& kind,
-                       const juce::String& label,
-                       int n_in, int n_out) {
-        NodeLayout n;
-        n.id    = id;
-        n.kind  = kind;
-        n.label = label;
-        n.num_input_ports  = n_in;
-        n.num_output_ports = n_out;
-        n.bounds = juce::Rectangle<float>(0, 0, kNodeWidth, kNodeHeight);
-        nodes_.push_back(std::move(n));
-    };
-
-    for (const auto& n : doc_->inputs)
-        addNode(n.id, "input",
-                n.id + "\n(input, " + juce::String(n.channels) + "ch)",
-                /*in*/0, /*out*/1);
-    for (const auto& n : doc_->plugins)
-        addNode(n.id, "plugin",
-                n.id + "\n" + n.path.getFileNameWithoutExtension(),
-                /*in*/1, /*out*/1);
-    for (const auto& n : doc_->mixes)
-        addNode(n.id, "mix",
-                n.id + "\n(mix " + juce::String(n.num_inputs)
-                  + " x " + juce::String(n.channels) + "ch)",
-                /*in*/n.num_inputs, /*out*/1);
-    for (const auto& n : doc_->outputs)
-        addNode(n.id, "output",
-                n.id + "\n(output, " + juce::String(n.channels) + "ch)",
-                /*in*/1, /*out*/0);
+    // Walk every kind in canonical registry order; each entry's
+    // canvas_info supplies the node label + port counts.
+    for (const auto& entry : nodeRegistry())
+    {
+        const int c = entry.count(*doc_);
+        for (int i = 0; i < c; ++i)
+        {
+            const auto info = entry.canvas_info(*doc_, i);
+            NodeLayout n;
+            n.id    = entry.id_at(*doc_, i);
+            n.kind  = entry.kind_string;
+            n.label = info.label;
+            n.num_input_ports  = info.num_input_ports;
+            n.num_output_ports = info.num_output_ports;
+            n.bounds = juce::Rectangle<float>(0, 0, kNodeWidth, kNodeHeight);
+            nodes_.push_back(std::move(n));
+        }
+    }
 
     std::unordered_map<std::string, int> id_to_idx;
     for (size_t i = 0; i < nodes_.size(); ++i)
@@ -87,7 +74,7 @@ void CanvasComponent::rebuildLayout()
         if (src_it == id_to_idx.end() || dst_it == id_to_idx.end())
             continue;
         EdgeLayout edge{ src_it->second, dst_it->second, e.dst_port,
-                         (int) i };
+                         (int) i, e.kind };
         edges_.push_back(edge);
     }
 
@@ -194,10 +181,19 @@ void CanvasComponent::paint(juce::Graphics& g)
         juce::Path path;
         path.startNewSubPath(p0);
         path.cubicTo(c0, c1, p1);
-        const bool is_sel = ((int) i == selected_edge_);
-        g.setColour(is_sel ? juce::Colours::yellow
-                           : juce::Colour(0xffb0b0b0));
-        g.strokePath(path, juce::PathStrokeType(is_sel ? 2.5f : 1.6f));
+        const bool is_sel  = ((int) i == selected_edge_);
+        const bool is_midi = (e.kind == project::EdgeKind::Midi);
+        const auto base_col = is_midi ? juce::Colour(0xffb98be0)   // lilac
+                                      : juce::Colour(0xffb0b0b0);
+        g.setColour(is_sel ? juce::Colours::yellow : base_col);
+        juce::PathStrokeType stroke(is_sel ? 2.5f : 1.6f);
+        if (is_midi)
+        {
+            // Dashed stroke to read as MIDI even on grayscale displays.
+            const float dashes[] = { 6.0f, 4.0f };
+            stroke.createDashedStroke(path, path, dashes, 2);
+        }
+        g.strokePath(path, stroke);
     }
 
     // In-progress connect drag.
@@ -232,6 +228,74 @@ void CanvasComponent::paint(juce::Graphics& g)
                     : juce::Colour(0xff707070));
         g.drawRoundedRectangle(n.bounds, 6.0f,
                                i == selected_node_ ? 2.0f : 1.0f);
+
+        // Meter overlay: vertical per-channel level bars across the
+        // bottom of the node. Always draws an empty frame so the
+        // user can identify the node as a meter even when no audio
+        // is flowing (or before Live starts). Inside the frame,
+        // bars fill bottom-up proportional to the lock-free peak
+        // atomic. Atomic stores happen on the audio thread; this
+        // read uses relaxed ordering.
+        if (n.kind == "meter" && doc_ != nullptr)
+        {
+            // Find this meter in the doc; cache its channel count
+            // so the empty frame uses the configured channel count
+            // even when Live isn't running.
+            int meter_idx = -1;
+            for (int mi = 0; mi < (int) doc_->meters.size(); ++mi)
+                if (doc_->meters[(size_t) mi].id == n.id)
+                { meter_idx = mi; break; }
+            const int ch = (meter_idx >= 0)
+                ? doc_->meters[(size_t) meter_idx].channels : 2;
+
+            // Carve out the bottom 55% of the node for the meter
+            // frame. Use a dark base so empty cells are visible
+            // even against the slate-grey meter node colour.
+            auto box = n.bounds.reduced(8.0f);
+            box = box.removeFromBottom(box.getHeight() * 0.55f);
+            g.setColour(juce::Colour(0xff121212));
+            g.fillRect(box);
+
+            const float bar_w = box.getWidth() / std::max(1, ch);
+            // Faint per-channel column separators inside the frame.
+            g.setColour(juce::Colour(0xff2a2a2a));
+            for (int c = 0; c <= ch; ++c)
+                g.drawVerticalLine((int) (box.getX() + c * bar_w),
+                                   box.getY(), box.getBottom());
+
+            // Filled bars from current peaks. Skipped silently when
+            // Live isn't running (live_project_ is null).
+            if (live_project_ != nullptr
+                && meter_idx >= 0
+                && meter_idx < (int) live_project_->meter_states.size())
+            {
+                const auto* st
+                    = live_project_->meter_states[(size_t) meter_idx].get();
+                for (int c = 0; c < ch; ++c)
+                {
+                    const float peak = st->peak[(size_t) c]
+                                          .load(std::memory_order_relaxed);
+                    const float vis  = std::sqrt(std::min(1.0f, peak));
+                    if (vis <= 0.0f) continue;
+                    const float h = box.getHeight() * vis;
+                    juce::Rectangle<float> bar(
+                        box.getX() + c * bar_w + 1.0f,
+                        box.getBottom() - h,
+                        bar_w - 2.0f,
+                        h);
+                    const juce::Colour col
+                        = vis < 0.7f ? juce::Colour(0xff3aa84a)    // green
+                        : vis < 0.9f ? juce::Colour(0xffd0c020)    // yellow
+                        :              juce::Colour(0xffd03030);   // red
+                    g.setColour(col);
+                    g.fillRect(bar);
+                }
+            }
+
+            // Frame outline so the meter region reads as a box.
+            g.setColour(juce::Colour(0xff404040));
+            g.drawRect(box, 1.0f);
+        }
 
         g.setColour(juce::Colours::white);
         g.drawFittedText(n.label,
@@ -525,15 +589,10 @@ void CanvasComponent::removeNodeFromDoc(int node_index)
             }),
         doc.edges.end());
 
-    auto eraseById = [&](auto& vec) {
-        vec.erase(std::remove_if(vec.begin(), vec.end(),
-                    [&](const auto& n) { return n.id == id; }),
-                  vec.end());
-    };
-    eraseById(doc.inputs);
-    eraseById(doc.outputs);
-    eraseById(doc.plugins);
-    eraseById(doc.mixes);
+    // Sweep every kind's spec vector for an entry matching this id;
+    // at most one will hit since ids are unique across the doc.
+    for (const auto& entry : nodeRegistry())
+        entry.erase_by_id(doc, id);
     doc.layout.erase(sid);
 }
 
@@ -552,29 +611,93 @@ void CanvasComponent::addEdgeToDoc(int src_node_index, int dst_node_index,
     const auto& src_n = nodes_[(size_t) src_node_index];
     const auto& dst_n = nodes_[(size_t) dst_node_index];
 
+    // If either endpoint is a MIDI node, this is a MIDI edge. Audio
+    // channel validation is skipped; the graph compiler enforces
+    // MIDI capability at load time. MIDI processors and merges are
+    // both source AND dst capable.
+    // MIDI source/sink classification comes straight from the
+    // registry; adding a new MIDI-capable kind needs nothing here.
+    const auto* src_entry = findKind(src_n.kind);
+    const auto* dst_entry = findKind(dst_n.kind);
+    const bool src_is_midi = src_entry && src_entry->is_midi_source;
+    const bool dst_is_midi = dst_entry && dst_entry->is_midi_sink;
+    if (src_is_midi || dst_is_midi)
+    {
+        if (!src_is_midi && src_n.kind != "plugin")
+        {
+            juce::AlertWindow::showMessageBoxAsync(
+                juce::AlertWindow::WarningIcon,
+                "MIDI edge requires a MIDI source",
+                "Connect from a MIDI source (input, clock, processor, "
+                "merge, or MIDI-producing plugin) into a MIDI sink "
+                "(output, processor, merge, or MIDI-accepting plugin).");
+            return;
+        }
+        // For midi_merge, pick the lowest unconnected dst_port; for
+        // other dst kinds use port 0 (single MIDI input port).
+        int chosen_port = 0;
+        if (dst_n.kind == "midi_merge")
+        {
+            // Find the merge spec to know num_inputs.
+            int num_inputs = 1;
+            for (const auto& mm : doc_->midi_merges)
+                if (mm.id == dst_n.id) { num_inputs = mm.num_inputs; break; }
+            chosen_port = -1;
+            for (int p = 0; p < num_inputs; ++p)
+            {
+                bool used = false;
+                for (const auto& e : doc_->edges)
+                    if (e.kind == project::EdgeKind::Midi
+                        && e.dst == dst_n.id && e.dst_port == p)
+                    { used = true; break; }
+                if (!used) { chosen_port = p; break; }
+            }
+            if (chosen_port < 0)
+            {
+                juce::AlertWindow::showMessageBoxAsync(
+                    juce::AlertWindow::WarningIcon,
+                    "Merge full",
+                    "All input ports on this midi_merge are already "
+                    "connected. Edit the merge to increase num_inputs.");
+                return;
+            }
+        }
+        else
+        {
+            // Single-port consumer: replace any existing edge at port 0.
+            const auto dst_id = dst_n.id;
+            doc_->edges.erase(
+                std::remove_if(doc_->edges.begin(), doc_->edges.end(),
+                    [&](const project::EdgeSpec& e) {
+                        return e.dst == dst_id
+                            && e.kind == project::EdgeKind::Midi
+                            && e.dst_port == 0;
+                    }),
+                doc_->edges.end());
+        }
+        project::EdgeSpec e;
+        e.src      = src_n.id;
+        e.dst      = dst_n.id;
+        e.dst_port = chosen_port;
+        e.kind     = project::EdgeKind::Midi;
+        doc_->edges.push_back(std::move(e));
+        rebuildLayout();
+        return;
+    }
+
     // Connect-time channel validation. For non-plugin kinds the
     // channel count is on the doc spec; for plugin nodes use the
-    // cached probe (-1 means "unknown", skip validation).
-    auto channels_for = [&](int node_index, bool is_output_port) -> int {
-        const int n_in   = (int) doc_->inputs.size();
-        const int n_plug = (int) doc_->plugins.size();
-        const int n_mix  = (int) doc_->mixes.size();
-        if (node_index < n_in)
-            return doc_->inputs[(size_t) node_index].channels;
-        const int after_in = node_index - n_in;
-        if (after_in < n_plug)
-        {
-            const auto& spec = doc_->plugins[(size_t) after_in];
-            return is_output_port ? spec.probed_out_channels
-                                  : spec.probed_in_channels;
-        }
-        const int after_plug = after_in - n_plug;
-        if (after_plug < n_mix)
-            return doc_->mixes[(size_t) after_plug].channels;
-        const int after_mix = after_plug - n_mix;
-        if (after_mix >= 0 && after_mix < (int) doc_->outputs.size())
-            return doc_->outputs[(size_t) after_mix].channels;
-        return -1;
+    // cached probe (-1 means "unknown", skip validation). Order must
+    // match rebuildLayout's section order.
+    // Channel count for the canvas node at `idx`. The registry's
+    // channels_for hook is asymmetric (pick_channel / merge_channels
+    // return different values for src vs dst), so we pass through
+    // is_output_port.
+    auto channels_for = [&](int idx, bool is_output_port) -> int {
+        const auto lk = mapCanvasIndex(*doc_, idx);
+        return lk.entry ? lk.entry->channels_for(*doc_, lk.spec_index,
+                                                 is_output_port)
+                        : -1;
     };
 
     const int src_ch = channels_for(src_node_index, /*is_output_port=*/true);
@@ -614,36 +737,63 @@ void CanvasComponent::addEdgeToDoc(int src_node_index, int dst_node_index,
 
 void CanvasComponent::showContextMenu(juce::Point<int> screen_pos)
 {
+    // Hard-coded item ids for entries that need special handling
+    // (file choosers, multi-node convenience helpers). Everything
+    // else is registry-driven: any NodeKindEntry with a non-empty
+    // menu_label gets a menu item that calls entry.menu_add(*doc_).
     enum {
-        kAddInput = 1,
+        kAddInput  = 1,
         kAddOutput,
-        kAddMix2,
-        kAddMix3,
         kAddPlugin,
+        kAddSplitStereo,
+        kRegistryBase = 1000,
     };
+
     juce::PopupMenu m;
     m.addItem(kAddInput,  "Add Input...");
     m.addItem(kAddOutput, "Add Output...");
-    m.addSeparator();
-    m.addItem(kAddMix2,   "Add Mix (2 inputs, stereo)");
-    m.addItem(kAddMix3,   "Add Mix (3 inputs, stereo)");
-    m.addSeparator();
     m.addItem(kAddPlugin, "Add Plugin...");
+    m.addSeparator();
+    m.addItem(kAddSplitStereo,
+              "Add Channel Split (stereo -> 2 mono)");
+    m.addSeparator();
+    for (int i = 0; i < (int) nodeRegistry().size(); ++i)
+    {
+        const auto& entry = nodeRegistry()[(size_t) i];
+        if (entry.menu_label.isNotEmpty() && entry.menu_add)
+            m.addItem(kRegistryBase + i, entry.menu_label);
+    }
 
     juce::PopupMenu::Options opts;
     opts = opts.withTargetScreenArea({ screen_pos, screen_pos });
     m.showMenuAsync(opts,
         [this](int chosen) {
-            switch (chosen)
+            if (chosen == kAddInput)        { addInputNode();          return; }
+            if (chosen == kAddOutput)       { addOutputNode();         return; }
+            if (chosen == kAddPlugin)       { addPluginNode();         return; }
+            if (chosen == kAddSplitStereo)  { addChannelSplitStereo(); return; }
+            const int reg_idx = chosen - kRegistryBase;
+            if (reg_idx >= 0 && reg_idx < (int) nodeRegistry().size())
             {
-            case kAddInput:  addInputNode();   break;
-            case kAddOutput: addOutputNode();  break;
-            case kAddMix2:   addMixNode(2, 2); break;
-            case kAddMix3:   addMixNode(3, 2); break;
-            case kAddPlugin: addPluginNode(); break;
-            default: break;
+                const auto& entry = nodeRegistry()[(size_t) reg_idx];
+                if (entry.menu_add && doc_ != nullptr)
+                {
+                    entry.menu_add(*doc_);
+                    rebuildLayout();
+                    repaint();
+                }
             }
         });
+}
+
+void CanvasComponent::setLiveProject(project::LoadedProject* lp)
+{
+    live_project_ = lp;
+    if (lp != nullptr && doc_ != nullptr && !doc_->meters.empty())
+        startTimerHz(30);
+    else
+        stopTimer();
+    repaint();
 }
 
 void CanvasComponent::showNodePropertiesDialog(int node_index)
@@ -651,172 +801,85 @@ void CanvasComponent::showNodePropertiesDialog(int node_index)
     if (doc_ == nullptr) return;
     if (node_index < 0 || node_index >= (int) nodes_.size()) return;
 
-    // Map the canvas node index to the appropriate doc spec.
-    const int n_in   = (int) doc_->inputs.size();
-    const int n_plug = (int) doc_->plugins.size();
-    const int n_mix  = (int) doc_->mixes.size();
+    // Registry-driven: the entry's dialog_emit / dialog_apply hooks
+    // know which fields to show + how to write them back.
+    const auto lookup = mapCanvasIndex(*doc_, node_index);
+    if (lookup.entry == nullptr) return;
+    const auto& entry = *lookup.entry;
+    const int   spec_index = lookup.spec_index;
 
     auto* aw = new juce::AlertWindow(
         "Node properties",
-        "",  // populated below per-kind
+        entry.dialog_title(*doc_, spec_index),
         juce::AlertWindow::QuestionIcon);
 
-    enum Kind { K_INPUT, K_PLUGIN, K_MIX, K_OUTPUT };
-    Kind kind;
-    int  spec_index;
-    if      (node_index < n_in)                          { kind = K_INPUT;  spec_index = node_index; }
-    else if (node_index < n_in + n_plug)                 { kind = K_PLUGIN; spec_index = node_index - n_in; }
-    else if (node_index < n_in + n_plug + n_mix)         { kind = K_MIX;    spec_index = node_index - n_in - n_plug; }
-    else                                                  { kind = K_OUTPUT; spec_index = node_index - n_in - n_plug - n_mix; }
-
-    if      (kind == K_INPUT)  aw->setMessage("Input node");
-    else if (kind == K_PLUGIN) aw->setMessage("Plugin node (path read-only here; delete + re-add to change)");
-    else if (kind == K_MIX)    aw->setMessage("Mix node");
-    else                       aw->setMessage("Output node");
-
-    // Common: id
-    juce::String current_id;
-    if      (kind == K_INPUT)  current_id = doc_->inputs[(size_t)  spec_index].id;
-    else if (kind == K_PLUGIN) current_id = doc_->plugins[(size_t) spec_index].id;
-    else if (kind == K_MIX)    current_id = doc_->mixes[(size_t)   spec_index].id;
-    else                       current_id = doc_->outputs[(size_t) spec_index].id;
-    aw->addTextEditor("id", current_id, "id");
-
-    // Per-kind fields
-    if (kind == K_INPUT)
-    {
-        const auto& s = doc_->inputs[(size_t) spec_index];
-        aw->addTextEditor("channels", juce::String(s.channels), "channels");
-        aw->addTextEditor("source",   s.source.getFullPathName(), "source path");
-    }
-    else if (kind == K_OUTPUT)
-    {
-        const auto& s = doc_->outputs[(size_t) spec_index];
-        aw->addTextEditor("channels",  juce::String(s.channels),  "channels");
-        aw->addTextEditor("bit_depth", juce::String(s.bit_depth), "bit depth (16/24/32)");
-        aw->addTextEditor("sink",      s.sink.getFullPathName(),  "sink path");
-    }
-    else if (kind == K_MIX)
-    {
-        const auto& s = doc_->mixes[(size_t) spec_index];
-        aw->addTextEditor("num_inputs", juce::String(s.num_inputs), "num_inputs");
-        aw->addTextEditor("channels",   juce::String(s.channels),   "channels");
-        juce::String gain_csv;
-        for (size_t i = 0; i < s.gains.size(); ++i)
-        {
-            if (i) gain_csv += ",";
-            gain_csv += juce::String(s.gains[i]);
-        }
-        aw->addTextEditor("gains", gain_csv, "gains (comma-separated)");
-    }
-    else // K_PLUGIN
-    {
-        const auto& s = doc_->plugins[(size_t) spec_index];
-        aw->addTextEditor("path",
-                          s.path.getFullPathName(),
-                          "plugin path");
-        aw->getTextEditor("path")->setReadOnly(true);
-        aw->addTextEditor("state_b64_size",
-                          juce::String((int) s.state_b64.length()),
-                          "state_b64 length (read-only)");
-        aw->getTextEditor("state_b64_size")->setReadOnly(true);
-        aw->addTextEditor("receives_midi",
-                          s.receives_midi ? "1" : "0",
-                          "receives MIDI input (1/0)");
-    }
+    // Every kind shares an editable id field.
+    aw->addTextEditor("id", entry.id_at(*doc_, spec_index), "id");
+    // Per-kind fields.
+    entry.dialog_emit(*doc_, spec_index, *aw);
 
     aw->addButton("OK",     1, juce::KeyPress(juce::KeyPress::returnKey));
     aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
 
     aw->enterModalState(true,
         juce::ModalCallbackFunction::create(
-            [this, aw, kind, spec_index](int result) {
+            [this, aw, &entry, spec_index](int result) {
                 if (result != 1) { delete aw; return; }
                 if (doc_ == nullptr) { delete aw; return; }
 
-                const auto new_id =
-                    aw->getTextEditorContents("id").trim();
+                const auto new_id = aw->getTextEditorContents("id").trim();
                 if (new_id.isEmpty()) { delete aw; return; }
 
-                auto rename_in_edges = [&](const juce::String& old_id,
-                                           const juce::String& nid) {
-                    for (auto& e : doc_->edges)
-                    {
-                        if (e.src == old_id) e.src = nid;
-                        if (e.dst == old_id) e.dst = nid;
-                    }
-                    auto it = doc_->layout.find(old_id.toStdString());
-                    if (it != doc_->layout.end())
-                    {
-                        doc_->layout[nid.toStdString()] = it->second;
-                        doc_->layout.erase(it);
-                    }
-                };
+                NodeKindEntry::RenameFn rename =
+                    [this](const juce::String& old_id,
+                           const juce::String& nid) {
+                        for (auto& e : doc_->edges)
+                        {
+                            if (e.src == old_id) e.src = nid;
+                            if (e.dst == old_id) e.dst = nid;
+                        }
+                        auto it = doc_->layout.find(old_id.toStdString());
+                        if (it != doc_->layout.end())
+                        {
+                            doc_->layout[nid.toStdString()] = it->second;
+                            doc_->layout.erase(it);
+                        }
+                    };
 
-                if (kind == K_INPUT)
-                {
-                    auto& s = doc_->inputs[(size_t) spec_index];
-                    if (s.id != new_id) { rename_in_edges(s.id, new_id); s.id = new_id; }
-                    s.channels = aw->getTextEditorContents("channels").getIntValue();
-                    s.source   = juce::File(
-                        aw->getTextEditorContents("source"));
-                }
-                else if (kind == K_OUTPUT)
-                {
-                    auto& s = doc_->outputs[(size_t) spec_index];
-                    if (s.id != new_id) { rename_in_edges(s.id, new_id); s.id = new_id; }
-                    s.channels  = aw->getTextEditorContents("channels").getIntValue();
-                    s.bit_depth = aw->getTextEditorContents("bit_depth").getIntValue();
-                    s.sink      = juce::File(
-                        aw->getTextEditorContents("sink"));
-                }
-                else if (kind == K_MIX)
-                {
-                    auto& s = doc_->mixes[(size_t) spec_index];
-                    if (s.id != new_id) { rename_in_edges(s.id, new_id); s.id = new_id; }
-                    const int new_n = std::max(1,
-                        aw->getTextEditorContents("num_inputs").getIntValue());
-                    s.channels = std::max(1,
-                        aw->getTextEditorContents("channels").getIntValue());
-                    // Parse gains CSV; pad/truncate to new_n with 1.0.
-                    juce::StringArray gain_strs;
-                    gain_strs.addTokens(aw->getTextEditorContents("gains"),
-                                        ",", "");
-                    std::vector<float> new_gains((size_t) new_n, 1.0f);
-                    for (int i = 0;
-                         i < std::min(new_n, gain_strs.size()); ++i)
-                        new_gains[(size_t) i]
-                            = gain_strs[i].trim().getFloatValue();
-                    s.gains = std::move(new_gains);
-                    // Drop any edges referencing ports >= new_n.
-                    if (new_n < s.num_inputs)
-                    {
-                        const juce::String mix_id = s.id;
-                        doc_->edges.erase(
-                            std::remove_if(
-                                doc_->edges.begin(), doc_->edges.end(),
-                                [&](const project::EdgeSpec& e) {
-                                    return e.dst == mix_id
-                                        && e.dst_port >= new_n;
-                                }),
-                            doc_->edges.end());
-                    }
-                    s.num_inputs = new_n;
-                }
-                else // K_PLUGIN
-                {
-                    auto& s = doc_->plugins[(size_t) spec_index];
-                    if (s.id != new_id) { rename_in_edges(s.id, new_id); s.id = new_id; }
-                    s.receives_midi
-                        = aw->getTextEditorContents("receives_midi")
-                              .getIntValue() != 0;
-                    // path/state_b64 are read-only in this dialog
-                }
+                entry.dialog_apply(*doc_, spec_index, *aw, new_id, rename);
                 rebuildLayout();
                 repaint();
                 delete aw;
             }),
         /*deleteWhenDismissed=*/false);
+}
+
+void CanvasComponent::addChannelSplitStereo()
+{
+    if (doc_ == nullptr) return;
+    // "Channel split" is two pick_channel nodes (one per channel).
+    // No grouped doc-level entity -- they're independent specs.
+    auto unique_id = [&](const juce::String& prefix) -> juce::String {
+        int n = 1;
+        juce::String id;
+        do { id = prefix + juce::String(n++); }
+        while (std::any_of(doc_->pick_channels.begin(),
+                           doc_->pick_channels.end(),
+                           [&](const project::PickChannelNodeSpec& s) {
+                               return s.id == id;
+                           }));
+        return id;
+    };
+    for (int c = 0; c < 2; ++c)
+    {
+        project::PickChannelNodeSpec s;
+        s.id = unique_id(c == 0 ? "L" : "R");
+        s.in_channels   = 2;
+        s.channel_index = c;
+        doc_->pick_channels.push_back(std::move(s));
+    }
+    rebuildLayout();
+    repaint();
 }
 
 void CanvasComponent::addInputNode()
@@ -906,18 +969,6 @@ juce::String CanvasComponent::generateUniqueId(const juce::String& prefix) const
     return prefix + "_x";
 }
 
-void CanvasComponent::addMixNode(int num_inputs, int channels)
-{
-    if (doc_ == nullptr) return;
-    project::MixNodeSpec m;
-    m.id         = generateUniqueId("mix");
-    m.num_inputs = num_inputs;
-    m.channels   = channels;
-    m.gains.assign((size_t) num_inputs, 1.0f);
-    doc_->mixes.push_back(std::move(m));
-    rebuildLayout();
-    repaint();
-}
 
 void CanvasComponent::addPluginNode()
 {
@@ -933,7 +984,6 @@ void CanvasComponent::addPluginNode()
             const auto file = fc.getResult();
             if (file == juce::File() || doc_ == nullptr) return;
             project::PluginNodeSpec p;
-            p.id   = generateUniqueId("fx");
             p.path = file;
             // Probe channel counts so canvas edges can validate. Use
             // the project's sample_rate / block_size so prepareToPlay
@@ -944,6 +994,9 @@ void CanvasComponent::addPluginNode()
                                        doc_->block_size,
                                        /*req_in=*/0, /*req_out=*/0,
                                        err, sizeof(err));
+            // Default to "fx" prefix; we'll switch to "synth" below
+            // once the probe tells us whether it's an instrument.
+            juce::String id_prefix = "fx";
             if (probe != nullptr)
             {
                 MH_Info info{};
@@ -951,6 +1004,14 @@ void CanvasComponent::addPluginNode()
                 {
                     p.probed_in_channels  = info.num_input_ch;
                     p.probed_out_channels = info.num_output_ch;
+                    p.accepts_midi        = info.accepts_midi != 0;
+                    p.produces_midi       = info.produces_midi != 0;
+                    // Heuristic: an instrument has no audio input
+                    // (or only MIDI-driven output). Naming reflects
+                    // that so the canvas reads as "synth_1" instead
+                    // of "fx_1".
+                    if (info.num_input_ch == 0 || info.is_midi_effect)
+                        id_prefix = "synth";
                 }
                 mh_close(probe);
             }
@@ -965,6 +1026,7 @@ void CanvasComponent::addPluginNode()
                           "validation at connect time will be disabled "
                           "until the next load.");
             }
+            p.id = generateUniqueId(id_prefix);
             doc_->plugins.push_back(std::move(p));
             rebuildLayout();
             repaint();

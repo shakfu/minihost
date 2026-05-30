@@ -26,6 +26,7 @@ add_executable(minihost_desktop
     src/project.cpp
     src/canvas.cpp
     src/live.cpp
+    src/node_registry.cpp
 )
 
 target_include_directories(minihost_desktop PRIVATE

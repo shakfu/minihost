@@ -1528,12 +1528,154 @@ public:
         return id;
     }
 
+    int add_pick_channel(int in_channels, int channel_index) {
+        char err[256] = {0};
+        int id = mh_graph_v2_add_pick_channel(graph_, in_channels,
+                                              channel_index,
+                                              err, sizeof(err));
+        if (id < 0)
+            throw std::runtime_error(
+                std::string("add_pick_channel failed: ") + err);
+        return id;
+    }
+
+    int add_merge_channels(int out_channels) {
+        char err[256] = {0};
+        int id = mh_graph_v2_add_merge_channels(graph_, out_channels,
+                                                err, sizeof(err));
+        if (id < 0)
+            throw std::runtime_error(
+                std::string("add_merge_channels failed: ") + err);
+        return id;
+    }
+
+    // Build params from a kwargs-style dict; missing fields use C
+    // defaults so callers only set what they need for their op.
+    static MH_MidiProcessorParams parse_processor_params(nb::dict p) {
+        MH_MidiProcessorParams out{};
+        out.op                  = MH_MIDI_OP_FILTER;
+        out.min_note            = 0;
+        out.max_note            = 127;
+        out.channel_mask        = 0xFFFF;
+        out.transpose_semitones = 0;
+        out.velocity_gamma      = 1.0f;
+        for (auto item : p) {
+            auto k = nb::cast<std::string>(item.first);
+            if      (k == "op")            out.op = (MH_MidiOp) nb::cast<int>(item.second);
+            else if (k == "min_note")      out.min_note = nb::cast<int>(item.second);
+            else if (k == "max_note")      out.max_note = nb::cast<int>(item.second);
+            else if (k == "channel_mask")  out.channel_mask = nb::cast<int>(item.second);
+            else if (k == "transpose_semitones") out.transpose_semitones = nb::cast<int>(item.second);
+            else if (k == "velocity_gamma")      out.velocity_gamma = nb::cast<float>(item.second);
+            else throw std::runtime_error(
+                std::string("unknown MIDI processor param: ") + k);
+        }
+        return out;
+    }
+
+    int add_midi_processor(nb::dict params) {
+        char err[256] = {0};
+        const auto cp = parse_processor_params(params);
+        int id = mh_graph_v2_add_midi_processor(graph_, cp,
+                                                err, sizeof(err));
+        if (id < 0)
+            throw std::runtime_error(
+                std::string("add_midi_processor failed: ") + err);
+        return id;
+    }
+
+    void set_midi_processor_params(int node_id, nb::dict params) {
+        const auto cp = parse_processor_params(params);
+        if (!mh_graph_v2_set_midi_processor_params(graph_, node_id, cp))
+            throw std::runtime_error(
+                "set_midi_processor_params failed (bad node id or kind)");
+    }
+
+    int add_midi_merge(int num_inputs) {
+        char err[256] = {0};
+        int id = mh_graph_v2_add_midi_merge(graph_, num_inputs,
+                                            err, sizeof(err));
+        if (id < 0)
+            throw std::runtime_error(
+                std::string("add_midi_merge failed: ") + err);
+        return id;
+    }
+
+    void connect_midi_port(int src, int dst, int dst_port) {
+        char err[256] = {0};
+        if (!mh_graph_v2_connect_midi_port(graph_, src, dst, dst_port,
+                                           err, sizeof(err)))
+            throw std::runtime_error(
+                std::string("connect_midi_port failed: ") + err);
+    }
+
+    int add_midi_input() {
+        char err[256] = {0};
+        int id = mh_graph_v2_add_midi_input(graph_, err, sizeof(err));
+        if (id < 0)
+            throw std::runtime_error(
+                std::string("add_midi_input failed: ") + err);
+        return id;
+    }
+
+    int add_midi_output() {
+        char err[256] = {0};
+        int id = mh_graph_v2_add_midi_output(graph_, err, sizeof(err));
+        if (id < 0)
+            throw std::runtime_error(
+                std::string("add_midi_output failed: ") + err);
+        return id;
+    }
+
     void connect(int src, int dst, int dst_port) {
         char err[256] = {0};
         if (!mh_graph_v2_connect(graph_, src, 0, dst, dst_port,
                                  err, sizeof(err)))
             throw std::runtime_error(
                 std::string("connect failed: ") + err);
+    }
+
+    void connect_midi(int src, int dst) {
+        char err[256] = {0};
+        if (!mh_graph_v2_connect_midi(graph_, src, dst,
+                                      err, sizeof(err)))
+            throw std::runtime_error(
+                std::string("connect_midi failed: ") + err);
+    }
+
+    void set_midi_input_events(int node_id, nb::list events) {
+        auto& buf = midi_in_scratch_[node_id];
+        buf.clear();
+        for (auto item : events) buf.push_back(parse_midi_event(item));
+        if (!mh_graph_v2_set_midi_input_events(
+                graph_, node_id,
+                buf.empty() ? nullptr : buf.data(),
+                (int) buf.size()))
+            throw std::runtime_error(
+                "set_midi_input_events failed (bad node id or kind)");
+    }
+
+    nb::list get_midi_output_events(int node_id) {
+        int total = 0;
+        if (!mh_graph_v2_get_midi_output_events(graph_, node_id,
+                                                nullptr, 0, &total))
+            throw std::runtime_error(
+                "get_midi_output_events failed (bad node id or kind)");
+        std::vector<MH_MidiEvent> buf((size_t) total);
+        if (total > 0) {
+            int n = 0;
+            mh_graph_v2_get_midi_output_events(graph_, node_id,
+                                               buf.data(), total, &n);
+            buf.resize((size_t) n);
+        }
+        nb::list out;
+        for (const auto& e : buf) {
+            out.append(nb::make_tuple(e.sample_offset,
+                                       (int) e.status,
+                                       (int) e.data1,
+                                       (int) e.data2));
+        }
+        return out;
     }
 
     void set_mix_gain(int mix_node, int input_index, float gain) {
@@ -1644,6 +1786,7 @@ private:
     // Per-node automation scratch buffers that outlive Python call
     // boundaries (the graph borrows pointers during render_block).
     std::unordered_map<int, std::vector<MH_ParamChange>> autos_scratch_;
+    std::unordered_map<int, std::vector<MH_MidiEvent>>   midi_in_scratch_;
 };
 
 
@@ -3239,6 +3382,44 @@ NB_MODULE(_core, m) {
              "Add a mix node summing `num_inputs` inputs (each "
              "`channels` channels, gain 1.0 by default) into one "
              "`channels`-channel output. Returns node id.")
+        .def("add_pick_channel", &GraphV2::add_pick_channel,
+             nb::arg("in_channels"), nb::arg("channel_index"),
+             "Add a pick-channel node: takes an in_channels signal "
+             "and outputs the single channel at channel_index. "
+             "Returns node id.")
+        .def("add_merge_channels", &GraphV2::add_merge_channels,
+             nb::arg("out_channels"),
+             "Add a merge-channels node: takes out_channels separate "
+             "1-channel inputs (one per port) and interleaves them "
+             "into one out_channels output signal. Returns node id.")
+        .def("add_midi_processor", &GraphV2::add_midi_processor,
+             nb::arg("params"),
+             "Add a MIDI processor node. params is a dict with key "
+             "'op' (0=filter, 1=transpose, 2=velocity_curve) plus "
+             "op-specific fields: min_note/max_note/channel_mask "
+             "(filter), transpose_semitones (transpose), "
+             "velocity_gamma (velocity_curve). Defaults are "
+             "pass-through identities for fields you omit.")
+        .def("set_midi_processor_params",
+             &GraphV2::set_midi_processor_params,
+             nb::arg("node_id"), nb::arg("params"),
+             "Update the params on an existing MIDI processor node. "
+             "Same dict shape as add_midi_processor.")
+        .def("add_midi_merge", &GraphV2::add_midi_merge,
+             nb::arg("num_inputs"),
+             "Add a MIDI merge node with num_inputs MIDI input "
+             "ports. Connect each port via connect_midi_port. "
+             "Returns node id.")
+        .def("connect_midi_port", &GraphV2::connect_midi_port,
+             nb::arg("src"), nb::arg("dst"), nb::arg("dst_port"),
+             "Connect a MIDI edge to a specific dst_port (required "
+             "for MIDI_MERGE; other dst kinds accept only port 0).")
+        .def("add_midi_input", &GraphV2::add_midi_input,
+             "Add a MIDI input node. Caller stages events per block "
+             "via set_midi_input_events. Returns node id.")
+        .def("add_midi_output", &GraphV2::add_midi_output,
+             "Add a MIDI output node. Drain via "
+             "get_midi_output_events after render_block. Returns node id.")
         .def("connect", &GraphV2::connect,
              nb::arg("src"), nb::arg("dst"), nb::arg("dst_port") = 0,
              "Connect src.out -> dst.in[dst_port]. dst_port is 0 "
@@ -3249,6 +3430,23 @@ NB_MODULE(_core, m) {
              nb::arg("mix_node"), nb::arg("input_index"), nb::arg("gain"),
              "Set the per-input gain (linear, default 1.0) on a mix "
              "node. Callable before or after compile.")
+        .def("connect_midi", &GraphV2::connect_midi,
+             nb::arg("src"), nb::arg("dst"),
+             "Connect a MIDI edge. src must be a MIDI_INPUT node or a "
+             "plugin with produces_midi=1; dst must be a MIDI_OUTPUT "
+             "node or a plugin with accepts_midi=1. One MIDI edge per "
+             "dst; fan-out from a source is allowed.")
+        .def("set_midi_input_events", &GraphV2::set_midi_input_events,
+             nb::arg("node_id"), nb::arg("events"),
+             "Stage MIDI events on a MIDI_INPUT node for the next "
+             "render_block. Each event is a "
+             "(sample_offset, status, data1, data2) tuple. Cleared "
+             "after render_block.")
+        .def("get_midi_output_events", &GraphV2::get_midi_output_events,
+             nb::arg("node_id"),
+             "Drain MIDI events that flowed into a MIDI_OUTPUT node "
+             "during the most recent render_block. Returns a list of "
+             "(sample_offset, status, data1, data2) tuples.")
         .def("compile", &GraphV2::compile,
              "Validate topology, build the schedule, and allocate the "
              "per-node buffer pool. After compile, no further add_* / "

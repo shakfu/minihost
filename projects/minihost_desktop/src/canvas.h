@@ -27,7 +27,8 @@
 
 namespace minihost_desktop {
 
-class CanvasComponent : public juce::Component
+class CanvasComponent : public juce::Component,
+                        private juce::Timer
 {
 public:
     CanvasComponent();
@@ -53,6 +54,11 @@ public:
     // captured editor state), call this so the canvas refreshes its
     // label cache. Pure repaint trigger; no layout recompute.
     void notifyDocumentChanged() { repaint(); }
+
+    // Wire the canvas to the live LoadedProject so meter nodes show
+    // real-time per-channel peak. Pass nullptr when live stops.
+    // Starts/stops an internal repaint timer accordingly.
+    void setLiveProject(project::LoadedProject* lp);
 
     void paint(juce::Graphics& g) override;
     void resized() override;
@@ -80,10 +86,11 @@ private:
     // corresponding entry in doc_->edges so deletes remove the right
     // one even if the user drags create new edges in between.
     struct EdgeLayout {
-        int src_node_index;
-        int dst_node_index;
-        int dst_port;
-        int doc_edge_index;
+        int          src_node_index;
+        int          dst_node_index;
+        int          dst_port;
+        int          doc_edge_index;
+        project::EdgeKind kind = project::EdgeKind::Audio;
     };
 
     // What did the user grab on mouseDown? Tracks the in-progress
@@ -111,10 +118,13 @@ private:
                    juce::Point<float>& c0, juce::Point<float>& c1) const;
 
     void showContextMenu(juce::Point<int> screen_pos);
-    void addMixNode(int num_inputs, int channels);
+    // File-chooser flows (registry can't express async UI cleanly):
     void addPluginNode();           // launches an async file chooser
     void addInputNode();            // file chooser -> source WAV; channels from file
     void addOutputNode();           // file chooser -> sink path; defaults to 2 channels
+    // Convenience helper: stereo split into two pick_channel nodes
+    // (registry doesn't model multi-spec menu helpers).
+    void addChannelSplitStereo();
 
     // Property editing entry point. Inspects the kind of node_index
     // and dispatches to the appropriate dialog.
@@ -127,6 +137,10 @@ private:
     juce::String generateUniqueId(const juce::String& prefix) const;
 
     project::ProjectDocument* doc_ = nullptr;
+    project::LoadedProject*   live_project_ = nullptr;
+
+    // juce::Timer
+    void timerCallback() override { repaint(); }
     OpenPluginEditorCb        on_open_plugin_editor_;
     std::vector<NodeLayout>   nodes_;
     std::vector<EdgeLayout>   edges_;

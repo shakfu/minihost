@@ -40,6 +40,7 @@
 
 #include "minihost.h"
 #include "minihost_audiofile.h"
+#include "minihost_midi.h"
 #include "canvas.h"
 #include "live.h"
 #include "project.h"
@@ -1314,6 +1315,8 @@ private:
         {
             live_->stop();
             mainWindow_->setLiveRunning(false);
+            if (auto* c = mainWindow_->canvas())
+                c->setLiveProject(nullptr);
         }
         project::ProjectDocument blank;
         blank.sample_rate = 48000;
@@ -1447,7 +1450,12 @@ private:
         if (live_ && live_->isRunning())
         {
             live_->stop();
-            if (mainWindow_) mainWindow_->setLiveRunning(false);
+            if (mainWindow_)
+            {
+                mainWindow_->setLiveRunning(false);
+                if (auto* c = mainWindow_->canvas())
+                    c->setLiveProject(nullptr);
+            }
         }
         try {
             auto doc = project::parseProjectFile(project_file);
@@ -1515,20 +1523,34 @@ private:
             return;
         }
         mainWindow_->setLiveRunning(true);
+        if (auto* c = mainWindow_->canvas())
+            c->setLiveProject(engine.loadedProject());
         std::fprintf(stderr, "live: started\n");
     }
 
     void stopLive()
     {
         if (live_) live_->stop();
-        if (mainWindow_) mainWindow_->setLiveRunning(false);
+        if (mainWindow_)
+        {
+            mainWindow_->setLiveRunning(false);
+            if (auto* c = mainWindow_->canvas())
+                c->setLiveProject(nullptr);
+        }
         std::fprintf(stderr, "live: stopped\n");
     }
 
     void showMidiInputDialog()
     {
         auto& engine = ensureLiveEngine();
-        const auto devices = juce::MidiInput::getAvailableDevices();
+        // Enumerate ports via libminihost (libremidi-backed). Names are
+        // the persistence key passed to LiveEngine::setMidiInputDevice.
+        juce::StringArray port_names;
+        const int n_ports = mh_midi_get_num_inputs();
+        char buf[256];
+        for (int i = 0; i < n_ports; ++i)
+            if (mh_midi_get_input_name(i, buf, sizeof(buf)))
+                port_names.add(juce::String::fromUTF8(buf));
 
         juce::PopupMenu m;
         const int kNone = 1;
@@ -1536,27 +1558,27 @@ private:
                   /*isActive=*/true,
                   /*isTicked=*/engine.midiInputDevice().isEmpty());
         m.addSeparator();
-        for (int i = 0; i < devices.size(); ++i)
+        for (int i = 0; i < port_names.size(); ++i)
         {
-            const auto& d = devices[(int) i];
-            m.addItem(kNone + 1 + i, d.name,
+            const auto& name = port_names[i];
+            m.addItem(kNone + 1 + i, name,
                       true,
-                      engine.midiInputDevice() == d.identifier);
+                      engine.midiInputDevice() == name);
         }
 
         juce::PopupMenu::Options opts;
         if (mainWindow_)
             opts = opts.withTargetComponent(mainWindow_.get());
         m.showMenuAsync(opts,
-            [this, devices](int chosen) {
+            [this, port_names](int chosen) {
                 if (chosen <= 0) return;
                 auto& eng = ensureLiveEngine();
                 if (chosen == kNone) eng.setMidiInputDevice({});
                 else
                 {
                     const int idx = chosen - kNone - 1;
-                    if (idx >= 0 && idx < devices.size())
-                        eng.setMidiInputDevice(devices[idx].identifier);
+                    if (idx >= 0 && idx < port_names.size())
+                        eng.setMidiInputDevice(port_names[idx]);
                 }
             });
     }
