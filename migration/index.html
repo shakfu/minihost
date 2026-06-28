@@ -548,6 +548,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#5-routing-types-renamed-plugingraph-pluginbus-graphv2-plugingraph" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Routing types renamed (PluginGraph -&gt; PluginBus, GraphV2 -&gt; PluginGraph)
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -791,6 +802,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#5-routing-types-renamed-plugingraph-pluginbus-graphv2-plugingraph" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Routing types renamed (PluginGraph -&gt; PluginBus, GraphV2 -&gt; PluginGraph)
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -900,10 +922,13 @@
 
 
 <h1 id="migration-guide">Migration guide<a class="headerlink" href="#migration-guide" title="Permanent link">&para;</a></h1>
-<p>This guide covers the breaking changes introduced by the <code>AudioBuffer</code>
-migration (see CHANGELOG <code>[Unreleased]</code>). Every breaking change has a
-one-keyword fix to keep existing code working; the recommended patterns
-shown below are improvements, not requirements.</p>
+<p>This guide covers the breaking changes shipping in <strong>0.2.0</strong> (see CHANGELOG
+<code>[Unreleased]</code>): the <code>AudioBuffer</code> / numpy-optional migration, and the routing
+type rename (<code>PluginGraph</code> -&gt; <code>PluginBus</code>, <code>GraphV2</code> -&gt; <code>PluginGraph</code>).</p>
+<p>The <code>AudioBuffer</code> changes each have a one-keyword fix to keep existing code
+working; the recommended patterns shown below are improvements, not
+requirements. The routing rename (section 5) is the exception -- it is a hard
+rename with no compatibility shim, because minihost is still alpha (0.x).</p>
 <h2 id="tldr">TL;DR<a class="headerlink" href="#tldr" title="Permanent link">&para;</a></h2>
 <p><strong>Install:</strong>
 - Was: <code>pip install minihost</code> (numpy was a hard dependency, installed transparently)
@@ -917,6 +942,7 @@ shown below are improvements, not requirements.</p>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">plugin</span><span class="o">.</span><span class="n">process</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="n">output_buffer</span><span class="p">)</span>                <span class="c1"># AudioBuffer in directly</span>
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">np_data</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">as_ndarray</span><span class="p">()</span>                        <span class="c1"># zero-copy numpy view if you need one</span>
 </code></pre></div>
+<p><strong>Routing rename (no shim):</strong> <code>PluginGraph</code> (the parallel bus) is now <code>PluginBus</code>; <code>GraphV2</code> (the DAG) is now <code>PluginGraph</code>. Mind the swap -- <code>PluginGraph</code> now means the DAG. Full details and the C/C++ ABI rename are in breaking change 5 below.</p>
 <hr />
 <h2 id="breaking-changes">Breaking changes<a class="headerlink" href="#breaking-changes" title="Permanent link">&para;</a></h2>
 <h3 id="1-pip-install-minihost-no-longer-installs-numpy">1. <code>pip install minihost</code> no longer installs numpy<a class="headerlink" href="#1-pip-install-minihost-no-longer-installs-numpy" title="Permanent link">&para;</a></h3>
@@ -986,6 +1012,104 @@ shown below are improvements, not requirements.</p>
 <a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a>    <span class="n">peak</span> <span class="o">=</span> <span class="n">block</span><span class="o">.</span><span class="n">magnitude</span><span class="p">()</span>             <span class="c1"># JUCE-backed, no numpy</span>
 </code></pre></div>
 <p><code>MidiRenderer.render_all()</code> accepts <code>as_=numpy.ndarray</code> for the whole-buffer return.</p>
+<h3 id="5-routing-types-renamed-plugingraph-pluginbus-graphv2-plugingraph">5. Routing types renamed (<code>PluginGraph</code> -&gt; <code>PluginBus</code>, <code>GraphV2</code> -&gt; <code>PluginGraph</code>)<a class="headerlink" href="#5-routing-types-renamed-plugingraph-pluginbus-graphv2-plugingraph" title="Permanent link">&para;</a></h3>
+<p>0.2.0 gives the routing types a clean three-tier model. Unlike the
+<code>AudioBuffer</code> changes above, <strong>this is a hard rename with no compatibility
+shim</strong> -- the old names are gone in both Python and the C/C++ ABI.</p>
+<table>
+<thead>
+<tr>
+<th>Concept</th>
+<th>Old name</th>
+<th>New name</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Series (A -&gt; B -&gt; C)</td>
+<td><code>PluginChain</code></td>
+<td><code>PluginChain</code> (unchanged)</td>
+</tr>
+<tr>
+<td>Parallel, summed (a mix bus)</td>
+<td><code>PluginGraph</code></td>
+<td><strong><code>PluginBus</code></strong></td>
+</tr>
+<tr>
+<td>Arbitrary node-to-node DAG</td>
+<td><code>GraphV2</code></td>
+<td><strong><code>PluginGraph</code></strong></td>
+</tr>
+</tbody>
+</table>
+<p>Watch the swap: <strong><code>PluginGraph</code> now means the DAG executor</strong>, not the parallel
+bus. Code that used the old <code>PluginGraph</code> (the bus) must move to <code>PluginBus</code>;
+code that used <code>GraphV2</code> must move to <code>PluginGraph</code>.</p>
+<p><strong>Python:</strong></p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Old: parallel-branches-summed</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">bus</span> <span class="o">=</span> <span class="n">minihost</span><span class="o">.</span><span class="n">PluginGraph</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="n">max_block_size</span><span class="o">=</span><span class="mi">512</span><span class="p">,</span> <span class="n">sample_rate</span><span class="o">=</span><span class="mf">48000.0</span><span class="p">)</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="c1"># New:</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="n">bus</span> <span class="o">=</span> <span class="n">minihost</span><span class="o">.</span><span class="n">PluginBus</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="n">max_block_size</span><span class="o">=</span><span class="mi">512</span><span class="p">,</span> <span class="n">sample_rate</span><span class="o">=</span><span class="mf">48000.0</span><span class="p">)</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="c1"># Old: general DAG executor</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="n">g</span> <span class="o">=</span> <span class="n">minihost</span><span class="o">.</span><span class="n">GraphV2</span><span class="p">(</span><span class="mi">512</span><span class="p">,</span> <span class="mf">48000.0</span><span class="p">)</span>
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="c1"># New:</span>
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="n">g</span> <span class="o">=</span> <span class="n">minihost</span><span class="o">.</span><span class="n">PluginGraph</span><span class="p">(</span><span class="mi">512</span><span class="p">,</span> <span class="mf">48000.0</span><span class="p">)</span>
+</code></pre></div>
+<p>Project files (<code>load_project</code> / <code>render_project</code>) are <strong>unaffected</strong>: the JSON
+schema is identical; only the Python class backing it was renamed.</p>
+<p>New in the same release: <code>PluginBus.process_midi(input, output, midi_in)</code> fans
+the same MIDI to every branch, so one part can layer across parallel
+instruments. See the README "Parallel routing (PluginBus)" section.</p>
+<p><strong>C / C++ ABI</strong> (<code>MH_API_VERSION</code> bumped to <strong>2.0.0</strong>):</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Old</th>
+<th>New</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>bus functions</td>
+<td><code>mh_graph_*</code></td>
+<td><code>mh_bus_*</code></td>
+</tr>
+<tr>
+<td>bus type</td>
+<td><code>MH_PluginGraph</code></td>
+<td><code>MH_PluginBus</code></td>
+</tr>
+<tr>
+<td>DAG functions</td>
+<td><code>mh_graph_v2_*</code></td>
+<td><code>mh_graph_*</code></td>
+</tr>
+<tr>
+<td>DAG type</td>
+<td><code>MH_GraphV2</code></td>
+<td><code>MH_PluginGraph</code></td>
+</tr>
+<tr>
+<td>DAG C++ RAII wrapper</td>
+<td><code>minihost::GraphV2</code></td>
+<td><code>minihost::PluginGraph</code></td>
+</tr>
+</tbody>
+</table>
+<p>Source file names are retained for git history (<code>minihost_graph.{h,cpp}</code> is the
+bus; <code>minihost_graph_v2.{h,cpp,hpp}</code> is the DAG); a header note in each maps the
+file to its symbol family. Binaries linked against minihost should validate the
+ABI at startup: <code>if (mh_api_version() &lt; MH_API_VERSION_NUMBER) { /* mismatch */ }</code>.</p>
+<p>To migrate a C/C++ codebase, apply the substitutions in this order -- the
+ordering matters because <code>mh_graph_</code> is a prefix of <code>mh_graph_v2_</code>, so a naive
+pass would corrupt the DAG symbols:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># function symbols (placeholder avoids the prefix collision)</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>perl<span class="w"> </span>-pi<span class="w"> </span>-e<span class="w"> </span><span class="s1">&#39;s/mh_graph_v2_/MHTMP_/g; s/mh_graph_/mh_bus_/g; s/MHTMP_/mh_graph_/g&#39;</span><span class="w"> </span>FILES...
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="c1"># types and the C++ wrapper class</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>perl<span class="w"> </span>-pi<span class="w"> </span>-e<span class="w"> </span><span class="s1">&#39;s/MH_GraphV2/MHTMP2/g; s/\bGraphV2\b/PluginGraph/g; s/MH_PluginGraph/MH_PluginBus/g; s/MHTMP2/MH_PluginGraph/g&#39;</span><span class="w"> </span>FILES...
+</code></pre></div>
 <hr />
 <h2 id="if-your-old-code-did-x-do-y-table">"If your old code did X, do Y" table<a class="headerlink" href="#if-your-old-code-did-x-do-y-table" title="Permanent link">&para;</a></h2>
 <table>
@@ -1042,6 +1166,31 @@ shown below are improvements, not requirements.</p>
 <td>call <code>.as_ndarray()</code> once at the boundary</td>
 <td>same</td>
 </tr>
+<tr>
+<td><code>minihost.PluginGraph(in, out, ...)</code> (parallel bus)</td>
+<td><code>minihost.PluginBus(in, out, ...)</code></td>
+<td>same — plus <code>bus.process_midi(...)</code> for layering</td>
+</tr>
+<tr>
+<td><code>minihost.GraphV2(block, sr)</code> (DAG)</td>
+<td><code>minihost.PluginGraph(block, sr)</code></td>
+<td>same</td>
+</tr>
+<tr>
+<td>C: <code>mh_graph_*</code> / <code>MH_PluginGraph</code> (bus)</td>
+<td><code>mh_bus_*</code> / <code>MH_PluginBus</code></td>
+<td>same</td>
+</tr>
+<tr>
+<td>C: <code>mh_graph_v2_*</code> / <code>MH_GraphV2</code> (DAG)</td>
+<td><code>mh_graph_*</code> / <code>MH_PluginGraph</code></td>
+<td>same</td>
+</tr>
+<tr>
+<td>C++: <code>minihost::GraphV2</code></td>
+<td><code>minihost::PluginGraph</code></td>
+<td>same</td>
+</tr>
 </tbody>
 </table>
 <hr />
@@ -1068,43 +1217,43 @@ shown below are improvements, not requirements.</p>
 <p>These additions ship in the same release. They don't break existing code but they collapse common patterns:</p>
 <h3 id="process_audio_to_file-file-chain-file-in-one-call"><code>process_audio_to_file</code> — file → chain → file in one call<a class="headerlink" href="#process_audio_to_file-file-chain-file-in-one-call" title="Permanent link">&para;</a></h3>
 <p>If you currently open <code>read_audio</code>, build a block loop, and call <code>write_audio</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Old:</span>
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">data</span><span class="p">,</span> <span class="n">sr</span> <span class="o">=</span> <span class="n">minihost</span><span class="o">.</span><span class="n">read_audio</span><span class="p">(</span><span class="s2">&quot;in.wav&quot;</span><span class="p">)</span>
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="n">output</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>
-<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="k">for</span> <span class="n">start</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="o">...</span><span class="p">,</span> <span class="n">block_size</span><span class="p">):</span>
-<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>    <span class="n">plugin</span><span class="o">.</span><span class="n">process</span><span class="p">(</span><span class="n">data</span><span class="p">[:,</span> <span class="n">start</span><span class="p">:</span><span class="n">start</span><span class="o">+</span><span class="n">block_size</span><span class="p">],</span> <span class="n">output</span><span class="p">[:,</span> <span class="n">start</span><span class="p">:</span><span class="n">start</span><span class="o">+</span><span class="n">block_size</span><span class="p">])</span>
-<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="n">minihost</span><span class="o">.</span><span class="n">write_audio</span><span class="p">(</span><span class="s2">&quot;out.wav&quot;</span><span class="p">,</span> <span class="n">output</span><span class="p">,</span> <span class="n">sr</span><span class="p">)</span>
-<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>
-<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="c1"># New:</span>
-<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="n">minihost</span><span class="o">.</span><span class="n">process_audio_to_file</span><span class="p">(</span><span class="n">plugin</span><span class="p">,</span> <span class="s2">&quot;in.wav&quot;</span><span class="p">,</span> <span class="s2">&quot;out.wav&quot;</span><span class="p">,</span> <span class="n">tail_seconds</span><span class="o">=</span><span class="mf">4.0</span><span class="p">)</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># Old:</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="n">data</span><span class="p">,</span> <span class="n">sr</span> <span class="o">=</span> <span class="n">minihost</span><span class="o">.</span><span class="n">read_audio</span><span class="p">(</span><span class="s2">&quot;in.wav&quot;</span><span class="p">)</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="n">output</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="k">for</span> <span class="n">start</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="o">...</span><span class="p">,</span> <span class="n">block_size</span><span class="p">):</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>    <span class="n">plugin</span><span class="o">.</span><span class="n">process</span><span class="p">(</span><span class="n">data</span><span class="p">[:,</span> <span class="n">start</span><span class="p">:</span><span class="n">start</span><span class="o">+</span><span class="n">block_size</span><span class="p">],</span> <span class="n">output</span><span class="p">[:,</span> <span class="n">start</span><span class="p">:</span><span class="n">start</span><span class="o">+</span><span class="n">block_size</span><span class="p">])</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="n">minihost</span><span class="o">.</span><span class="n">write_audio</span><span class="p">(</span><span class="s2">&quot;out.wav&quot;</span><span class="p">,</span> <span class="n">output</span><span class="p">,</span> <span class="n">sr</span><span class="p">)</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="c1"># New:</span>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="n">minihost</span><span class="o">.</span><span class="n">process_audio_to_file</span><span class="p">(</span><span class="n">plugin</span><span class="p">,</span> <span class="s2">&quot;in.wav&quot;</span><span class="p">,</span> <span class="s2">&quot;out.wav&quot;</span><span class="p">,</span> <span class="n">tail_seconds</span><span class="o">=</span><span class="mf">4.0</span><span class="p">)</span>
 </code></pre></div>
 <p><code>process_audio_to_file</code> handles block iteration, latency compensation, sample-rate matching, channel layout, and tail rendering.</p>
 <h3 id="midimapper-control-surface-ccs-to-plugin-parameters"><code>MidiMapper</code> — control-surface CCs to plugin parameters<a class="headerlink" href="#midimapper-control-surface-ccs-to-plugin-parameters" title="Permanent link">&para;</a></h3>
 <p>For mapping a USB MIDI control surface onto plugin parameters at runtime:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="n">plugin</span> <span class="o">=</span> <span class="n">minihost</span><span class="o">.</span><span class="n">Plugin</span><span class="p">(</span><span class="s2">&quot;/path/to/synth.vst3&quot;</span><span class="p">,</span> <span class="n">sample_rate</span><span class="o">=</span><span class="mi">48000</span><span class="p">)</span>
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="n">mapper</span> <span class="o">=</span> <span class="n">minihost</span><span class="o">.</span><span class="n">MidiMapper</span><span class="p">(</span><span class="n">plugin</span><span class="p">)</span>
-<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">mapper</span><span class="o">.</span><span class="n">map_cc</span><span class="p">(</span><span class="n">channel</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">cc</span><span class="o">=</span><span class="mi">7</span><span class="p">,</span>  <span class="n">param</span><span class="o">=</span><span class="s2">&quot;Volume&quot;</span><span class="p">)</span>
-<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="n">mapper</span><span class="o">.</span><span class="n">map_cc</span><span class="p">(</span><span class="n">channel</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">cc</span><span class="o">=</span><span class="mi">74</span><span class="p">,</span> <span class="n">param</span><span class="o">=</span><span class="s2">&quot;Cutoff&quot;</span><span class="p">,</span> <span class="n">curve</span><span class="o">=</span><span class="s2">&quot;exp&quot;</span><span class="p">)</span>
-<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>
-<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="k">with</span> <span class="n">minihost</span><span class="o">.</span><span class="n">AudioDevice</span><span class="p">(</span><span class="n">plugin</span><span class="p">)</span> <span class="k">as</span> <span class="n">audio</span><span class="p">:</span>
-<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>    <span class="k">with</span> <span class="n">minihost</span><span class="o">.</span><span class="n">MidiIn</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">mapper</span><span class="p">):</span>
-<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>        <span class="nb">input</span><span class="p">(</span><span class="s2">&quot;Press Enter to stop...</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="n">plugin</span> <span class="o">=</span> <span class="n">minihost</span><span class="o">.</span><span class="n">Plugin</span><span class="p">(</span><span class="s2">&quot;/path/to/synth.vst3&quot;</span><span class="p">,</span> <span class="n">sample_rate</span><span class="o">=</span><span class="mi">48000</span><span class="p">)</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="n">mapper</span> <span class="o">=</span> <span class="n">minihost</span><span class="o">.</span><span class="n">MidiMapper</span><span class="p">(</span><span class="n">plugin</span><span class="p">)</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="n">mapper</span><span class="o">.</span><span class="n">map_cc</span><span class="p">(</span><span class="n">channel</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">cc</span><span class="o">=</span><span class="mi">7</span><span class="p">,</span>  <span class="n">param</span><span class="o">=</span><span class="s2">&quot;Volume&quot;</span><span class="p">)</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="n">mapper</span><span class="o">.</span><span class="n">map_cc</span><span class="p">(</span><span class="n">channel</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">cc</span><span class="o">=</span><span class="mi">74</span><span class="p">,</span> <span class="n">param</span><span class="o">=</span><span class="s2">&quot;Cutoff&quot;</span><span class="p">,</span> <span class="n">curve</span><span class="o">=</span><span class="s2">&quot;exp&quot;</span><span class="p">)</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="k">with</span> <span class="n">minihost</span><span class="o">.</span><span class="n">AudioDevice</span><span class="p">(</span><span class="n">plugin</span><span class="p">)</span> <span class="k">as</span> <span class="n">audio</span><span class="p">:</span>
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>    <span class="k">with</span> <span class="n">minihost</span><span class="o">.</span><span class="n">MidiIn</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">mapper</span><span class="p">):</span>
+<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>        <span class="nb">input</span><span class="p">(</span><span class="s2">&quot;Press Enter to stop...</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">)</span>
 </code></pre></div>
 <p>Or via the CLI:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>minihost<span class="w"> </span>play<span class="w"> </span>/path/to/synth.vst3<span class="w"> </span>--midi<span class="w"> </span><span class="m">0</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span>--map<span class="w"> </span><span class="m">0</span>:7:Volume<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">  </span>--map<span class="w"> </span><span class="m">0</span>:74:Cutoff:0:1:exp<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">  </span>--map-file<span class="w"> </span>~/.config/minihost/launch_control.json
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>minihost<span class="w"> </span>play<span class="w"> </span>/path/to/synth.vst3<span class="w"> </span>--midi<span class="w"> </span><span class="m">0</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span>--map<span class="w"> </span><span class="m">0</span>:7:Volume<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">  </span>--map<span class="w"> </span><span class="m">0</span>:74:Cutoff:0:1:exp<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">  </span>--map-file<span class="w"> </span>~/.config/minihost/launch_control.json
 </code></pre></div>
 <h3 id="-loop-midi-and-loop-audio-on-minihost-play"><code>--loop-midi</code> and <code>--loop-audio</code> on <code>minihost play</code><a class="headerlink" href="#-loop-midi-and-loop-audio-on-minihost-play" title="Permanent link">&para;</a></h3>
 <p>For live parameter tweaking against a repeating source:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>minihost<span class="w"> </span>play<span class="w"> </span>/path/to/synth.vst3<span class="w"> </span>--midi<span class="w"> </span><span class="m">0</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span>--map<span class="w"> </span><span class="m">0</span>:74:Cutoff:0:1:exp<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">  </span>--loop-midi<span class="w"> </span>tests/_wav/test_pattern.mid
-<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>
-<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>minihost<span class="w"> </span>play<span class="w"> </span>/path/to/reverb.vst3<span class="w"> </span>--midi<span class="w"> </span><span class="m">0</span><span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">  </span>--map<span class="w"> </span><span class="m">0</span>:7:Mix<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">  </span>--loop-audio<span class="w"> </span>guitar_dry.wav
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>minihost<span class="w"> </span>play<span class="w"> </span>/path/to/synth.vst3<span class="w"> </span>--midi<span class="w"> </span><span class="m">0</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="w">  </span>--map<span class="w"> </span><span class="m">0</span>:74:Cutoff:0:1:exp<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">  </span>--loop-midi<span class="w"> </span>tests/_wav/test_pattern.mid
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>minihost<span class="w"> </span>play<span class="w"> </span>/path/to/reverb.vst3<span class="w"> </span>--midi<span class="w"> </span><span class="m">0</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a><span class="w">  </span>--map<span class="w"> </span><span class="m">0</span>:7:Mix<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a><span class="w">  </span>--loop-audio<span class="w"> </span>guitar_dry.wav
 </code></pre></div>
 <hr />
 <h2 id="why-the-breaking-change">Why the breaking change?<a class="headerlink" href="#why-the-breaking-change" title="Permanent link">&para;</a></h2>

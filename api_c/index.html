@@ -633,6 +633,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#plugin-bus-functions-minihost_graphh" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plugin Bus Functions (minihost_graph.h)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#midi-functions-minihost_midih" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1051,6 +1062,17 @@
     <span class="md-ellipsis">
       
         Plugin Chain Functions (minihost_chain.h)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#plugin-bus-functions-minihost_graphh" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plugin Bus Functions (minihost_graph.h)
       
     </span>
   </a>
@@ -1782,6 +1804,66 @@
 </tr>
 </tbody>
 </table>
+<hr />
+<h2 id="plugin-bus-functions-minihost_graphh">Plugin Bus Functions (minihost_graph.h)<a class="headerlink" href="#plugin-bus-functions-minihost_graphh" title="Permanent link">&para;</a></h2>
+<p>Parallel-branches-summed routing: fan one input to N <code>MH_PluginChain</code> branches
+and sum their outputs with per-branch gain. Python: <code>PluginBus</code>.
+(File name retained from before the 0.2.0 rename; symbols are <code>mh_bus_*</code>.)</p>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mh_bus_create</code></td>
+<td>Create a bus for a fixed I/O channel layout, block size, and sample rate</td>
+</tr>
+<tr>
+<td><code>mh_bus_close</code></td>
+<td>Close the bus (does not close the branches)</td>
+</tr>
+<tr>
+<td><code>mh_bus_add_branch</code></td>
+<td>Add a <code>MH_PluginChain</code> branch with a linear gain; returns branch index. Rejects channel/sample-rate mismatch</td>
+</tr>
+<tr>
+<td><code>mh_bus_set_branch_gain</code> / <code>mh_bus_get_branch_gain</code></td>
+<td>Set/get a branch's summing gain (0.0 mutes; muted branches skip processing)</td>
+</tr>
+<tr>
+<td><code>mh_bus_get_num_branches</code></td>
+<td>Number of branches</td>
+</tr>
+<tr>
+<td><code>mh_bus_process</code></td>
+<td>Fan input to every branch, sum (per-branch gain) into outputs</td>
+</tr>
+<tr>
+<td><code>mh_bus_process_midi</code></td>
+<td>As <code>mh_bus_process</code>, but also fan the same MIDI to every branch (to each branch's first plugin). Branch MIDI output is not collected</td>
+</tr>
+<tr>
+<td><code>mh_bus_get_num_input_channels</code> / <code>mh_bus_get_num_output_channels</code></td>
+<td>Configured channel counts</td>
+</tr>
+<tr>
+<td><code>mh_bus_get_sample_rate</code> / <code>mh_bus_get_max_block_size</code></td>
+<td>Configured sample rate / block size</td>
+</tr>
+<tr>
+<td><code>mh_bus_get_latency_samples</code> / <code>mh_bus_get_tail_seconds</code></td>
+<td>Maximum latency / tail across branches</td>
+</tr>
+</tbody>
+</table>
+<p>The general DAG executor (Python <code>PluginGraph</code>) lives in <code>minihost_graph_v2.h</code>
+as the <code>mh_graph_*</code> / <code>MH_PluginGraph</code> family, with a C++ RAII wrapper
+<code>minihost::PluginGraph</code> in <code>minihost_graph_v2.hpp</code>. Its surface is large
+(node add/connect, MIDI routing, automation, <code>mh_graph_compile</code>,
+<code>mh_graph_render_block</code>); see the header for the full API.</p>
 <hr />
 <h2 id="midi-functions-minihost_midih">MIDI Functions (minihost_midi.h)<a class="headerlink" href="#midi-functions-minihost_midih" title="Permanent link">&para;</a></h2>
 <h3 id="port-enumeration">Port Enumeration<a class="headerlink" href="#port-enumeration" title="Permanent link">&para;</a></h3>

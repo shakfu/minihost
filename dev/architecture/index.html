@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://shakfu.github.io/minihost/dev/260510-review/">
+        <link rel="canonical" href="https://shakfu.github.io/minihost/dev/architecture/">
       
       
       
@@ -23,7 +23,7 @@
     
     
       
-        <title>minihost Code Review - minihost</title>
+        <title>Architecture — what shares what - minihost</title>
       
     
     
@@ -74,7 +74,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#minihost-code-review" class="md-skip">
+        <a href="#architecture-what-shares-what" class="md-skip">
           Skip to content
         </a>
       
@@ -110,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              minihost Code Review
+              Architecture — what shares what
             
           </span>
         </div>
@@ -519,10 +519,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#status-update" class="md-nav__link">
+  <a href="#layer-diagram" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Status update
+        Layer diagram
       
     </span>
   </a>
@@ -530,10 +530,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#9-recommended-priorities" class="md-nav__link">
+  <a href="#what-is-shared-deepest-to-thinnest" class="md-nav__link">
     <span class="md-ellipsis">
       
-        9. Recommended priorities
+        What is shared (deepest to thinnest)
       
     </span>
   </a>
@@ -541,41 +541,68 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#10-resolution-status-post-review-work" class="md-nav__link">
+  <a href="#what-is-not-shared" class="md-nav__link">
     <span class="md-ellipsis">
       
-        10. Resolution status (post-review work)
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="10. Resolution status (post-review work)">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#caveats-and-deferred-work" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Caveats and deferred work
+        What is NOT shared
       
     </span>
   </a>
   
 </li>
-        
-          <li class="md-nav__item">
-  <a href="#test-suite-delta" class="md-nav__link">
+      
+        <li class="md-nav__item">
+  <a href="#the-schema-duplication-pinch" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Test suite delta
+        The schema-duplication pinch
       
     </span>
   </a>
   
 </li>
-        
-      </ul>
-    </nav>
+      
+        <li class="md-nav__item">
+  <a href="#where-changes-propagate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where changes propagate
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-target-topology" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build target topology
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#runtime-independence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Runtime independence
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#related-design-docs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Related design docs
+      
+    </span>
+  </a>
   
 </li>
       
@@ -599,219 +626,229 @@
   
 
 
-<h1 id="minihost-code-review">minihost Code Review<a class="headerlink" href="#minihost-code-review" title="Permanent link">&para;</a></h1>
-<p>Scope: C API (<code>projects/libminihost/</code>), audio I/O layer (<code>projects/libminihost_audio/</code>),
-nanobind bindings (<code>src/minihost/_core.cpp</code>), pure-Python layer (<code>src/minihost/*.py</code>),
-and tests. Findings cite <code>path:line</code> and describe a concrete defect or improvement.</p>
-<h2 id="status-update">Status update<a class="headerlink" href="#status-update" title="Permanent link">&para;</a></h2>
-<p>All 14 items in Section 9 ("Recommended priorities") were addressed across
-follow-up work. See <strong>Section 10</strong> at the end of this document for per-item
-status. The findings below are preserved as written so the rationale and
-code citations remain available; consult Section 10 for the resolution
-of any specific item.</p>
-<h2 id="9-recommended-priorities">9. Recommended priorities<a class="headerlink" href="#9-recommended-priorities" title="Permanent link">&para;</a></h2>
-<p>Ranked by impact-to-effort, highest first:</p>
+<h1 id="architecture-what-shares-what">Architecture — what shares what<a class="headerlink" href="#architecture-what-shares-what" title="Permanent link">&para;</a></h1>
+<p>Status: descriptive. Captures the current layering between the C
+library, the Python wheel, and the <code>minihost_desktop</code> binary so future
+refactors don't accidentally couple them in surprising ways.</p>
+<p>The TL;DR: <strong>three artifacts, one C core.</strong> The wheel and the desktop
+binary are largely independent codebases that both consume the same
+<code>libminihost</code> C ABI. The only meaningful coupling outside the C ABI
+is the JSON project schema, which has two independent parsers (one
+Python, one C++) kept in sync by a parity test.</p>
+<h2 id="layer-diagram">Layer diagram<a class="headerlink" href="#layer-diagram" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>                ┌───────────────────────────────────────────────────────┐
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>                │  libminihost  (C ABI: mh_open, mh_process,            │
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>                │   mh_graph_*, mh_set_node_midi,                    │
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>                │   mh_graph_set_node_automation, ...)               │
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>                │   minihost.cpp / minihost_chain.cpp /                 │
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>                │   minihost_graph.cpp / minihost_graph_v2.cpp          │
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>                └───────────┬───────────────────────────┬───────────────┘
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>                            │                           │
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>            libminihost.a (headless)         libminihost_gui.a (full JUCE)
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>                            │                           │
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>                            ▼                           ▼
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>            ┌───────────────────────┐     ┌───────────────────────┐
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>            │ libminihost_audio.a   │     │ libminihost_audio_gui │
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>            │ (mh_audio_read,       │     │  (same .c sources,    │
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>            │  mh_audio_write,      │     │   PUBLIC-links _gui)  │
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>            │  miniaudio + tflac)   │     │                       │
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>            └───────────────────────┘     └───────────────────────┘
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>                            │                           │
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>                            ▼                           ▼
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>            ┌───────────────────────┐     ┌───────────────────────┐
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>            │  src/minihost/_core.cpp│     │ projects/minihost_   │
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>            │  (nanobind binding)   │     │  desktop/src/*        │
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>            │                       │     │  (main, canvas, live, │
+<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>            │  src/minihost/*.py    │     │   project)            │
+<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>            │  (project.py, cli.py, │     │                       │
+<a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>            │   render.py, ...)     │     │                       │
+<a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>            └──────────┬────────────┘     └──────────┬────────────┘
+<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>                       ▼                              ▼
+<a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>                 Python wheel                   minihost_desktop binary
+</code></pre></div>
+<h2 id="what-is-shared-deepest-to-thinnest">What is shared (deepest to thinnest)<a class="headerlink" href="#what-is-shared-deepest-to-thinnest" title="Permanent link">&para;</a></h2>
 <ol>
-<li>Fix audio-thread heap allocations in <code>mh_process_double</code>,
-   <code>mh_chain_process_*</code>, and the listener trampoline (Section 2).</li>
-<li>Add concurrency, channel-mismatch, and RT-allocation tests (Section 7).</li>
-<li>Introduce ABI versioning macro + struct version fields before any new
-   API is shipped (Section 5).</li>
-<li>Tighten <code>mh_set_sample_rate</code> and <code>mh_set_processing_precision</code> to fail
-   loudly when the plugin rejects the new layout/rate post-prepare
-   (Sections 2 and 3).</li>
-<li>Document the realtime-vs-other-thread contract more precisely in
-   <code>minihost.h:4-9</code> and add <code>mh_close</code> / AudioDevice ordering rules
-   (Section 3).</li>
-<li>Pre-roll / trim by <code>latency_samples</code> in the Python <code>render_midi</code> path
-   (Section 4).</li>
-<li>Deduplicate the two <code>find_param_by_name</code> implementations and the two
-    vstpreset parsers (Sections 5 and 3).</li>
-<li>Stream <code>render_midi_to_file</code> instead of materializing the full
-    waveform in memory (Section 6).</li>
-<li>Add a <code>with</code> context manager to <code>Plugin</code> and a real <code>close()</code> method
-    (Section 5).</li>
-<li>Pin JUCE to a SHA in <code>download_juce.py</code>; add CMake install rules
-    (Section 8).</li>
-<li>Replace <code>desc.isInstrument</code> heuristic in <code>mh_probe</code> or document its
-    limits (Sections 2 and 4).</li>
+<li>
+<p><strong>The C ABI in <code>libminihost</code>.</strong> Every type and function -- <code>MH_Plugin</code>,
+   <code>MH_PluginGraph</code>, <code>MH_PluginChain</code>, <code>MH_PluginBus</code>, <code>mh_open</code>,
+   <code>mh_process*</code>, <code>mh_graph_*</code>, the Phase-2 additions
+   (<code>mh_graph_set_node_midi</code>, <code>mh_graph_set_node_automation</code>),
+   <code>mh_get_juce_processor</code> -- is the single source of truth. Both
+   consumers call into this. The header is valid C; only consumers
+   that link JUCE cast the <code>void*</code> returned by <code>mh_get_juce_processor</code>.</p>
+</li>
+<li>
+<p><strong><code>libminihost_audio</code> (and <code>_gui</code> sibling).</strong> Audio file I/O and MIDI
+   ringbuffers. Consumed by both the wheel and the desktop. The two
+   variants exist only so the wheel-side build stays headless while the
+   desktop links the GUI flavour of <code>libminihost</code> -- both compile the
+   same C source files.</p>
+</li>
+<li>
+<p><strong>JSON project schema.</strong> The <em>spec</em> is shared, but the <strong>parsers are
+   not the same code</strong>. See <a href="#the-schema-duplication-pinch">The schema-duplication
+   pinch</a> below.</p>
+</li>
 </ol>
-<hr />
-<h2 id="10-resolution-status-post-review-work">10. Resolution status (post-review work)<a class="headerlink" href="#10-resolution-status-post-review-work" title="Permanent link">&para;</a></h2>
-<p>Verified by re-reading the cited file paths and running the full test suite
-(485 passed, 2 skipped). 8 new test files added, exercising the regression
-surface for each fix.</p>
-<table>
-<thead>
-<tr>
-<th>#</th>
-<th>Item</th>
-<th>Status</th>
-<th>Evidence</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>1</td>
-<td>Audio-thread heap allocations in <code>mh_process_double</code>, <code>mh_chain_process_*</code>, listener trampoline</td>
-<td>DONE</td>
-<td><code>minihost.cpp:1421-1497</code> (process_double via persistent <code>processBufD</code>); <code>minihost_chain.cpp:387-411</code> (persistent <code>autoChunkIn/Out/MidiIn/MidiOut</code>); <code>_core.cpp:885-910</code> (listener: bounded queue + reserve + clear). Tests: <code>test_rt_allocations.py</code>, <code>test_concurrency.py</code></td>
-</tr>
-<tr>
-<td>2</td>
-<td><code>inCh != outCh</code> data-loss in <code>mh_process_midi_io</code></td>
-<td>DONE</td>
-<td><code>minihost.cpp:339-385</code> and chunk path 681-733 -- single <code>processBuf</code> sized <code>max(inCh+sidechainCh, outCh)</code>. Test: <code>test_asymmetric_channels.py</code></td>
-</tr>
-<tr>
-<td>3</td>
-<td><code>PluginChain</code> / <code>AudioDevice</code> raw-pointer GC bug</td>
-<td>DONE</td>
-<td><code>_core.cpp:2120,2196,2219</code> -- <code>nb::keep_alive&lt;1, 2&gt;()</code> on all three constructors. Test: <code>test_chain_gc.py</code></td>
-</tr>
-<tr>
-<td>4</td>
-<td>Channel-count validation on Python <code>process*</code> methods</td>
-<td>DONE</td>
-<td><code>_core.cpp:67-94</code> (helper); applied in 8 process methods. Test: <code>test_channel_validation.py</code></td>
-</tr>
-<tr>
-<td>5</td>
-<td>Concurrency, channel-mismatch, and RT-allocation tests</td>
-<td>DONE</td>
-<td><code>test_concurrency.py</code> (set_param vs. process, callback queue ordering and overflow); <code>test_channel_validation.py</code>; <code>test_rt_allocations.py</code></td>
-</tr>
-<tr>
-<td>6</td>
-<td>ABI versioning macro + struct version fields</td>
-<td>DONE (partial -- macros + functions only; struct_size fields deferred per Section 9 design notes)</td>
-<td><code>minihost.h:80-100</code> (macros + decls); <code>minihost.cpp:32-42</code> (impls). Per-struct <code>size_t struct_size</code> deferred until first additive change actually needs it -- adding it now would be churn without benefit. Test: <code>test_api_version.py</code></td>
-</tr>
-<tr>
-<td>7</td>
-<td><code>mh_set_sample_rate</code> / <code>mh_set_processing_precision</code> fail loudly on rejection</td>
-<td>DONE</td>
-<td><code>minihost.cpp:1276-1289</code> (sample rate post-prepare verification + NaN reject); 1380-1392 (precision post-prepare verification). Test: <code>test_setters_fail_loud.py</code></td>
-</tr>
-<tr>
-<td>8</td>
-<td>Tighten realtime-vs-other-thread contract docs in <code>minihost.h:4-9</code></td>
-<td>DONE</td>
-<td><code>minihost.h:4-50</code> -- now distinguishes three classes (audio-only, concurrent-with-audio, NOT-safe-to-overlap) explicitly with full function lists, plus AudioDevice / <code>mh_close</code> ordering rules</td>
-</tr>
-<tr>
-<td>9</td>
-<td>Pre-roll / latency-trim in Python <code>render_midi</code></td>
-<td>DONE</td>
-<td><code>render.py:441-458</code> (init compensation), 510-616 (render_block trims first <code>latency_samples</code> of output, extends render bound by latency, uses corrected MIDI-end for auto-tail). Test: <code>test_render_latency_compensation.py</code></td>
-</tr>
-<tr>
-<td>10</td>
-<td>Deduplicate <code>find_param_by_name</code> and <code>.vstpreset</code> parsers</td>
-<td>DONE</td>
-<td><code>automation.py:28-49</code> -- now delegates to <code>Plugin.find_param</code>; <code>vstpreset.py</code> shrunk from 303 to 140 lines, delegating to new <code>_core.vstpreset_read</code> / <code>vstpreset_write</code> (<code>_core.cpp:1761-1818</code>)</td>
-</tr>
-<tr>
-<td>11</td>
-<td>Stream <code>render_midi_to_file</code> instead of materializing</td>
-<td>DONE</td>
-<td><code>render.py:307-353</code> -- pre-allocates one output array sized to <code>MidiRenderer.total_samples</code> and writes blocks into slices; peak memory drops from ~3x to ~1x of final audio</td>
-</tr>
-<tr>
-<td>12</td>
-<td><code>with</code> context manager + <code>close()</code> on <code>Plugin</code></td>
-<td>DONE</td>
-<td><code>_core.cpp:111-131</code> (Plugin), 939-951 (PluginChain) -- explicit <code>close()</code>, <code>__enter__</code>, <code>__exit__</code>. Test: <code>test_context_manager.py</code></td>
-</tr>
-<tr>
-<td>13</td>
-<td>Pin JUCE to a SHA in <code>download_juce.py</code>; add CMake install rules</td>
-<td>DONE (partial -- install rules without <code>find_package</code> export; see caveat)</td>
-<td><code>scripts/download_juce.py:18-43</code> (SHA pin with <code>JUCE_ALLOW_TAG=1</code> escape hatch); <code>CMakeLists.txt:25-65</code> and <code>projects/libminihost/CMakeLists.txt:39-51</code> (install rules gated on <code>MINIHOST_INSTALL</code>). No <code>find_package(minihost)</code> config target: the static lib has PRIVATE link deps on JUCE that this project vendors via <code>add_subdirectory</code> of a downloaded source tree, so a clean export is not achievable without first solving the JUCE-vendoring story (out of scope for this round). External consumers get <code>lib/libminihost.a</code> + <code>include/minihost/*.h</code>.</td>
-</tr>
-<tr>
-<td>14</td>
-<td><code>mh_probe</code> <code>accepts_midi = isInstrument</code> heuristic</td>
-<td>DONE (documentation-only, code unchanged)</td>
-<td>This JUCE version's <code>PluginDescription</code> has no <code>wantsMidiInput</code> / <code>producesMidiOutput</code> fields; a real fix would require parsing VST3 <code>moduleinfo.json</code> ourselves. <code>minihost.h:30-31</code> and <code>minihost.cpp:847-857</code> now document the limitation explicitly and direct callers to <code>mh_get_info</code> for authoritative values.</td>
-</tr>
-</tbody>
-</table>
-<h3 id="caveats-and-deferred-work">Caveats and deferred work<a class="headerlink" href="#caveats-and-deferred-work" title="Permanent link">&para;</a></h3>
+<h2 id="what-is-not-shared">What is NOT shared<a class="headerlink" href="#what-is-not-shared" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>#1 (listener trampoline)</strong>: kept the mutex; replaced <code>swap()</code> with
-  <code>clear()</code> + reserved capacity to eliminate the malloc path. Mutex hold is
-  microseconds against pre-reserved capacity. A full lock-free MPSC ring
-  buffer is a localized later change if measurements ever show audible
-  glitches from the residual mutex.</li>
-<li><strong>#6 (ABI versioning)</strong>: macros + <code>mh_api_version()</code> shipped at 1.0.0;
-  per-struct <code>struct_size</code> fields not added (would be churn without benefit
-  until the first additive change actually needs them).</li>
-<li><strong>#13 (install rules)</strong>: ships static lib + headers; no <code>find_package</code>
-  export. JUCE-as-private-dep is the blocker; documented in the install
-  block.</li>
-<li><strong>#14 (<code>mh_probe</code> MIDI flags)</strong>: documentation-only fix; the code path
-  still uses <code>isInstrument</code>. Properly fixing it requires parsing VST3
-  <code>moduleinfo.json</code> ourselves -- new C code that wasn't in scope.</li>
+<li><strong>The Python wheel doesn't use <code>libminihost_gui</code> or any GUI code.</strong>
+  It links <code>libminihost.a</code> (headless), which substitutes
+  <code>juce_audio_processors_headless</code> for <code>juce_audio_processors</code>. The
+  wheel has no <code>juce::Component</code>, no editor windows, no
+  <code>AudioDeviceManager</code>. (See the build / link layer in
+  <a href="../desktop_app/">docs/dev/desktop_app.md</a>.)</li>
+<li><strong>The desktop binary doesn't embed Python.</strong> It calls
+  <code>mh_graph_*</code> natively from C++. No Python interpreter, no
+  <code>nanobind</code>, no IPC seam.</li>
+<li><strong><code>minihost::PluginGraph</code></strong> -- the header-only RAII wrapper in
+  <code>projects/libminihost/minihost_graph_v2.hpp</code> -- is used only by
+  the desktop's <code>LiveEngine</code> and project loader. The Python
+  binding talks straight to the C ABI through <code>nanobind</code>; the C++
+  wrapper is not on its path.</li>
+<li><strong>App-level code</strong> -- <code>main.cpp</code>, <code>canvas.{h,cpp}</code>,
+  <code>live.{h,cpp}</code>, the C++ <code>project.{h,cpp}</code>, <code>rt_param_queue.h</code> --
+  is desktop-only.</li>
+<li><strong>Python-level code</strong> -- <code>process.py</code>, <code>chain.py</code>, <code>render.py</code>,
+  <code>audio_io.py</code>, <code>cli.py</code>, <code>project.py</code>, <code>automation.py</code>,
+  <code>vstpreset.py</code> -- is wheel-only.</li>
 </ul>
-<h3 id="test-suite-delta">Test suite delta<a class="headerlink" href="#test-suite-delta" title="Permanent link">&para;</a></h3>
+<h2 id="the-schema-duplication-pinch">The schema-duplication pinch<a class="headerlink" href="#the-schema-duplication-pinch" title="Permanent link">&para;</a></h2>
+<p>The JSON project file format (schema v1, declared in
+<code>src/minihost/project.py</code> and re-declared in
+<code>projects/minihost_desktop/src/project.{h,cpp}</code>) is the <strong>one
+load-bearing coupling outside the C ABI</strong>.</p>
+<p>Both parsers must accept the same documents and produce equivalent
+in-memory shapes. A schema change requires editing both:</p>
 <table>
 <thead>
 <tr>
+<th>Code path</th>
 <th>File</th>
-<th>Tests</th>
-<th>Coverage</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>test_chain_gc.py</code></td>
-<td>3</td>
-<td><code>PluginChain</code> / <code>AudioDevice</code> lifetime pinning</td>
+<td>Python load</td>
+<td><code>src/minihost/project.py</code> (<code>load_project</code>, <code>save_project</code>)</td>
 </tr>
 <tr>
-<td><code>test_channel_validation.py</code></td>
-<td>8 (6 active, 2 skip on mono)</td>
-<td>Shape validation on all process entry points</td>
-</tr>
-<tr>
-<td><code>test_asymmetric_channels.py</code></td>
-<td>4</td>
-<td>Combined-buffer correctness, varying block sizes</td>
-</tr>
-<tr>
-<td><code>test_rt_allocations.py</code></td>
-<td>5</td>
-<td>Repeated-call stability for <code>process_double</code> and chain <code>process_auto</code></td>
-</tr>
-<tr>
-<td><code>test_context_manager.py</code></td>
-<td>7</td>
-<td><code>Plugin</code> / <code>PluginChain</code> close + <code>with</code> semantics</td>
-</tr>
-<tr>
-<td><code>test_api_version.py</code></td>
-<td>4</td>
-<td>Header / runtime ABI-version agreement</td>
-</tr>
-<tr>
-<td><code>test_concurrency.py</code></td>
-<td>4</td>
-<td><code>set_param</code> racing <code>process</code>; callback queue ordering and overflow</td>
-</tr>
-<tr>
-<td><code>test_setters_fail_loud.py</code></td>
-<td>4</td>
-<td><code>set_sample_rate</code> rejects negative/zero/NaN; <code>set_processing_precision</code> rejects unsupported double</td>
-</tr>
-<tr>
-<td><code>test_render_latency_compensation.py</code></td>
-<td>5</td>
-<td>Mock-plugin verification of latency-comp skip semantics</td>
+<td>C++ load</td>
+<td><code>projects/minihost_desktop/src/project.cpp</code> (<code>parseProjectFile</code>, <code>loadProject</code>, <code>saveProjectFile</code>)</td>
 </tr>
 </tbody>
 </table>
-<p>Total: 44 new tests across 9 files. Full suite: 485 passed, 2 skipped.</p>
+<p>The contract is enforced by parity tests, not by code generation:</p>
+<ul>
+<li><strong>Python load + render parity:</strong> <code>tests/test_project.py</code> (13 tests)
+  covers validation, round-trip, and render-vs-<code>process_audio_to_file</code>.</li>
+<li><strong>C++ vs Python parity:</strong> <code>tests/test_desktop_render_parity.py</code>
+  (2 tests) drives <code>minihost_desktop --render-project=...</code> headlessly
+  and asserts the output is bit-identical to <code>minihost.render_project()</code>
+  over the same project. Also asserts <code>--save-roundtrip=...</code> (C++
+  load + save) preserves layout for the Python loader.</li>
+</ul>
+<p>If you change the schema and forget one parser, those tests fail.</p>
+<p>Generating one parser from the other (e.g. via a JSON-schema codegen)
+would close the gap structurally; the current hand-maintained mirror
+is acceptable because the schema is small (4 node kinds, 1 edge kind,
+optional layout) and changes infrequently.</p>
+<h2 id="where-changes-propagate">Where changes propagate<a class="headerlink" href="#where-changes-propagate" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Change in…</th>
+<th>Affects Python wheel?</th>
+<th>Affects desktop?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>minihost.h</code> / <code>minihost.cpp</code></td>
+<td>Yes (via <code>_core.cpp</code>)</td>
+<td>Yes (via C++ call)</td>
+</tr>
+<tr>
+<td><code>minihost_graph_v2.{h,cpp}</code></td>
+<td>Yes (via <code>nanobind</code>)</td>
+<td>Yes (via C++ wrapper)</td>
+</tr>
+<tr>
+<td><code>minihost_graph_v2.hpp</code> (C++ wrapper, header-only)</td>
+<td>No</td>
+<td>Yes (used by <code>LiveEngine</code>, project loader)</td>
+</tr>
+<tr>
+<td><code>src/minihost/project.py</code></td>
+<td>Yes</td>
+<td>No</td>
+</tr>
+<tr>
+<td><code>projects/minihost_desktop/src/project.{h,cpp}</code></td>
+<td>No</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Schema doc-of-truth (the JSON shape itself)</td>
+<td>Both -- must hand-port to both parsers</td>
+<td></td>
+</tr>
+<tr>
+<td><code>src/minihost/_core.cpp</code> (nanobind bindings)</td>
+<td>Yes</td>
+<td>No</td>
+</tr>
+<tr>
+<td><code>projects/minihost_desktop/src/canvas.{h,cpp}</code> etc.</td>
+<td>No</td>
+<td>Yes</td>
+</tr>
+</tbody>
+</table>
+<h2 id="build-target-topology">Build target topology<a class="headerlink" href="#build-target-topology" title="Permanent link">&para;</a></h2>
+<p><code>CMakeLists.txt</code> produces two sibling static libraries for each C
+library that has a GUI vs headless distinction:</p>
+<ul>
+<li><code>libminihost.a</code> -- always built. Used by the Python wheel and the
+  CLI tools.</li>
+<li><code>libminihost_gui.a</code> -- built when <code>MINIHOST_BUILD_DESKTOP=ON</code> (or
+  <code>MINIHOST_BUILD_GUI_LIB=ON</code>). Same <code>.cpp</code> sources, links
+  <code>juce_audio_processors</code> and <code>juce_gui_basics</code> instead of the
+  <code>_headless</code> variant.</li>
+<li><code>libminihost_audio.a</code> / <code>libminihost_audio_gui.a</code> -- the same
+  pattern, gated on the same option.</li>
+</ul>
+<p>The Python wheel's <code>setup</code> only sees <code>libminihost.a</code> /
+<code>libminihost_audio.a</code>. The desktop sees the <code>_gui</code> variants. They
+coexist in one <code>build/</code> tree; flipping between them is a configure-
+time toggle, not a clean-rebuild event.</p>
+<h2 id="runtime-independence">Runtime independence<a class="headerlink" href="#runtime-independence" title="Permanent link">&para;</a></h2>
+<p>A user can:</p>
+<ul>
+<li>Install the wheel (<code>uv pip install minihost</code>) and never touch the
+  desktop binary. They get the C ABI exposed as <code>minihost.Plugin</code>,
+  <code>minihost.PluginGraph</code>, <code>minihost.process_audio_to_file</code>, the CLI tools,
+  etc.</li>
+<li>Build the desktop binary and never use Python. The Python wheel is
+  not a runtime dependency of <code>minihost_desktop</code>. The binary is
+  self-contained except for the OS and the user's plugin files.</li>
+<li>Use both, independently. Projects produced by one are consumed by
+  the other byte-identically; that's what the schema parity tests
+  enforce.</li>
+</ul>
+<p>The two artifacts share lineage but not lifetime. Releasing a new
+Python wheel doesn't require a desktop rebuild and vice versa, as
+long as the C ABI in <code>libminihost</code> stays stable.</p>
+<h2 id="related-design-docs">Related design docs<a class="headerlink" href="#related-design-docs" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="../desktop_app/">desktop_app.md</a> -- desktop application design
+  (phases, build configuration, project file format).</li>
+<li><a href="../desktop_app_todo/">desktop_app_todo.md</a> -- per-phase task list
+  with current state.</li>
+<li><a href="../graph/">graph.md</a> -- the original v1 graph-executor sketch
+  (predates <code>mh_graph_*</code> and the C++ wrapper; preserved as a
+  historical note).</li>
+</ul>
 
 
 

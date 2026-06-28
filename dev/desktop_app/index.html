@@ -1,0 +1,1147 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Minimal headless audio plugin host for VST3, AudioUnit, and LV2">
+      
+      
+      
+        <link rel="canonical" href="https://shakfu.github.io/minihost/dev/desktop_app/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Desktop Application — Design Document - minihost</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#desktop-application-design-document" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="minihost" class="md-header__button md-logo" aria-label="minihost" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            minihost
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Desktop Application — Design Document
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/shakfu/minihost" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    shakfu/minihost
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="minihost" class="md-nav__button md-logo" aria-label="minihost" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    minihost
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/shakfu/minihost" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    shakfu/minihost
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting_started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api_python/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api_c/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    C API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../hosting_guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hosting Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../migration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Migration Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../vendored/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Vendored Dependencies
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#goal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Goal
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stack" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Stack
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-1-offline-graph-renderer-with-editor-windows" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 1 — Offline graph renderer with editor windows
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phase 1 — Offline graph renderer with editor windows">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scope
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Architecture
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#graph-executor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Graph executor
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#editor-window-hosting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Editor window hosting
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#project-file" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Project file
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#render-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Render path
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-2-realtime-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 2 — Realtime mode
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phase 2 — Realtime mode">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#scope-additions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scope additions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#architecture-delta" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Architecture delta
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#items-deferred-to-v25" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Items deferred to v2.5+
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cross-cutting-concerns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cross-cutting concerns
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Cross-cutting concerns">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#build-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#testing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Testing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#distribution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Distribution
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#telemetry-crash-reporting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Telemetry / crash reporting
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#open-questions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Open questions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validation-plan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation plan
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="desktop-application-design-document">Desktop Application — Design Document<a class="headerlink" href="#desktop-application-design-document" title="Permanent link">&para;</a></h1>
+<p>Status: design proposal, not implemented. Single binary, phased: v1 ships
+an offline graph renderer with plugin editor windows; v2 adds a realtime
+audio device callback driver and live MIDI input on top of the same
+codebase.</p>
+<p>Working name: <code>minihost-desktop</code> (binary), <code>minihost.app</code> on macOS.
+Source lives in <code>projects/minihost_desktop/</code> alongside the other
+sub-projects (<code>projects/libminihost/</code>, <code>projects/libminihost_audio/</code>,
+<code>projects/libminihost_graph/</code>). The top-level <code>CMakeLists.txt</code> adds it
+behind <code>MINIHOST_BUILD_DESKTOP</code> (default OFF).</p>
+<h2 id="goal">Goal<a class="headerlink" href="#goal" title="Permanent link">&para;</a></h2>
+<p>A developer-facing host app that loads VST3/AU/LV2 plugins, wires them
+into a node graph, exposes plugin editor windows, and renders to disk
+offline. v2 extends the same graph executor to drive a realtime audio
+device callback.</p>
+<p>Non-goals (both phases):</p>
+<ul>
+<li>DAW features: arrangement timeline, clip editing, mixer automation
+  curves drawn in-app, time-stretching, take comping.</li>
+<li>Preset browser UI beyond <code>read_vstpreset</code> / <code>set_state</code>.</li>
+<li>MIDI learn / parameter mapping UI.</li>
+<li>Plugin shell / multi-instrument disambiguation.</li>
+<li>Cross-graph routing (every project is one graph).</li>
+</ul>
+<p>The app is a thin GUI on top of <code>libminihost</code>, <code>libminihost_graph</code>, and
+JUCE's plugin / device modules. Where v1 needs functionality the C
+library doesn't have, the design favours extending the C ABI over
+duplicating logic in the GUI process.</p>
+<h2 id="stack">Stack<a class="headerlink" href="#stack" title="Permanent link">&para;</a></h2>
+<p>JUCE C++, single binary, statically linked.</p>
+<ul>
+<li>UI: <code>juce_gui_basics</code>, <code>juce_gui_extra</code>. Native widgets, no web view.</li>
+<li>Audio engine v1: existing <code>libminihost</code> + <code>libminihost_graph</code>,
+  driven from a non-realtime render thread.</li>
+<li>Audio engine v2: <code>juce_audio_devices</code> <code>AudioIODeviceCallback</code> driving
+  the same graph executor.</li>
+<li>Plugin editor windows: JUCE's <code>AudioProcessorEditor</code>, hosted in a
+  <code>DocumentWindow</code> per plugin instance. Requires
+  <code>MINIHOST_HEADLESS=OFF</code> for the GUI build; the headless build of
+  <code>libminihost</code> is unaffected (separate CMake target).</li>
+<li>Project file: JSON, schema-versioned. See <a href="#project-file">Project file</a>.</li>
+</ul>
+<p>Rationale for JUCE C++ over Python+Qt or Tauri+web:</p>
+<ol>
+<li>Plugin editor windows require a native window handle that composes
+   with JUCE's <code>AudioProcessorEditor</code>. Other shells force either window
+   embedding or an out-of-process editor daemon — both add a permanent
+   IPC seam between UI and audio that JUCE-native avoids.</li>
+<li><code>libminihost</code> is already JUCE. The GUI build flips
+   <code>MINIHOST_HEADLESS=OFF</code> and adds <code>juce_gui_basics</code> to the same CMake
+   project; nothing is reimplemented.</li>
+<li>The Python bindings remain the supported scripting surface. The
+   desktop app is not a Python application.</li>
+</ol>
+<p>Cost accepted: JUCE's UI toolkit is older than web/Qt. Acceptable for a
+developer-facing host where fidelity and packaging beat visual polish.</p>
+<h2 id="phase-1-offline-graph-renderer-with-editor-windows">Phase 1 — Offline graph renderer with editor windows<a class="headerlink" href="#phase-1-offline-graph-renderer-with-editor-windows" title="Permanent link">&para;</a></h2>
+<h3 id="scope">Scope<a class="headerlink" href="#scope" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Load / save project files.</li>
+<li>Add, remove, connect plugin nodes via a node-graph canvas.</li>
+<li>Open plugin editor windows; parameter changes propagate to the
+  underlying <code>MH_Plugin</code> immediately and are persisted on save.</li>
+<li>Render the graph to a WAV/FLAC file via the offline executor.</li>
+<li>Progress reporting on long renders; cancellation.</li>
+</ul>
+<p>Out of scope for v1:</p>
+<ul>
+<li>Realtime playback through an audio device.</li>
+<li>Live MIDI input.</li>
+<li>Latency compensation across fan-in paths (matches <code>graph.md</code>'s v1
+  scope).</li>
+<li>Feedback loops.</li>
+</ul>
+<h3 id="architecture">Architecture<a class="headerlink" href="#architecture" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>+--------------------------------------------------+
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>|                    GUI thread                    |
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>|  - MainWindow, GraphCanvas, EditorHost windows   |
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>|  - ProjectModel (observable, owns Graph state)   |
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>+--------------------+-----------------------------+
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>                     | command queue (lock-free SPSC)
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>                     v
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>+--------------------------------------------------+
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>|              Render / engine thread              |
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>|  - GraphExecutor (mh_graph_*)                    |
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>|  - mh_process_auto per node, per block           |
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>|  - Writes to AudioFileWriter (libminihost_audio) |
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>+--------------------------------------------------+
+</code></pre></div>
+<p>In v1 there is no audio device. The render thread is started by the
+"Render" action, runs to completion (or cancellation), and exits. Editor
+window parameter writes call <code>mh_set_param</code> directly on the GUI thread;
+<code>libminihost</code> already serializes these against the audio thread via its
+internal mutex, and no audio thread exists during editor-only use.</p>
+<h3 id="graph-executor">Graph executor<a class="headerlink" href="#graph-executor" title="Permanent link">&para;</a></h3>
+<p>The C-level executor lives in <code>libminihost</code> (the parallel bus is already
+present as <code>PluginBus</code>, parallel-branches-summed). v1 extends it from
+"parallel branches summed" to a general DAG:</p>
+<ol>
+<li>New C API in <code>projects/libminihost_graph/</code>:</li>
+<li><code>mh_graph_create</code>, <code>mh_graph_add_node</code>,
+     <code>mh_graph_connect</code>, <code>mh_graph_compile</code>,
+     <code>mh_graph_render_block</code>.</li>
+<li>Built-in non-plugin node kinds: <code>input</code> (file or buffer source),
+     <code>output</code> (file or buffer sink), <code>gain</code>, <code>mix</code>.</li>
+<li>Compilation does Kahn topological sort, channel-count validation,
+   and edge-buffer pool allocation with liveness reuse.</li>
+<li>Per-block step matches <code>docs/dev/graph.md</code> §Execution.</li>
+</ol>
+<p>The parallel bus is preserved as <code>PluginBus</code> (<code>mh_bus_*</code>), the
+parallel-branches-summed shortcut; <code>mh_graph_*</code> is the general DAG case.
+The Python <code>PluginBus</code> binding is the shortcut; the <code>minihost.PluginGraph</code>
+binding wraps the DAG ABI and is what the desktop app's project loader
+emits.</p>
+<p>Justification for keeping the executor in C rather than the Python
+sketch from <code>graph.md</code>: the desktop app's render thread runs in-process
+with no GIL, and we want the same executor to drive the v2 realtime
+callback. Python isn't on the realtime path in either phase.</p>
+<h3 id="editor-window-hosting">Editor window hosting<a class="headerlink" href="#editor-window-hosting" title="Permanent link">&para;</a></h3>
+<p>One <code>DocumentWindow</code> per opened plugin editor. The window owns:</p>
+<ul>
+<li>A <code>juce::AudioProcessorEditor*</code> obtained from the plugin instance
+  underlying the <code>MH_Plugin</code> handle. This requires a new C ABI call:
+  <code>mh_get_juce_processor(MH_Plugin*) -&gt; juce::AudioProcessor*</code> (opaque
+  pointer; only the desktop binary, which links JUCE, dereferences it).</li>
+<li>A resize listener that calls the editor's <code>setSize</code>.</li>
+<li>A close handler that destroys the editor but leaves the plugin
+  instance alive.</li>
+</ul>
+<p>Parameter changes from the editor reach <code>MH_Plugin</code> through JUCE's
+existing <code>AudioProcessorParameter::Listener</code> mechanism, which
+<code>libminihost</code> already wires to <code>mh_register_param_listener</code>. The GUI
+mirrors parameter state from listener callbacks, not by polling.</p>
+<h3 id="project-file">Project file<a class="headerlink" href="#project-file" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">&quot;minihost_project_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">&quot;sample_rate&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">48000</span><span class="p">,</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span><span class="nt">&quot;block_size&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">512</span><span class="p">,</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span><span class="nt">&quot;nodes&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;in&quot;</span><span class="p">,</span><span class="w">   </span><span class="nt">&quot;kind&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;input&quot;</span><span class="p">,</span><span class="w">  </span><span class="nt">&quot;channels&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;source&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;kick.wav&quot;</span><span class="p">},</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;comp&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;kind&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;plugin&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;path&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/Library/.../OTT.vst3&quot;</span><span class="p">,</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">     </span><span class="nt">&quot;state_b64&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;...&quot;</span><span class="p">},</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;out&quot;</span><span class="p">,</span><span class="w">  </span><span class="nt">&quot;kind&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;output&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;channels&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;sink&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;bounce.wav&quot;</span><span class="p">}</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">  </span><span class="p">],</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">  </span><span class="nt">&quot;edges&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;src&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;in&quot;</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">],</span><span class="w">   </span><span class="nt">&quot;dst&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;comp&quot;</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;channels&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">},</span>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;src&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;comp&quot;</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;dst&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;out&quot;</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">],</span><span class="w">  </span><span class="nt">&quot;channels&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">}</span>
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">  </span><span class="p">],</span>
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">  </span><span class="nt">&quot;automation&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;node&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;comp&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;param&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Threshold&quot;</span><span class="p">,</span>
+<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">     </span><span class="nt">&quot;points&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[[</span><span class="mf">0.0</span><span class="p">,</span><span class="w"> </span><span class="mf">-20.0</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">5.0</span><span class="p">,</span><span class="w"> </span><span class="mf">-8.0</span><span class="p">]]}</span>
+<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">  </span><span class="p">]</span>
+<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="p">}</span>
+</code></pre></div>
+<p>Plugin state is the opaque blob returned by <code>mh_get_state</code>,
+base64-encoded. Project files are not portable across plugin versions
+that change state format; that's the plugin's contract, not ours.</p>
+<h3 id="render-path">Render path<a class="headerlink" href="#render-path" title="Permanent link">&para;</a></h3>
+<p>"Render" action:</p>
+<ol>
+<li>Snapshot the <code>ProjectModel</code> to a <code>CompiledGraph</code> on the GUI thread.</li>
+<li>Spawn the render thread. The thread loops <code>mh_graph_render_block</code>
+   advancing <code>t0</code> by <code>block_size</code>, writing each output node's buffer to
+   its sink via <code>mh_audio_write</code> (streaming, not all-at-once).</li>
+<li>Progress is reported by frames written; the GUI polls at 30 Hz.</li>
+<li>Cancellation flips an atomic flag checked at the top of each block.</li>
+</ol>
+<p>The render path reuses <code>process_audio_to_file</code> semantics where
+possible — peak normalization, latency-comp trim — but operates over
+the graph executor's output node(s) rather than a single plugin.</p>
+<h2 id="phase-2-realtime-mode">Phase 2 — Realtime mode<a class="headerlink" href="#phase-2-realtime-mode" title="Permanent link">&para;</a></h2>
+<h3 id="scope-additions">Scope additions<a class="headerlink" href="#scope-additions" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Audio device selection (input / output device, sample rate, block
+  size) via <code>juce::AudioDeviceManager</code>.</li>
+<li>Transport bar: play / stop / loop region / BPM. Drives
+  <code>MH_TransportInfo</code> for each block.</li>
+<li>Live MIDI input routed to designated plugin nodes.</li>
+<li>The same graph executor compiled in "realtime" mode (allocation-free
+  block step; pre-allocated buffer pool sized at <code>prepare</code>).</li>
+</ul>
+<h3 id="architecture-delta">Architecture delta<a class="headerlink" href="#architecture-delta" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>+---------------------------+   +------------------------------+
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>|       GUI thread          |   |   AudioIODevice callback     |
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>|  - transport controls     |   |  - GraphExecutor.process()   |
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>|  - MIDI device pick       |   |  - reads SPSC command queue  |
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>+-------------+-------------+   +------------------------------+
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>              |                          ^
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>              | commands (SPSC)          |
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>              +--------------------------+
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>              | MIDI input thread --&gt; MIDI ring buffer
+</code></pre></div>
+<p>Constraints the executor must satisfy in v2:</p>
+<ul>
+<li>Allocation-free <code>render_block</code> (already true for <code>mh_chain_process_*</code>;
+  must extend to <code>mh_graph_render_block</code>). Tracked by an
+  RT-allocation test analogous to the existing
+  <code>tests/test_rt_allocations.py</code>.</li>
+<li>Parameter writes from the GUI thread reach the audio thread via a
+  bounded SPSC queue with drop-newest-on-overflow. The existing
+  <code>mh_set_param</code> mutex is fine for offline; v2 introduces an explicit
+  lock-free path for live editing.</li>
+<li>Editor window parameter writes go through the same lock-free path.</li>
+</ul>
+<p>Recompilation of the graph (topology change) requires stopping the
+device callback, swapping the <code>CompiledGraph</code> under a brief mute, and
+restarting. Parameter and automation changes do not recompile.</p>
+<h3 id="items-deferred-to-v25">Items deferred to v2.5+<a class="headerlink" href="#items-deferred-to-v25" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Latency compensation across fan-in paths. Plugin latency is known
+  (<code>mh_get_latency</code>); inserting per-path delay at fan-in points is a
+  scheduler change, not a UI change.</li>
+<li>Feedback loops with a one-block delay node.</li>
+<li>Sidechain input buses on plugins (blocked on a C ABI gap noted in
+  <code>graph.md</code>).</li>
+<li>Plugin process isolation (out-of-process plugin hosting for crash
+  containment). Significant scope; deferred unless crashes become a
+  routine support burden.</li>
+</ul>
+<h2 id="cross-cutting-concerns">Cross-cutting concerns<a class="headerlink" href="#cross-cutting-concerns" title="Permanent link">&para;</a></h2>
+<h3 id="build-configuration">Build configuration<a class="headerlink" href="#build-configuration" title="Permanent link">&para;</a></h3>
+<ul>
+<li>New sub-project at <code>projects/minihost_desktop/</code> with its own
+  <code>CMakeLists.txt</code> defining the <code>minihost_desktop</code> executable target.
+  Depends on <code>minihost_gui</code> (sibling static library produced by
+  <code>projects/libminihost/CMakeLists.txt</code> alongside the headless
+  <code>minihost</code>), and the JUCE GUI modules. The top-level
+  <code>CMakeLists.txt</code> includes the sub-project via <code>add_subdirectory</code>
+  guarded by <code>MINIHOST_BUILD_DESKTOP</code>. Both archives coexist in the
+  same build tree; enabling the desktop does not invalidate the
+  headless library or the Python wheel.</li>
+<li><code>libminihost_audio</code> will need an equivalent split (<code>minihost_audio</code> +
+  <code>minihost_audio_gui</code>) once the desktop needs audio file or device
+  I/O, since its current PUBLIC link on the headless <code>minihost</code> would
+  conflict with <code>minihost_gui</code> symbols. Tracked in the TODO.</li>
+<li>The headless <code>libminihost</code> static / shared library and the Python
+  wheel build are unaffected; they continue to use the headless JUCE
+  module set.</li>
+<li><code>MINIHOST_BUILD_DESKTOP=OFF</code> by default; opt-in to keep CI matrix
+  cheap.</li>
+</ul>
+<h3 id="testing">Testing<a class="headerlink" href="#testing" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Project file round-trip: load → save → byte-identical (after
+  canonicalization).</li>
+<li>Render parity: a project containing one input → one plugin → one
+  output renders bit-identically to a CLI invocation of
+  <code>process_audio_to_file</code> over the same plugin and parameters.</li>
+<li>Graph render parity vs manual <code>PluginChain</code> for linear graphs;
+  vs the parallel-branches <code>PluginBus</code> for the fan-out + mix case.
+  These mirror the validation plan in <code>docs/dev/graph.md</code>.</li>
+<li>Editor window smoke test: open / close 50× on a known plugin under
+  ASan; assert no leaks.</li>
+<li>v2: RT-allocation test for <code>mh_graph_render_block</code> analogous to
+  <code>test_rt_allocations.py</code>.</li>
+</ul>
+<h3 id="distribution">Distribution<a class="headerlink" href="#distribution" title="Permanent link">&para;</a></h3>
+<ul>
+<li>macOS: <code>.app</code> bundle, signed and notarized; <code>.dmg</code> for download.</li>
+<li>Windows: portable <code>.exe</code> first; installer once configuration paths
+  stabilize.</li>
+<li>Linux: AppImage. Distro packages out of scope until demand exists.</li>
+</ul>
+<h3 id="telemetry-crash-reporting">Telemetry / crash reporting<a class="headerlink" href="#telemetry-crash-reporting" title="Permanent link">&para;</a></h3>
+<p>None in v1. v2 may add opt-in crash reporting if hosted plugins prove
+to be a routine source of crashes. No usage telemetry either way.</p>
+<h2 id="open-questions">Open questions<a class="headerlink" href="#open-questions" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Process isolation for plugins.</strong> Hosting third-party plugins
+  in-process means a plugin crash kills the app. Out-of-process plugin
+  hosting (one helper per plugin or per format) is the standard
+  mitigation; it adds an IPC seam to every audio block and roughly
+  doubles the engine's complexity. Defer to v2.5; revisit if v1
+  testing shows crashes are routine.</li>
+<li><strong>Project file versioning.</strong> <code>minihost_project_version: 1</code> is the
+  obvious lever, but plugin state blobs embedded in projects are
+  versioned by the plugin author, not by us. A project that loads
+  cleanly on one machine may produce different audio on another if a
+  plugin's state format silently changed. Document this; don't try
+  to solve it.</li>
+<li><strong>Undo/redo granularity.</strong> Per-parameter undo is cheap; per-editor-
+  session undo (grouping a burst of edits from a plugin's own GUI) is
+  harder. v1 ships per-command undo (add node, connect, set parameter
+  from the app's own controls); editor-window edits go into a single
+  coalesced undo entry per editor open/close cycle.</li>
+<li><strong>macOS sandbox.</strong> Hosting arbitrary VST3/AU code is hostile to App
+  Store distribution; direct download only.</li>
+</ul>
+<h2 id="validation-plan">Validation plan<a class="headerlink" href="#validation-plan" title="Permanent link">&para;</a></h2>
+<p>Before committing to the design, confirm:</p>
+<ol>
+<li>The C-level graph executor (<code>mh_graph_*</code>) can be built from the
+   existing <code>PluginBus</code> source with bounded effort. If extending
+   "parallel branches" to a general DAG requires a rewrite rather than
+   an extension, reconsider whether to host the executor in Python
+   (per the original <code>graph.md</code> sketch) for v1 and port to C only for
+   v2's realtime path.</li>
+<li>JUCE's <code>AudioProcessorEditor</code> lifetime composes with <code>MH_Plugin</code>'s
+   internal locking. Specifically: opening an editor while
+   <code>mh_process_*</code> runs on another thread must not deadlock or race.
+   Smoke-test before committing to in-process editor hosting.</li>
+<li>A throwaway prototype loads one plugin, opens its editor window,
+   tweaks a parameter, and renders 5 seconds of output to a WAV. If
+   that's not working end-to-end in a week, the stack choice (or the
+   scope) is wrong.</li>
+</ol>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "content.code.copy", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
