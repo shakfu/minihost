@@ -115,7 +115,7 @@ struct EdgeKey {
 
 } // namespace
 
-struct MH_GraphV2 {
+struct MH_PluginGraph {
     int    max_block_size = 0;
     double sample_rate    = 0.0;
 
@@ -182,7 +182,7 @@ int findEdge(const std::vector<Edge>& edges, MH_NodeId dst, int port)
 
 } // namespace
 
-extern "C" MH_GraphV2* mh_graph_v2_create(int max_block_size,
+extern "C" MH_PluginGraph* mh_graph_create(int max_block_size,
                                           double sample_rate,
                                           char* err_buf, size_t err_buf_size)
 {
@@ -196,20 +196,20 @@ extern "C" MH_GraphV2* mh_graph_v2_create(int max_block_size,
         setErr(err_buf, err_buf_size, "sample_rate must be positive");
         return nullptr;
     }
-    auto* g = new MH_GraphV2();
+    auto* g = new MH_PluginGraph();
     g->max_block_size = max_block_size;
     g->sample_rate    = sample_rate;
     return g;
 }
 
-extern "C" void mh_graph_v2_close(MH_GraphV2* g)
+extern "C" void mh_graph_close(MH_PluginGraph* g)
 {
     if (g == nullptr) return;
     // Plugin nodes are caller-owned.
     delete g;
 }
 
-extern "C" MH_NodeId mh_graph_v2_add_plugin(MH_GraphV2* g, MH_Plugin* p,
+extern "C" MH_NodeId mh_graph_add_plugin(MH_PluginGraph* g, MH_Plugin* p,
                                             char* err_buf, size_t err_buf_size)
 {
     if (g == nullptr || p == nullptr)
@@ -251,7 +251,7 @@ extern "C" MH_NodeId mh_graph_v2_add_plugin(MH_GraphV2* g, MH_Plugin* p,
     return (MH_NodeId)(g->nodes.size() - 1);
 }
 
-extern "C" MH_NodeId mh_graph_v2_add_pick_channel(MH_GraphV2* g,
+extern "C" MH_NodeId mh_graph_add_pick_channel(MH_PluginGraph* g,
                                                   int in_channels,
                                                   int channel_index,
                                                   char* err_buf, size_t err_buf_size)
@@ -283,7 +283,7 @@ extern "C" MH_NodeId mh_graph_v2_add_pick_channel(MH_GraphV2* g,
     return (MH_NodeId)(g->nodes.size() - 1);
 }
 
-extern "C" MH_NodeId mh_graph_v2_add_merge_channels(MH_GraphV2* g,
+extern "C" MH_NodeId mh_graph_add_merge_channels(MH_PluginGraph* g,
                                                     int out_channels,
                                                     char* err_buf, size_t err_buf_size)
 {
@@ -308,7 +308,7 @@ extern "C" MH_NodeId mh_graph_v2_add_merge_channels(MH_GraphV2* g,
     return (MH_NodeId)(g->nodes.size() - 1);
 }
 
-extern "C" MH_NodeId mh_graph_v2_add_midi_input(MH_GraphV2* g,
+extern "C" MH_NodeId mh_graph_add_midi_input(MH_PluginGraph* g,
                                                 char* err_buf, size_t err_buf_size)
 {
     if (g == nullptr) { setErr(err_buf, err_buf_size, "null graph"); return -1; }
@@ -324,7 +324,7 @@ extern "C" MH_NodeId mh_graph_v2_add_midi_input(MH_GraphV2* g,
     return (MH_NodeId)(g->nodes.size() - 1);
 }
 
-extern "C" MH_NodeId mh_graph_v2_add_midi_output(MH_GraphV2* g,
+extern "C" MH_NodeId mh_graph_add_midi_output(MH_PluginGraph* g,
                                                  char* err_buf, size_t err_buf_size)
 {
     if (g == nullptr) { setErr(err_buf, err_buf_size, "null graph"); return -1; }
@@ -342,7 +342,7 @@ extern "C" MH_NodeId mh_graph_v2_add_midi_output(MH_GraphV2* g,
     return (MH_NodeId)(g->nodes.size() - 1);
 }
 
-extern "C" MH_NodeId mh_graph_v2_add_input(MH_GraphV2* g, int channels,
+extern "C" MH_NodeId mh_graph_add_input(MH_PluginGraph* g, int channels,
                                            char* err_buf, size_t err_buf_size)
 {
     if (g == nullptr) { setErr(err_buf, err_buf_size, "null graph"); return -1; }
@@ -365,7 +365,7 @@ extern "C" MH_NodeId mh_graph_v2_add_input(MH_GraphV2* g, int channels,
     return id;
 }
 
-extern "C" MH_NodeId mh_graph_v2_add_output(MH_GraphV2* g, int channels,
+extern "C" MH_NodeId mh_graph_add_output(MH_PluginGraph* g, int channels,
                                             char* err_buf, size_t err_buf_size)
 {
     if (g == nullptr) { setErr(err_buf, err_buf_size, "null graph"); return -1; }
@@ -389,7 +389,7 @@ extern "C" MH_NodeId mh_graph_v2_add_output(MH_GraphV2* g, int channels,
     return id;
 }
 
-extern "C" MH_NodeId mh_graph_v2_add_mix(MH_GraphV2* g,
+extern "C" MH_NodeId mh_graph_add_mix(MH_PluginGraph* g,
                                          int num_inputs, int channels,
                                          char* err_buf, size_t err_buf_size)
 {
@@ -413,8 +413,8 @@ extern "C" MH_NodeId mh_graph_v2_add_mix(MH_GraphV2* g,
     return (MH_NodeId)(g->nodes.size() - 1);
 }
 
-extern "C" MH_NodeId mh_graph_v2_add_midi_processor(
-    MH_GraphV2* g, MH_MidiProcessorParams params,
+extern "C" MH_NodeId mh_graph_add_midi_processor(
+    MH_PluginGraph* g, MH_MidiProcessorParams params,
     char* err_buf, size_t err_buf_size)
 {
     if (g == nullptr) { setErr(err_buf, err_buf_size, "null graph"); return -1; }
@@ -438,8 +438,8 @@ extern "C" MH_NodeId mh_graph_v2_add_midi_processor(
     return (MH_NodeId)(g->nodes.size() - 1);
 }
 
-extern "C" int mh_graph_v2_set_midi_processor_params(
-    MH_GraphV2* g, MH_NodeId node, MH_MidiProcessorParams params)
+extern "C" int mh_graph_set_midi_processor_params(
+    MH_PluginGraph* g, MH_NodeId node, MH_MidiProcessorParams params)
 {
     if (g == nullptr) return 0;
     if (!inRange(node, (int) g->nodes.size())) return 0;
@@ -449,8 +449,8 @@ extern "C" int mh_graph_v2_set_midi_processor_params(
     return 1;
 }
 
-extern "C" MH_NodeId mh_graph_v2_add_midi_merge(
-    MH_GraphV2* g, int num_inputs,
+extern "C" MH_NodeId mh_graph_add_midi_merge(
+    MH_PluginGraph* g, int num_inputs,
     char* err_buf, size_t err_buf_size)
 {
     if (g == nullptr) { setErr(err_buf, err_buf_size, "null graph"); return -1; }
@@ -472,7 +472,7 @@ extern "C" MH_NodeId mh_graph_v2_add_midi_merge(
     return (MH_NodeId)(g->nodes.size() - 1);
 }
 
-extern "C" int mh_graph_v2_connect(MH_GraphV2* g,
+extern "C" int mh_graph_connect(MH_PluginGraph* g,
                                    MH_NodeId src, int src_port,
                                    MH_NodeId dst, int dst_port,
                                    char* err_buf, size_t err_buf_size)
@@ -515,7 +515,7 @@ extern "C" int mh_graph_v2_connect(MH_GraphV2* g,
     {
         setErr(err_buf, err_buf_size,
                "MIDI nodes cannot participate in audio edges; "
-               "use mh_graph_v2_connect_midi");
+               "use mh_graph_connect_midi");
         return 0;
     }
     if (dst_port < 0 || dst_port >= dn.num_input_ports)
@@ -541,7 +541,7 @@ extern "C" int mh_graph_v2_connect(MH_GraphV2* g,
     return 1;
 }
 
-extern "C" int mh_graph_v2_set_mix_gain(MH_GraphV2* g, MH_NodeId mix_node,
+extern "C" int mh_graph_set_mix_gain(MH_PluginGraph* g, MH_NodeId mix_node,
                                         int input_index, float gain)
 {
     if (g == nullptr) return 0;
@@ -553,7 +553,7 @@ extern "C" int mh_graph_v2_set_mix_gain(MH_GraphV2* g, MH_NodeId mix_node,
     return 1;
 }
 
-extern "C" int mh_graph_v2_connect_midi_port(MH_GraphV2* g,
+extern "C" int mh_graph_connect_midi_port(MH_PluginGraph* g,
                                              MH_NodeId src, MH_NodeId dst,
                                              int dst_port,
                                              char* err_buf, size_t err_buf_size)
@@ -625,14 +625,14 @@ extern "C" int mh_graph_v2_connect_midi_port(MH_GraphV2* g,
     return 1;
 }
 
-extern "C" int mh_graph_v2_connect_midi(MH_GraphV2* g,
+extern "C" int mh_graph_connect_midi(MH_PluginGraph* g,
                                         MH_NodeId src, MH_NodeId dst,
                                         char* err_buf, size_t err_buf_size)
 {
-    return mh_graph_v2_connect_midi_port(g, src, dst, 0, err_buf, err_buf_size);
+    return mh_graph_connect_midi_port(g, src, dst, 0, err_buf, err_buf_size);
 }
 
-extern "C" int mh_graph_v2_compile(MH_GraphV2* g,
+extern "C" int mh_graph_compile(MH_PluginGraph* g,
                                    char* err_buf, size_t err_buf_size)
 {
     if (g == nullptr) { setErr(err_buf, err_buf_size, "null graph"); return 0; }
@@ -838,13 +838,13 @@ extern "C" int mh_graph_v2_compile(MH_GraphV2* g,
     }
 
     g->schedule = std::move(order);
-    g->pending_midi.assign((size_t) N, MH_GraphV2::PendingMidi{nullptr, 0});
-    g->pending_auto.assign((size_t) N, MH_GraphV2::PendingAuto{nullptr, 0});
+    g->pending_midi.assign((size_t) N, MH_PluginGraph::PendingMidi{nullptr, 0});
+    g->pending_auto.assign((size_t) N, MH_PluginGraph::PendingAuto{nullptr, 0});
     g->compiled = true;
     return 1;
 }
 
-extern "C" int mh_graph_v2_set_node_midi(MH_GraphV2* g, MH_NodeId node,
+extern "C" int mh_graph_set_node_midi(MH_PluginGraph* g, MH_NodeId node,
                                          const MH_MidiEvent* events,
                                          int num_events)
 {
@@ -857,7 +857,7 @@ extern "C" int mh_graph_v2_set_node_midi(MH_GraphV2* g, MH_NodeId node,
     return 1;
 }
 
-extern "C" int mh_graph_v2_set_midi_input_events(MH_GraphV2* g, MH_NodeId node,
+extern "C" int mh_graph_set_midi_input_events(MH_PluginGraph* g, MH_NodeId node,
                                                  const MH_MidiEvent* events,
                                                  int num_events)
 {
@@ -871,7 +871,7 @@ extern "C" int mh_graph_v2_set_midi_input_events(MH_GraphV2* g, MH_NodeId node,
     return 1;
 }
 
-extern "C" int mh_graph_v2_get_midi_output_events(MH_GraphV2* g, MH_NodeId node,
+extern "C" int mh_graph_get_midi_output_events(MH_PluginGraph* g, MH_NodeId node,
                                                   MH_MidiEvent* out_buf,
                                                   int capacity,
                                                   int* num_events_out)
@@ -892,7 +892,7 @@ extern "C" int mh_graph_v2_get_midi_output_events(MH_GraphV2* g, MH_NodeId node,
     return 1;
 }
 
-extern "C" int mh_graph_v2_set_node_automation(MH_GraphV2* g, MH_NodeId node,
+extern "C" int mh_graph_set_node_automation(MH_PluginGraph* g, MH_NodeId node,
                                                const MH_ParamChange* changes,
                                                int num_changes)
 {
@@ -906,7 +906,7 @@ extern "C" int mh_graph_v2_set_node_automation(MH_GraphV2* g, MH_NodeId node,
     return 1;
 }
 
-extern "C" int mh_graph_v2_render_block(MH_GraphV2* g,
+extern "C" int mh_graph_render_block(MH_PluginGraph* g,
                                         const float* const* const* input_buffers,
                                         int num_input_nodes,
                                         float* const* const* output_buffers,
@@ -1325,14 +1325,14 @@ extern "C" int mh_graph_v2_render_block(MH_GraphV2* g,
     return 1;
 }
 
-extern "C" int mh_graph_v2_num_nodes(MH_GraphV2* g)
+extern "C" int mh_graph_num_nodes(MH_PluginGraph* g)
 { return g ? (int) g->nodes.size() : 0; }
 
-extern "C" int mh_graph_v2_num_input_nodes(MH_GraphV2* g)
+extern "C" int mh_graph_num_input_nodes(MH_PluginGraph* g)
 { return g ? (int) g->input_nodes_.size() : 0; }
 
-extern "C" int mh_graph_v2_num_output_nodes(MH_GraphV2* g)
+extern "C" int mh_graph_num_output_nodes(MH_PluginGraph* g)
 { return g ? (int) g->output_nodes_.size() : 0; }
 
-extern "C" int mh_graph_v2_is_compiled(MH_GraphV2* g)
+extern "C" int mh_graph_is_compiled(MH_PluginGraph* g)
 { return (g && g->compiled) ? 1 : 0; }

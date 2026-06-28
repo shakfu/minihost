@@ -31,8 +31,8 @@ from minihost._core import (
     AudioBuffer,
     Plugin,
     PluginChain,
+    PluginBus,
     PluginGraph,
-    GraphV2,
     Session,
     AudioDevice,
     MidiFile,
@@ -132,8 +132,8 @@ __all__ = [
     "AudioBuffer",
     "Plugin",
     "PluginChain",
+    "PluginBus",
     "PluginGraph",
-    "GraphV2",
     "Session",
     "AudioDevice",
     "MidiFile",
@@ -200,4 +200,4 @@ __all__ = [
     "MH_API_VERSION_NUMBER",
     "MH_API_VERSION_STRING",
 ]
-__version__ = "0.1.7"
+__version__ = "0.2.0"

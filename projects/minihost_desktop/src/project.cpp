@@ -198,7 +198,7 @@ void LoadedProject::renderMetronomes(std::vector<std::vector<float>>& planar_inp
     }
 }
 
-void LoadedProject::stageMidiClocks(MH_GraphV2* g_handle,
+void LoadedProject::stageMidiClocks(MH_PluginGraph* g_handle,
                                     int nframes,
                                     long long pos_samples,
                                     double sr, double bpm, bool playing)
@@ -246,7 +246,7 @@ void LoadedProject::stageMidiClocks(MH_GraphV2* g_handle,
             }
         }
 
-        mh_graph_v2_set_midi_input_events(
+        mh_graph_set_midi_input_events(
             g_handle, midi_clock_node_ids[m],
             buf.empty() ? nullptr : buf.data(),
             (int) buf.size());
@@ -543,11 +543,11 @@ std::unique_ptr<LoadedProject> loadProject(const juce::File& path)
     }
 
     // Build the graph.
-    loaded->graph = std::make_unique<minihost::GraphV2>(
+    loaded->graph = std::make_unique<minihost::PluginGraph>(
         doc.block_size, (double) doc.sample_rate);
     auto& g = *loaded->graph;
 
-    std::unordered_map<std::string, minihost::GraphV2::NodeId> id_to_node;
+    std::unordered_map<std::string, minihost::PluginGraph::NodeId> id_to_node;
     // Single dispatch: walk every kind in canonical registry order
     // and let the entry's load_one translate its specs into graph
     // nodes (and record any side effects on LoadedProject). The

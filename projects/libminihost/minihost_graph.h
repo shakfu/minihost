@@ -1,7 +1,12 @@
 // minihost_graph.h
-// Parallel plugin routing for minihost.
+// Parallel plugin routing for minihost (the "bus").
 //
-// MH_PluginGraph runs N PluginChain branches in parallel against the
+// NOTE: the file name is retained for git history; as of ABI 2.0.0 the
+// symbols here are the mh_bus_* / MH_PluginBus family (Python: PluginBus).
+// The general DAG executor lives in minihost_graph_v2.h (mh_graph_* /
+// MH_PluginGraph; Python: PluginGraph).
+//
+// MH_PluginBus runs N PluginChain branches in parallel against the
 // same input, then sums their outputs with per-branch gains. This
 // covers the common cases that a serial PluginChain can't handle:
 // parallel compression, dry-bus + reverb-send, multi-band processing
@@ -13,12 +18,13 @@
 // possible v2.
 //
 // Thread Safety:
-//   - mh_graph_process: call from the audio thread only.
+//   - mh_bus_process: call from the audio thread only.
 //   - All other functions are thread-safe (do not call while a process
 //     call is in flight on the same graph from another thread).
 //
 #pragma once
 #include <stddef.h>
+#include "minihost.h"   // MH_MidiEvent
 
 #ifdef __cplusplus
 extern "C" {
@@ -26,7 +32,7 @@ extern "C" {
 
 // Forward declarations
 typedef struct MH_PluginChain MH_PluginChain;
-typedef struct MH_PluginGraph MH_PluginGraph;
+typedef struct MH_PluginBus MH_PluginBus;
 
 // Create a graph configured for a fixed I/O channel layout and max
 // block size. Every branch added later must accept exactly
@@ -36,7 +42,7 @@ typedef struct MH_PluginGraph MH_PluginGraph;
 // max_block_size frames per call.
 //
 // Returns NULL on failure.
-MH_PluginGraph* mh_graph_create(int num_in_channels,
+MH_PluginBus* mh_bus_create(int num_in_channels,
                                  int num_out_channels,
                                  int max_block_size,
                                  double sample_rate,
@@ -45,7 +51,7 @@ MH_PluginGraph* mh_graph_create(int num_in_channels,
 
 // Close the graph and free its scratch buffers. Does NOT close the
 // PluginChain branches -- they are still owned by the caller.
-void mh_graph_close(MH_PluginGraph* graph);
+void mh_bus_close(MH_PluginBus* graph);
 
 // Add a PluginChain branch to the graph. The graph stores the chain
 // pointer but does not take ownership; the caller must keep the chain
@@ -57,7 +63,7 @@ void mh_graph_close(MH_PluginGraph* graph);
 // Returns the branch index (>= 0) on success, or -1 on failure (e.g.,
 // NULL chain, channel-count mismatch with the graph, sample-rate
 // mismatch).
-int mh_graph_add_branch(MH_PluginGraph* graph,
+int mh_bus_add_branch(MH_PluginBus* graph,
                          MH_PluginChain* chain,
                          float gain,
                          char* err_buf,
@@ -65,12 +71,12 @@ int mh_graph_add_branch(MH_PluginGraph* graph,
 
 // Get / set a branch's summing gain. Returns 1 on success, 0 on
 // failure (NULL graph, index out of range).
-int mh_graph_set_branch_gain(MH_PluginGraph* graph, int branch_index, float gain);
+int mh_bus_set_branch_gain(MH_PluginBus* graph, int branch_index, float gain);
 
 // Returns gain on success, or NaN on failure.
-float mh_graph_get_branch_gain(MH_PluginGraph* graph, int branch_index);
+float mh_bus_get_branch_gain(MH_PluginBus* graph, int branch_index);
 
-int mh_graph_get_num_branches(MH_PluginGraph* graph);
+int mh_bus_get_num_branches(MH_PluginBus* graph);
 
 // Process audio through the graph: fan inputs to every branch, sum
 // each branch's output (scaled by its gain) into outputs.
@@ -80,21 +86,42 @@ int mh_graph_get_num_branches(MH_PluginGraph* graph);
 // nframes must be in (0, max_block_size].
 //
 // Returns 1 on success, 0 on failure.
-int mh_graph_process(MH_PluginGraph* graph,
+int mh_bus_process(MH_PluginBus* graph,
                       const float* const* inputs,
                       float* const* outputs,
                       int nframes);
 
+// Process audio with MIDI fanned out to every branch. The same
+// midi_in events are delivered to each branch (to that branch's first
+// plugin, per mh_chain_process_midi_io semantics), which is what makes
+// the bus a layering primitive: one MIDI part drives N parallel
+// instruments whose audio is summed.
+//
+// midi_in / num_midi_in: input MIDI events (pass NULL/0 to process
+// audio only -- equivalent to mh_bus_process). Muted branches
+// (gain 0.0) are skipped and receive no MIDI.
+//
+// MIDI produced by branches is NOT collected (this is an audio-summing
+// bus); collecting/merging branch MIDI output is a planned follow-up.
+//
+// Returns 1 on success, 0 on failure.
+int mh_bus_process_midi(MH_PluginBus* graph,
+                          const float* const* inputs,
+                          float* const* outputs,
+                          int nframes,
+                          const MH_MidiEvent* midi_in,
+                          int num_midi_in);
+
 // Properties
-int mh_graph_get_num_input_channels(MH_PluginGraph* graph);
-int mh_graph_get_num_output_channels(MH_PluginGraph* graph);
-double mh_graph_get_sample_rate(MH_PluginGraph* graph);
-int mh_graph_get_max_block_size(MH_PluginGraph* graph);
+int mh_bus_get_num_input_channels(MH_PluginBus* graph);
+int mh_bus_get_num_output_channels(MH_PluginBus* graph);
+double mh_bus_get_sample_rate(MH_PluginBus* graph);
+int mh_bus_get_max_block_size(MH_PluginBus* graph);
 
 // Total latency / tail: maximum across branches (parallel branches
 // don't accumulate latency the way serial chains do).
-int mh_graph_get_latency_samples(MH_PluginGraph* graph);
-double mh_graph_get_tail_seconds(MH_PluginGraph* graph);
+int mh_bus_get_latency_samples(MH_PluginBus* graph);
+double mh_bus_get_tail_seconds(MH_PluginBus* graph);
 
 #ifdef __cplusplus
 }

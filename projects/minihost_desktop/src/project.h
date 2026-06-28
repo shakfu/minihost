@@ -2,7 +2,7 @@
 //
 // C++ port of src/minihost/project.py. Same JSON schema (v1). Parses
 // a project file, opens plugins, reads input WAVs, builds a compiled
-// minihost::GraphV2, renders block-by-block, writes output WAVs.
+// minihost::PluginGraph, renders block-by-block, writes output WAVs.
 //
 // Pure non-GUI logic so it can be unit-tested headlessly and driven
 // from a worker thread inside the desktop app. The UI integration
@@ -308,7 +308,7 @@ struct LoadedProject {
     LoadedProject& operator=(const LoadedProject&) = delete;
     ~LoadedProject();
 
-    std::unique_ptr<minihost::GraphV2> graph;
+    std::unique_ptr<minihost::PluginGraph> graph;
     std::vector<MH_Plugin*>            plugins;          // owned
     ProjectDocument                    doc;
     int                                duration_frames = 0;
@@ -404,7 +404,7 @@ struct LoadedProject {
     // For each MidiClockNodeSpec, the graph node id of its dedicated
     // MH_NODE_MIDI_INPUT and a scratch buffer for the events that
     // LiveEngine builds per block. Pointers into these buffers are
-    // staged via mh_graph_v2_set_midi_input_events.
+    // staged via mh_graph_set_midi_input_events.
     std::vector<MH_NodeId>             midi_clock_node_ids;
     std::vector<std::vector<MH_MidiEvent>> midi_clock_event_buffers;
 
@@ -416,9 +416,9 @@ struct LoadedProject {
 
     // Builds the next block's MIDI clock events (Start / Stop /
     // 24-PPQN Clock ticks) per midi_clock node, stages them on the
-    // graph via mh_graph_v2_set_midi_input_events, and updates the
+    // graph via mh_graph_set_midi_input_events, and updates the
     // per-node "was_playing" edge-detection state.
-    void stageMidiClocks(struct MH_GraphV2* graph,
+    void stageMidiClocks(struct MH_PluginGraph* graph,
                          int nframes,
                          long long pos_samples,
                          double sr, double bpm, bool playing);

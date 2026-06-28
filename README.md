@@ -61,6 +61,34 @@ sample-rate matching, channel layout, and tail rendering. See the
 - **Async plugin loading** -- `minihost.open_async()` returns a `concurrent.futures.Future` for background loading of large sample-library plugins
 - **VST3 preset I/O** -- read and write `.vstpreset` files from C (`minihost_vstpreset.h`), C++, and Python (`minihost.vstpreset`); `minihost presets` CLI subcommand exports the current plugin state, optionally after loading a program, state blob, or another `.vstpreset`
 
+## Library structure
+
+minihost ships as two separate static libraries with a one-way dependency:
+`libminihost_audio` builds on `libminihost`, never the reverse.
+
+- **`libminihost`** -- the plugin host core (`projects/libminihost/`). Loads and
+  runs VST3/AU/LV2 plugins and processes audio blocks you hand it: MIDI in/out,
+  parameters, state save/restore, sample-accurate automation, sidechain,
+  transport, bus layouts, and the routing abstractions (`PluginChain`,
+  `PluginBus`, `PluginGraph`). Depends only on JUCE. C ABI prefix: `mh_*` (e.g.
+  `mh_open`, `mh_process`, `mh_chain_*`, `mh_bus_*`, `mh_graph_*`). Header: `minihost.h`.
+  Link this alone to load a plugin and feed it your own buffers -- the offline
+  and embedded path, with no device or codec dependencies.
+
+- **`libminihost_audio`** -- the I/O layer around the core
+  (`projects/libminihost_audio/`). It has no plugin-format knowledge; it gets
+  audio and MIDI in and out of the machine and drives a plugin or chain through
+  its real-time audio callback. Provides live audio device playback/capture
+  (miniaudio), audio file read/write (read WAV/FLAC/MP3/Vorbis; write WAV/FLAC
+  via miniaudio + tflac), MIDI ports (libremidi), and the lock-free ring
+  buffers. Depends on `libminihost` plus the vendored miniaudio, tflac, and
+  libremidi. C ABI prefix: `mh_audio_*`. Headers: `minihost_audio.h`,
+  `minihost_audiofile.h`, `minihost_midi.h`. Link this in addition to
+  `libminihost` when you want real-time devices, file I/O, or MIDI hardware.
+
+In short: `libminihost` runs the plugin; `libminihost_audio` connects it to
+speakers, files, and MIDI hardware. The Python wheel links both.
+
 ## Requirements
 
 - CMake 3.20+
@@ -760,6 +788,41 @@ for i in range(chain.num_plugins):
     plugin = chain.get_plugin(i)
     print(f"Plugin {i}: {plugin.num_params} params")
 ```
+
+### Parallel routing (PluginBus)
+
+`PluginChain` is series; `PluginBus` is parallel. A bus fans the same input
+to N branches (each a `PluginChain`) and sums their outputs with a per-branch
+gain -- parallel compression, dry-bus + reverb-send, multi-band processing.
+With `process_midi`, the same MIDI is delivered to every branch, which is the
+idiomatic way to layer one part across several instruments:
+
+```python
+import minihost
+
+# Three synths layered under one MIDI part, summed to stereo.
+a = minihost.PluginChain([minihost.Plugin("/path/to/saw.vst3", sample_rate=48000)])
+b = minihost.PluginChain([minihost.Plugin("/path/to/sub.vst3", sample_rate=48000)])
+c = minihost.PluginChain([minihost.Plugin("/path/to/pad.vst3", sample_rate=48000)])
+
+bus = minihost.PluginBus(2, 2, max_block_size=512, sample_rate=48000.0)
+bus.add_branch(a, gain=1.0)
+bus.add_branch(b, gain=0.7)
+bus.add_branch(c, gain=0.5)
+
+silence = minihost.AudioBuffer(2, 512)   # synths ignore audio input
+out = minihost.AudioBuffer(2, 512)
+note_on = [(0, 0x90, 60, 100)]           # C4 reaches ALL three synths
+bus.process_midi(silence, out, note_on)
+```
+
+A complete, runnable version (block loop, chord, WAV output) is in
+[`examples/parallel_bus.py`](examples/parallel_bus.py).
+
+For arbitrary node-to-node topologies (multiple inputs/outputs, MIDI
+processors, channel pick/merge), use `PluginGraph` -- the general DAG executor
+that also backs project files (`minihost.load_project`). Branch MIDI *output*
+is not collected by the bus; reach for `PluginGraph` if you need that.
 
 ### VST3 Presets
 

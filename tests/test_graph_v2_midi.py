@@ -1,4 +1,4 @@
-"""Tests for MIDI routing in minihost.GraphV2.
+"""Tests for MIDI routing in minihost.PluginGraph.
 
 Covers the no-plugin paths: MIDI_INPUT -> MIDI_OUTPUT, validation of
 edge endpoints, and the rule that audio and MIDI live on separate
@@ -31,14 +31,14 @@ skip_if_no_plugin = pytest.mark.skipif(
 # -------------------------------------------------------------------- #
 
 def test_midi_input_node_addable_without_audio_io():
-    g = minihost.GraphV2(64, 48000.0)
+    g = minihost.PluginGraph(64, 48000.0)
     mi = g.add_midi_input()
     assert mi >= 0
     assert g.num_input_nodes == 0  # MIDI inputs do not count as audio inputs
 
 
 def test_midi_output_node_requires_incoming_midi_edge():
-    g = minihost.GraphV2(64, 48000.0)
+    g = minihost.PluginGraph(64, 48000.0)
     # Need at least one audio output to make compile happy on that
     # front, plus an unconnected MIDI_OUTPUT to trigger the error.
     inp = g.add_input(2)
@@ -50,7 +50,7 @@ def test_midi_output_node_requires_incoming_midi_edge():
 
 
 def test_audio_connect_rejects_midi_nodes():
-    g = minihost.GraphV2(64, 48000.0)
+    g = minihost.PluginGraph(64, 48000.0)
     mi = g.add_midi_input()
     out = g.add_output(2)
     with pytest.raises(RuntimeError, match="MIDI nodes cannot"):
@@ -58,7 +58,7 @@ def test_audio_connect_rejects_midi_nodes():
 
 
 def test_midi_connect_rejects_audio_only_src():
-    g = minihost.GraphV2(64, 48000.0)
+    g = minihost.PluginGraph(64, 48000.0)
     a_in = g.add_input(2)
     mo = g.add_midi_output()
     with pytest.raises(RuntimeError, match="does not produce MIDI"):
@@ -66,7 +66,7 @@ def test_midi_connect_rejects_audio_only_src():
 
 
 def test_midi_connect_rejects_audio_only_dst():
-    g = minihost.GraphV2(64, 48000.0)
+    g = minihost.PluginGraph(64, 48000.0)
     mi = g.add_midi_input()
     a_out = g.add_output(2)
     with pytest.raises(RuntimeError, match="does not accept MIDI"):
@@ -74,7 +74,7 @@ def test_midi_connect_rejects_audio_only_dst():
 
 
 def test_midi_self_edge_rejected():
-    g = minihost.GraphV2(64, 48000.0)
+    g = minihost.PluginGraph(64, 48000.0)
     mi = g.add_midi_input()
     with pytest.raises(RuntimeError, match="self-edges"):
         g.connect_midi(mi, mi)
@@ -82,7 +82,7 @@ def test_midi_self_edge_rejected():
 
 def test_midi_edge_overwrites_previous_on_same_dst():
     """One MIDI edge per dst: a second connect_midi swaps the source."""
-    g = minihost.GraphV2(64, 48000.0)
+    g = minihost.PluginGraph(64, 48000.0)
     mi1 = g.add_midi_input()
     mi2 = g.add_midi_input()
     mo = g.add_midi_output()
@@ -103,7 +103,7 @@ def test_midi_edge_overwrites_previous_on_same_dst():
 
 
 def test_post_compile_midi_connect_rejected():
-    g = minihost.GraphV2(64, 48000.0)
+    g = minihost.PluginGraph(64, 48000.0)
     mi = g.add_midi_input()
     mo = g.add_midi_output()
     g.connect_midi(mi, mo)
@@ -121,7 +121,7 @@ def test_post_compile_midi_connect_rejected():
 
 def test_midi_input_passthrough_to_midi_output():
     F = 16
-    g = minihost.GraphV2(F, 48000.0)
+    g = minihost.PluginGraph(F, 48000.0)
     mi = g.add_midi_input()
     mo = g.add_midi_output()
     g.connect_midi(mi, mo)
@@ -148,7 +148,7 @@ def test_midi_input_passthrough_to_midi_output():
 def test_midi_staging_cleared_after_render():
     """Staged MIDI is one-shot; the next block sees no events."""
     F = 8
-    g = minihost.GraphV2(F, 48000.0)
+    g = minihost.PluginGraph(F, 48000.0)
     mi = g.add_midi_input()
     mo = g.add_midi_output()
     g.connect_midi(mi, mo)
@@ -170,7 +170,7 @@ def test_midi_staging_cleared_after_render():
 
 def test_midi_fanout_to_multiple_outputs():
     F = 8
-    g = minihost.GraphV2(F, 48000.0)
+    g = minihost.PluginGraph(F, 48000.0)
     mi = g.add_midi_input()
     mo_a = g.add_midi_output()
     mo_b = g.add_midi_output()
@@ -213,7 +213,7 @@ def test_plugin_midi_input_from_graph_edge():
         # tests above.
         pytest.skip("plugin has no audio input port; edge form n/a")
 
-    g1 = minihost.GraphV2(F, sr)
+    g1 = minihost.PluginGraph(F, sr)
     pn1   = g1.add_plugin(p1)
     mi    = g1.add_midi_input()
     a_in  = g1.add_input(in_ch)

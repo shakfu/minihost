@@ -15,8 +15,8 @@ Python, one C++) kept in sync by a parity test.
 ```
                 ┌───────────────────────────────────────────────────────┐
                 │  libminihost  (C ABI: mh_open, mh_process,            │
-                │   mh_graph_v2_*, mh_set_node_midi,                    │
-                │   mh_graph_v2_set_node_automation, ...)               │
+                │   mh_graph_*, mh_set_node_midi,                    │
+                │   mh_graph_set_node_automation, ...)               │
                 │   minihost.cpp / minihost_chain.cpp /                 │
                 │   minihost_graph.cpp / minihost_graph_v2.cpp          │
                 └───────────┬───────────────────────────┬───────────────┘
@@ -47,9 +47,9 @@ Python, one C++) kept in sync by a parity test.
 ## What is shared (deepest to thinnest)
 
 1. **The C ABI in `libminihost`.** Every type and function -- `MH_Plugin`,
-   `MH_GraphV2`, `MH_PluginChain`, `MH_PluginGraph`, `mh_open`,
-   `mh_process*`, `mh_graph_v2_*`, the Phase-2 additions
-   (`mh_graph_v2_set_node_midi`, `mh_graph_v2_set_node_automation`),
+   `MH_PluginGraph`, `MH_PluginChain`, `MH_PluginBus`, `mh_open`,
+   `mh_process*`, `mh_graph_*`, the Phase-2 additions
+   (`mh_graph_set_node_midi`, `mh_graph_set_node_automation`),
    `mh_get_juce_processor` -- is the single source of truth. Both
    consumers call into this. The header is valid C; only consumers
    that link JUCE cast the `void*` returned by `mh_get_juce_processor`.
@@ -73,9 +73,9 @@ Python, one C++) kept in sync by a parity test.
   `AudioDeviceManager`. (See the build / link layer in
   [docs/dev/desktop_app.md](desktop_app.md).)
 - **The desktop binary doesn't embed Python.** It calls
-  `mh_graph_v2_*` natively from C++. No Python interpreter, no
+  `mh_graph_*` natively from C++. No Python interpreter, no
   `nanobind`, no IPC seam.
-- **`minihost::GraphV2`** -- the header-only RAII wrapper in
+- **`minihost::PluginGraph`** -- the header-only RAII wrapper in
   `projects/libminihost/minihost_graph_v2.hpp` -- is used only by
   the desktop's `LiveEngine` and project loader. The Python
   binding talks straight to the C ABI through `nanobind`; the C++
@@ -157,7 +157,7 @@ A user can:
 
 - Install the wheel (`uv pip install minihost`) and never touch the
   desktop binary. They get the C ABI exposed as `minihost.Plugin`,
-  `minihost.GraphV2`, `minihost.process_audio_to_file`, the CLI tools,
+  `minihost.PluginGraph`, `minihost.process_audio_to_file`, the CLI tools,
   etc.
 - Build the desktop binary and never use Python. The Python wheel is
   not a runtime dependency of `minihost_desktop`. The binary is
@@ -177,5 +177,5 @@ long as the C ABI in `libminihost` stays stable.
 - [desktop_app_todo.md](desktop_app_todo.md) -- per-phase task list
   with current state.
 - [graph.md](graph.md) -- the original v1 graph-executor sketch
-  (predates `mh_graph_v2_*` and the C++ wrapper; preserved as a
+  (predates `mh_graph_*` and the C++ wrapper; preserved as a
   historical note).

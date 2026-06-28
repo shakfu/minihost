@@ -10,7 +10,7 @@
 #include <limits>
 #include <vector>
 
-struct MH_PluginGraph
+struct MH_PluginBus
 {
     int in_channels;
     int out_channels;
@@ -33,7 +33,7 @@ static void setErr(char* buf, size_t n, const char* msg)
     std::snprintf(buf, n, "%s", msg);
 }
 
-MH_PluginGraph* mh_graph_create(int num_in_channels,
+MH_PluginBus* mh_bus_create(int num_in_channels,
                                  int num_out_channels,
                                  int max_block_size,
                                  double sample_rate,
@@ -57,7 +57,7 @@ MH_PluginGraph* mh_graph_create(int num_in_channels,
         return nullptr;
     }
 
-    auto* graph = new MH_PluginGraph();
+    auto* graph = new MH_PluginBus();
     graph->in_channels = num_in_channels;
     graph->out_channels = num_out_channels;
     graph->max_block_size = max_block_size;
@@ -65,14 +65,14 @@ MH_PluginGraph* mh_graph_create(int num_in_channels,
     return graph;
 }
 
-void mh_graph_close(MH_PluginGraph* graph)
+void mh_bus_close(MH_PluginBus* graph)
 {
     if (graph == nullptr) return;
     // Branches are owned by the caller -- do not close them.
     delete graph;
 }
 
-int mh_graph_add_branch(MH_PluginGraph* graph,
+int mh_bus_add_branch(MH_PluginBus* graph,
                          MH_PluginChain* chain,
                          float gain,
                          char* err_buf,
@@ -136,7 +136,7 @@ int mh_graph_add_branch(MH_PluginGraph* graph,
     return static_cast<int>(graph->branches.size()) - 1;
 }
 
-int mh_graph_set_branch_gain(MH_PluginGraph* graph, int branch_index, float gain)
+int mh_bus_set_branch_gain(MH_PluginBus* graph, int branch_index, float gain)
 {
     if (graph == nullptr) return 0;
     if (branch_index < 0 ||
@@ -146,7 +146,7 @@ int mh_graph_set_branch_gain(MH_PluginGraph* graph, int branch_index, float gain
     return 1;
 }
 
-float mh_graph_get_branch_gain(MH_PluginGraph* graph, int branch_index)
+float mh_bus_get_branch_gain(MH_PluginBus* graph, int branch_index)
 {
     if (graph == nullptr) return std::numeric_limits<float>::quiet_NaN();
     if (branch_index < 0 ||
@@ -155,16 +155,23 @@ float mh_graph_get_branch_gain(MH_PluginGraph* graph, int branch_index)
     return graph->gains[branch_index];
 }
 
-int mh_graph_get_num_branches(MH_PluginGraph* graph)
+int mh_bus_get_num_branches(MH_PluginBus* graph)
 {
     if (graph == nullptr) return 0;
     return static_cast<int>(graph->branches.size());
 }
 
-int mh_graph_process(MH_PluginGraph* graph,
-                      const float* const* inputs,
-                      float* const* outputs,
-                      int nframes)
+// Shared fan-out-and-sum core for the audio-only and MIDI variants.
+// When midi_in is non-NULL (and num_midi_in > 0) each branch is driven
+// via mh_chain_process_midi_io so the same MIDI reaches every branch;
+// branch MIDI output is discarded (audio-summing bus). Otherwise the
+// plain audio path is used.
+static int graph_process_impl(MH_PluginBus* graph,
+                              const float* const* inputs,
+                              float* const* outputs,
+                              int nframes,
+                              const MH_MidiEvent* midi_in,
+                              int num_midi_in)
 {
     if (graph == nullptr) return 0;
     if (nframes <= 0 || nframes > graph->max_block_size) return 0;
@@ -182,6 +189,8 @@ int mh_graph_process(MH_PluginGraph* graph,
 
     if (n_branches == 0) return 1;
 
+    const bool have_midi = (midi_in != nullptr && num_midi_in > 0);
+
     for (int b = 0; b < n_branches; ++b)
     {
         float gain = graph->gains[b];
@@ -189,8 +198,20 @@ int mh_graph_process(MH_PluginGraph* graph,
             continue;  // muted branch -- skip processing entirely
 
         float* const* branch_out = graph->branch_ptrs[b].data();
-        int r = mh_chain_process(graph->branches[b], inputs,
-                                  branch_out, nframes);
+        int r;
+        if (have_midi)
+        {
+            // Fan the same MIDI to every branch; discard branch MIDI out.
+            r = mh_chain_process_midi_io(graph->branches[b], inputs,
+                                         branch_out, nframes,
+                                         midi_in, num_midi_in,
+                                         nullptr, 0, nullptr);
+        }
+        else
+        {
+            r = mh_chain_process(graph->branches[b], inputs,
+                                 branch_out, nframes);
+        }
         if (!r) return 0;
 
         // Sum branch_out * gain into outputs.
@@ -207,27 +228,46 @@ int mh_graph_process(MH_PluginGraph* graph,
     return 1;
 }
 
-int mh_graph_get_num_input_channels(MH_PluginGraph* graph)
+int mh_bus_process(MH_PluginBus* graph,
+                      const float* const* inputs,
+                      float* const* outputs,
+                      int nframes)
+{
+    return graph_process_impl(graph, inputs, outputs, nframes, nullptr, 0);
+}
+
+int mh_bus_process_midi(MH_PluginBus* graph,
+                          const float* const* inputs,
+                          float* const* outputs,
+                          int nframes,
+                          const MH_MidiEvent* midi_in,
+                          int num_midi_in)
+{
+    return graph_process_impl(graph, inputs, outputs, nframes,
+                              midi_in, num_midi_in);
+}
+
+int mh_bus_get_num_input_channels(MH_PluginBus* graph)
 {
     return graph ? graph->in_channels : 0;
 }
 
-int mh_graph_get_num_output_channels(MH_PluginGraph* graph)
+int mh_bus_get_num_output_channels(MH_PluginBus* graph)
 {
     return graph ? graph->out_channels : 0;
 }
 
-double mh_graph_get_sample_rate(MH_PluginGraph* graph)
+double mh_bus_get_sample_rate(MH_PluginBus* graph)
 {
     return graph ? graph->sample_rate : 0.0;
 }
 
-int mh_graph_get_max_block_size(MH_PluginGraph* graph)
+int mh_bus_get_max_block_size(MH_PluginBus* graph)
 {
     return graph ? graph->max_block_size : 0;
 }
 
-int mh_graph_get_latency_samples(MH_PluginGraph* graph)
+int mh_bus_get_latency_samples(MH_PluginBus* graph)
 {
     if (graph == nullptr) return 0;
     int max_latency = 0;
@@ -239,7 +279,7 @@ int mh_graph_get_latency_samples(MH_PluginGraph* graph)
     return max_latency;
 }
 
-double mh_graph_get_tail_seconds(MH_PluginGraph* graph)
+double mh_bus_get_tail_seconds(MH_PluginBus* graph)
 {
     if (graph == nullptr) return 0.0;
     double max_tail = 0.0;

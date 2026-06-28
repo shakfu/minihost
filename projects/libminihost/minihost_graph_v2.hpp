@@ -1,13 +1,13 @@
 // minihost_graph_v2.hpp
 //
-// Header-only C++ wrapper over the C `mh_graph_v2_*` API. RAII, method
+// Header-only C++ wrapper over the C `mh_graph_*` API. RAII, method
 // syntax, exceptions on error. No new functionality -- pure sugar.
 //
 // The C ABI in `minihost_graph_v2.h` remains the source of truth and
 // the surface the Python wheel binds against. This header exists so
 // C++ consumers (the desktop app, future C++ examples) can write
 //
-//     minihost::GraphV2 g(512, 48000.0);
+//     minihost::PluginGraph g(512, 48000.0);
 //     auto in  = g.addInput(2);
 //     auto out = g.addOutput(2);
 //     g.connect(in, out);
@@ -25,29 +25,29 @@
 
 namespace minihost {
 
-class GraphV2 {
+class PluginGraph {
 public:
     using NodeId = MH_NodeId;
 
-    GraphV2(int max_block_size, double sample_rate)
+    PluginGraph(int max_block_size, double sample_rate)
     {
         char err[kErrLen] = {0};
-        g_ = mh_graph_v2_create(max_block_size, sample_rate,
+        g_ = mh_graph_create(max_block_size, sample_rate,
                                 err, sizeof(err));
-        if (g_ == nullptr) throwErr("mh_graph_v2_create", err);
+        if (g_ == nullptr) throwErr("mh_graph_create", err);
     }
 
-    ~GraphV2() { if (g_) mh_graph_v2_close(g_); }
+    ~PluginGraph() { if (g_) mh_graph_close(g_); }
 
-    GraphV2(const GraphV2&) = delete;
-    GraphV2& operator=(const GraphV2&) = delete;
+    PluginGraph(const PluginGraph&) = delete;
+    PluginGraph& operator=(const PluginGraph&) = delete;
 
-    GraphV2(GraphV2&& other) noexcept : g_(other.g_) { other.g_ = nullptr; }
-    GraphV2& operator=(GraphV2&& other) noexcept
+    PluginGraph(PluginGraph&& other) noexcept : g_(other.g_) { other.g_ = nullptr; }
+    PluginGraph& operator=(PluginGraph&& other) noexcept
     {
         if (this != &other)
         {
-            if (g_) mh_graph_v2_close(g_);
+            if (g_) mh_graph_close(g_);
             g_ = other.g_;
             other.g_ = nullptr;
         }
@@ -56,12 +56,12 @@ public:
 
     // Direct access for cases that need to reach the C ABI (e.g. an
     // extension we haven't wrapped yet). Use sparingly.
-    MH_GraphV2* handle() const noexcept { return g_; }
+    MH_PluginGraph* handle() const noexcept { return g_; }
 
     NodeId addPlugin(MH_Plugin* p)
     {
         char err[kErrLen] = {0};
-        const NodeId id = mh_graph_v2_add_plugin(g_, p, err, sizeof(err));
+        const NodeId id = mh_graph_add_plugin(g_, p, err, sizeof(err));
         if (id < 0) throwErr("add_plugin", err);
         return id;
     }
@@ -69,7 +69,7 @@ public:
     NodeId addInput(int channels)
     {
         char err[kErrLen] = {0};
-        const NodeId id = mh_graph_v2_add_input(g_, channels,
+        const NodeId id = mh_graph_add_input(g_, channels,
                                                 err, sizeof(err));
         if (id < 0) throwErr("add_input", err);
         return id;
@@ -78,7 +78,7 @@ public:
     NodeId addOutput(int channels)
     {
         char err[kErrLen] = {0};
-        const NodeId id = mh_graph_v2_add_output(g_, channels,
+        const NodeId id = mh_graph_add_output(g_, channels,
                                                  err, sizeof(err));
         if (id < 0) throwErr("add_output", err);
         return id;
@@ -87,7 +87,7 @@ public:
     NodeId addMix(int num_inputs, int channels)
     {
         char err[kErrLen] = {0};
-        const NodeId id = mh_graph_v2_add_mix(g_, num_inputs, channels,
+        const NodeId id = mh_graph_add_mix(g_, num_inputs, channels,
                                               err, sizeof(err));
         if (id < 0) throwErr("add_mix", err);
         return id;
@@ -98,21 +98,21 @@ public:
     void connect(NodeId src, NodeId dst, int dst_port = 0)
     {
         char err[kErrLen] = {0};
-        if (!mh_graph_v2_connect(g_, src, 0, dst, dst_port,
+        if (!mh_graph_connect(g_, src, 0, dst, dst_port,
                                  err, sizeof(err)))
             throwErr("connect", err);
     }
 
     void setMixGain(NodeId mix_node, int input_index, float gain)
     {
-        if (!mh_graph_v2_set_mix_gain(g_, mix_node, input_index, gain))
+        if (!mh_graph_set_mix_gain(g_, mix_node, input_index, gain))
             throw std::runtime_error("set_mix_gain failed (bad node/index)");
     }
 
     NodeId addPickChannel(int in_channels, int channel_index)
     {
         char err[kErrLen] = {0};
-        const NodeId id = mh_graph_v2_add_pick_channel(
+        const NodeId id = mh_graph_add_pick_channel(
             g_, in_channels, channel_index, err, sizeof(err));
         if (id < 0) throwErr("add_pick_channel", err);
         return id;
@@ -121,7 +121,7 @@ public:
     NodeId addMergeChannels(int out_channels)
     {
         char err[kErrLen] = {0};
-        const NodeId id = mh_graph_v2_add_merge_channels(
+        const NodeId id = mh_graph_add_merge_channels(
             g_, out_channels, err, sizeof(err));
         if (id < 0) throwErr("add_merge_channels", err);
         return id;
@@ -130,7 +130,7 @@ public:
     NodeId addMidiProcessor(MH_MidiProcessorParams params)
     {
         char err[kErrLen] = {0};
-        const NodeId id = mh_graph_v2_add_midi_processor(
+        const NodeId id = mh_graph_add_midi_processor(
             g_, params, err, sizeof(err));
         if (id < 0) throwErr("add_midi_processor", err);
         return id;
@@ -138,13 +138,13 @@ public:
 
     bool setMidiProcessorParams(NodeId node, MH_MidiProcessorParams params)
     {
-        return mh_graph_v2_set_midi_processor_params(g_, node, params) != 0;
+        return mh_graph_set_midi_processor_params(g_, node, params) != 0;
     }
 
     NodeId addMidiMerge(int num_inputs)
     {
         char err[kErrLen] = {0};
-        const NodeId id = mh_graph_v2_add_midi_merge(
+        const NodeId id = mh_graph_add_midi_merge(
             g_, num_inputs, err, sizeof(err));
         if (id < 0) throwErr("add_midi_merge", err);
         return id;
@@ -153,7 +153,7 @@ public:
     void connectMidiPort(NodeId src, NodeId dst, int dst_port)
     {
         char err[kErrLen] = {0};
-        if (!mh_graph_v2_connect_midi_port(g_, src, dst, dst_port,
+        if (!mh_graph_connect_midi_port(g_, src, dst, dst_port,
                                             err, sizeof(err)))
             throwErr("connect_midi_port", err);
     }
@@ -161,7 +161,7 @@ public:
     NodeId addMidiInput()
     {
         char err[kErrLen] = {0};
-        const NodeId id = mh_graph_v2_add_midi_input(g_, err, sizeof(err));
+        const NodeId id = mh_graph_add_midi_input(g_, err, sizeof(err));
         if (id < 0) throwErr("add_midi_input", err);
         return id;
     }
@@ -169,7 +169,7 @@ public:
     NodeId addMidiOutput()
     {
         char err[kErrLen] = {0};
-        const NodeId id = mh_graph_v2_add_midi_output(g_, err, sizeof(err));
+        const NodeId id = mh_graph_add_midi_output(g_, err, sizeof(err));
         if (id < 0) throwErr("add_midi_output", err);
         return id;
     }
@@ -177,21 +177,21 @@ public:
     void connectMidi(NodeId src, NodeId dst)
     {
         char err[kErrLen] = {0};
-        if (!mh_graph_v2_connect_midi(g_, src, dst, err, sizeof(err)))
+        if (!mh_graph_connect_midi(g_, src, dst, err, sizeof(err)))
             throwErr("connect_midi", err);
     }
 
     bool setMidiInputEvents(NodeId node,
                             const MH_MidiEvent* events, int num_events)
     {
-        return mh_graph_v2_set_midi_input_events(
+        return mh_graph_set_midi_input_events(
                    g_, node, events, num_events) != 0;
     }
 
     bool setNodeMidi(NodeId node,
                      const MH_MidiEvent* events, int num_events)
     {
-        return mh_graph_v2_set_node_midi(
+        return mh_graph_set_node_midi(
                    g_, node, events, num_events) != 0;
     }
 
@@ -199,7 +199,7 @@ public:
                             MH_MidiEvent* out_buf, int capacity)
     {
         int n = 0;
-        if (!mh_graph_v2_get_midi_output_events(
+        if (!mh_graph_get_midi_output_events(
                 g_, node, out_buf, capacity, &n)) return -1;
         return n;
     }
@@ -207,7 +207,7 @@ public:
     void compile()
     {
         char err[kErrLen] = {0};
-        if (!mh_graph_v2_compile(g_, err, sizeof(err)))
+        if (!mh_graph_compile(g_, err, sizeof(err)))
             throwErr("compile", err);
     }
 
@@ -219,7 +219,7 @@ public:
                      int num_output_nodes,
                      int nframes)
     {
-        if (!mh_graph_v2_render_block(g_,
+        if (!mh_graph_render_block(g_,
                                       input_buffers,  num_input_nodes,
                                       output_buffers, num_output_nodes,
                                       nframes))
@@ -227,26 +227,26 @@ public:
     }
 
     int numNodes()        const noexcept
-    { return mh_graph_v2_num_nodes(g_); }
+    { return mh_graph_num_nodes(g_); }
     int numInputNodes()   const noexcept
-    { return mh_graph_v2_num_input_nodes(g_); }
+    { return mh_graph_num_input_nodes(g_); }
     int numOutputNodes()  const noexcept
-    { return mh_graph_v2_num_output_nodes(g_); }
+    { return mh_graph_num_output_nodes(g_); }
     bool isCompiled()     const noexcept
-    { return mh_graph_v2_is_compiled(g_) != 0; }
+    { return mh_graph_is_compiled(g_) != 0; }
 
 private:
     static constexpr size_t kErrLen = 256;
 
     [[noreturn]] static void throwErr(const char* op, const char* err)
     {
-        std::string msg = "minihost::GraphV2::";
+        std::string msg = "minihost::PluginGraph::";
         msg += op;
         if (err && *err) { msg += ": "; msg += err; }
         throw std::runtime_error(std::move(msg));
     }
 
-    MH_GraphV2* g_ = nullptr;
+    MH_PluginGraph* g_ = nullptr;
 };
 
 } // namespace minihost

@@ -215,7 +215,7 @@ NodeKindEntry makeInput()
     };
 
     e.load_one = [](const ProjectDocument& d, int i,
-                    minihost::GraphV2& g,
+                    minihost::PluginGraph& g,
                     std::unordered_map<std::string, MH_NodeId>& id_to_node,
                     LoadedProject&) {
         const auto& s = d.inputs[(size_t) i];
@@ -309,7 +309,7 @@ NodeKindEntry makePlugin()
     // MH_Plugin* (so it can state-load + probe channels). load_one
     // attaches the already-opened plugin to the graph.
     e.load_one = [](const ProjectDocument& d, int i,
-                    minihost::GraphV2& g,
+                    minihost::PluginGraph& g,
                     std::unordered_map<std::string, MH_NodeId>& id_to_node,
                     LoadedProject& lp) {
         const auto& s = d.plugins[(size_t) i];
@@ -431,7 +431,7 @@ NodeKindEntry makeMix()
     };
 
     e.load_one = [](const ProjectDocument& d, int i,
-                    minihost::GraphV2& g,
+                    minihost::PluginGraph& g,
                     std::unordered_map<std::string, MH_NodeId>& id_to_node,
                     LoadedProject&) {
         const auto& s = d.mixes[(size_t) i];
@@ -507,7 +507,7 @@ NodeKindEntry makeOutput()
     };
 
     e.load_one = [](const ProjectDocument& d, int i,
-                    minihost::GraphV2& g,
+                    minihost::PluginGraph& g,
                     std::unordered_map<std::string, MH_NodeId>& id_to_node,
                     LoadedProject&) {
         const auto& s = d.outputs[(size_t) i];
@@ -583,7 +583,7 @@ NodeKindEntry makeMidiInput()
     };
 
     e.load_one = [](const ProjectDocument& d, int i,
-                    minihost::GraphV2& g,
+                    minihost::PluginGraph& g,
                     std::unordered_map<std::string, MH_NodeId>& id_to_node,
                     LoadedProject& lp) {
         const auto& s = d.midi_inputs[(size_t) i];
@@ -657,7 +657,7 @@ NodeKindEntry makeMidiOutput()
     };
 
     e.load_one = [](const ProjectDocument& d, int i,
-                    minihost::GraphV2& g,
+                    minihost::PluginGraph& g,
                     std::unordered_map<std::string, MH_NodeId>& id_to_node,
                     LoadedProject&) {
         const auto& s = d.midi_outputs[(size_t) i];
@@ -740,7 +740,7 @@ NodeKindEntry makeDeviceOutput()
     };
 
     e.load_one = [](const ProjectDocument& d, int i,
-                    minihost::GraphV2& g,
+                    minihost::PluginGraph& g,
                     std::unordered_map<std::string, MH_NodeId>& id_to_node,
                     LoadedProject& lp) {
         const auto& s = d.device_outputs[(size_t) i];
@@ -821,7 +821,7 @@ NodeKindEntry makeDeviceInput()
     };
 
     e.load_one = [](const ProjectDocument& d, int i,
-                    minihost::GraphV2& g,
+                    minihost::PluginGraph& g,
                     std::unordered_map<std::string, MH_NodeId>& id_to_node,
                     LoadedProject& lp) {
         const auto& s = d.device_inputs[(size_t) i];
@@ -893,7 +893,7 @@ NodeKindEntry makeMeter()
     };
 
     e.load_one = [](const ProjectDocument& d, int i,
-                    minihost::GraphV2& g,
+                    minihost::PluginGraph& g,
                     std::unordered_map<std::string, MH_NodeId>& id_to_node,
                     LoadedProject& lp) {
         const auto& s = d.meters[(size_t) i];
@@ -975,7 +975,7 @@ NodeKindEntry makeGain()
     };
 
     e.load_one = [](const ProjectDocument& d, int i,
-                    minihost::GraphV2& g,
+                    minihost::PluginGraph& g,
                     std::unordered_map<std::string, MH_NodeId>& id_to_node,
                     LoadedProject&) {
         const auto& s = d.gains[(size_t) i];
@@ -1046,7 +1046,7 @@ NodeKindEntry makeBus()
     };
 
     e.load_one = [](const ProjectDocument& d, int i,
-                    minihost::GraphV2& g,
+                    minihost::PluginGraph& g,
                     std::unordered_map<std::string, MH_NodeId>& id_to_node,
                     LoadedProject&) {
         const auto& s = d.buses[(size_t) i];
@@ -1116,12 +1116,12 @@ NodeKindEntry makePickChannel()
     };
 
     e.load_one = [](const ProjectDocument& d, int i,
-                    minihost::GraphV2& g,
+                    minihost::PluginGraph& g,
                     std::unordered_map<std::string, MH_NodeId>& id_to_node,
                     LoadedProject&) {
         const auto& s = d.pick_channels[(size_t) i];
         char err[256] = {0};
-        auto nid = mh_graph_v2_add_pick_channel(
+        auto nid = mh_graph_add_pick_channel(
             g.handle(), s.in_channels, s.channel_index, err, sizeof(err));
         if (nid < 0)
             throw project::ProjectError(("pick_channel " + s.id + ": "
@@ -1193,12 +1193,12 @@ NodeKindEntry makeMergeChannels()
     };
 
     e.load_one = [](const ProjectDocument& d, int i,
-                    minihost::GraphV2& g,
+                    minihost::PluginGraph& g,
                     std::unordered_map<std::string, MH_NodeId>& id_to_node,
                     LoadedProject&) {
         const auto& s = d.merge_channels[(size_t) i];
         char err[256] = {0};
-        auto nid = mh_graph_v2_add_merge_channels(
+        auto nid = mh_graph_add_merge_channels(
             g.handle(), s.out_channels, err, sizeof(err));
         if (nid < 0)
             throw project::ProjectError(("merge_channels " + s.id + ": "
@@ -1283,7 +1283,7 @@ NodeKindEntry makeMetronome()
     };
 
     e.load_one = [](const ProjectDocument& d, int i,
-                    minihost::GraphV2& g,
+                    minihost::PluginGraph& g,
                     std::unordered_map<std::string, MH_NodeId>& id_to_node,
                     LoadedProject& lp) {
         const auto& s = d.metronomes[(size_t) i];
@@ -1343,7 +1343,7 @@ NodeKindEntry makeMidiClock()
     };
 
     e.load_one = [](const ProjectDocument& d, int i,
-                    minihost::GraphV2& g,
+                    minihost::PluginGraph& g,
                     std::unordered_map<std::string, MH_NodeId>& id_to_node,
                     LoadedProject& lp) {
         const auto& s = d.midi_clocks[(size_t) i];
@@ -1362,11 +1362,11 @@ NodeKindEntry makeMidiClock()
 //============================================================
 
 // Shared loader for the three MIDI_PROCESSOR variants.
-static MH_NodeId addProcessor(minihost::GraphV2& g, const juce::String& id,
+static MH_NodeId addProcessor(minihost::PluginGraph& g, const juce::String& id,
                               MH_MidiProcessorParams params)
 {
     char err[256] = {0};
-    auto nid = mh_graph_v2_add_midi_processor(
+    auto nid = mh_graph_add_midi_processor(
         g.handle(), params, err, sizeof(err));
     if (nid < 0)
         throw project::ProjectError(("midi processor " + id + ": "
@@ -1442,7 +1442,7 @@ NodeKindEntry makeMidiFilter()
     };
 
     e.load_one = [](const ProjectDocument& d, int i,
-                    minihost::GraphV2& g,
+                    minihost::PluginGraph& g,
                     std::unordered_map<std::string, MH_NodeId>& id_to_node,
                     LoadedProject&) {
         const auto& s = d.midi_filters[(size_t) i];
@@ -1515,7 +1515,7 @@ NodeKindEntry makeMidiTranspose()
     };
 
     e.load_one = [](const ProjectDocument& d, int i,
-                    minihost::GraphV2& g,
+                    minihost::PluginGraph& g,
                     std::unordered_map<std::string, MH_NodeId>& id_to_node,
                     LoadedProject&) {
         const auto& s = d.midi_transposes[(size_t) i];
@@ -1587,7 +1587,7 @@ NodeKindEntry makeMidiVelocityCurve()
     };
 
     e.load_one = [](const ProjectDocument& d, int i,
-                    minihost::GraphV2& g,
+                    minihost::PluginGraph& g,
                     std::unordered_map<std::string, MH_NodeId>& id_to_node,
                     LoadedProject&) {
         const auto& s = d.midi_velocity_curves[(size_t) i];
@@ -1660,12 +1660,12 @@ NodeKindEntry makeMidiMerge()
     };
 
     e.load_one = [](const ProjectDocument& d, int i,
-                    minihost::GraphV2& g,
+                    minihost::PluginGraph& g,
                     std::unordered_map<std::string, MH_NodeId>& id_to_node,
                     LoadedProject&) {
         const auto& s = d.midi_merges[(size_t) i];
         char err[256] = {0};
-        auto nid = mh_graph_v2_add_midi_merge(
+        auto nid = mh_graph_add_midi_merge(
             g.handle(), s.num_inputs, err, sizeof(err));
         if (nid < 0)
             throw project::ProjectError(("midi_merge " + s.id + ": "

@@ -1042,7 +1042,7 @@ private:
     // Allow AudioDevice and PluginChain to access raw plugin pointer
     friend class AudioDevice;
     friend class PluginChain;
-    friend class GraphV2;
+    friend class PluginGraph;
 };
 
 
@@ -1336,26 +1336,172 @@ private:
     MH_PluginChain* chain_ = nullptr;
     std::vector<Plugin*> plugin_refs_;  // Keep references to prevent plugins from being GC'd
 
-    // Allow AudioDevice and PluginGraph to access the raw chain pointer.
+    // Allow AudioDevice and PluginBus to access the raw chain pointer.
     friend class AudioDevice;
-    friend class PluginGraph;
+    friend class PluginBus;
 };
 
 
-// Python wrapper class for MH_PluginGraph
-class PluginGraph {
+// Python wrapper class for MH_PluginBus
+class PluginBus {
 public:
-    PluginGraph(int num_in_channels, int num_out_channels,
+    PluginBus(int num_in_channels, int num_out_channels,
                 int max_block_size, double sample_rate)
     {
         char err[256] = {0};
-        graph_ = mh_graph_create(num_in_channels, num_out_channels,
+        graph_ = mh_bus_create(num_in_channels, num_out_channels,
                                   max_block_size, sample_rate,
                                   err, sizeof(err));
         if (!graph_) {
             throw std::runtime_error(
                 std::string("Failed to create plugin graph: ") + err);
         }
+    }
+
+    ~PluginBus() { close(); }
+
+    void close() {
+        if (graph_) {
+            mh_bus_close(graph_);
+            graph_ = nullptr;
+        }
+    }
+
+    PluginBus(const PluginBus&) = delete;
+    PluginBus& operator=(const PluginBus&) = delete;
+
+    PluginBus& enter() { return *this; }
+    void exit(nb::object, nb::object, nb::object) { close(); }
+
+    int add_branch(PluginChain& chain, float gain) {
+        char err[256] = {0};
+        int idx = mh_bus_add_branch(graph_, chain.chain_, gain,
+                                       err, sizeof(err));
+        if (idx < 0) {
+            throw std::runtime_error(
+                std::string("Failed to add graph branch: ") + err);
+        }
+        branch_refs_.push_back(&chain);
+        return idx;
+    }
+
+    void set_branch_gain(int branch_index, float gain) {
+        if (!mh_bus_set_branch_gain(graph_, branch_index, gain)) {
+            throw std::runtime_error("Branch index out of range");
+        }
+    }
+
+    float get_branch_gain(int branch_index) {
+        float g = mh_bus_get_branch_gain(graph_, branch_index);
+        if (std::isnan(g)) {
+            throw std::runtime_error("Branch index out of range");
+        }
+        return g;
+    }
+
+    int num_branches() const {
+        return mh_bus_get_num_branches(graph_);
+    }
+
+    int num_input_channels() const {
+        return mh_bus_get_num_input_channels(graph_);
+    }
+
+    int num_output_channels() const {
+        return mh_bus_get_num_output_channels(graph_);
+    }
+
+    double get_sample_rate() const {
+        return mh_bus_get_sample_rate(graph_);
+    }
+
+    int max_block_size() const {
+        return mh_bus_get_max_block_size(graph_);
+    }
+
+    int latency_samples() const {
+        return mh_bus_get_latency_samples(graph_);
+    }
+
+    double tail_seconds() const {
+        return mh_bus_get_tail_seconds(graph_);
+    }
+
+    void process(AudioArray input, AudioArray output) {
+        int in_ch = static_cast<int>(input.shape(0));
+        int out_ch = static_cast<int>(output.shape(0));
+        int in_fr = static_cast<int>(input.shape(1));
+        int out_fr = static_cast<int>(output.shape(1));
+
+        validate_process_shape(in_ch, out_ch, in_fr, out_fr,
+                               mh_bus_get_num_input_channels(graph_),
+                               mh_bus_get_num_output_channels(graph_),
+                               mh_bus_get_max_block_size(graph_));
+
+        std::vector<const float*> in_ptrs(in_ch);
+        std::vector<float*> out_ptrs(out_ch);
+        for (int c = 0; c < in_ch; ++c)
+            in_ptrs[c] = input.data() + c * in_fr;
+        for (int c = 0; c < out_ch; ++c)
+            out_ptrs[c] = output.data() + c * out_fr;
+
+        if (!mh_bus_process(graph_, in_ptrs.data(), out_ptrs.data(), in_fr)) {
+            throw std::runtime_error("Bus process failed");
+        }
+    }
+
+    // Fan audio + MIDI to every branch (MIDI to each branch's first
+    // plugin), summing branch outputs. Enables layering one MIDI part
+    // across parallel instruments. Branch MIDI output is not collected.
+    void process_midi(AudioArray input, AudioArray output, nb::list midi_in) {
+        int in_ch = static_cast<int>(input.shape(0));
+        int out_ch = static_cast<int>(output.shape(0));
+        int in_fr = static_cast<int>(input.shape(1));
+        int out_fr = static_cast<int>(output.shape(1));
+
+        validate_process_shape(in_ch, out_ch, in_fr, out_fr,
+                               mh_bus_get_num_input_channels(graph_),
+                               mh_bus_get_num_output_channels(graph_),
+                               mh_bus_get_max_block_size(graph_));
+
+        std::vector<MH_MidiEvent> midi_events;
+        for (size_t i = 0; i < nb::len(midi_in); ++i)
+            midi_events.push_back(parse_midi_event(midi_in[i]));
+
+        std::vector<const float*> in_ptrs(in_ch);
+        std::vector<float*> out_ptrs(out_ch);
+        for (int c = 0; c < in_ch; ++c)
+            in_ptrs[c] = input.data() + c * in_fr;
+        for (int c = 0; c < out_ch; ++c)
+            out_ptrs[c] = output.data() + c * out_fr;
+
+        if (!mh_bus_process_midi(graph_, in_ptrs.data(), out_ptrs.data(),
+                                   in_fr, midi_events.data(),
+                                   static_cast<int>(midi_events.size()))) {
+            throw std::runtime_error("Bus process failed");
+        }
+    }
+
+private:
+    MH_PluginBus* graph_ = nullptr;
+    std::vector<PluginChain*> branch_refs_;  // keep branches alive
+};
+
+
+// Python wrapper class for MH_PluginGraph (general-DAG executor).
+// Plugin refs are kept alive via plugin_refs_; add_plugin also uses
+// nb::keep_alive at the binding to tie the Plugin Python object's
+// lifetime to this graph.
+class PluginGraph {
+public:
+    PluginGraph(int max_block_size, double sample_rate)
+    {
+        char err[256] = {0};
+        graph_ = mh_graph_create(max_block_size, sample_rate,
+                                    err, sizeof(err));
+        if (!graph_)
+            throw std::runtime_error(
+                std::string("Failed to create PluginGraph: ") + err);
     }
 
     ~PluginGraph() { close(); }
@@ -1373,123 +1519,9 @@ public:
     PluginGraph& enter() { return *this; }
     void exit(nb::object, nb::object, nb::object) { close(); }
 
-    int add_branch(PluginChain& chain, float gain) {
-        char err[256] = {0};
-        int idx = mh_graph_add_branch(graph_, chain.chain_, gain,
-                                       err, sizeof(err));
-        if (idx < 0) {
-            throw std::runtime_error(
-                std::string("Failed to add graph branch: ") + err);
-        }
-        branch_refs_.push_back(&chain);
-        return idx;
-    }
-
-    void set_branch_gain(int branch_index, float gain) {
-        if (!mh_graph_set_branch_gain(graph_, branch_index, gain)) {
-            throw std::runtime_error("Branch index out of range");
-        }
-    }
-
-    float get_branch_gain(int branch_index) {
-        float g = mh_graph_get_branch_gain(graph_, branch_index);
-        if (std::isnan(g)) {
-            throw std::runtime_error("Branch index out of range");
-        }
-        return g;
-    }
-
-    int num_branches() const {
-        return mh_graph_get_num_branches(graph_);
-    }
-
-    int num_input_channels() const {
-        return mh_graph_get_num_input_channels(graph_);
-    }
-
-    int num_output_channels() const {
-        return mh_graph_get_num_output_channels(graph_);
-    }
-
-    double get_sample_rate() const {
-        return mh_graph_get_sample_rate(graph_);
-    }
-
-    int max_block_size() const {
-        return mh_graph_get_max_block_size(graph_);
-    }
-
-    int latency_samples() const {
-        return mh_graph_get_latency_samples(graph_);
-    }
-
-    double tail_seconds() const {
-        return mh_graph_get_tail_seconds(graph_);
-    }
-
-    void process(AudioArray input, AudioArray output) {
-        int in_ch = static_cast<int>(input.shape(0));
-        int out_ch = static_cast<int>(output.shape(0));
-        int in_fr = static_cast<int>(input.shape(1));
-        int out_fr = static_cast<int>(output.shape(1));
-
-        validate_process_shape(in_ch, out_ch, in_fr, out_fr,
-                               mh_graph_get_num_input_channels(graph_),
-                               mh_graph_get_num_output_channels(graph_),
-                               mh_graph_get_max_block_size(graph_));
-
-        std::vector<const float*> in_ptrs(in_ch);
-        std::vector<float*> out_ptrs(out_ch);
-        for (int c = 0; c < in_ch; ++c)
-            in_ptrs[c] = input.data() + c * in_fr;
-        for (int c = 0; c < out_ch; ++c)
-            out_ptrs[c] = output.data() + c * out_fr;
-
-        if (!mh_graph_process(graph_, in_ptrs.data(), out_ptrs.data(), in_fr)) {
-            throw std::runtime_error("Graph process failed");
-        }
-    }
-
-private:
-    MH_PluginGraph* graph_ = nullptr;
-    std::vector<PluginChain*> branch_refs_;  // keep branches alive
-};
-
-
-// Python wrapper class for MH_GraphV2 (general-DAG executor).
-// Plugin refs are kept alive via plugin_refs_; add_plugin also uses
-// nb::keep_alive at the binding to tie the Plugin Python object's
-// lifetime to this graph.
-class GraphV2 {
-public:
-    GraphV2(int max_block_size, double sample_rate)
-    {
-        char err[256] = {0};
-        graph_ = mh_graph_v2_create(max_block_size, sample_rate,
-                                    err, sizeof(err));
-        if (!graph_)
-            throw std::runtime_error(
-                std::string("Failed to create GraphV2: ") + err);
-    }
-
-    ~GraphV2() { close(); }
-
-    void close() {
-        if (graph_) {
-            mh_graph_v2_close(graph_);
-            graph_ = nullptr;
-        }
-    }
-
-    GraphV2(const GraphV2&) = delete;
-    GraphV2& operator=(const GraphV2&) = delete;
-
-    GraphV2& enter() { return *this; }
-    void exit(nb::object, nb::object, nb::object) { close(); }
-
     int add_plugin(Plugin& p) {
         char err[256] = {0};
-        int id = mh_graph_v2_add_plugin(graph_, p.plugin_,
+        int id = mh_graph_add_plugin(graph_, p.plugin_,
                                         err, sizeof(err));
         if (id < 0)
             throw std::runtime_error(
@@ -1500,7 +1532,7 @@ public:
 
     int add_input(int channels) {
         char err[256] = {0};
-        int id = mh_graph_v2_add_input(graph_, channels,
+        int id = mh_graph_add_input(graph_, channels,
                                        err, sizeof(err));
         if (id < 0)
             throw std::runtime_error(
@@ -1510,7 +1542,7 @@ public:
 
     int add_output(int channels) {
         char err[256] = {0};
-        int id = mh_graph_v2_add_output(graph_, channels,
+        int id = mh_graph_add_output(graph_, channels,
                                         err, sizeof(err));
         if (id < 0)
             throw std::runtime_error(
@@ -1520,7 +1552,7 @@ public:
 
     int add_mix(int num_inputs, int channels) {
         char err[256] = {0};
-        int id = mh_graph_v2_add_mix(graph_, num_inputs, channels,
+        int id = mh_graph_add_mix(graph_, num_inputs, channels,
                                      err, sizeof(err));
         if (id < 0)
             throw std::runtime_error(
@@ -1530,7 +1562,7 @@ public:
 
     int add_pick_channel(int in_channels, int channel_index) {
         char err[256] = {0};
-        int id = mh_graph_v2_add_pick_channel(graph_, in_channels,
+        int id = mh_graph_add_pick_channel(graph_, in_channels,
                                               channel_index,
                                               err, sizeof(err));
         if (id < 0)
@@ -1541,7 +1573,7 @@ public:
 
     int add_merge_channels(int out_channels) {
         char err[256] = {0};
-        int id = mh_graph_v2_add_merge_channels(graph_, out_channels,
+        int id = mh_graph_add_merge_channels(graph_, out_channels,
                                                 err, sizeof(err));
         if (id < 0)
             throw std::runtime_error(
@@ -1576,7 +1608,7 @@ public:
     int add_midi_processor(nb::dict params) {
         char err[256] = {0};
         const auto cp = parse_processor_params(params);
-        int id = mh_graph_v2_add_midi_processor(graph_, cp,
+        int id = mh_graph_add_midi_processor(graph_, cp,
                                                 err, sizeof(err));
         if (id < 0)
             throw std::runtime_error(
@@ -1586,14 +1618,14 @@ public:
 
     void set_midi_processor_params(int node_id, nb::dict params) {
         const auto cp = parse_processor_params(params);
-        if (!mh_graph_v2_set_midi_processor_params(graph_, node_id, cp))
+        if (!mh_graph_set_midi_processor_params(graph_, node_id, cp))
             throw std::runtime_error(
                 "set_midi_processor_params failed (bad node id or kind)");
     }
 
     int add_midi_merge(int num_inputs) {
         char err[256] = {0};
-        int id = mh_graph_v2_add_midi_merge(graph_, num_inputs,
+        int id = mh_graph_add_midi_merge(graph_, num_inputs,
                                             err, sizeof(err));
         if (id < 0)
             throw std::runtime_error(
@@ -1603,7 +1635,7 @@ public:
 
     void connect_midi_port(int src, int dst, int dst_port) {
         char err[256] = {0};
-        if (!mh_graph_v2_connect_midi_port(graph_, src, dst, dst_port,
+        if (!mh_graph_connect_midi_port(graph_, src, dst, dst_port,
                                            err, sizeof(err)))
             throw std::runtime_error(
                 std::string("connect_midi_port failed: ") + err);
@@ -1611,7 +1643,7 @@ public:
 
     int add_midi_input() {
         char err[256] = {0};
-        int id = mh_graph_v2_add_midi_input(graph_, err, sizeof(err));
+        int id = mh_graph_add_midi_input(graph_, err, sizeof(err));
         if (id < 0)
             throw std::runtime_error(
                 std::string("add_midi_input failed: ") + err);
@@ -1620,7 +1652,7 @@ public:
 
     int add_midi_output() {
         char err[256] = {0};
-        int id = mh_graph_v2_add_midi_output(graph_, err, sizeof(err));
+        int id = mh_graph_add_midi_output(graph_, err, sizeof(err));
         if (id < 0)
             throw std::runtime_error(
                 std::string("add_midi_output failed: ") + err);
@@ -1629,7 +1661,7 @@ public:
 
     void connect(int src, int dst, int dst_port) {
         char err[256] = {0};
-        if (!mh_graph_v2_connect(graph_, src, 0, dst, dst_port,
+        if (!mh_graph_connect(graph_, src, 0, dst, dst_port,
                                  err, sizeof(err)))
             throw std::runtime_error(
                 std::string("connect failed: ") + err);
@@ -1637,7 +1669,7 @@ public:
 
     void connect_midi(int src, int dst) {
         char err[256] = {0};
-        if (!mh_graph_v2_connect_midi(graph_, src, dst,
+        if (!mh_graph_connect_midi(graph_, src, dst,
                                       err, sizeof(err)))
             throw std::runtime_error(
                 std::string("connect_midi failed: ") + err);
@@ -1647,7 +1679,7 @@ public:
         auto& buf = midi_in_scratch_[node_id];
         buf.clear();
         for (auto item : events) buf.push_back(parse_midi_event(item));
-        if (!mh_graph_v2_set_midi_input_events(
+        if (!mh_graph_set_midi_input_events(
                 graph_, node_id,
                 buf.empty() ? nullptr : buf.data(),
                 (int) buf.size()))
@@ -1657,14 +1689,14 @@ public:
 
     nb::list get_midi_output_events(int node_id) {
         int total = 0;
-        if (!mh_graph_v2_get_midi_output_events(graph_, node_id,
+        if (!mh_graph_get_midi_output_events(graph_, node_id,
                                                 nullptr, 0, &total))
             throw std::runtime_error(
                 "get_midi_output_events failed (bad node id or kind)");
         std::vector<MH_MidiEvent> buf((size_t) total);
         if (total > 0) {
             int n = 0;
-            mh_graph_v2_get_midi_output_events(graph_, node_id,
+            mh_graph_get_midi_output_events(graph_, node_id,
                                                buf.data(), total, &n);
             buf.resize((size_t) n);
         }
@@ -1679,14 +1711,14 @@ public:
     }
 
     void set_mix_gain(int mix_node, int input_index, float gain) {
-        if (!mh_graph_v2_set_mix_gain(graph_, mix_node, input_index, gain))
+        if (!mh_graph_set_mix_gain(graph_, mix_node, input_index, gain))
             throw std::runtime_error(
                 "set_mix_gain failed (bad node or input index)");
     }
 
     void compile() {
         char err[256] = {0};
-        if (!mh_graph_v2_compile(graph_, err, sizeof(err)))
+        if (!mh_graph_compile(graph_, err, sizeof(err)))
             throw std::runtime_error(
                 std::string("compile failed: ") + err);
     }
@@ -1711,7 +1743,7 @@ public:
             c.value         = nb::cast<float>(t[2]);
             buf.push_back(c);
         }
-        if (!mh_graph_v2_set_node_automation(
+        if (!mh_graph_set_node_automation(
                 graph_, node_id,
                 buf.empty() ? nullptr : buf.data(),
                 (int) buf.size()))
@@ -1723,10 +1755,10 @@ public:
     // per output node), shape (channels, nframes). All output arrays
     // and all input arrays must share the same nframes value, and
     // each array's channel count must match its node's declared
-    // count (validated by mh_graph_v2_render_block).
+    // count (validated by mh_graph_render_block).
     void render_block(nb::list inputs, nb::list outputs, int nframes) {
-        const int num_in  = mh_graph_v2_num_input_nodes(graph_);
-        const int num_out = mh_graph_v2_num_output_nodes(graph_);
+        const int num_in  = mh_graph_num_input_nodes(graph_);
+        const int num_out = mh_graph_num_output_nodes(graph_);
         if ((int) inputs.size() != num_in)
             throw std::runtime_error(
                 "inputs list length does not match num_input_nodes");
@@ -1768,20 +1800,20 @@ public:
             out_top[i] = out_ptrs_per_node[i].data();
         }
 
-        if (!mh_graph_v2_render_block(graph_,
+        if (!mh_graph_render_block(graph_,
                                       in_top.data(),  num_in,
                                       out_top.data(), num_out,
                                       nframes))
             throw std::runtime_error("render_block failed");
     }
 
-    int num_nodes()        const { return mh_graph_v2_num_nodes(graph_); }
-    int num_input_nodes()  const { return mh_graph_v2_num_input_nodes(graph_); }
-    int num_output_nodes() const { return mh_graph_v2_num_output_nodes(graph_); }
-    bool is_compiled()     const { return mh_graph_v2_is_compiled(graph_) != 0; }
+    int num_nodes()        const { return mh_graph_num_nodes(graph_); }
+    int num_input_nodes()  const { return mh_graph_num_input_nodes(graph_); }
+    int num_output_nodes() const { return mh_graph_num_output_nodes(graph_); }
+    bool is_compiled()     const { return mh_graph_is_compiled(graph_) != 0; }
 
 private:
-    MH_GraphV2* graph_ = nullptr;
+    MH_PluginGraph* graph_ = nullptr;
     std::vector<Plugin*> plugin_refs_;
     // Per-node automation scratch buffers that outlive Python call
     // boundaries (the graph borrows pointers during render_block).
@@ -3305,56 +3337,67 @@ NB_MODULE(_core, m) {
             self.close();
         });
 
-    // PluginGraph: parallel-branches-summed routing
-    nb::class_<PluginGraph>(m, "PluginGraph")
+    // PluginBus: parallel-branches-summed routing
+    nb::class_<PluginBus>(m, "PluginBus")
         .def(nb::init<int, int, int, double>(),
              nb::arg("num_in_channels"),
              nb::arg("num_out_channels"),
              nb::arg("max_block_size") = 8192,
              nb::arg("sample_rate") = 48000.0,
-             "Create a plugin graph. All branches added later must "
+             "Create a plugin bus. All branches added later must "
              "accept num_in_channels inputs and produce num_out_channels "
              "outputs at sample_rate. Branches are processed in parallel "
              "and their outputs summed (with per-branch gain) into the "
-             "graph's output.")
-        .def("add_branch", &PluginGraph::add_branch,
+             "bus output. For arbitrary node-to-node routing use "
+             "PluginGraph instead.")
+        .def("add_branch", &PluginBus::add_branch,
              nb::arg("chain"), nb::arg("gain") = 1.0f,
              nb::keep_alive<1, 2>(),
              "Add a PluginChain branch with the given summing gain "
              "(linear; default 1.0). The branch's input and output "
              "channel counts must match the graph's. Returns the "
              "branch index.")
-        .def("set_branch_gain", &PluginGraph::set_branch_gain,
+        .def("set_branch_gain", &PluginBus::set_branch_gain,
              nb::arg("branch_index"), nb::arg("gain"),
              "Set a branch's summing gain.")
-        .def("get_branch_gain", &PluginGraph::get_branch_gain,
+        .def("get_branch_gain", &PluginBus::get_branch_gain,
              nb::arg("branch_index"),
              "Get a branch's summing gain.")
-        .def_prop_ro("num_branches", &PluginGraph::num_branches,
+        .def_prop_ro("num_branches", &PluginBus::num_branches,
                      "Number of branches in the graph.")
-        .def_prop_ro("num_input_channels", &PluginGraph::num_input_channels)
-        .def_prop_ro("num_output_channels", &PluginGraph::num_output_channels)
-        .def_prop_ro("sample_rate", &PluginGraph::get_sample_rate)
-        .def_prop_ro("max_block_size", &PluginGraph::max_block_size)
-        .def_prop_ro("latency_samples", &PluginGraph::latency_samples,
+        .def_prop_ro("num_input_channels", &PluginBus::num_input_channels)
+        .def_prop_ro("num_output_channels", &PluginBus::num_output_channels)
+        .def_prop_ro("sample_rate", &PluginBus::get_sample_rate)
+        .def_prop_ro("max_block_size", &PluginBus::max_block_size)
+        .def_prop_ro("latency_samples", &PluginBus::latency_samples,
                      "Maximum latency across all branches (parallel "
                      "branches do not accumulate latency).")
-        .def_prop_ro("tail_seconds", &PluginGraph::tail_seconds,
+        .def_prop_ro("tail_seconds", &PluginBus::tail_seconds,
                      "Maximum tail across all branches.")
-        .def("process", &PluginGraph::process,
+        .def("process", &PluginBus::process,
              nb::arg("input"), nb::arg("output"),
              "Fan input to every branch, sum branch outputs (each "
              "scaled by its gain) into output.")
-        .def("close", &PluginGraph::close,
-             "Release the graph's internal resources. Idempotent. "
+        .def("process_midi", &PluginBus::process_midi,
+             nb::arg("input"), nb::arg("output"), nb::arg("midi_in"),
+             "Fan input audio and MIDI to every branch (MIDI goes to "
+             "each branch's first plugin), then sum branch outputs "
+             "(each scaled by its gain) into output. This is the "
+             "layering primitive: one MIDI part drives N parallel "
+             "instruments whose audio is summed. midi_in is a list of "
+             "(sample_offset, status, data1, data2) tuples. Muted "
+             "branches (gain 0.0) are skipped. Branch MIDI output is "
+             "not collected.")
+        .def("close", &PluginBus::close,
+             "Release the bus's internal resources. Idempotent. "
              "The underlying PluginChain branches are not closed.")
-        .def("__enter__", &PluginGraph::enter, nb::rv_policy::reference)
-        .def("__exit__", [](PluginGraph& self, const nb::args&) {
+        .def("__enter__", &PluginBus::enter, nb::rv_policy::reference)
+        .def("__exit__", [](PluginBus& self, const nb::args&) {
             self.close();
         });
 
-    // GraphV2: general-DAG executor with input/output/mix built-ins.
-    nb::class_<GraphV2>(m, "GraphV2")
+    // PluginGraph: general-DAG executor with input/output/mix built-ins.
+    nb::class_<PluginGraph>(m, "PluginGraph")
         .def(nb::init<int, double>(),
              nb::arg("max_block_size"),
              nb::arg("sample_rate"),
@@ -3363,36 +3406,36 @@ NB_MODULE(_core, m) {
              "before render_block(). max_block_size is the largest "
              "frame count accepted by render_block; sample_rate is the "
              "rate every plugin node must have been opened at.")
-        .def("add_plugin", &GraphV2::add_plugin,
+        .def("add_plugin", &PluginGraph::add_plugin,
              nb::arg("plugin"),
              nb::keep_alive<1, 2>(),
              "Add a plugin node. The graph keeps a reference to the "
              "Plugin so it cannot be garbage-collected while the graph "
              "is alive. Returns the new node id.")
-        .def("add_input", &GraphV2::add_input,
+        .def("add_input", &PluginGraph::add_input,
              nb::arg("channels"),
              "Add an input node producing `channels` channels from a "
              "caller-supplied buffer at render time. Returns node id.")
-        .def("add_output", &GraphV2::add_output,
+        .def("add_output", &PluginGraph::add_output,
              nb::arg("channels"),
              "Add an output node consuming `channels` channels into a "
              "caller-supplied buffer at render time. Returns node id.")
-        .def("add_mix", &GraphV2::add_mix,
+        .def("add_mix", &PluginGraph::add_mix,
              nb::arg("num_inputs"), nb::arg("channels"),
              "Add a mix node summing `num_inputs` inputs (each "
              "`channels` channels, gain 1.0 by default) into one "
              "`channels`-channel output. Returns node id.")
-        .def("add_pick_channel", &GraphV2::add_pick_channel,
+        .def("add_pick_channel", &PluginGraph::add_pick_channel,
              nb::arg("in_channels"), nb::arg("channel_index"),
              "Add a pick-channel node: takes an in_channels signal "
              "and outputs the single channel at channel_index. "
              "Returns node id.")
-        .def("add_merge_channels", &GraphV2::add_merge_channels,
+        .def("add_merge_channels", &PluginGraph::add_merge_channels,
              nb::arg("out_channels"),
              "Add a merge-channels node: takes out_channels separate "
              "1-channel inputs (one per port) and interleaves them "
              "into one out_channels output signal. Returns node id.")
-        .def("add_midi_processor", &GraphV2::add_midi_processor,
+        .def("add_midi_processor", &PluginGraph::add_midi_processor,
              nb::arg("params"),
              "Add a MIDI processor node. params is a dict with key "
              "'op' (0=filter, 1=transpose, 2=velocity_curve) plus "
@@ -3401,77 +3444,77 @@ NB_MODULE(_core, m) {
              "velocity_gamma (velocity_curve). Defaults are "
              "pass-through identities for fields you omit.")
         .def("set_midi_processor_params",
-             &GraphV2::set_midi_processor_params,
+             &PluginGraph::set_midi_processor_params,
              nb::arg("node_id"), nb::arg("params"),
              "Update the params on an existing MIDI processor node. "
              "Same dict shape as add_midi_processor.")
-        .def("add_midi_merge", &GraphV2::add_midi_merge,
+        .def("add_midi_merge", &PluginGraph::add_midi_merge,
              nb::arg("num_inputs"),
              "Add a MIDI merge node with num_inputs MIDI input "
              "ports. Connect each port via connect_midi_port. "
              "Returns node id.")
-        .def("connect_midi_port", &GraphV2::connect_midi_port,
+        .def("connect_midi_port", &PluginGraph::connect_midi_port,
              nb::arg("src"), nb::arg("dst"), nb::arg("dst_port"),
              "Connect a MIDI edge to a specific dst_port (required "
              "for MIDI_MERGE; other dst kinds accept only port 0).")
-        .def("add_midi_input", &GraphV2::add_midi_input,
+        .def("add_midi_input", &PluginGraph::add_midi_input,
              "Add a MIDI input node. Caller stages events per block "
              "via set_midi_input_events. Returns node id.")
-        .def("add_midi_output", &GraphV2::add_midi_output,
+        .def("add_midi_output", &PluginGraph::add_midi_output,
              "Add a MIDI output node. Drain via "
              "get_midi_output_events after render_block. Returns node id.")
-        .def("connect", &GraphV2::connect,
+        .def("connect", &PluginGraph::connect,
              nb::arg("src"), nb::arg("dst"), nb::arg("dst_port") = 0,
              "Connect src.out -> dst.in[dst_port]. dst_port is 0 "
              "except for mix nodes, where it selects one of "
              "num_inputs slots. Channel counts must match. Fan-out "
              "from a source is allowed; fan-in requires a mix node.")
-        .def("set_mix_gain", &GraphV2::set_mix_gain,
+        .def("set_mix_gain", &PluginGraph::set_mix_gain,
              nb::arg("mix_node"), nb::arg("input_index"), nb::arg("gain"),
              "Set the per-input gain (linear, default 1.0) on a mix "
              "node. Callable before or after compile.")
-        .def("connect_midi", &GraphV2::connect_midi,
+        .def("connect_midi", &PluginGraph::connect_midi,
              nb::arg("src"), nb::arg("dst"),
              "Connect a MIDI edge. src must be a MIDI_INPUT node or a "
              "plugin with produces_midi=1; dst must be a MIDI_OUTPUT "
              "node or a plugin with accepts_midi=1. One MIDI edge per "
              "dst; fan-out from a source is allowed.")
-        .def("set_midi_input_events", &GraphV2::set_midi_input_events,
+        .def("set_midi_input_events", &PluginGraph::set_midi_input_events,
              nb::arg("node_id"), nb::arg("events"),
              "Stage MIDI events on a MIDI_INPUT node for the next "
              "render_block. Each event is a "
              "(sample_offset, status, data1, data2) tuple. Cleared "
              "after render_block.")
-        .def("get_midi_output_events", &GraphV2::get_midi_output_events,
+        .def("get_midi_output_events", &PluginGraph::get_midi_output_events,
              nb::arg("node_id"),
              "Drain MIDI events that flowed into a MIDI_OUTPUT node "
              "during the most recent render_block. Returns a list of "
              "(sample_offset, status, data1, data2) tuples.")
-        .def("compile", &GraphV2::compile,
+        .def("compile", &PluginGraph::compile,
              "Validate topology, build the schedule, and allocate the "
              "per-node buffer pool. After compile, no further add_* / "
              "connect calls are permitted.")
-        .def("render_block", &GraphV2::render_block,
+        .def("render_block", &PluginGraph::render_block,
              nb::arg("inputs"), nb::arg("outputs"), nb::arg("nframes"),
              "Render one block. inputs is a list of float32 arrays "
              "shape (channels, nframes), one per input node in the "
              "order add_input was called; outputs is the same for "
              "output nodes. nframes must be <= max_block_size.")
-        .def("set_node_automation", &GraphV2::set_node_automation,
+        .def("set_node_automation", &PluginGraph::set_node_automation,
              nb::arg("node_id"), nb::arg("changes"),
              "Stage sample-accurate parameter automation for a plugin "
              "node. `changes` is a list of "
              "(sample_offset, param_index, value) tuples. Cleared "
              "after the next render_block call.")
-        .def_prop_ro("num_nodes",        &GraphV2::num_nodes)
-        .def_prop_ro("num_input_nodes",  &GraphV2::num_input_nodes)
-        .def_prop_ro("num_output_nodes", &GraphV2::num_output_nodes)
-        .def_prop_ro("is_compiled",      &GraphV2::is_compiled)
-        .def("close", &GraphV2::close,
+        .def_prop_ro("num_nodes",        &PluginGraph::num_nodes)
+        .def_prop_ro("num_input_nodes",  &PluginGraph::num_input_nodes)
+        .def_prop_ro("num_output_nodes", &PluginGraph::num_output_nodes)
+        .def_prop_ro("is_compiled",      &PluginGraph::is_compiled)
+        .def("close", &PluginGraph::close,
              "Release the graph's internal resources. Idempotent. "
              "Plugin nodes are not closed.")
-        .def("__enter__", &GraphV2::enter, nb::rv_policy::reference)
-        .def("__exit__", [](GraphV2& self, const nb::args&) {
+        .def("__enter__", &PluginGraph::enter, nb::rv_policy::reference)
+        .def("__exit__", [](PluginGraph& self, const nb::args&) {
             self.close();
         });
 

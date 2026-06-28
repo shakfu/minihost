@@ -1,4 +1,4 @@
-"""PluginChain dry/wet mix and PluginGraph parallel routing."""
+"""PluginChain dry/wet mix and PluginBus parallel routing."""
 
 from __future__ import annotations
 
@@ -128,30 +128,30 @@ def test_chain_set_mix_rejects_mismatched_channels():
 
 
 # ---------------------------------------------------------------------------
-# PluginGraph
+# PluginBus
 # ---------------------------------------------------------------------------
 
 
 def test_graph_create_rejects_bad_channels():
     with pytest.raises(RuntimeError, match="channel counts must be positive"):
-        minihost.PluginGraph(0, 2, max_block_size=512, sample_rate=48000.0)
+        minihost.PluginBus(0, 2, max_block_size=512, sample_rate=48000.0)
     with pytest.raises(RuntimeError, match="channel counts must be positive"):
-        minihost.PluginGraph(2, -1, max_block_size=512, sample_rate=48000.0)
+        minihost.PluginBus(2, -1, max_block_size=512, sample_rate=48000.0)
 
 
 def test_graph_create_rejects_bad_block_size():
     with pytest.raises(RuntimeError, match="max_block_size"):
-        minihost.PluginGraph(2, 2, max_block_size=0, sample_rate=48000.0)
+        minihost.PluginBus(2, 2, max_block_size=0, sample_rate=48000.0)
 
 
 def test_graph_create_rejects_bad_sample_rate():
     with pytest.raises(RuntimeError, match="sample_rate"):
-        minihost.PluginGraph(2, 2, max_block_size=512, sample_rate=-1.0)
+        minihost.PluginBus(2, 2, max_block_size=512, sample_rate=-1.0)
 
 
 @skip_if_no_fx
 def test_graph_empty_produces_silence():
-    g = minihost.PluginGraph(2, 2, max_block_size=512, sample_rate=48000.0)
+    g = minihost.PluginBus(2, 2, max_block_size=512, sample_rate=48000.0)
     try:
         inp = np.full((2, 256), 0.5, dtype=np.float32)
         out = np.full((2, 256), 1.0, dtype=np.float32)  # pre-fill non-zero
@@ -167,7 +167,7 @@ def test_graph_add_branch_rejects_channel_mismatch():
     chain, _p = _make_chain()
     try:
         # Graph expects 4-channel I/O; chain is 2-channel.
-        g = minihost.PluginGraph(4, 4, max_block_size=512, sample_rate=48000.0)
+        g = minihost.PluginBus(4, 4, max_block_size=512, sample_rate=48000.0)
         with pytest.raises(RuntimeError, match="input channels"):
             g.add_branch(chain)
         g.close()
@@ -179,7 +179,7 @@ def test_graph_add_branch_rejects_channel_mismatch():
 def test_graph_add_branch_rejects_sample_rate_mismatch():
     chain, _p = _make_chain()
     try:
-        g = minihost.PluginGraph(2, 2, max_block_size=512, sample_rate=44100.0)
+        g = minihost.PluginBus(2, 2, max_block_size=512, sample_rate=44100.0)
         with pytest.raises(RuntimeError, match="sample rate"):
             g.add_branch(chain)
         g.close()
@@ -198,7 +198,7 @@ def test_graph_single_branch_matches_chain_output():
     ref_chain.close()
 
     g_chain, _ = _make_chain()
-    g = minihost.PluginGraph(2, 2, max_block_size=512, sample_rate=48000.0)
+    g = minihost.PluginBus(2, 2, max_block_size=512, sample_rate=48000.0)
     g.add_branch(g_chain, gain=1.0)
     out = np.zeros((2, 256), dtype=np.float32)
     g.process(inp, out)
@@ -225,7 +225,7 @@ def test_graph_sums_two_branches():
 
     gc1, _ = _make_chain()
     gc2, _ = _make_chain()
-    g = minihost.PluginGraph(2, 2, max_block_size=512, sample_rate=48000.0)
+    g = minihost.PluginBus(2, 2, max_block_size=512, sample_rate=48000.0)
     g.add_branch(gc1, gain=1.0)
     g.add_branch(gc2, gain=1.0)
     out = np.zeros((2, 256), dtype=np.float32)
@@ -243,7 +243,7 @@ def test_graph_branch_gain_scales_contribution():
 
     # One-branch graph at gain=0.5 vs the same chain at gain=1.0.
     gc1, _ = _make_chain()
-    g1 = minihost.PluginGraph(2, 2, max_block_size=512, sample_rate=48000.0)
+    g1 = minihost.PluginBus(2, 2, max_block_size=512, sample_rate=48000.0)
     g1.add_branch(gc1, gain=1.0)
     out_full = np.zeros((2, 256), dtype=np.float32)
     g1.process(inp, out_full)
@@ -251,7 +251,7 @@ def test_graph_branch_gain_scales_contribution():
     gc1.close()
 
     gc2, _ = _make_chain()
-    g2 = minihost.PluginGraph(2, 2, max_block_size=512, sample_rate=48000.0)
+    g2 = minihost.PluginBus(2, 2, max_block_size=512, sample_rate=48000.0)
     g2.add_branch(gc2, gain=0.5)
     out_half = np.zeros((2, 256), dtype=np.float32)
     g2.process(inp, out_half)
@@ -264,7 +264,7 @@ def test_graph_branch_gain_scales_contribution():
 @skip_if_no_fx
 def test_graph_muted_branch_skips_processing():
     g_chain, _ = _make_chain()
-    g = minihost.PluginGraph(2, 2, max_block_size=512, sample_rate=48000.0)
+    g = minihost.PluginBus(2, 2, max_block_size=512, sample_rate=48000.0)
     idx = g.add_branch(g_chain, gain=0.0)
     assert g.get_branch_gain(idx) == pytest.approx(0.0)
 
@@ -280,7 +280,7 @@ def test_graph_muted_branch_skips_processing():
 @skip_if_no_fx
 def test_graph_set_get_branch_gain():
     g_chain, _ = _make_chain()
-    g = minihost.PluginGraph(2, 2, max_block_size=512, sample_rate=48000.0)
+    g = minihost.PluginBus(2, 2, max_block_size=512, sample_rate=48000.0)
     idx = g.add_branch(g_chain)
     assert g.get_branch_gain(idx) == pytest.approx(1.0)
     g.set_branch_gain(idx, 0.25)
@@ -297,7 +297,7 @@ def test_graph_set_get_branch_gain():
 def test_graph_latency_and_tail_are_max_across_branches():
     c1, _ = _make_chain()
     c2, _ = _make_chain()
-    g = minihost.PluginGraph(2, 2, max_block_size=512, sample_rate=48000.0)
+    g = minihost.PluginBus(2, 2, max_block_size=512, sample_rate=48000.0)
     g.add_branch(c1)
     g.add_branch(c2)
     # Both branches have identical latency/tail; max == single-branch value.
@@ -311,9 +311,98 @@ def test_graph_latency_and_tail_are_max_across_branches():
 @skip_if_no_fx
 def test_graph_context_manager_closes():
     c, _ = _make_chain()
-    with minihost.PluginGraph(2, 2, max_block_size=512, sample_rate=48000.0) as g:
+    with minihost.PluginBus(2, 2, max_block_size=512, sample_rate=48000.0) as g:
         g.add_branch(c)
         assert g.num_branches == 1
     # After context exit, graph is closed; close is idempotent.
     g.close()
     c.close()
+
+
+# ---------------------------------------------------------------------------
+# PluginBus MIDI fan-out (layering)
+# ---------------------------------------------------------------------------
+
+SYNTH_PLUGIN = (
+    os.environ.get("MINIHOST_TEST_PLUGIN")
+    or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+)
+
+skip_if_no_synth = pytest.mark.skipif(
+    not os.path.exists(SYNTH_PLUGIN),
+    reason=f"instrument plugin not found at {SYNTH_PLUGIN}",
+)
+
+
+def _make_synth_chain():
+    p = minihost.Plugin(SYNTH_PLUGIN, sample_rate=48000, max_block_size=512)
+    return minihost.PluginChain([p]), p
+
+
+@skip_if_no_fx
+def test_bus_process_midi_empty_matches_process():
+    # With an effect that ignores MIDI, process_midi([]) (audio-only path)
+    # must produce exactly the same output as process().
+    inp = np.full((2, 256), 0.1, dtype=np.float32)
+
+    ref_chain, _ = _make_chain()
+    ref = np.zeros((2, 256), dtype=np.float32)
+    g_ref = minihost.PluginBus(2, 2, max_block_size=512, sample_rate=48000.0)
+    g_ref.add_branch(ref_chain)
+    g_ref.process(inp, ref)
+    g_ref.close()
+    ref_chain.close()
+
+    test_chain, _ = _make_chain()
+    out = np.zeros((2, 256), dtype=np.float32)
+    g = minihost.PluginBus(2, 2, max_block_size=512, sample_rate=48000.0)
+    g.add_branch(test_chain)
+    g.process_midi(inp, out, [])  # empty MIDI -> audio-only path
+    g.close()
+    test_chain.close()
+
+    assert np.allclose(out, ref, atol=1e-6)
+
+
+@skip_if_no_synth
+def test_bus_fans_midi_to_all_branches():
+    # The headline use case: one MIDI part drives N parallel instruments
+    # whose audio is summed. A two-branch bus must deliver the note to
+    # BOTH branches -> output == sum of two independent single renders.
+    note = [(0, 0x90, 60, 100)]  # note-on C4, velocity 100
+
+    probe_chain, _pp = _make_synth_chain()
+    in_ch = probe_chain.num_input_channels
+    out_ch = probe_chain.num_output_channels
+    probe_chain.close()
+    if in_ch < 1 or out_ch < 1:
+        pytest.skip("synth reports zero channels; bus requires positive I/O")
+
+    silence_in = np.zeros((in_ch, 512), dtype=np.float32)
+
+    # Two independent single-synth renders of the same note.
+    c1, _ = _make_synth_chain()
+    c2, _ = _make_synth_chain()
+    r1 = np.zeros((out_ch, 512), dtype=np.float32)
+    r2 = np.zeros((out_ch, 512), dtype=np.float32)
+    c1.process_midi(silence_in, r1, note)
+    c2.process_midi(silence_in, r2, note)
+    c1.close()
+    c2.close()
+    expected = r1 + r2
+
+    assert np.any(np.abs(expected) > 1e-6), "synth produced no output for note-on"
+
+    # Same note through a two-branch bus.
+    bc1, _ = _make_synth_chain()
+    bc2, _ = _make_synth_chain()
+    g = minihost.PluginBus(in_ch, out_ch, max_block_size=512, sample_rate=48000.0)
+    g.add_branch(bc1)
+    g.add_branch(bc2)
+    out = np.zeros((out_ch, 512), dtype=np.float32)
+    g.process_midi(silence_in, out, note)
+    g.close()
+    bc1.close()
+    bc2.close()
+
+    assert np.allclose(out, expected, atol=1e-4)

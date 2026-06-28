@@ -1,9 +1,13 @@
 # Migration guide
 
-This guide covers the breaking changes introduced by the `AudioBuffer`
-migration (see CHANGELOG `[Unreleased]`). Every breaking change has a
-one-keyword fix to keep existing code working; the recommended patterns
-shown below are improvements, not requirements.
+This guide covers the breaking changes shipping in **0.2.0** (see CHANGELOG
+`[Unreleased]`): the `AudioBuffer` / numpy-optional migration, and the routing
+type rename (`PluginGraph` -> `PluginBus`, `GraphV2` -> `PluginGraph`).
+
+The `AudioBuffer` changes each have a one-keyword fix to keep existing code
+working; the recommended patterns shown below are improvements, not
+requirements. The routing rename (section 5) is the exception -- it is a hard
+rename with no compatibility shim, because minihost is still alpha (0.x).
 
 ## TL;DR
 
@@ -25,6 +29,8 @@ data, sr = minihost.read_audio(path)              # AudioBuffer
 plugin.process(data, output_buffer)                # AudioBuffer in directly
 np_data = data.as_ndarray()                        # zero-copy numpy view if you need one
 ```
+
+**Routing rename (no shim):** `PluginGraph` (the parallel bus) is now `PluginBus`; `GraphV2` (the DAG) is now `PluginGraph`. Mind the swap -- `PluginGraph` now means the DAG. Full details and the C/C++ ABI rename are in breaking change 5 below.
 
 ---
 
@@ -116,6 +122,69 @@ while not renderer.is_finished:
 
 `MidiRenderer.render_all()` accepts `as_=numpy.ndarray` for the whole-buffer return.
 
+### 5. Routing types renamed (`PluginGraph` -> `PluginBus`, `GraphV2` -> `PluginGraph`)
+
+0.2.0 gives the routing types a clean three-tier model. Unlike the
+`AudioBuffer` changes above, **this is a hard rename with no compatibility
+shim** -- the old names are gone in both Python and the C/C++ ABI.
+
+| Concept | Old name | New name |
+| --- | --- | --- |
+| Series (A -> B -> C) | `PluginChain` | `PluginChain` (unchanged) |
+| Parallel, summed (a mix bus) | `PluginGraph` | **`PluginBus`** |
+| Arbitrary node-to-node DAG | `GraphV2` | **`PluginGraph`** |
+
+Watch the swap: **`PluginGraph` now means the DAG executor**, not the parallel
+bus. Code that used the old `PluginGraph` (the bus) must move to `PluginBus`;
+code that used `GraphV2` must move to `PluginGraph`.
+
+**Python:**
+
+```python
+# Old: parallel-branches-summed
+bus = minihost.PluginGraph(2, 2, max_block_size=512, sample_rate=48000.0)
+# New:
+bus = minihost.PluginBus(2, 2, max_block_size=512, sample_rate=48000.0)
+
+# Old: general DAG executor
+g = minihost.GraphV2(512, 48000.0)
+# New:
+g = minihost.PluginGraph(512, 48000.0)
+```
+
+Project files (`load_project` / `render_project`) are **unaffected**: the JSON
+schema is identical; only the Python class backing it was renamed.
+
+New in the same release: `PluginBus.process_midi(input, output, midi_in)` fans
+the same MIDI to every branch, so one part can layer across parallel
+instruments. See the README "Parallel routing (PluginBus)" section.
+
+**C / C++ ABI** (`MH_API_VERSION` bumped to **2.0.0**):
+
+| | Old | New |
+| --- | --- | --- |
+| bus functions | `mh_graph_*` | `mh_bus_*` |
+| bus type | `MH_PluginGraph` | `MH_PluginBus` |
+| DAG functions | `mh_graph_v2_*` | `mh_graph_*` |
+| DAG type | `MH_GraphV2` | `MH_PluginGraph` |
+| DAG C++ RAII wrapper | `minihost::GraphV2` | `minihost::PluginGraph` |
+
+Source file names are retained for git history (`minihost_graph.{h,cpp}` is the
+bus; `minihost_graph_v2.{h,cpp,hpp}` is the DAG); a header note in each maps the
+file to its symbol family. Binaries linked against minihost should validate the
+ABI at startup: `if (mh_api_version() < MH_API_VERSION_NUMBER) { /* mismatch */ }`.
+
+To migrate a C/C++ codebase, apply the substitutions in this order -- the
+ordering matters because `mh_graph_` is a prefix of `mh_graph_v2_`, so a naive
+pass would corrupt the DAG symbols:
+
+```sh
+# function symbols (placeholder avoids the prefix collision)
+perl -pi -e 's/mh_graph_v2_/MHTMP_/g; s/mh_graph_/mh_bus_/g; s/MHTMP_/mh_graph_/g' FILES...
+# types and the C++ wrapper class
+perl -pi -e 's/MH_GraphV2/MHTMP2/g; s/\bGraphV2\b/PluginGraph/g; s/MH_PluginGraph/MH_PluginBus/g; s/MHTMP2/MH_PluginGraph/g' FILES...
+```
+
 ---
 
 ## "If your old code did X, do Y" table
@@ -131,6 +200,11 @@ while not renderer.is_finished:
 | `block = renderer.render_block()` (was numpy) | `block = renderer.render_block().as_ndarray()` | `block = renderer.render_block()` (AudioBuffer) |
 | `pip install minihost` (relied on numpy) | `pip install minihost[numpy]` | same — there's no "no-numpy" recommendation if you actually use numpy |
 | Custom DSP on the result (FFT, plot, etc.) | call `.as_ndarray()` once at the boundary | same |
+| `minihost.PluginGraph(in, out, ...)` (parallel bus) | `minihost.PluginBus(in, out, ...)` | same — plus `bus.process_midi(...)` for layering |
+| `minihost.GraphV2(block, sr)` (DAG) | `minihost.PluginGraph(block, sr)` | same |
+| C: `mh_graph_*` / `MH_PluginGraph` (bus) | `mh_bus_*` / `MH_PluginBus` | same |
+| C: `mh_graph_v2_*` / `MH_GraphV2` (DAG) | `mh_graph_*` / `MH_PluginGraph` | same |
+| C++: `minihost::GraphV2` | `minihost::PluginGraph` | same |
 
 ---
 

@@ -1,4 +1,4 @@
-"""Steady-state behavioural tests for `mh_graph_v2_render_block`.
+"""Steady-state behavioural tests for `mh_graph_render_block`.
 
 The C-side render_block is required to be allocation-free after compile
 (it uses a per-node buffer pool sized at compile time). We can't trap
@@ -19,7 +19,7 @@ import minihost
 
 
 def _build_mix_graph(max_block: int = 512, sr: float = 48000.0):
-    g = minihost.GraphV2(max_block, sr)
+    g = minihost.PluginGraph(max_block, sr)
     a   = g.add_input(2)
     b   = g.add_input(2)
     mix = g.add_mix(2, 2)

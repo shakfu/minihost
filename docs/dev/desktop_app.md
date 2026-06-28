@@ -107,25 +107,25 @@ internal mutex, and no audio thread exists during editor-only use.
 
 ### Graph executor
 
-The C-level executor lives in `libminihost_graph` (already present as
-`PluginGraph`, parallel-branches-summed). v1 extends it from
+The C-level executor lives in `libminihost` (the parallel bus is already
+present as `PluginBus`, parallel-branches-summed). v1 extends it from
 "parallel branches summed" to a general DAG:
 
 1. New C API in `projects/libminihost_graph/`:
-   - `mh_graph_v2_create`, `mh_graph_v2_add_node`,
-     `mh_graph_v2_connect`, `mh_graph_v2_compile`,
-     `mh_graph_v2_render_block`.
+   - `mh_graph_create`, `mh_graph_add_node`,
+     `mh_graph_connect`, `mh_graph_compile`,
+     `mh_graph_render_block`.
    - Built-in non-plugin node kinds: `input` (file or buffer source),
      `output` (file or buffer sink), `gain`, `mix`.
 2. Compilation does Kahn topological sort, channel-count validation,
    and edge-buffer pool allocation with liveness reuse.
 3. Per-block step matches `docs/dev/graph.md` §Execution.
 
-The existing `PluginGraph` is preserved as the parallel-branches-summed
-shortcut; `mh_graph_v2_*` is the general case. The Python `PluginGraph`
-binding stays as-is for backward compatibility; a new
-`minihost.GraphV2` binding wraps the new ABI and is what the desktop
-app's project loader emits.
+The parallel bus is preserved as `PluginBus` (`mh_bus_*`), the
+parallel-branches-summed shortcut; `mh_graph_*` is the general DAG case.
+The Python `PluginBus` binding is the shortcut; the `minihost.PluginGraph`
+binding wraps the DAG ABI and is what the desktop app's project loader
+emits.
 
 Justification for keeping the executor in C rather than the Python
 sketch from `graph.md`: the desktop app's render thread runs in-process
@@ -182,7 +182,7 @@ that change state format; that's the plugin's contract, not ours.
 "Render" action:
 
 1. Snapshot the `ProjectModel` to a `CompiledGraph` on the GUI thread.
-2. Spawn the render thread. The thread loops `mh_graph_v2_render_block`
+2. Spawn the render thread. The thread loops `mh_graph_render_block`
    advancing `t0` by `block_size`, writing each output node's buffer to
    its sink via `mh_audio_write` (streaming, not all-at-once).
 3. Progress is reported by frames written; the GUI polls at 30 Hz.
@@ -221,7 +221,7 @@ the graph executor's output node(s) rather than a single plugin.
 Constraints the executor must satisfy in v2:
 
 - Allocation-free `render_block` (already true for `mh_chain_process_*`;
-  must extend to `mh_graph_v2_render_block`). Tracked by an
+  must extend to `mh_graph_render_block`). Tracked by an
   RT-allocation test analogous to the existing
   `tests/test_rt_allocations.py`.
 - Parameter writes from the GUI thread reach the audio thread via a
@@ -277,11 +277,11 @@ restarting. Parameter and automation changes do not recompile.
   output renders bit-identically to a CLI invocation of
   `process_audio_to_file` over the same plugin and parameters.
 - Graph render parity vs manual `PluginChain` for linear graphs;
-  vs the parallel-branches `PluginGraph` for the fan-out + mix case.
+  vs the parallel-branches `PluginBus` for the fan-out + mix case.
   These mirror the validation plan in `docs/dev/graph.md`.
 - Editor window smoke test: open / close 50× on a known plugin under
   ASan; assert no leaks.
-- v2: RT-allocation test for `mh_graph_v2_render_block` analogous to
+- v2: RT-allocation test for `mh_graph_render_block` analogous to
   `test_rt_allocations.py`.
 
 ### Distribution
@@ -322,8 +322,8 @@ to be a routine source of crashes. No usage telemetry either way.
 
 Before committing to the design, confirm:
 
-1. The C-level graph executor (`mh_graph_v2_*`) can be built from the
-   existing `PluginGraph` source with bounded effort. If extending
+1. The C-level graph executor (`mh_graph_*`) can be built from the
+   existing `PluginBus` source with bounded effort. If extending
    "parallel branches" to a general DAG requires a rewrite rather than
    an extension, reconsider whether to host the executor in Python
    (per the original `graph.md` sketch) for v1 and port to C only for

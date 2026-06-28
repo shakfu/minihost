@@ -116,7 +116,7 @@ struct NodeKindEntry {
     // tables, MIDI input node lists, meter states, ...).
     std::function<void(const project::ProjectDocument&,
                        int idx,
-                       minihost::GraphV2&,
+                       minihost::PluginGraph&,
                        std::unordered_map<std::string, MH_NodeId>&,
                        project::LoadedProject&)> load_one;
 };

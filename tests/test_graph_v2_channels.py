@@ -1,4 +1,4 @@
-"""Tests for pick_channel and merge_channels nodes in GraphV2.
+"""Tests for pick_channel and merge_channels nodes in PluginGraph.
 
 These nodes let a graph reshape multi-channel audio without plugins:
 extract one channel from a multi-channel source, or interleave several
@@ -19,7 +19,7 @@ import minihost
 # -------------------------------------------------------------------- #
 
 def test_pick_channel_rejects_bad_index_at_add():
-    g = minihost.GraphV2(64, 48000.0)
+    g = minihost.PluginGraph(64, 48000.0)
     with pytest.raises(RuntimeError, match="channel_index"):
         g.add_pick_channel(in_channels=2, channel_index=2)
     with pytest.raises(RuntimeError, match="channel_index"):
@@ -27,14 +27,14 @@ def test_pick_channel_rejects_bad_index_at_add():
 
 
 def test_pick_channel_rejects_zero_channels():
-    g = minihost.GraphV2(64, 48000.0)
+    g = minihost.PluginGraph(64, 48000.0)
     with pytest.raises(RuntimeError, match="in_channels"):
         g.add_pick_channel(in_channels=0, channel_index=0)
 
 
 def test_pick_channel_extracts_left_from_stereo():
     F = 32
-    g = minihost.GraphV2(F, 48000.0)
+    g = minihost.PluginGraph(F, 48000.0)
     src = g.add_input(2)
     pick = g.add_pick_channel(in_channels=2, channel_index=0)
     out = g.add_output(1)
@@ -53,7 +53,7 @@ def test_pick_channel_extracts_left_from_stereo():
 
 def test_pick_channel_extracts_right_from_stereo():
     F = 16
-    g = minihost.GraphV2(F, 48000.0)
+    g = minihost.PluginGraph(F, 48000.0)
     src = g.add_input(2)
     pick = g.add_pick_channel(in_channels=2, channel_index=1)
     out = g.add_output(1)
@@ -72,7 +72,7 @@ def test_pick_channel_extracts_right_from_stereo():
 
 def test_pick_channel_channel_mismatch_at_connect():
     """A mono source can't feed pick_channel(in_channels=2)."""
-    g = minihost.GraphV2(64, 48000.0)
+    g = minihost.PluginGraph(64, 48000.0)
     mono = g.add_input(1)
     pick = g.add_pick_channel(in_channels=2, channel_index=0)
     with pytest.raises(RuntimeError, match="channel mismatch"):
@@ -84,14 +84,14 @@ def test_pick_channel_channel_mismatch_at_connect():
 # -------------------------------------------------------------------- #
 
 def test_merge_channels_rejects_zero_out():
-    g = minihost.GraphV2(64, 48000.0)
+    g = minihost.PluginGraph(64, 48000.0)
     with pytest.raises(RuntimeError, match="out_channels"):
         g.add_merge_channels(out_channels=0)
 
 
 def test_merge_channels_interleaves_two_mono_into_stereo():
     F = 24
-    g = minihost.GraphV2(F, 48000.0)
+    g = minihost.PluginGraph(F, 48000.0)
     left  = g.add_input(1)
     right = g.add_input(1)
     merge = g.add_merge_channels(out_channels=2)
@@ -112,7 +112,7 @@ def test_merge_channels_interleaves_two_mono_into_stereo():
 def test_merge_channels_input_ports_are_mono():
     """Each merge_channels input port accepts 1-channel signals; a
     stereo source can't be connected to a port directly."""
-    g = minihost.GraphV2(64, 48000.0)
+    g = minihost.PluginGraph(64, 48000.0)
     stereo = g.add_input(2)
     merge  = g.add_merge_channels(out_channels=2)
     with pytest.raises(RuntimeError, match="channel mismatch"):
@@ -122,7 +122,7 @@ def test_merge_channels_input_ports_are_mono():
 def test_pick_then_merge_is_identity():
     """split-then-merge of a stereo signal should reproduce the input."""
     F = 64
-    g = minihost.GraphV2(F, 48000.0)
+    g = minihost.PluginGraph(F, 48000.0)
     src = g.add_input(2)
     pL  = g.add_pick_channel(in_channels=2, channel_index=0)
     pR  = g.add_pick_channel(in_channels=2, channel_index=1)
@@ -145,7 +145,7 @@ def test_pick_then_merge_is_identity():
 # -------------------------------------------------------------------- #
 # gain / bus via mix(1, channels)                                       #
 # -------------------------------------------------------------------- #
-# gain and bus aren't separate GraphV2 node kinds -- they are
+# gain and bus aren't separate PluginGraph node kinds -- they are
 # 1-input mix nodes from the graph's point of view. These tests
 # confirm the existing mix(1, channels) construct meets the gain /
 # bus contract; the project-format layer adds the distinct spec
@@ -153,7 +153,7 @@ def test_pick_then_merge_is_identity():
 
 def test_mix_of_one_with_gain_acts_as_gain_stage():
     F = 16
-    g = minihost.GraphV2(F, 48000.0)
+    g = minihost.PluginGraph(F, 48000.0)
     src  = g.add_input(2)
     gain = g.add_mix(num_inputs=1, channels=2)
     g.set_mix_gain(gain, 0, 0.25)
@@ -170,7 +170,7 @@ def test_mix_of_one_with_gain_acts_as_gain_stage():
 
 def test_mix_of_one_with_unit_gain_acts_as_bus():
     F = 8
-    g = minihost.GraphV2(F, 48000.0)
+    g = minihost.PluginGraph(F, 48000.0)
     src = g.add_input(2)
     bus = g.add_mix(num_inputs=1, channels=2)   # default gain = 1.0
     out = g.add_output(2)

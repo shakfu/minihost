@@ -1,12 +1,12 @@
 // live.h
 //
 // Realtime engine for the desktop app. Holds a juce::AudioDeviceManager
-// + a LoadedProject and pumps mh_graph_v2_render_block from an
+// + a LoadedProject and pumps mh_graph_render_block from an
 // AudioIODeviceCallback.
 //
 // v1 live contract:
 //   - The currently loaded project provides the graph topology.
-//   - Project input nodes are fed silence each block (the GraphV2
+//   - Project input nodes are fed silence each block (the PluginGraph
 //     contract requires they receive data; we don't route device
 //     input into them in this slice). Synth chains work; effects
 //     over device input require a future "device_in" node kind.

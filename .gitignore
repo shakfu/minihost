@@ -6,6 +6,7 @@ site/
 __pycache__
 .venv
 .*_cache
+REVIEW.md
 
 docs/changelog.md
 

@@ -3,7 +3,7 @@
 Drives `minihost_desktop --render-project=<path>` headlessly and
 compares its output to `minihost.render_project()` over the same
 project file. Both paths read the same JSON schema and route audio
-through `mh_graph_v2_render_block`; we expect bit-identical output
+through `mh_graph_render_block`; we expect bit-identical output
 within 24-bit quantization (~1.2e-7).
 
 Skipped when the desktop binary isn't built (CI / wheel-only runs).

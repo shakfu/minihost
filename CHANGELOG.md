@@ -2,7 +2,35 @@
 
 ## [Unreleased]
 
+## [0.2.0]
+
+### Changed
+
+- **BREAKING (0.2.0): routing types renamed, top to bottom.** The
+  parallel-branches-summed type formerly called `PluginGraph` is now
+  **`PluginBus`**, and the general-DAG executor formerly called `GraphV2`
+  is now **`PluginGraph`**. This gives the three routing primitives a clean
+  tier: `PluginChain` (series), `PluginBus` (parallel, summed),
+  `PluginGraph` (arbitrary DAG). As an alpha (0.x) project this is a clean
+  break with no deprecation aliases; package version bumped to 0.2.0.
+
+  The rename goes all the way down to the C ABI (**`MH_API_VERSION` bumped
+  to 2.0.0**, a deliberate incompatible-ABI major bump per the policy in
+  `minihost.h`):
+  - bus: `mh_graph_*` -> `mh_bus_*`, `MH_PluginGraph` -> `MH_PluginBus`;
+  - DAG: `mh_graph_v2_*` -> `mh_graph_*`, `MH_GraphV2` -> `MH_PluginGraph`,
+    C++ RAII wrapper `minihost::GraphV2` -> `minihost::PluginGraph`.
+
+  The source file names (`minihost_graph.{h,cpp}` for the bus,
+  `minihost_graph_v2.{h,cpp,hpp}` for the DAG) are retained for git history;
+  a header note in each maps the file to its symbol family. Both consumers
+  (the Python wheel and the `minihost_desktop` binary) were updated and
+  build clean. Earlier changelog entries that mention `GraphV2` /
+  `mh_graph_v2_*` describe what is now `PluginGraph` / `mh_graph_*`.
+
 ### Added
+
+- **MIDI fan-out on `PluginBus`** -- `PluginBus.process_midi(input, output, midi_in)` delivers the same MIDI events to every branch (each branch's first plugin), making the bus a layering primitive: one MIDI part drives N parallel instruments whose audio is summed with per-branch gain. Muted branches (gain 0.0) are skipped. New C API `mh_graph_process_midi` in `projects/libminihost/minihost_graph.{h,cpp}` (shares the fan-out-and-sum core with `mh_graph_process`; delegates per branch to `mh_chain_process_midi_io` with MIDI output discarded). Branch MIDI *output* is not collected -- that remains a `PluginGraph` (DAG) capability and a possible follow-up. New tests in `tests/test_chain_mix_and_graph.py` (audio-only path parity with empty MIDI; two-branch layering equals the sum of two independent single renders).
 
 - **MIDI routing in `GraphV2`** -- `graph_v2` gains first-class MIDI as a sibling of audio routing. Two new node kinds (`MH_NODE_MIDI_INPUT`, `MH_NODE_MIDI_OUTPUT`) and a separate MIDI edge list (`mh_graph_v2_connect_midi`) let callers express MIDI fan-out, MIDI effect chains (e.g. arpeggiator -> synth), and per-plugin MIDI sources without the old global "fan MIDI to every plugin" hack. One MIDI edge per dst (fan-out from a source is allowed); the topo-sort indegree includes both audio and MIDI edges so dependencies are respected. Plugin nodes whose `produces_midi=1` *and* have an outgoing MIDI edge are dispatched via `mh_process_midi_io` (or `mh_process_auto` with midi_out when automation is also active); their MIDI output is captured into a per-node buffer (default capacity 1024 events) and forwarded along the edge. New C API: `mh_graph_v2_add_midi_input`, `mh_graph_v2_add_midi_output`, `mh_graph_v2_connect_midi`, `mh_graph_v2_set_midi_input_events` (stages caller events for a MIDI_INPUT node per block; borrowed pointer, cleared after `render_block`), `mh_graph_v2_get_midi_output_events` (drains a MIDI_OUTPUT node after render; truncation-aware count). The legacy `mh_graph_v2_set_node_midi` remains for direct staging on plugin nodes that aren't wired through the new routing; if a MIDI edge is connected, the edge takes precedence. C++ wrapper (`minihost::GraphV2::addMidiInput` / `addMidiOutput` / `connectMidi` / `setMidiInputEvents` / `getMidiOutputEvents`) and Python bindings (`GraphV2.add_midi_input`, `add_midi_output`, `connect_midi`, `set_midi_input_events`, `get_midi_output_events`) mirror the C API. 12 new tests in `tests/test_graph_v2_midi.py` (topology validation, passthrough, staging clear-on-render, fan-out, post-compile rejection, MIDI-edge-overwrites-on-same-dst, plugin MIDI input via graph edge matches direct `process_midi` staging).
 

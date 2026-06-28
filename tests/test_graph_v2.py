@@ -1,4 +1,4 @@
-"""Tests for minihost.GraphV2 (general-DAG executor).
+"""Tests for minihost.PluginGraph (general-DAG executor).
 
 Three families of tests:
 
@@ -39,13 +39,13 @@ skip_if_no_plugin = pytest.mark.skipif(
 # -------------------------------------------------------------------- #
 
 def test_compile_empty_graph_fails():
-    g = minihost.GraphV2(64, 48000.0)
+    g = minihost.PluginGraph(64, 48000.0)
     with pytest.raises(RuntimeError, match="no output nodes"):
         g.compile()
 
 
 def test_unconnected_input_port_fails_compile():
-    g = minihost.GraphV2(64, 48000.0)
+    g = minihost.PluginGraph(64, 48000.0)
     g.add_input(2)
     g.add_output(2)
     # output's input port 0 is unconnected
@@ -54,7 +54,7 @@ def test_unconnected_input_port_fails_compile():
 
 
 def test_channel_mismatch_rejected_at_connect():
-    g = minihost.GraphV2(64, 48000.0)
+    g = minihost.PluginGraph(64, 48000.0)
     stereo_in = g.add_input(2)
     mono_out = g.add_output(1)
     with pytest.raises(RuntimeError, match="channel mismatch"):
@@ -62,7 +62,7 @@ def test_channel_mismatch_rejected_at_connect():
 
 
 def test_cannot_connect_into_input_node():
-    g = minihost.GraphV2(64, 48000.0)
+    g = minihost.PluginGraph(64, 48000.0)
     a = g.add_input(2)
     b = g.add_input(2)
     with pytest.raises(RuntimeError, match="cannot connect into an input"):
@@ -70,7 +70,7 @@ def test_cannot_connect_into_input_node():
 
 
 def test_dst_port_out_of_range():
-    g = minihost.GraphV2(64, 48000.0)
+    g = minihost.PluginGraph(64, 48000.0)
     src = g.add_input(2)
     mix = g.add_mix(2, 2)
     with pytest.raises(RuntimeError, match="dst_port"):
@@ -78,14 +78,14 @@ def test_dst_port_out_of_range():
 
 
 def test_self_edge_rejected():
-    g = minihost.GraphV2(64, 48000.0)
+    g = minihost.PluginGraph(64, 48000.0)
     m = g.add_mix(1, 2)
     with pytest.raises(RuntimeError, match="self-edge"):
         g.connect(m, m, dst_port=0)
 
 
 def test_cycle_detected_at_compile():
-    g = minihost.GraphV2(64, 48000.0)
+    g = minihost.PluginGraph(64, 48000.0)
     m1 = g.add_mix(1, 2)
     m2 = g.add_mix(1, 2)
     out = g.add_output(2)
@@ -97,7 +97,7 @@ def test_cycle_detected_at_compile():
 
 
 def test_post_compile_mutation_rejected():
-    g = minihost.GraphV2(64, 48000.0)
+    g = minihost.PluginGraph(64, 48000.0)
     inp = g.add_input(2)
     out = g.add_output(2)
     g.connect(inp, out)
@@ -110,7 +110,7 @@ def test_post_compile_mutation_rejected():
 
 
 def test_render_before_compile_fails():
-    g = minihost.GraphV2(64, 48000.0)
+    g = minihost.PluginGraph(64, 48000.0)
     inp = g.add_input(2)
     out = g.add_output(2)
     g.connect(inp, out)
@@ -127,7 +127,7 @@ def test_render_before_compile_fails():
 def test_identity_input_to_output_copies_samples():
     """input -> output is a memcpy. Whatever goes in comes out."""
     F = 32
-    g = minihost.GraphV2(F, 48000.0)
+    g = minihost.PluginGraph(F, 48000.0)
     inp = g.add_input(2)
     out = g.add_output(2)
     g.connect(inp, out)
@@ -143,7 +143,7 @@ def test_identity_input_to_output_copies_samples():
 def test_mix_node_sums_with_per_input_gain():
     """mix(2,2) with gains (1.0, 0.5) on inputs (a, b) emits a + 0.5*b."""
     F = 16
-    g = minihost.GraphV2(F, 48000.0)
+    g = minihost.PluginGraph(F, 48000.0)
     inA = g.add_input(2)
     inB = g.add_input(2)
     mix = g.add_mix(2, 2)
@@ -164,7 +164,7 @@ def test_mix_node_sums_with_per_input_gain():
 
 def test_gain_change_takes_effect_without_recompile():
     F = 8
-    g = minihost.GraphV2(F, 48000.0)
+    g = minihost.PluginGraph(F, 48000.0)
     inA = g.add_input(2)
     inB = g.add_input(2)
     mix = g.add_mix(2, 2)
@@ -189,7 +189,7 @@ def test_gain_change_takes_effect_without_recompile():
 def test_fan_out_with_mix_reconvergence():
     """One input fanned to both inputs of a mix is summed by the gains."""
     F = 8
-    g = minihost.GraphV2(F, 48000.0)
+    g = minihost.PluginGraph(F, 48000.0)
     src = g.add_input(2)
     mix = g.add_mix(2, 2)
     out = g.add_output(2)
@@ -237,7 +237,7 @@ def test_linear_plugin_graph_matches_process_audio():
         ref = ref.to_numpy()
     ref = ref[:, :total]
 
-    g = minihost.GraphV2(block, float(sr))
+    g = minihost.PluginGraph(block, float(sr))
     in_node  = g.add_input(in_ch)
     pl_node  = g.add_plugin(p)
     out_node = g.add_output(out_ch)
@@ -258,7 +258,7 @@ def test_linear_plugin_graph_matches_process_audio():
 
 @skip_if_no_plugin
 def test_graph_automation_matches_plugin_process_auto():
-    """Per-block parameter automation through GraphV2.set_node_automation
+    """Per-block parameter automation through PluginGraph.set_node_automation
     must match Plugin.process_auto when applied to the same plugin
     over the same input + automation events.
     """
@@ -285,7 +285,7 @@ def test_graph_automation_matches_plugin_process_auto():
     # Compare against a graph that wraps a separate Plugin instance
     # (each instance is fresh so initial parameter state is identical).
     p_graph = minihost.Plugin(PLUGIN, sample_rate=sr, max_block_size=block)
-    g = minihost.GraphV2(block, float(sr))
+    g = minihost.PluginGraph(block, float(sr))
     in_node  = g.add_input(in_ch)
     pl_node  = g.add_plugin(p_graph)
     out_node = g.add_output(out_ch)
@@ -304,7 +304,7 @@ def test_plugin_node_keeps_plugin_alive():
     """The graph holds a Python reference to the Plugin so dropping
     the local name does not free the underlying instance."""
     import gc
-    g = minihost.GraphV2(256, 48000.0)
+    g = minihost.PluginGraph(256, 48000.0)
     p = minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=256)
     in_ch = p.num_input_channels
     out_ch = p.num_output_channels

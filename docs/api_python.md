@@ -217,6 +217,78 @@ Chain parameter changes are tuples of `(sample_offset, plugin_index, param_index
 
 ---
 
+## PluginBus
+
+Run N `PluginChain` branches in parallel against the same input and sum their
+outputs with a per-branch gain (a mix bus). Use it for parallel compression,
+dry-bus + reverb-send, multi-band processing, and -- via `process_midi` --
+layering one MIDI part across several instruments.
+
+### Constructor
+
+```python
+PluginBus(num_in_channels, num_out_channels, max_block_size=8192, sample_rate=48000.0)
+```
+
+Every branch added later must accept exactly `num_in_channels` inputs, produce
+exactly `num_out_channels` outputs, and run at `sample_rate`; `add_branch`
+rejects mismatches with a descriptive error.
+
+### Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `num_branches` | `int` | Number of branches |
+| `num_input_channels` | `int` | Configured input channels |
+| `num_output_channels` | `int` | Configured output channels |
+| `sample_rate` | `float` | Configured sample rate |
+| `max_block_size` | `int` | Maximum block size |
+| `latency_samples` | `int` | Maximum latency across branches (parallel branches do not accumulate latency) |
+| `tail_seconds` | `float` | Maximum tail across branches |
+
+### Methods
+
+| Method | Description |
+|--------|-------------|
+| `add_branch(chain, gain=1.0)` | Add a `PluginChain` branch with a linear summing gain. Returns the branch index. The bus keeps the branch alive |
+| `set_branch_gain(branch_index, gain)` | Set a branch's summing gain (0.0 mutes; muted branches skip processing) |
+| `get_branch_gain(branch_index)` | Get a branch's summing gain |
+| `process(input, output)` | Fan input to every branch, sum (per-branch gain) into output |
+| `process_midi(input, output, midi_in)` | Fan input audio **and** the same MIDI to every branch (MIDI to each branch's first plugin), then sum. The layering primitive. Branch MIDI output is not collected |
+| `close()` | Release internal resources (idempotent). Branches are not closed |
+
+Supports the context-manager protocol (`with minihost.PluginBus(...) as bus:`).
+
+---
+
+## PluginGraph
+
+General-DAG executor: arbitrary node-to-node audio and MIDI routing (plugin,
+input, output, mix, channel pick/merge, and MIDI nodes). It backs project
+files (`load_project` / `render_project`); most users reach it through those
+rather than wiring nodes by hand. Build the graph (`add_*`, `connect`,
+`set_mix_gain`), call `compile()`, then `render_block()`.
+
+```python
+g = minihost.PluginGraph(max_block_size, sample_rate)
+src = g.add_input(2); fx = g.add_plugin(plugin); out = g.add_output(2)
+g.connect(src, fx); g.connect(fx, out)
+g.compile()
+g.render_block([in_buf], [out_buf], nframes)
+```
+
+Key methods: `add_input`, `add_output`, `add_plugin`, `add_mix`,
+`add_pick_channel`, `add_merge_channels`, `add_midi_input`, `add_midi_output`,
+`add_midi_processor`, `add_midi_merge`, `connect`, `connect_midi`,
+`connect_midi_port`, `set_mix_gain`, `set_node_automation`,
+`set_midi_input_events`, `get_midi_output_events`, `compile`, `render_block`,
+`close`. See `_core.pyi` for full signatures.
+
+> Renamed in 0.2.0: this is the former `GraphV2`; the former `PluginGraph`
+> (parallel bus) is now `PluginBus`. See the [migration guide](migration.md).
+
+---
+
 ## AudioDevice
 
 Real-time audio device for plugin playback. Supports context manager protocol.

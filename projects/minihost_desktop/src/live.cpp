@@ -442,7 +442,7 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
         {
             auto* graph = compiled_->graph->handle();
             for (MH_NodeId nid : compiled_->midi_input_node_ids)
-                mh_graph_v2_set_midi_input_events(
+                mh_graph_set_midi_input_events(
                     graph, nid,
                     midi_scratch_.data(),
                     (int) midi_scratch_.size());

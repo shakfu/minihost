@@ -228,6 +228,33 @@ for (int i = 0; i < count; i++) {
 
 ---
 
+## Plugin Bus Functions (minihost_graph.h)
+
+Parallel-branches-summed routing: fan one input to N `MH_PluginChain` branches
+and sum their outputs with per-branch gain. Python: `PluginBus`.
+(File name retained from before the 0.2.0 rename; symbols are `mh_bus_*`.)
+
+| Function | Description |
+|----------|-------------|
+| `mh_bus_create` | Create a bus for a fixed I/O channel layout, block size, and sample rate |
+| `mh_bus_close` | Close the bus (does not close the branches) |
+| `mh_bus_add_branch` | Add a `MH_PluginChain` branch with a linear gain; returns branch index. Rejects channel/sample-rate mismatch |
+| `mh_bus_set_branch_gain` / `mh_bus_get_branch_gain` | Set/get a branch's summing gain (0.0 mutes; muted branches skip processing) |
+| `mh_bus_get_num_branches` | Number of branches |
+| `mh_bus_process` | Fan input to every branch, sum (per-branch gain) into outputs |
+| `mh_bus_process_midi` | As `mh_bus_process`, but also fan the same MIDI to every branch (to each branch's first plugin). Branch MIDI output is not collected |
+| `mh_bus_get_num_input_channels` / `mh_bus_get_num_output_channels` | Configured channel counts |
+| `mh_bus_get_sample_rate` / `mh_bus_get_max_block_size` | Configured sample rate / block size |
+| `mh_bus_get_latency_samples` / `mh_bus_get_tail_seconds` | Maximum latency / tail across branches |
+
+The general DAG executor (Python `PluginGraph`) lives in `minihost_graph_v2.h`
+as the `mh_graph_*` / `MH_PluginGraph` family, with a C++ RAII wrapper
+`minihost::PluginGraph` in `minihost_graph_v2.hpp`. Its surface is large
+(node add/connect, MIDI routing, automation, `mh_graph_compile`,
+`mh_graph_render_block`); see the header for the full API.
+
+---
+
 ## MIDI Functions (minihost_midi.h)
 
 ### Port Enumeration

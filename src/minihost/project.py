@@ -1,6 +1,6 @@
 """Project file loader / renderer for the v2 graph executor.
 
-A project file is a JSON document describing a `GraphV2`: which plugin /
+A project file is a JSON document describing a `PluginGraph`: which plugin /
 input / output / mix nodes exist, how they're connected, and where the
 input audio comes from / output audio goes. Schema v1:
 
@@ -23,7 +23,7 @@ input audio comes from / output audio goes. Schema v1:
     }
 
 Schema notes:
-    - Node IDs are user-readable strings; mapped to GraphV2 NodeIds at
+    - Node IDs are user-readable strings; mapped to PluginGraph NodeIds at
       load time.
     - Input nodes have a `source` path (WAV/FLAC/MP3/Vorbis -- whatever
       mh_audio_read supports). All input files must have the project's
@@ -111,10 +111,10 @@ class _MixNode:
 
 @dataclass
 class LoadedProject:
-    """Result of `load_project`. Holds the built (compiled) GraphV2,
+    """Result of `load_project`. Holds the built (compiled) PluginGraph,
     references to the Plugin objects (so the caller can keep them
     alive), and the per-output sink metadata needed for render."""
-    graph: minihost.GraphV2
+    graph: minihost.PluginGraph
     sample_rate: int
     block_size: int
     duration_frames: int
@@ -129,7 +129,7 @@ class LoadedProject:
 # -- loader ----------------------------------------------------------- #
 
 def load_project(project_path: str | Path) -> LoadedProject:
-    """Load a project file and build a compiled `GraphV2` from it.
+    """Load a project file and build a compiled `PluginGraph` from it.
 
     Returns a `LoadedProject` with the graph, the resolved input audio
     arrays, and the output sink metadata. Callers typically pass the
@@ -274,7 +274,7 @@ def load_project(project_path: str | Path) -> LoadedProject:
             n.plugin.set_state(base64.b64decode(n.state_b64))
 
     # Build the graph.
-    g = minihost.GraphV2(block, float(sr))
+    g = minihost.PluginGraph(block, float(sr))
     id_to_nodeid: dict[str, int] = {}
     for n in inputs:
         id_to_nodeid[n.id] = g.add_input(n.channels)

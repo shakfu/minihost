@@ -1,5 +1,10 @@
 // minihost_graph_v2.h
 //
+// NOTE: the file name is retained for git history; as of ABI 2.0.0 the
+// symbols here are the mh_graph_* / MH_PluginGraph family (Python:
+// PluginGraph). The parallel "bus" lives in minihost_graph.h (mh_bus_* /
+// MH_PluginBus; Python: PluginBus).
+//
 // General-DAG graph executor for minihost. v1 scope:
 //
 //   - Plugin nodes (wrapping an existing MH_Plugin*).
@@ -10,9 +15,9 @@
 //   - Channel-count validation at connect / compile time.
 //   - Per-node output buffer pool, allocation-free after compile.
 //   - Per-node parameter automation (MH_ParamChange lists) via
-//     mh_graph_v2_set_node_automation.
+//     mh_graph_set_node_automation.
 //   - MIDI routing: dedicated MIDI_INPUT / MIDI_OUTPUT node kinds and
-//     a separate MIDI edge list (mh_graph_v2_connect_midi). One MIDI
+//     a separate MIDI edge list (mh_graph_connect_midi). One MIDI
 //     edge per dst node; fan-out allowed. Plugin nodes accept MIDI on
 //     an implicit MIDI input port (when accepts_midi=1) and produce
 //     MIDI on an implicit MIDI output port (when produces_midi=1).
@@ -20,11 +25,11 @@
 //   - No feedback loops.
 //
 // Threading:
-//   - mh_graph_v2_render_block: audio-thread-only, no internal lock.
+//   - mh_graph_render_block: audio-thread-only, no internal lock.
 //   - All other functions: thread-safe (do not call concurrently
 //     with render_block on the same graph).
 //
-// The existing MH_PluginGraph (parallel-branches-summed) is unchanged
+// The existing MH_PluginBus (parallel-branches-summed) is unchanged
 // and remains the right tool for that specific shape.
 
 #pragma once
@@ -36,7 +41,7 @@
 extern "C" {
 #endif
 
-typedef struct MH_GraphV2 MH_GraphV2;
+typedef struct MH_PluginGraph MH_PluginGraph;
 
 typedef enum MH_NodeKind {
     MH_NODE_PLUGIN          = 0,
@@ -92,36 +97,36 @@ typedef int MH_NodeId;
 // and accept up to max_block_size frames per process call.
 //
 // Returns NULL on failure; err_buf receives a message.
-MH_GraphV2* mh_graph_v2_create(int max_block_size,
+MH_PluginGraph* mh_graph_create(int max_block_size,
                                double sample_rate,
                                char* err_buf, size_t err_buf_size);
 
 // Close the graph. Does NOT close any MH_Plugin nodes -- those remain
 // owned by the caller.
-void mh_graph_v2_close(MH_GraphV2* g);
+void mh_graph_close(MH_PluginGraph* g);
 
 // Add a plugin node. The graph borrows the MH_Plugin*; caller keeps
-// it alive until after mh_graph_v2_close. Plugin's input + output
+// it alive until after mh_graph_close. Plugin's input + output
 // channel counts (from mh_get_info) drive edge validation.
 //
 // Returns the new node id (>= 0) or -1 on failure.
-MH_NodeId mh_graph_v2_add_plugin(MH_GraphV2* g, MH_Plugin* p,
+MH_NodeId mh_graph_add_plugin(MH_PluginGraph* g, MH_Plugin* p,
                                  char* err_buf, size_t err_buf_size);
 
 // Add an input node: produces `channels` channels from a caller-
 // supplied buffer at render time.
-MH_NodeId mh_graph_v2_add_input(MH_GraphV2* g, int channels,
+MH_NodeId mh_graph_add_input(MH_PluginGraph* g, int channels,
                                 char* err_buf, size_t err_buf_size);
 
 // Add an output node: consumes `channels` channels, writes to a
 // caller-supplied buffer at render time.
-MH_NodeId mh_graph_v2_add_output(MH_GraphV2* g, int channels,
+MH_NodeId mh_graph_add_output(MH_PluginGraph* g, int channels,
                                  char* err_buf, size_t err_buf_size);
 
 // Add a mix node: sums `num_inputs` inputs (each `channels` channels)
 // with per-input gains (default 1.0) into one `channels`-channel
-// output. Use mh_graph_v2_set_mix_gain to override gains.
-MH_NodeId mh_graph_v2_add_mix(MH_GraphV2* g,
+// output. Use mh_graph_set_mix_gain to override gains.
+MH_NodeId mh_graph_add_mix(MH_PluginGraph* g,
                               int num_inputs, int channels,
                               char* err_buf, size_t err_buf_size);
 
@@ -134,7 +139,7 @@ MH_NodeId mh_graph_v2_add_mix(MH_GraphV2* g,
 // Topology:
 //   - One input port (port 0): in_channels channels.
 //   - One output port (port 0): 1 channel.
-MH_NodeId mh_graph_v2_add_pick_channel(MH_GraphV2* g,
+MH_NodeId mh_graph_add_pick_channel(MH_PluginGraph* g,
                                        int in_channels, int channel_index,
                                        char* err_buf, size_t err_buf_size);
 
@@ -147,14 +152,14 @@ MH_NodeId mh_graph_v2_add_pick_channel(MH_GraphV2* g,
 //   - out_channels input ports (port i: 1 channel, becomes channel i
 //     of the output).
 //   - One output port (port 0): out_channels channels.
-MH_NodeId mh_graph_v2_add_merge_channels(MH_GraphV2* g, int out_channels,
+MH_NodeId mh_graph_add_merge_channels(MH_PluginGraph* g, int out_channels,
                                          char* err_buf, size_t err_buf_size);
 
 // Add a MIDI processor node: applies params.op (filter / transpose /
 // velocity_curve) to events flowing from its single MIDI input port
 // (port 0) to its single MIDI output port. Defaults for unused
 // fields can be left zero -- the op selects which fields matter.
-MH_NodeId mh_graph_v2_add_midi_processor(MH_GraphV2* g,
+MH_NodeId mh_graph_add_midi_processor(MH_PluginGraph* g,
                                          MH_MidiProcessorParams params,
                                          char* err_buf, size_t err_buf_size);
 
@@ -164,27 +169,27 @@ MH_NodeId mh_graph_v2_add_midi_processor(MH_GraphV2* g,
 // while render_block is in flight is undefined (callers should
 // serialize, e.g. via LiveEngine's start/stop or message-thread
 // cadence).
-int mh_graph_v2_set_midi_processor_params(MH_GraphV2* g, MH_NodeId node,
+int mh_graph_set_midi_processor_params(MH_PluginGraph* g, MH_NodeId node,
                                           MH_MidiProcessorParams params);
 
 // Add a MIDI merge node: concatenates events from `num_inputs`
 // separate MIDI input ports (0..num_inputs-1) into one output
 // stream, sorted by sample_offset (stable across ports). The
 // canonical fan-in primitive for MIDI; pair with
-// mh_graph_v2_connect_midi_port to wire each source.
-MH_NodeId mh_graph_v2_add_midi_merge(MH_GraphV2* g, int num_inputs,
+// mh_graph_connect_midi_port to wire each source.
+MH_NodeId mh_graph_add_midi_merge(MH_PluginGraph* g, int num_inputs,
                                      char* err_buf, size_t err_buf_size);
 
 // Add a MIDI input node: produces a per-block MIDI event stream
-// supplied by the caller via mh_graph_v2_set_midi_input_events.
+// supplied by the caller via mh_graph_set_midi_input_events.
 // Has no audio I/O. Cannot be a destination of any edge.
-MH_NodeId mh_graph_v2_add_midi_input(MH_GraphV2* g,
+MH_NodeId mh_graph_add_midi_input(MH_PluginGraph* g,
                                      char* err_buf, size_t err_buf_size);
 
 // Add a MIDI output node: consumes a MIDI stream from upstream and
-// stores it for retrieval via mh_graph_v2_get_midi_output_events.
+// stores it for retrieval via mh_graph_get_midi_output_events.
 // Has no audio I/O. Has one MIDI input "port" (port 0).
-MH_NodeId mh_graph_v2_add_midi_output(MH_GraphV2* g,
+MH_NodeId mh_graph_add_midi_output(MH_PluginGraph* g,
                                       char* err_buf, size_t err_buf_size);
 
 // Connect src.out[src_port] -> dst.in[dst_port].
@@ -200,18 +205,18 @@ MH_NodeId mh_graph_v2_add_midi_output(MH_GraphV2* g,
 //
 // Returns 1 on success, 0 on failure (err_buf describes the error:
 // bad node ids, bad ports, channel-count mismatch, etc.).
-int mh_graph_v2_connect(MH_GraphV2* g,
+int mh_graph_connect(MH_PluginGraph* g,
                         MH_NodeId src, int src_port,
                         MH_NodeId dst, int dst_port,
                         char* err_buf, size_t err_buf_size);
 
 // Set the per-input gain on a mix node (default 1.0). Linear gain.
 // Returns 1 on success, 0 on failure.
-int mh_graph_v2_set_mix_gain(MH_GraphV2* g, MH_NodeId mix_node,
+int mh_graph_set_mix_gain(MH_PluginGraph* g, MH_NodeId mix_node,
                              int input_index, float gain);
 
 // Connect a MIDI edge: src.midi_out -> dst.midi_in[dst_port=0].
-// Convenience wrapper around mh_graph_v2_connect_midi_port; the
+// Convenience wrapper around mh_graph_connect_midi_port; the
 // destination port is always 0 for non-MIDI_MERGE consumers.
 //
 // Valid src kinds:
@@ -223,19 +228,19 @@ int mh_graph_v2_set_mix_gain(MH_GraphV2* g, MH_NodeId mix_node,
 //   - MH_NODE_PLUGIN with accepts_midi=1
 //   - MH_NODE_MIDI_OUTPUT
 //   - MH_NODE_MIDI_PROCESSOR
-//   - MH_NODE_MIDI_MERGE  (use mh_graph_v2_connect_midi_port to pick a
+//   - MH_NODE_MIDI_MERGE  (use mh_graph_connect_midi_port to pick a
 //     specific input port; this function uses port 0)
 //
 // One MIDI edge per (dst node, dst port). Fan-out from a source is
 // allowed. MIDI edges contribute to topological ordering the same
 // way audio edges do.
-int mh_graph_v2_connect_midi(MH_GraphV2* g,
+int mh_graph_connect_midi(MH_PluginGraph* g,
                              MH_NodeId src, MH_NodeId dst,
                              char* err_buf, size_t err_buf_size);
 
 // Connect a MIDI edge to a specific dst_port. Required for
 // MH_NODE_MIDI_MERGE; other dst kinds accept only dst_port == 0.
-int mh_graph_v2_connect_midi_port(MH_GraphV2* g,
+int mh_graph_connect_midi_port(MH_PluginGraph* g,
                                   MH_NodeId src, MH_NodeId dst,
                                   int dst_port,
                                   char* err_buf, size_t err_buf_size);
@@ -248,7 +253,7 @@ int mh_graph_v2_connect_midi_port(MH_GraphV2* g,
 // permitted (they return 0). Re-compile is not supported in v1.
 //
 // Returns 1 on success, 0 on failure.
-int mh_graph_v2_compile(MH_GraphV2* g, char* err_buf, size_t err_buf_size);
+int mh_graph_compile(MH_PluginGraph* g, char* err_buf, size_t err_buf_size);
 
 // Render one block.
 //
@@ -264,7 +269,7 @@ int mh_graph_v2_compile(MH_GraphV2* g, char* err_buf, size_t err_buf_size);
 //
 // Returns 1 on success, 0 on failure (e.g. graph not compiled,
 // nframes out of range, plugin process failure).
-int mh_graph_v2_render_block(MH_GraphV2* g,
+int mh_graph_render_block(MH_PluginGraph* g,
                              const float* const* const* input_buffers,
                              int num_input_nodes,
                              float* const* const* output_buffers,
@@ -281,12 +286,12 @@ int mh_graph_v2_render_block(MH_GraphV2* g,
 // applies and the MIDI events are passed alongside.
 //
 // Returns 1 on success, 0 if node is not a plugin / out of range.
-int mh_graph_v2_set_node_automation(MH_GraphV2* g, MH_NodeId node,
+int mh_graph_set_node_automation(MH_PluginGraph* g, MH_NodeId node,
                                     const MH_ParamChange* changes,
                                     int num_changes);
 
 // Stage MIDI events to deliver to a plugin node on the next
-// mh_graph_v2_render_block call. The graph borrows the events
+// mh_graph_render_block call. The graph borrows the events
 // pointer until render_block returns; the caller must keep it alive
 // until then. Cleared automatically after render_block.
 //
@@ -301,7 +306,7 @@ int mh_graph_v2_set_node_automation(MH_GraphV2* g, MH_NodeId node,
 // graph. LiveEngine serializes both on its audio thread.
 //
 // Returns 1 on success, 0 if node is not a plugin or is out of range.
-int mh_graph_v2_set_node_midi(MH_GraphV2* g, MH_NodeId node,
+int mh_graph_set_node_midi(MH_PluginGraph* g, MH_NodeId node,
                               const MH_MidiEvent* events,
                               int num_events);
 
@@ -310,7 +315,7 @@ int mh_graph_v2_set_node_midi(MH_GraphV2* g, MH_NodeId node,
 // render_block returns. Cleared automatically afterward.
 //
 // Returns 1 on success, 0 if node is not a MIDI_INPUT or out of range.
-int mh_graph_v2_set_midi_input_events(MH_GraphV2* g, MH_NodeId node,
+int mh_graph_set_midi_input_events(MH_PluginGraph* g, MH_NodeId node,
                                       const MH_MidiEvent* events,
                                       int num_events);
 
@@ -325,16 +330,16 @@ int mh_graph_v2_set_midi_input_events(MH_GraphV2* g, MH_NodeId node,
 //
 // Returns 1 on success, 0 if node is not a MIDI_OUTPUT or out of
 // range.
-int mh_graph_v2_get_midi_output_events(MH_GraphV2* g, MH_NodeId node,
+int mh_graph_get_midi_output_events(MH_PluginGraph* g, MH_NodeId node,
                                        MH_MidiEvent* out_buf,
                                        int capacity,
                                        int* num_events_out);
 
 // Introspection.
-int mh_graph_v2_num_nodes(MH_GraphV2* g);
-int mh_graph_v2_num_input_nodes(MH_GraphV2* g);
-int mh_graph_v2_num_output_nodes(MH_GraphV2* g);
-int mh_graph_v2_is_compiled(MH_GraphV2* g);
+int mh_graph_num_nodes(MH_PluginGraph* g);
+int mh_graph_num_input_nodes(MH_PluginGraph* g);
+int mh_graph_num_output_nodes(MH_PluginGraph* g);
+int mh_graph_is_compiled(MH_PluginGraph* g);
 
 #ifdef __cplusplus
 }

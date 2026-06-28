@@ -1,5 +1,5 @@
 """Tests for MH_NODE_MIDI_PROCESSOR (filter, transpose, velocity
-curve) and MH_NODE_MIDI_MERGE in GraphV2.
+curve) and MH_NODE_MIDI_MERGE in PluginGraph.
 
 The processor / merge nodes let MIDI streams be reshaped inside the
 graph without a plugin: filter by channel + note range, transpose,
@@ -24,7 +24,7 @@ OP_VELOCITY_CURVE = 2
 def _setup(F=8, channels=1):
     """Common audio scaffold: graph_v2 needs at least one audio output
     for compile to succeed."""
-    g = minihost.GraphV2(F, 48000.0)
+    g = minihost.PluginGraph(F, 48000.0)
     a_in = g.add_input(channels)
     a_out = g.add_output(channels)
     g.connect(a_in, a_out)

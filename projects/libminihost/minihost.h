@@ -78,7 +78,10 @@ extern "C" {
 #endif
 
 // API version components. Bump per the policy described above.
-#define MH_API_VERSION_MAJOR 1
+// 2.0.0: routing symbols renamed for the chain/bus/graph tier --
+//   mh_graph_* (parallel bus) -> mh_bus_* / MH_PluginGraph -> MH_PluginBus,
+//   and mh_graph_v2_* (DAG) -> mh_graph_* / MH_GraphV2 -> MH_PluginGraph.
+#define MH_API_VERSION_MAJOR 2
 #define MH_API_VERSION_MINOR 0
 #define MH_API_VERSION_PATCH 0
 
