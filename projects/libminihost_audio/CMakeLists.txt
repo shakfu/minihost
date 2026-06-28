@@ -47,15 +47,6 @@ function(_minihost_audio_configure_common target)
         LIBREMIDI_HEADER_ONLY=1
     )
 
-    # minihost_audio.c uses C11 <stdatomic.h> (_Atomic) for the audio
-    # input-callback pointer. MSVC gates C11 atomics behind an opt-in flag
-    # (VS 2022 17.5+); Clang/GCC need nothing. Scope it to C sources so the
-    # C++ sources (which use std::atomic) are unaffected.
-    if(MSVC)
-        target_compile_options(${target} PRIVATE
-            $<$<COMPILE_LANGUAGE:C>:/experimental:c11atomics>)
-    endif()
-
     if(APPLE)
         target_link_libraries(${target} PRIVATE
             "-framework CoreAudio"

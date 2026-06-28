@@ -93,10 +93,12 @@ the C ABI is bumped to **2.1.0** (additive).
 ### Fixed
 
 - **Data race on the audio input callback.** `mh_audio_set_input_callback`
-  wrote the callback function pointer (and user-data) from the app thread
-  while the audio thread read it unsynchronized (`minihost_audio.c`), risking
-  a torn pointer on weakly-ordered CPUs. The pointer is now an `_Atomic` with
-  a release/acquire publish (user-data published before the pointer), so the
+  wrote the callback pointer (and user-data) from the app thread while the
+  audio thread read it unsynchronized (`minihost_audio.c`), risking a torn
+  pointer on weakly-ordered CPUs. The pointer is now published / read through
+  portable acquire/release atomics (`__atomic` builtins on Clang/GCC,
+  `Interlocked` intrinsics on MSVC -- no C11 `<stdatomic.h>`, which MSVC gates
+  behind an opt-in flag), with user-data published before the pointer, so the
   audio thread never observes a torn or mismatched callback. Callers must
   still clear (set NULL) before installing a different callback -- the
   existing live-source start/stop contract.

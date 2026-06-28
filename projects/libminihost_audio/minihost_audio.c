@@ -14,7 +14,31 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#include <stdatomic.h>
+
+// Portable acquire/release atomics for a single pointer-sized slot, used for
+// the audio input-callback pointer (published by the app thread, read by the
+// audio thread). We avoid C11 <stdatomic.h> because MSVC gates it behind an
+// opt-in flag that the Visual Studio generator does not reliably pass; the
+// builtins/intrinsics below need no flag and work on every platform minihost
+// builds for (x86-64 and arm64, Clang / GCC / MSVC).
+#if defined(_MSC_VER)
+#include <intrin.h>
+static inline void* mh_atomic_load_acquire_ptr(void* volatile* slot) {
+    // A no-op compare-exchange returns the current value with a full barrier
+    // (correct on x64 and arm64).
+    return _InterlockedCompareExchangePointer(slot, NULL, NULL);
+}
+static inline void mh_atomic_store_release_ptr(void* volatile* slot, void* value) {
+    (void)_InterlockedExchangePointer(slot, value);  // full barrier
+}
+#else
+static inline void* mh_atomic_load_acquire_ptr(void* volatile* slot) {
+    return __atomic_load_n(slot, __ATOMIC_ACQUIRE);
+}
+static inline void mh_atomic_store_release_ptr(void* volatile* slot, void* value) {
+    __atomic_store_n(slot, value, __ATOMIC_RELEASE);
+}
+#endif
 
 struct MH_AudioDevice {
     ma_device device;
@@ -28,15 +52,15 @@ struct MH_AudioDevice {
     int channels;
     int capture;             // 1 if duplex (capture enabled), 0 if playback only
 
-    // Input callback for effects. Read on the audio thread, written from
-    // the app thread (mh_audio_set_input_callback). The callback pointer is
-    // atomic with release/acquire ordering so the audio thread never reads a
-    // torn pointer; user_data is published before the pointer, so observing
-    // a non-NULL callback implies its user_data is visible too. Callers must
-    // clear (set NULL) before installing a different callback (the existing
-    // contract -- the live source goes start -> stop -> start, never a hot
-    // swap between two distinct non-NULL callbacks).
-    _Atomic(MH_AudioInputCallback) input_callback;
+    // Input callback for effects. Read on the audio thread, written from the
+    // app thread (mh_audio_set_input_callback). Stored type-erased as void*
+    // and accessed through the acquire/release pointer atomics above, so the
+    // audio thread never reads a torn pointer; user_data is published before
+    // the pointer, so observing a non-NULL callback implies its user_data is
+    // visible too. Callers must clear (set NULL) before installing a different
+    // callback (the existing contract -- the live source goes start -> stop ->
+    // start, never a hot swap between two distinct non-NULL callbacks).
+    void* input_callback;  // holds an MH_AudioInputCallback
     void* input_callback_user_data;
 
     // Pre-allocated conversion buffers (non-interleaved)
@@ -178,7 +202,7 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
     }
 
     // Get input audio: capture (duplex) > input callback > silence
-    MH_AudioInputCallback cb;
+    void* cbp;
     if (dev->capture && input) {
         // De-interleave capture input into per-channel buffers
         const float* interleaved_input = (const float*)input;
@@ -187,9 +211,9 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
                 dev->input_buffers[ch][f] = interleaved_input[f * channels + ch];
             }
         }
-    } else if ((cb = atomic_load_explicit(&dev->input_callback,
-                                          memory_order_acquire)) != NULL) {
-        cb(dev->input_buffers, frames, dev->input_callback_user_data);
+    } else if ((cbp = mh_atomic_load_acquire_ptr(&dev->input_callback)) != NULL) {
+        ((MH_AudioInputCallback)cbp)(dev->input_buffers, frames,
+                                     dev->input_callback_user_data);
     } else {
         // Zero input buffers for synth plugins
         for (int ch = 0; ch < channels; ch++) {
@@ -681,7 +705,7 @@ void mh_audio_set_input_callback(MH_AudioDevice* dev, MH_AudioInputCallback cb, 
     // which loads the callback with acquire ordering, sees a matching
     // user_data once it observes a non-NULL callback (release store below).
     dev->input_callback_user_data = user_data;
-    atomic_store_explicit(&dev->input_callback, cb, memory_order_release);
+    mh_atomic_store_release_ptr(&dev->input_callback, (void*)cb);
 }
 
 double mh_audio_get_sample_rate(MH_AudioDevice* dev) {
