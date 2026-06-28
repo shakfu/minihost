@@ -163,16 +163,26 @@ int mh_bus_get_num_branches(MH_PluginBus* graph)
 
 // Shared fan-out-and-sum core for the audio-only and MIDI variants.
 // When midi_in is non-NULL (and num_midi_in > 0) each branch is driven
-// via mh_chain_process_midi_io so the same MIDI reaches every branch;
-// branch MIDI output is discarded (audio-summing bus). Otherwise the
-// plain audio path is used.
+// via mh_chain_process_midi_io so the same MIDI reaches every branch.
+// When midi_out is non-NULL (capacity > 0) each branch's MIDI output is
+// appended and then stably merge-sorted by sample_offset; otherwise
+// branch MIDI output is discarded. The audio fan-out-and-sum is
+// identical in every case.
 static int graph_process_impl(MH_PluginBus* graph,
                               const float* const* inputs,
                               float* const* outputs,
                               int nframes,
                               const MH_MidiEvent* midi_in,
-                              int num_midi_in)
+                              int num_midi_in,
+                              MH_MidiEvent* midi_out,
+                              int midi_out_capacity,
+                              int* num_midi_out,
+                              int* midi_out_overflow)
 {
+    // Default the MIDI-out reports up front so every early return is sane.
+    if (num_midi_out) *num_midi_out = 0;
+    if (midi_out_overflow) *midi_out_overflow = 0;
+
     if (graph == nullptr) return 0;
     if (nframes <= 0 || nframes > graph->max_block_size) return 0;
     if (outputs == nullptr) return 0;
@@ -190,6 +200,11 @@ static int graph_process_impl(MH_PluginBus* graph,
     if (n_branches == 0) return 1;
 
     const bool have_midi = (midi_in != nullptr && num_midi_in > 0);
+    const bool collect_midi = (midi_out != nullptr && midi_out_capacity > 0);
+
+    // Branch MIDI is appended directly into the caller's midi_out buffer
+    // (no internal allocation), then stably sorted once at the end.
+    int total_midi_out = 0;
 
     for (int b = 0; b < n_branches; ++b)
     {
@@ -199,13 +214,34 @@ static int graph_process_impl(MH_PluginBus* graph,
 
         float* const* branch_out = graph->branch_ptrs[b].data();
         int r;
-        if (have_midi)
+        if (have_midi || collect_midi)
         {
-            // Fan the same MIDI to every branch; discard branch MIDI out.
+            // Fan the same MIDI to every branch. When collecting, append
+            // this branch's MIDI output into the remaining tail of the
+            // caller's buffer; mh_chain_process_midi_io caps writes at the
+            // capacity we hand it, so the buffer never overflows.
+            MH_MidiEvent* branch_midi_out =
+                collect_midi ? (midi_out + total_midi_out) : nullptr;
+            int branch_cap =
+                collect_midi ? (midi_out_capacity - total_midi_out) : 0;
+            int branch_count = 0;
             r = mh_chain_process_midi_io(graph->branches[b], inputs,
                                          branch_out, nframes,
                                          midi_in, num_midi_in,
-                                         nullptr, 0, nullptr);
+                                         branch_midi_out, branch_cap,
+                                         collect_midi ? &branch_count : nullptr);
+            if (collect_midi)
+            {
+                total_midi_out += branch_count;
+                // The chain filled all the room we gave it: this branch (or
+                // a later one) may have produced more than fit.
+                if (branch_count == branch_cap &&
+                    total_midi_out == midi_out_capacity &&
+                    midi_out_overflow)
+                {
+                    *midi_out_overflow = 1;
+                }
+            }
         }
         else
         {
@@ -225,6 +261,27 @@ static int graph_process_impl(MH_PluginBus* graph,
         }
     }
 
+    if (collect_midi && total_midi_out > 1)
+    {
+        // Stable insertion sort by sample_offset. Allocation-free and
+        // stable (uses '>' so equal-offset events keep branch order),
+        // which matters for note-off/note-on pairs at the same frame.
+        // Event counts per block are small, so O(n^2) is acceptable on
+        // the audio thread.
+        for (int i = 1; i < total_midi_out; ++i)
+        {
+            MH_MidiEvent key = midi_out[i];
+            int j = i - 1;
+            while (j >= 0 && midi_out[j].sample_offset > key.sample_offset)
+            {
+                midi_out[j + 1] = midi_out[j];
+                --j;
+            }
+            midi_out[j + 1] = key;
+        }
+    }
+
+    if (num_midi_out) *num_midi_out = total_midi_out;
     return 1;
 }
 
@@ -233,7 +290,8 @@ int mh_bus_process(MH_PluginBus* graph,
                       float* const* outputs,
                       int nframes)
 {
-    return graph_process_impl(graph, inputs, outputs, nframes, nullptr, 0);
+    return graph_process_impl(graph, inputs, outputs, nframes,
+                              nullptr, 0, nullptr, 0, nullptr, nullptr);
 }
 
 int mh_bus_process_midi(MH_PluginBus* graph,
@@ -244,7 +302,25 @@ int mh_bus_process_midi(MH_PluginBus* graph,
                           int num_midi_in)
 {
     return graph_process_impl(graph, inputs, outputs, nframes,
-                              midi_in, num_midi_in);
+                              midi_in, num_midi_in,
+                              nullptr, 0, nullptr, nullptr);
+}
+
+int mh_bus_process_midi_io(MH_PluginBus* graph,
+                           const float* const* inputs,
+                           float* const* outputs,
+                           int nframes,
+                           const MH_MidiEvent* midi_in,
+                           int num_midi_in,
+                           MH_MidiEvent* midi_out,
+                           int midi_out_capacity,
+                           int* num_midi_out,
+                           int* midi_out_overflow)
+{
+    return graph_process_impl(graph, inputs, outputs, nframes,
+                              midi_in, num_midi_in,
+                              midi_out, midi_out_capacity,
+                              num_midi_out, midi_out_overflow);
 }
 
 int mh_bus_get_num_input_channels(MH_PluginBus* graph)

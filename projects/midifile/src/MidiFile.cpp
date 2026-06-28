@@ -652,9 +652,11 @@ bool MidiFile::write(std::ostream& out) {
 
 		}
 
-		// Add end-of-track message if not already written:
-		MidiEvent& lastevent = m_events[i]->back();
-		if (!lastevent.isEndOfTrack()) {
+		// Add end-of-track message if not already written. An empty track
+		// has no last event to inspect (calling back() on an empty vector
+		// is undefined behaviour and crashes), so always emit the
+		// end-of-track marker in that case.
+		if (m_events[i]->size() == 0 || !m_events[i]->back().isEndOfTrack()) {
 			trackdata.push_back(0x0);  // delta tick value
 			trackdata.push_back(0xff); // meta message
 			trackdata.push_back(0x2f); // message type (end-of-track)

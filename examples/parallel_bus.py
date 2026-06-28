@@ -16,6 +16,13 @@ For parallel *effect* processing (parallel compression, dry-bus + reverb-send)
 use :meth:`PluginBus.process` instead -- same fan-out-and-sum, no MIDI. For
 arbitrary node-to-node routing, use :class:`~minihost.PluginGraph`.
 
+When the branches themselves emit MIDI (e.g. parallel arpeggiators),
+:meth:`PluginBus.process_midi` returns an ``(events, overflow)`` tuple: the
+merged branch MIDI as ``(sample_offset, status, data1, data2)`` tuples,
+time-ordered by offset (so it can drive a downstream instrument), plus a
+bool flagging whether the ``midi_out_capacity`` cap was hit. Instrument
+branches emit no MIDI, so this example ignores the return value.
+
 Usage:
     # One instrument per path; each becomes a branch (pass 2-3 to layer):
     python parallel_bus.py /path/to/saw.vst3 /path/to/sub.vst3 /path/to/pad.vst3

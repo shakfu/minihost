@@ -8,8 +8,6 @@ __pycache__
 .*_cache
 REVIEW.md
 
-docs/changelog.md
-
 thirdparty/JUCE/
 
 # Prerequisites

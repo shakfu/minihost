@@ -996,6 +996,37 @@ class TestMidiFile:
         assert mf.num_tracks == initial_tracks + 1
         assert idx == initial_tracks
 
+    def test_midifile_save_with_empty_tracks(self, tmp_path):
+        """Regression: write() must not crash on empty tracks.
+
+        The vendored midifile library called vector::back() on a track
+        with no events (UB / segfault). A fresh MidiFile has one empty
+        track, and add_track() leaves the original track empty when events
+        are written only to the new one -- both must save cleanly.
+        """
+        # A fresh, event-free file saves and reloads.
+        p_empty = tmp_path / "empty.mid"
+        minihost.MidiFile().save(str(p_empty))
+        assert p_empty.exists()
+        reloaded = minihost.MidiFile()
+        assert reloaded.load(str(p_empty))
+
+        # add_track() then writing only to the new track leaves track 0
+        # empty; saving must still succeed and round-trip the events.
+        mf = minihost.MidiFile()
+        mf.ticks_per_quarter = 480
+        t = mf.add_track()
+        mf.add_note_on(t, 0, 0, 60, 100)
+        mf.add_note_off(t, 480, 0, 60, 0)
+        p_multi = tmp_path / "multi.mid"
+        mf.save(str(p_multi))
+
+        rt = minihost.MidiFile()
+        assert rt.load(str(p_multi))
+        assert rt.num_tracks == mf.num_tracks
+        types = [e["type"] for e in rt.get_events(t)]
+        assert "note_on" in types and "note_off" in types
+
     def test_midifile_add_notes(self):
         """Test adding note events."""
         mf = minihost.MidiFile()

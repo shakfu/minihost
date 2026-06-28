@@ -64,9 +64,27 @@ class _ProgressBar:
 
 
 def cmd_scan(args: argparse.Namespace) -> int:
-    """Scan directory for plugins."""
+    """Scan directory for plugins. Uses the persistent scan cache by
+    default (only new/changed plugins are probed); --no-cache forces a
+    full uncached scan and --refresh re-probes every plugin."""
     try:
-        results = minihost.scan_directory(args.directory)
+        if args.no_cache:
+            results = minihost.scan_directory(args.directory)
+        else:
+            from minihost import plugincache
+
+            def _progress(done: int, total: int, _path: str) -> None:
+                sys.stderr.write(f"\rProbing {done}/{total}...")
+                sys.stderr.flush()
+                if done == total:
+                    sys.stderr.write("\r" + " " * 24 + "\r")
+                    sys.stderr.flush()
+
+            results = plugincache.scan(
+                args.directory,
+                refresh=args.refresh,
+                on_progress=None if args.json else _progress,
+            )
     except RuntimeError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
@@ -81,6 +99,59 @@ def cmd_scan(args: argparse.Namespace) -> int:
         print(f"\nFound {len(results)} plugin(s)")
 
     return 0
+
+
+def cmd_cache(args: argparse.Namespace) -> int:
+    """Manage and query the persistent plugin-scan cache."""
+    from minihost import plugincache
+
+    action = args.cache_action
+    if action == "path":
+        print(plugincache.cache_file())
+        return 0
+
+    if action == "stats":
+        s = plugincache.stats()
+        if args.json:
+            import json
+
+            print(json.dumps(s, indent=2))
+        else:
+            print(f"Cache:  {s['path']}")
+            print(f"Exists: {'yes' if s['exists'] else 'no'}")
+            print(f"Total:  {s['total']}  (ok: {s['ok']}, error: {s['error']})")
+        return 0
+
+    if action == "clear":
+        plugincache.clear()
+        print("Cache cleared.")
+        return 0
+
+    if action == "prune":
+        n = plugincache.prune()
+        print(f"Pruned {n} missing plugin(s).")
+        return 0
+
+    if action == "list":
+        results = plugincache.query(
+            format=args.format,
+            name_contains=args.name,
+            vendor_contains=args.vendor,
+            accepts_midi=True if args.midi_in else None,
+            produces_midi=True if args.midi_out else None,
+        )
+        if args.json:
+            import json
+
+            print(json.dumps(results, indent=2))
+        else:
+            for i, d in enumerate(results, 1):
+                print(f"[{i}] {d['name']} ({d['format']}) - {d['path']}")
+            print(f"\n{len(results)} plugin(s) in cache")
+        return 0
+
+    print(f"Error: unknown cache action {action!r}", file=sys.stderr)
+    return 1
 
 
 def _print_probe_info(info: dict, json_output: bool = False) -> None:
@@ -103,10 +174,16 @@ def _print_probe_info(info: dict, json_output: bool = False) -> None:
 
 def cmd_info(args: argparse.Namespace) -> int:
     """Show plugin info. With --probe, uses lightweight metadata only."""
-    # Probe-only mode: no full load
+    # Probe-only mode: no full load. Served from the scan cache (probing +
+    # caching on a miss / stale fingerprint) unless --no-cache is given.
     if args.probe:
         try:
-            info = minihost.probe(args.plugin)
+            if args.no_cache:
+                info = minihost.probe(args.plugin)
+            else:
+                from minihost import plugincache
+
+                info = plugincache.info(args.plugin, refresh=args.refresh)
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
             return 1
@@ -1854,6 +1931,16 @@ Examples:
     scan_p = subparsers.add_parser("scan", help="Scan directory for plugins")
     scan_p.add_argument("directory", help="Directory to scan")
     scan_p.add_argument("-j", "--json", action="store_true", help="Output as JSON")
+    scan_p.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Re-probe every plugin, ignoring cached entries",
+    )
+    scan_p.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Bypass the scan cache entirely (full uncached scan)",
+    )
     scan_p.set_defaults(func=cmd_scan)
 
     # info
@@ -1865,7 +1952,40 @@ Examples:
         action="store_true",
         help="Lightweight mode: metadata only, no full plugin load",
     )
+    info_p.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Re-probe even if cached (with --probe)",
+    )
+    info_p.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Bypass the scan cache (with --probe)",
+    )
     info_p.set_defaults(func=cmd_info)
+
+    # cache
+    cache_p = subparsers.add_parser(
+        "cache", help="Manage/query the persistent plugin-scan cache"
+    )
+    cache_sub = cache_p.add_subparsers(dest="cache_action", required=True)
+    cache_sub.add_parser("path", help="Print the cache file path")
+    cache_stats_p = cache_sub.add_parser("stats", help="Show cache statistics")
+    cache_stats_p.add_argument("-j", "--json", action="store_true")
+    cache_sub.add_parser("clear", help="Delete the cache file")
+    cache_sub.add_parser("prune", help="Drop entries whose plugin is gone")
+    cache_list_p = cache_sub.add_parser("list", help="Query cached plugins")
+    cache_list_p.add_argument("-j", "--json", action="store_true")
+    cache_list_p.add_argument("--format", help="Filter by format (VST3/AU/LV2)")
+    cache_list_p.add_argument("--name", help="Filter by name substring")
+    cache_list_p.add_argument("--vendor", help="Filter by vendor substring")
+    cache_list_p.add_argument(
+        "--midi-in", action="store_true", help="Only plugins that accept MIDI"
+    )
+    cache_list_p.add_argument(
+        "--midi-out", action="store_true", help="Only plugins that produce MIDI"
+    )
+    cache_p.set_defaults(func=cmd_cache)
 
     # params
     params_p = subparsers.add_parser("params", help="List plugin parameters")

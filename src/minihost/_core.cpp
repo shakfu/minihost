@@ -34,9 +34,16 @@ using namespace nb::literals;
 // pointer is one big block of channels*frames floats laid out planar
 // (row-major: ch0..., ch1..., ...), which is what nb::ndarray<float,
 // nb::shape<-1, -1>, nb::c_contig> expects.
-class MhAudioBuffer {
+// Planar audio buffer backed by juce::AudioBuffer<T>. Instantiated for
+// float (exposed as Python `AudioBuffer`) and double (`AudioBufferD`); the
+// double instantiation completes the numpy-optional story for float64
+// (e.g. feeding Plugin.process_double without numpy).
+template <typename T>
+class MhAudioBufferT {
 public:
-    MhAudioBuffer(int channels, int frames)
+    using Sample = T;
+
+    MhAudioBufferT(int channels, int frames)
         : buf_(juce::jmax(1, channels), juce::jmax(0, frames))
     {
         // juce::AudioBuffer leaves memory uninitialized; explicit clear so
@@ -46,15 +53,19 @@ public:
 
     int channels() const { return buf_.getNumChannels(); }
     int frames()   const { return buf_.getNumSamples(); }
-    float*       data()       { return buf_.getWritePointer(0); }
-    const float* data() const { return buf_.getReadPointer(0); }
+    T*       data()       { return buf_.getWritePointer(0); }
+    const T* data() const { return buf_.getReadPointer(0); }
 
-    juce::AudioBuffer<float>&       juce()       { return buf_; }
-    const juce::AudioBuffer<float>& juce() const { return buf_; }
+    juce::AudioBuffer<T>&       juce()       { return buf_; }
+    const juce::AudioBuffer<T>& juce() const { return buf_; }
 
 private:
-    juce::AudioBuffer<float> buf_;
+    juce::AudioBuffer<T> buf_;
 };
+
+// Back-compat alias: existing float code paths refer to MhAudioBuffer.
+using MhAudioBuffer  = MhAudioBufferT<float>;
+using MhAudioBufferD = MhAudioBufferT<double>;
 
 // Normalize a (possibly negative) index to [0, size). Throws on out-of-range.
 static int normalize_index(int idx, int size, const char* axis) {
@@ -124,9 +135,19 @@ static std::pair<nb::object, nb::object> require_2tuple(nb::object key) {
 using AudioArray = nb::ndarray<float, nb::shape<-1, -1>, nb::c_contig, nb::device::cpu>;
 using DoubleAudioArray = nb::ndarray<double, nb::shape<-1, -1>, nb::c_contig, nb::device::cpu>;
 
-// Maximum number of MIDI output events per process call.
-// Events beyond this limit are silently dropped by the C layer.
+// Default capacity for the MIDI-output buffer of a process call. Callers
+// can raise this per call via the `midi_out_capacity` argument; events
+// beyond the chosen capacity are dropped by the C layer (a returned count
+// equal to the capacity means output may have been truncated).
 static constexpr int MIDI_OUT_CAPACITY = 256;
+
+// Validate a caller-supplied MIDI-out capacity (>= 1).
+static int check_midi_capacity(int cap) {
+    if (cap < 1) {
+        throw nb::value_error("midi_out_capacity must be >= 1");
+    }
+    return cap;
+}
 
 // Parse a Python MIDI event tuple (sample_offset, status, data1, data2) into MH_MidiEvent.
 // Validates that the tuple has exactly 4 elements before indexing.
@@ -618,8 +639,9 @@ public:
 
     // Process with MIDI
     nb::list process_midi(AudioArray input, AudioArray output,
-                          nb::list midi_in)
+                          nb::list midi_in, int midi_out_capacity)
     {
+        check_midi_capacity(midi_out_capacity);
         int in_channels = static_cast<int>(input.shape(0));
         int out_channels = static_cast<int>(output.shape(0));
         int in_frames = static_cast<int>(input.shape(1));
@@ -647,13 +669,13 @@ public:
             out_ptrs[ch] = output.data() + ch * out_frames;
         }
 
-        // Output MIDI buffer (capped at MIDI_OUT_CAPACITY; excess events are dropped)
-        std::vector<MH_MidiEvent> midi_out(MIDI_OUT_CAPACITY);
+        // Output MIDI buffer (capped at midi_out_capacity; excess dropped)
+        std::vector<MH_MidiEvent> midi_out(midi_out_capacity);
         int num_midi_out = 0;
 
         if (!mh_process_midi_io(plugin_, in_ptrs.data(), out_ptrs.data(), in_frames,
                                 midi_events.data(), static_cast<int>(midi_events.size()),
-                                midi_out.data(), MIDI_OUT_CAPACITY, &num_midi_out)) {
+                                midi_out.data(), midi_out_capacity, &num_midi_out)) {
             throw std::runtime_error("Process failed");
         }
 
@@ -672,8 +694,10 @@ public:
 
     // Process with sample-accurate automation
     nb::list process_auto(AudioArray input, AudioArray output,
-                          nb::list midi_in, nb::list param_changes)
+                          nb::list midi_in, nb::list param_changes,
+                          int midi_out_capacity)
     {
+        check_midi_capacity(midi_out_capacity);
         int in_channels = static_cast<int>(input.shape(0));
         int out_channels = static_cast<int>(output.shape(0));
         int in_frames = static_cast<int>(input.shape(1));
@@ -712,13 +736,13 @@ public:
             out_ptrs[ch] = output.data() + ch * out_frames;
         }
 
-        // Output MIDI buffer (capped at MIDI_OUT_CAPACITY; excess events are dropped)
-        std::vector<MH_MidiEvent> midi_out(MIDI_OUT_CAPACITY);
+        // Output MIDI buffer (capped at midi_out_capacity; excess dropped)
+        std::vector<MH_MidiEvent> midi_out(midi_out_capacity);
         int num_midi_out = 0;
 
         if (!mh_process_auto(plugin_, in_ptrs.data(), out_ptrs.data(), in_frames,
                              midi_events.data(), static_cast<int>(midi_events.size()),
-                             midi_out.data(), MIDI_OUT_CAPACITY, &num_midi_out,
+                             midi_out.data(), midi_out_capacity, &num_midi_out,
                              changes.data(), static_cast<int>(changes.size()))) {
             throw std::runtime_error("Process failed");
         }
@@ -1214,8 +1238,10 @@ public:
     }
 
     // Process with MIDI
-    nb::list process_midi(AudioArray input, AudioArray output, nb::list midi_in)
+    nb::list process_midi(AudioArray input, AudioArray output, nb::list midi_in,
+                          int midi_out_capacity)
     {
+        check_midi_capacity(midi_out_capacity);
         int in_channels = static_cast<int>(input.shape(0));
         int out_channels = static_cast<int>(output.shape(0));
         int in_frames = static_cast<int>(input.shape(1));
@@ -1242,13 +1268,13 @@ public:
             out_ptrs[ch] = output.data() + ch * out_frames;
         }
 
-        // Output MIDI buffer (capped at MIDI_OUT_CAPACITY; excess events are dropped)
-        std::vector<MH_MidiEvent> midi_out(MIDI_OUT_CAPACITY);
+        // Output MIDI buffer (capped at midi_out_capacity; excess dropped)
+        std::vector<MH_MidiEvent> midi_out(midi_out_capacity);
         int num_midi_out = 0;
 
         if (!mh_chain_process_midi_io(chain_, in_ptrs.data(), out_ptrs.data(), in_frames,
                                        midi_events.data(), static_cast<int>(midi_events.size()),
-                                       midi_out.data(), MIDI_OUT_CAPACITY, &num_midi_out)) {
+                                       midi_out.data(), midi_out_capacity, &num_midi_out)) {
             throw std::runtime_error("Chain process failed");
         }
 
@@ -1267,8 +1293,10 @@ public:
 
     // Process with sample-accurate automation
     nb::list process_auto(AudioArray input, AudioArray output,
-                          nb::list midi_in, nb::list param_changes)
+                          nb::list midi_in, nb::list param_changes,
+                          int midi_out_capacity)
     {
+        check_midi_capacity(midi_out_capacity);
         int in_channels = static_cast<int>(input.shape(0));
         int out_channels = static_cast<int>(output.shape(0));
         int in_frames = static_cast<int>(input.shape(1));
@@ -1308,13 +1336,13 @@ public:
             out_ptrs[ch] = output.data() + ch * out_frames;
         }
 
-        // Output MIDI buffer (capped at MIDI_OUT_CAPACITY; excess events are dropped)
-        std::vector<MH_MidiEvent> midi_out(MIDI_OUT_CAPACITY);
+        // Output MIDI buffer (capped at midi_out_capacity; excess dropped)
+        std::vector<MH_MidiEvent> midi_out(midi_out_capacity);
         int num_midi_out = 0;
 
         if (!mh_chain_process_auto(chain_, in_ptrs.data(), out_ptrs.data(), in_frames,
                                     midi_events.data(), static_cast<int>(midi_events.size()),
-                                    midi_out.data(), MIDI_OUT_CAPACITY, &num_midi_out,
+                                    midi_out.data(), midi_out_capacity, &num_midi_out,
                                     changes.data(), static_cast<int>(changes.size()))) {
             throw std::runtime_error("Chain process_auto failed");
         }
@@ -1452,8 +1480,14 @@ public:
 
     // Fan audio + MIDI to every branch (MIDI to each branch's first
     // plugin), summing branch outputs. Enables layering one MIDI part
-    // across parallel instruments. Branch MIDI output is not collected.
-    void process_midi(AudioArray input, AudioArray output, nb::list midi_in) {
+    // across parallel instruments. Returns a (events, overflow) tuple: the
+    // merged branch MIDI (time-ordered by sample offset) so parallel MIDI
+    // effects (e.g. a layer of arpeggiators) can be chained downstream,
+    // and a bool that is True if the merge filled midi_out_capacity and
+    // events may have been dropped.
+    nb::tuple process_midi(AudioArray input, AudioArray output,
+                           nb::list midi_in, int midi_out_capacity) {
+        check_midi_capacity(midi_out_capacity);
         int in_ch = static_cast<int>(input.shape(0));
         int out_ch = static_cast<int>(output.shape(0));
         int in_fr = static_cast<int>(input.shape(1));
@@ -1475,11 +1509,30 @@ public:
         for (int c = 0; c < out_ch; ++c)
             out_ptrs[c] = output.data() + c * out_fr;
 
-        if (!mh_bus_process_midi(graph_, in_ptrs.data(), out_ptrs.data(),
-                                   in_fr, midi_events.data(),
-                                   static_cast<int>(midi_events.size()))) {
+        // Merged branch MIDI out (capped at midi_out_capacity; excess
+        // events are dropped and reported via the overflow flag).
+        std::vector<MH_MidiEvent> midi_out(midi_out_capacity);
+        int num_midi_out = 0;
+        int overflow = 0;
+
+        if (!mh_bus_process_midi_io(graph_, in_ptrs.data(), out_ptrs.data(),
+                                      in_fr, midi_events.data(),
+                                      static_cast<int>(midi_events.size()),
+                                      midi_out.data(), midi_out_capacity,
+                                      &num_midi_out, &overflow)) {
             throw std::runtime_error("Bus process failed");
         }
+
+        nb::list result;
+        for (int i = 0; i < num_midi_out; ++i) {
+            result.append(nb::make_tuple(
+                midi_out[i].sample_offset,
+                midi_out[i].status,
+                midi_out[i].data1,
+                midi_out[i].data2
+            ));
+        }
+        return nb::make_tuple(result, overflow != 0);
     }
 
 private:
@@ -2668,19 +2721,29 @@ NB_MODULE(_core, m) {
     // Slicing: numpy-shaped 2-axis indexing, with documented limits (no
     // strided slices, no fancy indexing, no Ellipsis -- raise TypeError
     // pointing the user at .as_ndarray() for those).
-    nb::class_<MhAudioBuffer>(m, "AudioBuffer",
-        "Planar float32 audio buffer (stdlib-only; backed by juce::AudioBuffer).\n\n"
-        "Layout is (channels x frames) row-major. The buffer is always\n"
-        "contiguous in memory and exposes the DLPack buffer protocol, so it\n"
-        "can be passed directly to Plugin.process / PluginChain.process /\n"
-        "minihost.write_audio without an explicit conversion.\n\n"
-        "2-axis indexing follows numpy conventions with deliberate limits:\n"
-        "  buf[ch, fr]                -> float\n"
-        "  buf[ch_slice, fr_slice]    -> AudioBuffer (copy, not view)\n"
-        "Strided slices (step != 1), fancy indexing, boolean indexing, and\n"
-        "Ellipsis raise TypeError; use .as_ndarray() if you need those.")
+    // AudioBuffer (float32) and AudioBufferD (float64) share one
+    // implementation: a generic lambda binds the class for a sample type T.
+    // The local `using MhAudioBuffer` shadows the file-scope float alias so
+    // the body below is written once and instantiated for both types.
+    auto bind_audio_buffer = [&m](auto sample_tag, const char* name,
+                                  const char* dtype_str) {
+        using T = decltype(sample_tag);
+        using MhAudioBuffer = MhAudioBufferT<T>;
+        const std::string class_doc =
+            std::string("Planar ") + dtype_str +
+            " audio buffer (stdlib-only; backed by juce::AudioBuffer).\n\n"
+            "Layout is (channels x frames) row-major. The buffer is always\n"
+            "contiguous in memory and exposes the DLPack buffer protocol, so it\n"
+            "can be passed directly to Plugin.process / PluginChain.process /\n"
+            "minihost.write_audio without an explicit conversion.\n\n"
+            "2-axis indexing follows numpy conventions with deliberate limits:\n"
+            "  buf[ch, fr]                -> float\n"
+            "  buf[ch_slice, fr_slice]    -> same-dtype buffer (copy, not view)\n"
+            "Strided slices (step != 1), fancy indexing, boolean indexing, and\n"
+            "Ellipsis raise TypeError; use .as_ndarray() if you need those.";
+    nb::class_<MhAudioBuffer>(m, name, class_doc.c_str())
         .def(nb::init<int, int>(), "channels"_a, "frames"_a,
-             "Allocate a new AudioBuffer of (channels, frames) float32 samples, "
+             "Allocate a new buffer of (channels, frames) samples, "
              "zero-initialized.")
 
         .def_prop_ro("channels", &MhAudioBuffer::channels,
@@ -2693,14 +2756,15 @@ NB_MODULE(_core, m) {
                      },
                      "(channels, frames). Matches numpy's .shape on 2D arrays.")
         .def_prop_ro_static("dtype",
-                            [](nb::handle) { return std::string("float32"); },
-                            "Element dtype string. Always 'float32'.")
+                            [dtype_str](nb::handle) { return std::string(dtype_str); },
+                            "Element dtype string ('float32' or 'float64').")
 
         .def("__len__", &MhAudioBuffer::channels,
              "Number of channels (matches numpy's len() on 2D arrays).")
         .def("__repr__",
-             [](const MhAudioBuffer& self) {
-                 return "AudioBuffer(channels=" + std::to_string(self.channels()) +
+             [name](const MhAudioBuffer& self) {
+                 return std::string(name) + "(channels=" +
+                        std::to_string(self.channels()) +
                         ", frames=" + std::to_string(self.frames()) + ")";
              })
 
@@ -2728,11 +2792,11 @@ NB_MODULE(_core, m) {
                                                               self.frames(),
                                                               "frame");
                  auto* out = new MhAudioBuffer(ch_count, fr_count);
-                 const float* src = self.data();
-                 float* dst = out->data();
+                 const T* src = self.data();
+                 T* dst = out->data();
                  const size_t src_stride = (size_t)self.frames();
                  const size_t dst_stride = (size_t)fr_count;
-                 const size_t bytes = (size_t)fr_count * sizeof(float);
+                 const size_t bytes = (size_t)fr_count * sizeof(T);
                  for (int i = 0; i < ch_count; ++i) {
                      std::memcpy(dst + (size_t)i * dst_stride,
                                  src + ((size_t)ch_start + i) * src_stride + fr_start,
@@ -2751,15 +2815,15 @@ NB_MODULE(_core, m) {
                                                               self.frames(),
                                                               "frame");
 
-                 float* dst = self.data();
+                 T* dst = self.data();
                  const size_t dst_stride = (size_t)self.frames();
-                 const size_t bytes = (size_t)fr_count * sizeof(float);
+                 const size_t bytes = (size_t)fr_count * sizeof(T);
 
                  // Scalar broadcast.
                  if (PyFloat_Check(value.ptr()) || PyLong_Check(value.ptr())) {
-                     float v = nb::cast<float>(value);
+                     T v = nb::cast<T>(value);
                      for (int i = 0; i < ch_count; ++i) {
-                         float* row = dst + ((size_t)ch_start + i) * dst_stride
+                         T* row = dst + ((size_t)ch_start + i) * dst_stride
                                       + fr_start;
                          for (int j = 0; j < fr_count; ++j) row[j] = v;
                      }
@@ -2767,17 +2831,17 @@ NB_MODULE(_core, m) {
                  }
 
                  // 2D buffer-protocol source (numpy ndarray, AudioBuffer
-                 // via DLPack, etc.). Shape must match exactly.
-                 nb::ndarray<const float, nb::shape<-1, -1>, nb::c_contig,
+                 // via DLPack, etc.). Shape and dtype must match exactly.
+                 nb::ndarray<const T, nb::shape<-1, -1>, nb::c_contig,
                              nb::device::cpu> src;
                  try {
-                     src = nb::cast<nb::ndarray<const float, nb::shape<-1, -1>,
+                     src = nb::cast<nb::ndarray<const T, nb::shape<-1, -1>,
                                                 nb::c_contig, nb::device::cpu>>(value);
                  } catch (const nb::cast_error&) {
                      throw nb::type_error(
                          "AudioBuffer.__setitem__ value must be a Python "
-                         "scalar (broadcast) or a 2D float32 c-contiguous "
-                         "buffer (AudioBuffer / numpy ndarray / similar).");
+                         "scalar (broadcast) or a 2D c-contiguous buffer of "
+                         "matching dtype (AudioBuffer / numpy ndarray / similar).");
                  }
                  if ((int)src.shape(0) != ch_count
                      || (int)src.shape(1) != fr_count) {
@@ -2788,7 +2852,7 @@ NB_MODULE(_core, m) {
                           std::to_string(ch_count) + "x" +
                           std::to_string(fr_count)).c_str());
                  }
-                 const float* src_data = src.data();
+                 const T* src_data = src.data();
                  const size_t src_stride = (size_t)src.shape(1);
                  for (int i = 0; i < ch_count; ++i) {
                      std::memcpy(dst + ((size_t)ch_start + i) * dst_stride
@@ -2836,7 +2900,7 @@ NB_MODULE(_core, m) {
                                                self.frames());
                  std::memcpy(out->data(), self.data(),
                              (size_t)self.channels() * self.frames()
-                                 * sizeof(float));
+                                 * sizeof(T));
                  return nb::cast(out, nb::rv_policy::take_ownership);
              },
              "Return a deep copy of this buffer.")
@@ -2928,7 +2992,7 @@ NB_MODULE(_core, m) {
                      || source_start + count > source.frames()) {
                      throw nb::value_error("source range out of bounds");
                  }
-                 const float* src_ptr =
+                 const T* src_ptr =
                      source.juce().getReadPointer(source_channel) + source_start;
                  self.juce().addFromWithRamp(dest_channel, dest_start, src_ptr,
                                               count, gain_start, gain_end);
@@ -2995,13 +3059,14 @@ NB_MODULE(_core, m) {
                  auto& self = nb::cast<MhAudioBuffer&>(self_h);
                  size_t shape[2] = { (size_t)self.channels(),
                                      (size_t)self.frames() };
-                 return nb::ndarray<float, nb::shape<-1, -1>, nb::c_contig,
+                 return nb::ndarray<T, nb::shape<-1, -1>, nb::c_contig,
                                     nb::device::cpu>(
                      self.data(), 2, shape, self_h);
              },
              "stream"_a = nb::none(),
              "DLPack export. Consumers like nanobind's nb::ndarray and "
-             "numpy.asarray call this to obtain a zero-copy view.")
+             "numpy.asarray call this to obtain a zero-copy view. AudioBufferD "
+             "exports float64, so it feeds Plugin.process_double directly.")
         .def("__dlpack_device__",
              [](const MhAudioBuffer&) {
                  return nb::make_tuple(1, 0);  // (kDLCPU, device_id=0)
@@ -3020,7 +3085,7 @@ NB_MODULE(_core, m) {
                  auto& self = nb::cast<MhAudioBuffer&>(self_h);
                  size_t shape[2] = { (size_t)self.channels(),
                                      (size_t)self.frames() };
-                 return nb::ndarray<nb::numpy, float, nb::shape<-1, -1>,
+                 return nb::ndarray<nb::numpy, T, nb::shape<-1, -1>,
                                     nb::c_contig>(
                      self.data(), 2, shape, self_h);
              },
@@ -3035,26 +3100,30 @@ NB_MODULE(_core, m) {
                  auto& self = nb::cast<MhAudioBuffer&>(self_h);
                  size_t shape[2] = { (size_t)self.channels(),
                                      (size_t)self.frames() };
-                 return nb::ndarray<nb::numpy, float, nb::shape<-1, -1>,
+                 return nb::ndarray<nb::numpy, T, nb::shape<-1, -1>,
                                     nb::c_contig>(
                      self.data(), 2, shape, self_h);
              },
              "dtype"_a = nb::none(), "copy"_a = nb::none(),
              "numpy interop hook. Returns a numpy ndarray view (zero-copy). "
              "dtype and copy arguments are accepted for numpy 2.x compatibility "
-             "but ignored (the buffer is always float32; numpy may copy).")
+             "but ignored (the view keeps the buffer's dtype; numpy may copy).")
         .def_static("from_numpy",
-             [](nb::ndarray<const float, nb::shape<-1, -1>, nb::c_contig,
+             [](nb::ndarray<const T, nb::shape<-1, -1>, nb::c_contig,
                             nb::device::cpu> arr) {
                  int channels = (int)arr.shape(0);
                  int frames = (int)arr.shape(1);
                  auto* buf = new MhAudioBuffer(channels, frames);
                  std::memcpy(buf->data(), arr.data(),
-                             (size_t)channels * frames * sizeof(float));
+                             (size_t)channels * frames * sizeof(T));
                  return nb::cast(buf, nb::rv_policy::take_ownership);
              }, "array"_a,
-             "Construct a new AudioBuffer by copying from a 2D float32 "
-             "c-contiguous array (numpy ndarray, another AudioBuffer, etc.).");
+             "Construct a new buffer by copying from a 2D c-contiguous array "
+             "of matching dtype (numpy ndarray, another buffer, etc.).");
+    };  // bind_audio_buffer
+
+    bind_audio_buffer(float{},  "AudioBuffer",  "float32");
+    bind_audio_buffer(double{}, "AudioBufferD", "float64");
 
     nb::class_<Plugin>(m, "Plugin")
         .def(nb::init<const std::string&, double, int, int, int, int>(),
@@ -3177,12 +3246,16 @@ NB_MODULE(_core, m) {
              "Process audio (shape: [channels, frames])")
         .def("process_midi", &Plugin::process_midi,
              nb::arg("input"), nb::arg("output"), nb::arg("midi_in"),
+             nb::arg("midi_out_capacity") = MIDI_OUT_CAPACITY,
              "Process audio with MIDI. midi_in: list of (sample_offset, status, data1, data2). "
-             "Returns list of output MIDI events (max 256 per call; excess events are dropped).")
+             "Returns the list of output MIDI events. At most midi_out_capacity "
+             "(default 256) events are returned; a returned count equal to "
+             "midi_out_capacity means output may have been truncated -- raise it if so.")
         .def("process_auto", &Plugin::process_auto,
              nb::arg("input"), nb::arg("output"), nb::arg("midi_in"), nb::arg("param_changes"),
+             nb::arg("midi_out_capacity") = MIDI_OUT_CAPACITY,
              "Process with sample-accurate automation. param_changes: list of (sample_offset, param_index, value). "
-             "Returns list of output MIDI events (max 256 per call; excess events are dropped).")
+             "Returns the list of output MIDI events (capped at midi_out_capacity, default 256).")
         .def("process_sidechain", &Plugin::process_sidechain,
              nb::arg("main_in"), nb::arg("main_out"), nb::arg("sidechain_in"),
              "Process audio with sidechain input (all arrays shape: [channels, frames])")
@@ -3192,7 +3265,9 @@ NB_MODULE(_core, m) {
                      "True if plugin supports native double precision processing")
         .def("process_double", &Plugin::process_double,
              nb::arg("input"), nb::arg("output"),
-             "Process audio with double precision (float64). Shape: [channels, frames]")
+             "Process audio with double precision (float64). Shape: "
+             "[channels, frames]. Accepts float64 numpy arrays or AudioBufferD "
+             "(via DLPack) -- the latter needs no numpy.")
 
         // Processing precision
         .def_prop_rw("processing_precision",
@@ -3320,12 +3395,14 @@ NB_MODULE(_core, m) {
              "Process audio through the chain (shape: [channels, frames])")
         .def("process_midi", &PluginChain::process_midi,
              nb::arg("input"), nb::arg("output"), nb::arg("midi_in"),
+             nb::arg("midi_out_capacity") = MIDI_OUT_CAPACITY,
              "Process audio with MIDI (to first plugin). midi_in: list of (sample_offset, status, data1, data2). "
-             "Returns list of output MIDI events (max 256 per call; excess events are dropped).")
+             "Returns the list of output MIDI events (capped at midi_out_capacity, default 256).")
         .def("process_auto", &PluginChain::process_auto,
              nb::arg("input"), nb::arg("output"), nb::arg("midi_in"), nb::arg("param_changes"),
+             nb::arg("midi_out_capacity") = MIDI_OUT_CAPACITY,
              "Process with sample-accurate automation. param_changes: list of (sample_offset, plugin_index, param_index, value). "
-             "Returns list of output MIDI events (max 256 per call; excess events are dropped).")
+             "Returns the list of output MIDI events (capped at midi_out_capacity, default 256).")
 
         // Explicit close + context-manager support
         .def("close", &PluginChain::close,
@@ -3380,14 +3457,19 @@ NB_MODULE(_core, m) {
              "scaled by its gain) into output.")
         .def("process_midi", &PluginBus::process_midi,
              nb::arg("input"), nb::arg("output"), nb::arg("midi_in"),
+             nb::arg("midi_out_capacity") = MIDI_OUT_CAPACITY,
              "Fan input audio and MIDI to every branch (MIDI goes to "
              "each branch's first plugin), then sum branch outputs "
              "(each scaled by its gain) into output. This is the "
              "layering primitive: one MIDI part drives N parallel "
              "instruments whose audio is summed. midi_in is a list of "
              "(sample_offset, status, data1, data2) tuples. Muted "
-             "branches (gain 0.0) are skipped. Branch MIDI output is "
-             "not collected.")
+             "branches (gain 0.0) are skipped. Returns a (events, overflow) "
+             "tuple: the merged branch MIDI as a list of (sample_offset, "
+             "status, data1, data2) tuples, stably sorted by offset (branch "
+             "order preserved at equal offsets), and a bool that is True if "
+             "the merge hit midi_out_capacity (default 256) and events may "
+             "have been dropped.")
         .def("close", &PluginBus::close,
              "Release the bus's internal resources. Idempotent. "
              "The underlying PluginChain branches are not closed.")

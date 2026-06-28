@@ -101,8 +101,9 @@ int mh_bus_process(MH_PluginBus* graph,
 // audio only -- equivalent to mh_bus_process). Muted branches
 // (gain 0.0) are skipped and receive no MIDI.
 //
-// MIDI produced by branches is NOT collected (this is an audio-summing
-// bus); collecting/merging branch MIDI output is a planned follow-up.
+// MIDI produced by branches is NOT collected by this entry point (it is
+// an audio-summing bus). To collect and merge branch MIDI output, use
+// mh_bus_process_midi_io.
 //
 // Returns 1 on success, 0 on failure.
 int mh_bus_process_midi(MH_PluginBus* graph,
@@ -111,6 +112,42 @@ int mh_bus_process_midi(MH_PluginBus* graph,
                           int nframes,
                           const MH_MidiEvent* midi_in,
                           int num_midi_in);
+
+// Process audio with MIDI fanned out to every branch (as
+// mh_bus_process_midi), and additionally collect and merge the MIDI
+// produced by each branch (from each branch's first plugin, per
+// mh_chain_process_midi_io semantics) into a single time-ordered
+// stream. This completes the bus for parallel MIDI effects (e.g. a
+// layer of arpeggiators driven by one part).
+//
+// midi_in / num_midi_in: input MIDI fanned to every branch (NULL/0 ok).
+//
+// midi_out: caller-owned buffer receiving the merged branch MIDI,
+//   stably sorted by sample_offset (events at the same offset keep
+//   branch order: branch 0 before branch 1, etc.). May be NULL only if
+//   midi_out_capacity is 0.
+// midi_out_capacity: capacity of midi_out in events.
+// num_midi_out: receives the number of merged events written (may be
+//   NULL). Always <= midi_out_capacity.
+// midi_out_overflow: set to 1 if the merged buffer filled to capacity
+//   and events may have been dropped, else 0 (may be NULL). This is
+//   conservative: it can be 1 when the buffer filled exactly without
+//   loss, but it is never 0 when events were dropped.
+//
+// Processing (audio fan-out-and-sum) is identical to mh_bus_process_midi
+// regardless of whether MIDI output is collected.
+//
+// Returns 1 on success, 0 on failure.
+int mh_bus_process_midi_io(MH_PluginBus* graph,
+                           const float* const* inputs,
+                           float* const* outputs,
+                           int nframes,
+                           const MH_MidiEvent* midi_in,
+                           int num_midi_in,
+                           MH_MidiEvent* midi_out,
+                           int midi_out_capacity,
+                           int* num_midi_out,
+                           int* midi_out_overflow);
 
 // Properties
 int mh_bus_get_num_input_channels(MH_PluginBus* graph);

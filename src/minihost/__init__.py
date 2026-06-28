@@ -29,6 +29,7 @@ Example usage:
 
 from minihost._core import (
     AudioBuffer,
+    AudioBufferD,
     Plugin,
     PluginChain,
     PluginBus,
@@ -62,6 +63,7 @@ from minihost.render import (
     render_midi,
     render_midi_stream,
     render_midi_to_file,
+    midi_file_to_events,
     MidiRenderer,
 )
 
@@ -72,25 +74,29 @@ from minihost.audio_io import (
     resample,
 )
 
-# Wrap AudioBuffer.as_ndarray() to convert nanobind's "ModuleNotFoundError:
-# No module named 'numpy'" TypeError into a clear ImportError pointing at
-# the install-extra. Users who hit this haven't installed numpy and need
-# the friendlier message.
-_orig_as_ndarray = AudioBuffer.as_ndarray
+# Wrap as_ndarray() to convert nanobind's "ModuleNotFoundError: No module
+# named 'numpy'" TypeError into a clear ImportError pointing at the
+# install-extra. Users who hit this haven't installed numpy and need the
+# friendlier message. Applied to both the float32 (AudioBuffer) and float64
+# (AudioBufferD) buffers.
+def _make_as_ndarray_with_friendly_error(cls):
+    orig = cls.as_ndarray
+
+    def as_ndarray(self):
+        try:
+            import numpy  # noqa: F401
+        except ImportError as e:
+            raise ImportError(
+                f"{cls.__name__}.as_ndarray() requires numpy. Install "
+                "minihost with the numpy extra: 'pip install minihost[numpy]'."
+            ) from e
+        return orig(self)
+
+    cls.as_ndarray = as_ndarray  # type: ignore[method-assign]
 
 
-def _audiobuffer_as_ndarray_with_friendly_error(self):
-    try:
-        import numpy  # noqa: F401
-    except ImportError as e:
-        raise ImportError(
-            "AudioBuffer.as_ndarray() requires numpy. Install minihost "
-            "with the numpy extra: 'pip install minihost[numpy]'."
-        ) from e
-    return _orig_as_ndarray(self)
-
-
-AudioBuffer.as_ndarray = _audiobuffer_as_ndarray_with_friendly_error  # type: ignore[method-assign]
+_make_as_ndarray_with_friendly_error(AudioBuffer)
+_make_as_ndarray_with_friendly_error(AudioBufferD)
 
 
 from minihost.control import MidiMapper
@@ -111,6 +117,10 @@ from minihost.project import (
     render_project,
 )
 
+from minihost import plugincache
+from minihost.plugincache import scan as scan_plugins
+from minihost.plugincache import query as query_plugins
+
 from minihost.automation import (
     find_param_by_name,
     parse_param_arg,
@@ -130,6 +140,7 @@ from minihost.vstpreset import (
 __all__ = [
     # Core classes
     "AudioBuffer",
+    "AudioBufferD",
     "Plugin",
     "PluginChain",
     "PluginBus",
@@ -151,6 +162,7 @@ __all__ = [
     "render_midi",
     "render_midi_stream",
     "render_midi_to_file",
+    "midi_file_to_events",
     "MidiRenderer",
     # Audio I/O
     "read_audio",
@@ -169,6 +181,10 @@ __all__ = [
     "load_project",
     "save_project",
     "render_project",
+    # Persistent plugin-scan cache
+    "plugincache",
+    "scan_plugins",
+    "query_plugins",
     # Control surface mapping
     "MidiMapper",
     # Async loading
@@ -200,4 +216,4 @@ __all__ = [
     "MH_API_VERSION_NUMBER",
     "MH_API_VERSION_STRING",
 ]
-__version__ = "0.2.0"
+__version__ = "0.2.1"

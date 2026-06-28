@@ -78,11 +78,13 @@ extern "C" {
 #endif
 
 // API version components. Bump per the policy described above.
+// 2.1.0: added mh_bus_process_midi_io -- collects and merges the MIDI
+//   produced by each bus branch into one time-ordered stream (additive).
 // 2.0.0: routing symbols renamed for the chain/bus/graph tier --
 //   mh_graph_* (parallel bus) -> mh_bus_* / MH_PluginGraph -> MH_PluginBus,
 //   and mh_graph_v2_* (DAG) -> mh_graph_* / MH_GraphV2 -> MH_PluginGraph.
 #define MH_API_VERSION_MAJOR 2
-#define MH_API_VERSION_MINOR 0
+#define MH_API_VERSION_MINOR 1
 #define MH_API_VERSION_PATCH 0
 
 // Single packed integer for compile-time comparison.

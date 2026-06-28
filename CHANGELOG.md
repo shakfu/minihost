@@ -2,6 +2,114 @@
 
 ## [Unreleased]
 
+## [0.2.1]
+
+All changes below are additive or bug fixes relative to the published 0.2.0;
+the C ABI is bumped to **2.1.0** (additive).
+
+### Added
+
+- **Persistent plugin-scan cache.** A new `minihost.plugincache` module keeps
+  a JSON index of probe metadata keyed by plugin path, with a filesystem
+  fingerprint (mtime + size) so stale entries are re-probed automatically. A
+  repeat scan of an unchanged directory probes nothing and returns instantly;
+  failed probes are remembered (not retried every scan). API: `scan()`,
+  `info()`, `query(...)` (filter by format / name / vendor / MIDI / I/O),
+  `all_entries()`, `prune()`, `clear()`, `stats()`, `cache_file()`. Convenience
+  re-exports `minihost.scan_plugins` and `minihost.query_plugins`. The CLI
+  `scan` now uses the cache by default (`--refresh` re-probes, `--no-cache`
+  bypasses); `info --probe` is served from it; and a new `cache` subcommand
+  (`path` / `stats` / `list` / `prune` / `clear`) manages and queries the
+  index. Cache location honors `MINIHOST_CACHE_DIR` (defaults to the
+  platform cache dir). Probe-level metadata only -- parameter lists need a
+  full load and are not cached.
+
+- **`AudioBufferD` (float64 audio buffer).** A double-precision sibling of
+  `AudioBuffer` with the identical surface (indexing, slicing, DSP ops,
+  numpy interop, DLPack). It completes the numpy-optional story for
+  float64: `AudioBufferD.dtype == "float64"`, `as_ndarray()` returns a
+  float64 view, and its DLPack export is float64 -- so it feeds
+  `Plugin.process_double(in, out)` directly, with no numpy arrays involved.
+  Implemented as a single C++ template (`MhAudioBufferT<T>`) instantiated
+  for float and double, so the two classes never drift. `AudioBuffer`
+  (float32) is unchanged. Exported as `minihost.AudioBufferD`.
+
+- **MIDI routing in the project schema.** Offline project files
+  (`minihost.render_project`) can now express MIDI graphs, not just audio.
+  New node kinds: `midi_input` (offline `source` .mid path), `midi_output`
+  (offline `sink` .mid path), `midi_filter` / `midi_transpose` /
+  `midi_velocity_curve` (per-event processors), and `midi_merge` (fan-in).
+  MIDI edges share the `edges` list, tagged `"kind": "midi"` (audio edges
+  remain the default). This mirrors the node/edge schema the desktop app
+  already parses, so projects round-trip between the two; the offline
+  `source`/`sink` fields are additive (the desktop uses live `port_name`).
+  The renderer reads each `source` at the project sample rate, stages
+  events per block, and drains `midi_output` nodes to their `.mid` sink
+  (written on a canonical 120 BPM / 480-tpq grid; sample timing preserved).
+  New helper `minihost.midi_file_to_events(midi_file, sample_rate)` exposes
+  the tempo-mapped flatten used internally. Schema version stays `1`
+  (additive); audio-only projects are unaffected. Still deferred:
+  parameter automation in the schema, and offline `.mid` reading in the
+  desktop's headless `--render-project` (its renderer is live-port based).
+
+- **`PluginBus` MIDI-out merge.** `PluginBus.process_midi` now collects the
+  MIDI produced by each branch (from each branch's first plugin) and returns
+  it as an `(events, overflow)` tuple -- `events` is the merged stream, a
+  list of `(sample_offset, status, data1, data2)` tuples stably sorted by
+  sample offset (events at the same offset keep branch order), and `overflow`
+  flags truncation (see the Changed entry below). Previously it returned
+  `None` and discarded branch MIDI. This completes the bus for parallel MIDI
+  effects (e.g. a layer of arpeggiators driven by one part); 0.2.0 had
+  shipped MIDI fan-*in* but not the *out* merge. The audio fan-out-and-sum
+  is unchanged.
+
+  New C ABI entry point `mh_bus_process_midi_io` (additive). It appends each
+  branch's MIDI into the caller's buffer with no internal allocation, then
+  stably insertion-sorts by offset on the audio thread, and reports truncation
+  via an optional `midi_out_overflow` flag (conservative: it may flag an exact
+  fill, but never misses a real drop). The existing `mh_bus_process_midi` (no
+  MIDI out) is unchanged.
+
+- **ThreadSanitizer stress harness for the lock-free ring buffers**
+  (`tests/tsan/`, run with `make tsan`). Drives the SPSC MIDI and audio ring
+  buffers from two threads under ThreadSanitizer and asserts SPSC correctness
+  (exactly-once, in-order delivery with no field tearing). Contributor
+  tooling; the instrumented binary is not shipped in the wheel.
+
+### Changed
+
+- **Configurable MIDI-out capacity.** `Plugin` / `PluginChain` / `PluginBus`
+  `process_midi` and `process_auto` take an optional `midi_out_capacity`
+  argument (default 256), so callers with dense MIDI output (e.g. MPE) are
+  no longer silently capped. A returned event count equal to the capacity
+  means output may have been truncated -- raise the cap if so.
+  **`PluginBus.process_midi` now returns an `(events, overflow)` tuple**
+  (the bus merge was added in this same release, so this is not a break vs
+  0.2.0): `overflow` is `True` when the merge filled `midi_out_capacity` and
+  events may have been dropped. `Plugin` / `PluginChain` `process_midi` still
+  return a plain list (single-plugin output; use the count-equals-capacity
+  check).
+
+### Fixed
+
+- **Data race on the audio input callback.** `mh_audio_set_input_callback`
+  wrote the callback function pointer (and user-data) from the app thread
+  while the audio thread read it unsynchronized (`minihost_audio.c`), risking
+  a torn pointer on weakly-ordered CPUs. The pointer is now an `_Atomic` with
+  a release/acquire publish (user-data published before the pointer), so the
+  audio thread never observes a torn or mismatched callback. Callers must
+  still clear (set NULL) before installing a different callback -- the
+  existing live-source start/stop contract.
+
+- **`MidiFile.save()` crash on empty tracks.** The vendored midifile
+  library's `write()` called `vector::back()` on a track with no events
+  (undefined behaviour -> segfault). A fresh `MidiFile` has one empty
+  track, so even `MidiFile().save()` crashed; likewise `add_track()`
+  followed by writing events only to the new track left track 0 empty and
+  crashed on save. Patched `projects/midifile/src/MidiFile.cpp` to emit
+  the end-of-track marker without dereferencing a non-existent last event.
+  (Local patch to the vendored BSD-2 library; re-apply on any re-vendor.)
+
 ## [0.2.0]
 
 ### Changed

@@ -3,7 +3,7 @@
 
 .PHONY: all juce cli sync build rebuild test wheel sdist clean distclean help \
 		check publish-test publish lint format typecheck qa \
-		docs docs-serve docs-deploy run-desktop
+		docs docs-serve docs-deploy run-desktop tsan
 
 # Default target - build Python bindings
 all: build
@@ -30,6 +30,22 @@ rebuild: build
 # Run Python tests
 test: build
 	@uv run pytest tests/ -v
+
+# ThreadSanitizer stress test for the lock-free SPSC ring buffers.
+# Compiles the ring buffers + harness with -fsanitize=thread (no JUCE) and
+# runs them. Override the workload with N=... (default 200000). macOS/Linux;
+# needs a clang/gcc with TSan. See tests/tsan/README.md.
+TSAN_CXX ?= $(CXX)
+tsan:
+	@mkdir -p build
+	@$(TSAN_CXX) -std=c++17 -O1 -g -fsanitize=thread -pthread \
+		-Iprojects/libminihost_audio -Iprojects/libminihost \
+		tests/tsan/ringbuffer_stress.cpp \
+		projects/libminihost_audio/midi_ringbuffer.cpp \
+		projects/libminihost_audio/audio_ringbuffer.cpp \
+		-o build/tsan_ringbuffer_stress
+	@TSAN_OPTIONS="halt_on_error=1 $(TSAN_OPTIONS)" \
+		TSAN_STRESS_N=$(or $(N),200000) ./build/tsan_ringbuffer_stress
 
 run-desktop:
 	@./build/projects/minihost_desktop/minihost_desktop.app/Contents/MacOS/minihost_desktop
@@ -73,18 +89,17 @@ publish: check
 	@uv run twine upload dist/*
 
 # Build documentation (mkdocs)
+# docs/changelog.md is a symlink to the root CHANGELOG.md (the single
+# source of truth), so no copy step is needed.
 docs:
-	@cp CHANGELOG.md docs/changelog.md
 	@uv run --group docs mkdocs build
 
 # Serve documentation locally (with live reload)
 docs-serve:
-	@cp CHANGELOG.md docs/changelog.md
 	@uv run --group docs mkdocs serve
 
 # Deploy documentation to GitHub Pages
 docs-deploy:
-	@cp CHANGELOG.md docs/changelog.md
 	@uv run --group docs mkdocs gh-deploy --force
 
 # Clean build artifacts

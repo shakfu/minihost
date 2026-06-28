@@ -385,7 +385,8 @@ class TestCmdScanErrors:
     def test_scan_runtime_error(self, capsys):
         """scan should return 1 and print error on RuntimeError."""
         args = argparse.Namespace(
-            directory="/nonexistent", json=False, sample_rate=48000, block_size=512
+            directory="/nonexistent", json=False, sample_rate=48000,
+            block_size=512, no_cache=True, refresh=False,
         )
         with patch("minihost.scan_directory", side_effect=RuntimeError("not found")):
             ret = cmd_scan(args)
@@ -395,7 +396,8 @@ class TestCmdScanErrors:
     def test_scan_success_text(self, capsys):
         """scan should print results in text mode."""
         args = argparse.Namespace(
-            directory="/plugins", json=False, sample_rate=48000, block_size=512
+            directory="/plugins", json=False, sample_rate=48000,
+            block_size=512, no_cache=True, refresh=False,
         )
         results = [{"name": "TestSynth", "format": "VST3", "path": "/p/test.vst3"}]
         with patch("minihost.scan_directory", return_value=results):
@@ -410,7 +412,8 @@ class TestCmdScanErrors:
         import json
 
         args = argparse.Namespace(
-            directory="/plugins", json=True, sample_rate=48000, block_size=512
+            directory="/plugins", json=True, sample_rate=48000,
+            block_size=512, no_cache=True, refresh=False,
         )
         results = [{"name": "TestSynth", "format": "VST3", "path": "/p/test.vst3"}]
         with patch("minihost.scan_directory", return_value=results):
@@ -423,7 +426,8 @@ class TestCmdScanErrors:
 
     def test_scan_empty_results(self, capsys):
         args = argparse.Namespace(
-            directory="/empty", json=False, sample_rate=48000, block_size=512
+            directory="/empty", json=False, sample_rate=48000,
+            block_size=512, no_cache=True, refresh=False,
         )
         with patch("minihost.scan_directory", return_value=[]):
             ret = cmd_scan(args)
@@ -439,6 +443,8 @@ class TestCmdInfoErrors:
             probe=True,
             sample_rate=48000,
             block_size=512,
+            no_cache=True,
+            refresh=False,
         )
         with patch("minihost.probe", side_effect=RuntimeError("cannot probe")):
             ret = cmd_info(args)

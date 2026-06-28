@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdatomic.h>
 
 struct MH_AudioDevice {
     ma_device device;
@@ -27,8 +28,15 @@ struct MH_AudioDevice {
     int channels;
     int capture;             // 1 if duplex (capture enabled), 0 if playback only
 
-    // Input callback for effects
-    MH_AudioInputCallback input_callback;
+    // Input callback for effects. Read on the audio thread, written from
+    // the app thread (mh_audio_set_input_callback). The callback pointer is
+    // atomic with release/acquire ordering so the audio thread never reads a
+    // torn pointer; user_data is published before the pointer, so observing
+    // a non-NULL callback implies its user_data is visible too. Callers must
+    // clear (set NULL) before installing a different callback (the existing
+    // contract -- the live source goes start -> stop -> start, never a hot
+    // swap between two distinct non-NULL callbacks).
+    _Atomic(MH_AudioInputCallback) input_callback;
     void* input_callback_user_data;
 
     // Pre-allocated conversion buffers (non-interleaved)
@@ -170,6 +178,7 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
     }
 
     // Get input audio: capture (duplex) > input callback > silence
+    MH_AudioInputCallback cb;
     if (dev->capture && input) {
         // De-interleave capture input into per-channel buffers
         const float* interleaved_input = (const float*)input;
@@ -178,8 +187,9 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
                 dev->input_buffers[ch][f] = interleaved_input[f * channels + ch];
             }
         }
-    } else if (dev->input_callback) {
-        dev->input_callback(dev->input_buffers, frames, dev->input_callback_user_data);
+    } else if ((cb = atomic_load_explicit(&dev->input_callback,
+                                          memory_order_acquire)) != NULL) {
+        cb(dev->input_buffers, frames, dev->input_callback_user_data);
     } else {
         // Zero input buffers for synth plugins
         for (int ch = 0; ch < channels; ch++) {
@@ -667,8 +677,11 @@ int mh_audio_is_playing(MH_AudioDevice* dev) {
 
 void mh_audio_set_input_callback(MH_AudioDevice* dev, MH_AudioInputCallback cb, void* user_data) {
     if (!dev) return;
-    dev->input_callback = cb;
+    // Publish user_data before the callback pointer so the audio thread,
+    // which loads the callback with acquire ordering, sees a matching
+    // user_data once it observes a non-NULL callback (release store below).
     dev->input_callback_user_data = user_data;
+    atomic_store_explicit(&dev->input_callback, cb, memory_order_release);
 }
 
 double mh_audio_get_sample_rate(MH_AudioDevice* dev) {

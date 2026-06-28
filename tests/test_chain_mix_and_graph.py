@@ -406,3 +406,137 @@ def test_bus_fans_midi_to_all_branches():
     bc2.close()
 
     assert np.allclose(out, expected, atol=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# PluginBus MIDI-out merge
+#
+# process_midi collects and merges the MIDI produced by each branch (from
+# each branch's first plugin) into one stream, stably sorted by sample
+# offset. Branches built from effects/instruments that emit no MIDI yield an
+# empty list; full merge/ordering verification needs a MIDI-emitting plugin
+# (an arpeggiator, a MIDI echo) supplied via MINIHOST_TEST_MIDI_FX.
+# ---------------------------------------------------------------------------
+
+MIDI_FX_PLUGIN = os.environ.get("MINIHOST_TEST_MIDI_FX")
+
+skip_if_no_midi_fx = pytest.mark.skipif(
+    not (MIDI_FX_PLUGIN and os.path.exists(MIDI_FX_PLUGIN)),
+    reason="MIDI-emitting plugin not set via MINIHOST_TEST_MIDI_FX",
+)
+
+
+@skip_if_no_fx
+def test_bus_process_midi_returns_events_and_overflow():
+    # The return contract: process_midi yields (events, overflow). events is
+    # the merged branch MIDI as (offset, status, data1, data2) tuples; an
+    # effect branch emits no MIDI, so events is empty and overflow is False.
+    c, _ = _make_chain()
+    g = minihost.PluginBus(2, 2, max_block_size=512, sample_rate=48000.0)
+    g.add_branch(c)
+    out = np.zeros((2, 256), dtype=np.float32)
+    events, overflow = g.process_midi(
+        np.full((2, 256), 0.1, dtype=np.float32), out, [(0, 0x90, 60, 100)]
+    )
+    g.close()
+    c.close()
+
+    assert isinstance(events, list)
+    assert events == []  # an effect does not emit MIDI
+    assert overflow is False
+
+
+def test_bus_empty_bus_process_midi_returns_empty():
+    # No branches: no MIDI to merge, regardless of plugin availability.
+    g = minihost.PluginBus(2, 2, max_block_size=512, sample_rate=48000.0)
+    out = np.zeros((2, 256), dtype=np.float32)
+    events, overflow = g.process_midi(
+        np.zeros((2, 256), dtype=np.float32), out, [(0, 0x90, 60, 100)]
+    )
+    g.close()
+    assert events == []
+    assert overflow is False
+    assert np.all(out == 0.0)
+
+
+def test_bus_process_midi_rejects_bad_capacity():
+    # midi_out_capacity must be >= 1; validated before any processing, so an
+    # empty bus (no plugins) is enough to exercise it.
+    g = minihost.PluginBus(2, 2, max_block_size=512, sample_rate=48000.0)
+    out = np.zeros((2, 64), dtype=np.float32)
+    inp = np.zeros((2, 64), dtype=np.float32)
+    with pytest.raises(ValueError, match="midi_out_capacity"):
+        g.process_midi(inp, out, [], midi_out_capacity=0)
+    # A custom positive capacity is accepted.
+    events, overflow = g.process_midi(inp, out, [], midi_out_capacity=16)
+    g.close()
+    assert events == [] and overflow is False
+
+
+def _make_midi_fx_chain():
+    p = minihost.Plugin(MIDI_FX_PLUGIN, sample_rate=48000, max_block_size=512)
+    return minihost.PluginChain([p]), p
+
+
+@skip_if_no_midi_fx
+def test_bus_process_midi_reports_overflow():
+    # Force truncation with a capacity of 1 across two MIDI-emitting branches
+    # (each emits >= 1 event), and confirm the overflow flag is set.
+    note = [(0, 0x90, 60, 100)]
+    probe, _ = _make_midi_fx_chain()
+    ref = probe.process_midi(np.zeros((2, 512), dtype=np.float32),
+                             np.zeros((2, 512), dtype=np.float32), note)
+    probe.close()
+    if len(ref) < 1:
+        pytest.skip("configured MINIHOST_TEST_MIDI_FX emitted no MIDI")
+
+    bc1, _ = _make_midi_fx_chain()
+    bc2, _ = _make_midi_fx_chain()
+    g = minihost.PluginBus(2, 2, max_block_size=512, sample_rate=48000.0)
+    g.add_branch(bc1)
+    g.add_branch(bc2)
+    events, overflow = g.process_midi(np.zeros((2, 512), dtype=np.float32),
+                                      np.zeros((2, 512), dtype=np.float32), note,
+                                      midi_out_capacity=1)
+    g.close()
+    bc1.close()
+    bc2.close()
+    assert len(events) == 1
+    assert overflow is True
+
+
+@skip_if_no_midi_fx
+def test_bus_merges_branch_midi_sorted_by_offset():
+    # Two branches built from the same MIDI-emitting plugin, fed the same
+    # input MIDI, must produce a merged stream that is (a) the concatenation
+    # of both branches' output and (b) sorted by sample offset.
+    note = [(0, 0x90, 60, 100)]
+
+    # Reference: one branch's MIDI output in isolation.
+    c1, _ = _make_midi_fx_chain()
+    ref = c1.process_midi(np.zeros((2, 512), dtype=np.float32),
+                          np.zeros((2, 512), dtype=np.float32), note)
+    c1.close()
+    if not ref:
+        pytest.skip("configured MINIHOST_TEST_MIDI_FX emitted no MIDI")
+
+    bc1, _ = _make_midi_fx_chain()
+    bc2, _ = _make_midi_fx_chain()
+    g = minihost.PluginBus(2, 2, max_block_size=512, sample_rate=48000.0)
+    g.add_branch(bc1)
+    g.add_branch(bc2)
+    merged, overflow = g.process_midi(np.zeros((2, 512), dtype=np.float32),
+                                      np.zeros((2, 512), dtype=np.float32), note)
+    g.close()
+    bc1.close()
+    bc2.close()
+
+    assert overflow is False
+    # Both branches contribute: merged count == 2x a single branch.
+    assert len(merged) == 2 * len(ref)
+    # The merged stream is sorted by sample offset.
+    offsets = [ev[0] for ev in merged]
+    assert offsets == sorted(offsets)
+    # Every reference event appears with the correct multiplicity (2x).
+    from collections import Counter
+    assert Counter(merged) == Counter(ref + ref)

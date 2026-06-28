@@ -153,6 +153,38 @@ def _event_to_midi_tuple(
     return (sample_offset, status, data1, data2)
 
 
+def midi_file_to_events(
+    midi_file: Union[MidiFile, str],
+    sample_rate: float,
+) -> list[tuple[int, int, int, int]]:
+    """Flatten a MIDI file to absolute sample-offset events.
+
+    Returns a list of ``(sample_offset, status, data1, data2)`` tuples
+    sorted by sample offset, using the file's tempo map to convert ticks
+    to samples at ``sample_rate``. Meta events (tempo, etc.) are dropped;
+    only playable channel-voice messages are kept. This is the same
+    conversion :class:`MidiRenderer` performs internally, exposed for
+    callers (e.g. the project loader) that drive a graph block by block.
+    """
+    if isinstance(midi_file, str):
+        mf = MidiFile()
+        mf.load(midi_file)
+    else:
+        mf = midi_file
+
+    tempo_map = _build_tempo_map(mf)
+    tpq = mf.ticks_per_quarter
+    events: list[tuple[int, int, int, int]] = []
+    for event in _collect_midi_events(mf):
+        seconds = _tick_to_seconds(event["tick"], tempo_map, tpq)
+        offset = _seconds_to_samples(seconds, sample_rate)
+        tup = _event_to_midi_tuple(event, offset)
+        if tup is not None:
+            events.append(tup)
+    events.sort(key=lambda e: e[0])
+    return events
+
+
 def _is_auto_tail(tail_seconds: object) -> bool:
     """Check if tail_seconds requests auto-detection."""
     return tail_seconds == "auto"

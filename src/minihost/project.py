@@ -35,6 +35,20 @@ Schema notes:
       plugin itself; the schema does not duplicate them.
     - Mix nodes have `num_inputs` and `channels`. Optional `gains` array
       of length num_inputs (default all 1.0).
+    - MIDI routing uses a second edge class and dedicated node kinds:
+        - `midi_input`: an offline MIDI source. Optional `source` path to
+          a .mid file (read at the project sample rate); with no source
+          the node produces no events (e.g. a desktop live node).
+        - `midi_output`: an offline MIDI sink. Optional `sink` path to a
+          .mid file; with no sink the node drains and discards.
+        - `midi_filter` (`min_note`/`max_note`/`channel_mask`),
+          `midi_transpose` (`semitones`), `midi_velocity_curve`
+          (`gamma`): per-event MIDI processors.
+        - `midi_merge` (`num_inputs`): fan-in for MIDI streams; wire each
+          source to a numbered `dst_port`.
+      MIDI edges live in the same `edges` list, tagged `"kind": "midi"`
+      (audio edges are the default / `"kind": "audio"`). A MIDI edge can
+      drive any plugin node that accepts MIDI.
     - `duration_seconds` is optional; when omitted, the render length is
       the maximum length across input source files. If both are missing
       (no input nodes, no duration), loading fails.
@@ -43,8 +57,11 @@ Schema notes:
       edited node positions. Missing entries auto-layout; old project
       files without `layout` continue to parse unchanged.
 
-v1 deliberately omits: automation, MIDI routing, plugin sidechain
-buses. These are listed in docs/dev/desktop_app_todo.md as follow-ups.
+MIDI routing (input/output/filter/transpose/velocity-curve/merge nodes and
+`"kind": "midi"` edges) is supported; the schema mirrors what the desktop
+app already understands, so projects round-trip between the two. Still
+omitted: parameter automation and plugin sidechain buses (tracked in
+docs/dev/desktop_app_todo.md).
 """
 
 from __future__ import annotations
@@ -57,6 +74,7 @@ from typing import Any
 
 import minihost
 from minihost import audio_io
+from minihost.render import midi_file_to_events
 
 
 def _np():
@@ -110,6 +128,49 @@ class _MixNode:
 
 
 @dataclass
+class _MidiInputNode:
+    id: str
+    # Offline MIDI source (.mid). Optional: a node authored for the live
+    # desktop carries a port_name instead and has no offline source, in
+    # which case it produces no events during an offline render.
+    source: Path | None = None
+    # Absolute (sample_offset, status, data1, data2) events, loaded from
+    # `source` at the project sample rate.
+    events: list[tuple[int, int, int, int]] = field(
+        default_factory=list, repr=False
+    )
+    node_id: int = -1
+
+
+@dataclass
+class _MidiOutputNode:
+    id: str
+    # Offline MIDI sink (.mid). Optional: with no sink the node still
+    # exists (drains and discards), so a desktop-authored live project
+    # loads and renders without error.
+    sink: Path | None = None
+    # Absolute events captured across the render, written to `sink`.
+    captured: list[tuple[int, int, int, int]] = field(
+        default_factory=list, repr=False
+    )
+    node_id: int = -1
+
+
+@dataclass
+class _MidiProcessorNode:
+    id: str
+    # Dict passed straight to PluginGraph.add_midi_processor
+    # (op + op-specific fields).
+    params: dict
+
+
+@dataclass
+class _MidiMergeNode:
+    id: str
+    num_inputs: int
+
+
+@dataclass
 class LoadedProject:
     """Result of `load_project`. Holds the built (compiled) PluginGraph,
     references to the Plugin objects (so the caller can keep them
@@ -121,6 +182,11 @@ class LoadedProject:
     inputs: list[_InputNode]
     outputs: list[_OutputNode]
     plugins: list[_PluginNode]
+    # MIDI source/sink nodes participating in the offline render. The
+    # renderer stages each input's per-block events and drains each
+    # output, writing any node that has a `sink` to a .mid file.
+    midi_inputs: list[_MidiInputNode] = field(default_factory=list)
+    midi_outputs: list[_MidiOutputNode] = field(default_factory=list)
     # Optional canvas layout. Keyed by node id; values are (x, y)
     # tuples in canvas coordinates. Missing entries auto-layout.
     layout: dict[str, tuple[float, float]] = field(default_factory=dict)
@@ -171,6 +237,10 @@ def load_project(project_path: str | Path) -> LoadedProject:
     outputs: list[_OutputNode] = []
     plugins: list[_PluginNode] = []
     mixes: list[_MixNode]      = []
+    midi_inputs: list[_MidiInputNode] = []
+    midi_outputs: list[_MidiOutputNode] = []
+    midi_procs: list[_MidiProcessorNode] = []
+    midi_merges: list[_MidiMergeNode] = []
     node_by_id: dict[str, tuple[str, Any]] = {}    # id -> (kind, dataclass)
 
     for raw in nodes_raw:
@@ -218,6 +288,59 @@ def load_project(project_path: str | Path) -> LoadedProject:
                 )
             mixes.append(mn)
             node_by_id[nid] = ("mix", mn)
+        elif kind == "midi_input":
+            src = raw.get("source")
+            mi = _MidiInputNode(
+                id=nid,
+                source=(project_dir / src).resolve() if src else None,
+            )
+            midi_inputs.append(mi)
+            node_by_id[nid] = ("midi_input", mi)
+        elif kind == "midi_output":
+            snk = raw.get("sink")
+            mo = _MidiOutputNode(
+                id=nid,
+                sink=(project_dir / snk).resolve() if snk else None,
+            )
+            midi_outputs.append(mo)
+            node_by_id[nid] = ("midi_output", mo)
+        elif kind == "midi_filter":
+            mp = _MidiProcessorNode(
+                id=nid,
+                params={
+                    "op": 0,  # MH_MIDI_OP_FILTER
+                    "min_note": int(raw.get("min_note", 0)),
+                    "max_note": int(raw.get("max_note", 127)),
+                    "channel_mask": int(raw.get("channel_mask", 0xFFFF)),
+                },
+            )
+            midi_procs.append(mp)
+            node_by_id[nid] = ("midi_processor", mp)
+        elif kind == "midi_transpose":
+            mp = _MidiProcessorNode(
+                id=nid,
+                params={
+                    "op": 1,  # MH_MIDI_OP_TRANSPOSE
+                    "transpose_semitones": int(raw.get("semitones", 0)),
+                },
+            )
+            midi_procs.append(mp)
+            node_by_id[nid] = ("midi_processor", mp)
+        elif kind == "midi_velocity_curve":
+            mp = _MidiProcessorNode(
+                id=nid,
+                params={
+                    "op": 2,  # MH_MIDI_OP_VELOCITY_CURVE
+                    "velocity_gamma": float(raw.get("gamma", 1.0)),
+                },
+            )
+            midi_procs.append(mp)
+            node_by_id[nid] = ("midi_processor", mp)
+        elif kind == "midi_merge":
+            num_inputs = _require_field(raw, "num_inputs", int)
+            mm = _MidiMergeNode(id=nid, num_inputs=num_inputs)
+            midi_merges.append(mm)
+            node_by_id[nid] = ("midi_merge", mm)
         else:
             raise ProjectError(f"unknown node kind {kind!r}")
 
@@ -256,6 +379,20 @@ def load_project(project_path: str | Path) -> LoadedProject:
             "cannot determine render length"
         )
 
+    # Load MIDI sources (offline). A midi_input with no `source` produces
+    # no events (e.g. a desktop-authored live node); that is allowed.
+    for mi in midi_inputs:
+        if mi.source is None:
+            continue
+        if not mi.source.exists():
+            raise ProjectError(f"midi_input source not found: {mi.source}")
+        try:
+            mi.events = midi_file_to_events(str(mi.source), float(sr))
+        except Exception as e:
+            raise ProjectError(
+                f"midi_input {mi.id!r}: failed to read {mi.source}: {e}"
+            ) from e
+
     # Open plugin instances.
     for n in plugins:
         if not n.path.exists():
@@ -287,16 +424,43 @@ def load_project(project_path: str | Path) -> LoadedProject:
         id_to_nodeid[n.id] = nid
     for n in outputs:
         id_to_nodeid[n.id] = g.add_output(n.channels)
+    for mi in midi_inputs:
+        mi.node_id = g.add_midi_input()
+        id_to_nodeid[mi.id] = mi.node_id
+    for mp in midi_procs:
+        id_to_nodeid[mp.id] = g.add_midi_processor(mp.params)
+    for mm in midi_merges:
+        id_to_nodeid[mm.id] = g.add_midi_merge(mm.num_inputs)
+    for mo in midi_outputs:
+        mo.node_id = g.add_midi_output()
+        id_to_nodeid[mo.id] = mo.node_id
+
+    # Nodes that take MIDI on numbered ports (only midi_merge does); MIDI
+    # edges to anything else use the implicit port 0.
+    midi_merge_ids = {mm.id for mm in midi_merges}
 
     for e in edges_raw:
         src = _require_field(e, "src", str)
         dst = _require_field(e, "dst", str)
         dst_port = int(e.get("dst_port", 0))
+        ekind = e.get("kind", "audio")
         if src not in id_to_nodeid:
             raise ProjectError(f"edge references unknown src id {src!r}")
         if dst not in id_to_nodeid:
             raise ProjectError(f"edge references unknown dst id {dst!r}")
-        g.connect(id_to_nodeid[src], id_to_nodeid[dst], dst_port=dst_port)
+        if ekind == "audio":
+            g.connect(id_to_nodeid[src], id_to_nodeid[dst], dst_port=dst_port)
+        elif ekind == "midi":
+            if dst in midi_merge_ids:
+                g.connect_midi_port(
+                    id_to_nodeid[src], id_to_nodeid[dst], dst_port
+                )
+            else:
+                g.connect_midi(id_to_nodeid[src], id_to_nodeid[dst])
+        else:
+            raise ProjectError(
+                f"edge kind must be \"audio\" or \"midi\", got {ekind!r}"
+            )
 
     g.compile()
 
@@ -324,6 +488,8 @@ def load_project(project_path: str | Path) -> LoadedProject:
         inputs=inputs,
         outputs=outputs,
         plugins=plugins,
+        midi_inputs=midi_inputs,
+        midi_outputs=midi_outputs,
         layout=layout,
     )
 
@@ -340,12 +506,19 @@ def save_project(
     output_nodes: list[dict],
     plugin_nodes: list[dict],
     mix_nodes: list[dict] | None = None,
+    midi_nodes: list[dict] | None = None,
     edges: list[dict],
     layout: dict[str, tuple[float, float]] | None = None,
 ) -> None:
     """Write a project JSON file. Caller supplies node and edge dicts
     in the schema format (see module docstring). Atomic write via a
     .tmp file + rename.
+
+    `midi_nodes` is a list of MIDI node dicts; unlike the other node
+    lists each entry must carry its own `kind` (one of `midi_input`,
+    `midi_output`, `midi_filter`, `midi_transpose`,
+    `midi_velocity_curve`, `midi_merge`), since the kinds are
+    heterogeneous. MIDI edges go in `edges` tagged `"kind": "midi"`.
 
     `layout` is the optional canvas position map (see module docstring).
     Pass `None` (default) to omit; an empty dict writes an empty
@@ -367,6 +540,10 @@ def save_project(
         doc["nodes"].append({"kind": "plugin", **n})
     for n in (mix_nodes or []):
         doc["nodes"].append({"kind": "mix", **n})
+    for n in (midi_nodes or []):
+        if "kind" not in n:
+            raise ProjectError("each midi_nodes entry must include a 'kind'")
+        doc["nodes"].append(dict(n))
     for n in output_nodes:
         doc["nodes"].append({"kind": "output", **n})
 
@@ -417,34 +594,106 @@ def _render_loaded(p: LoadedProject, *, progress_callback=None) -> None:
         for n in p.outputs
     ]
 
+    # Per-input cursors into each MIDI source's (sorted) event list, so
+    # staging a block is a forward walk rather than a rescan.
+    midi_cursors = [0] * len(p.midi_inputs)
+
     frame = 0
     while frame < frames_total:
         n_frames = min(block, frames_total - frame)
-        # Stage inputs.
+        # Stage audio inputs.
         for buf, node in zip(in_bufs, p.inputs):
             avail = max(0, min(n_frames, node.audio.shape[1] - frame))
             if avail > 0:
                 buf[:, :avail] = node.audio[:, frame:frame + avail]
             if avail < n_frames:
                 buf[:, avail:n_frames] = 0.0
+        # Stage MIDI inputs: events in [frame, frame + n_frames), rebased
+        # to a block-local sample offset.
+        block_end = frame + n_frames
+        for ci, mi in enumerate(p.midi_inputs):
+            events = mi.events
+            cur = midi_cursors[ci]
+            block_events = []
+            while cur < len(events) and events[cur][0] < block_end:
+                off, status, d1, d2 = events[cur]
+                block_events.append((off - frame, status, d1, d2))
+                cur += 1
+            midi_cursors[ci] = cur
+            p.graph.set_midi_input_events(mi.node_id, block_events)
         # Render.
         p.graph.render_block(in_bufs, out_scratch, n_frames)
-        # Capture outputs.
+        # Capture audio outputs.
         for accum, scratch in zip(out_accum, out_scratch):
             accum[:, frame:frame + n_frames] = scratch[:, :n_frames]
+        # Drain MIDI outputs, restoring absolute sample offsets.
+        for mo in p.midi_outputs:
+            for off, status, d1, d2 in p.graph.get_midi_output_events(mo.node_id):
+                mo.captured.append((off + frame, status, d1, d2))
         frame += n_frames
         if progress_callback is not None:
             progress_callback(frame, frames_total)
 
-    # Write sinks.
+    # Write audio sinks.
     for node, accum in zip(p.outputs, out_accum):
         node.sink.parent.mkdir(parents=True, exist_ok=True)
         audio_io.write_audio(
             str(node.sink), accum, p.sample_rate, bit_depth=node.bit_depth
         )
 
+    # Write MIDI sinks (nodes without a sink drain and discard).
+    for mo in p.midi_outputs:
+        if mo.sink is None:
+            continue
+        mo.sink.parent.mkdir(parents=True, exist_ok=True)
+        _write_midi_events(mo.sink, mo.captured, p.sample_rate)
+
 
 # -- helpers ---------------------------------------------------------- #
+
+# MIDI sinks are written at a fixed tempo/resolution. Offline captures
+# carry absolute sample offsets, not the source's tempo map, so we pick a
+# canonical grid (120 BPM, 480 ticks/quarter) and place events on it; the
+# audible timing in samples is preserved, only the notated tempo is
+# synthetic.
+_MIDI_SINK_BPM = 120.0
+_MIDI_SINK_TPQ = 480
+
+
+def _write_midi_events(
+    path: Path,
+    events: list[tuple[int, int, int, int]],
+    sample_rate: float,
+) -> None:
+    """Write absolute (sample_offset, status, data1, data2) events to a
+    single-track .mid file. Events are assumed sorted by offset (the
+    renderer drains them in time order)."""
+    mf = minihost.MidiFile()
+    mf.ticks_per_quarter = _MIDI_SINK_TPQ
+    # A fresh MidiFile already has track 0; write into it directly.
+    track = 0
+    mf.add_tempo(track, 0, _MIDI_SINK_BPM)
+    ticks_per_sec = (_MIDI_SINK_BPM / 60.0) * _MIDI_SINK_TPQ
+    for off, status, d1, d2 in events:
+        tick = int(round((off / float(sample_rate)) * ticks_per_sec))
+        hi = status & 0xF0
+        ch = status & 0x0F
+        if hi == 0x90 and d2 > 0:
+            mf.add_note_on(track, tick, ch, d1, d2)
+        elif hi == 0x90:  # note-on with velocity 0 is a note-off
+            mf.add_note_off(track, tick, ch, d1, 0)
+        elif hi == 0x80:
+            mf.add_note_off(track, tick, ch, d1, d2)
+        elif hi == 0xB0:
+            mf.add_control_change(track, tick, ch, d1, d2)
+        elif hi == 0xC0:
+            mf.add_program_change(track, tick, ch, d1)
+        elif hi == 0xE0:
+            mf.add_pitch_bend(track, tick, ch, d1 | (d2 << 7))
+        # Other message classes (channel pressure, sysex, ...) are not
+        # represented by the MidiFile writer and are dropped.
+    mf.save(str(path))
+
 
 def _require_field(d: dict, key: str, expected_type) -> Any:
     if not isinstance(d, dict) or key not in d:
