@@ -4,6 +4,7 @@
 #include "minihost_midi.h"
 
 #include <libremidi/libremidi.hpp>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 #include <mutex>

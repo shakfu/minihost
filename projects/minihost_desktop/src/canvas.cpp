@@ -6,6 +6,7 @@
 #include "node_registry.h"
 
 #include <algorithm>
+#include <cmath>
 #include <unordered_set>
 
 namespace minihost_desktop {

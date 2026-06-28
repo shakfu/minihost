@@ -3,9 +3,11 @@
 
 #include "minihost_graph_v2.h"
 
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 namespace {
