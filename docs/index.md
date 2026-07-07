@@ -7,22 +7,39 @@ minihost provides a C API built on JUCE with Python bindings via nanobind. It bu
 ## Key Features
 
 - **Plugin formats**: VST3 (all platforms), AudioUnit (macOS), LV2 (all platforms)
+
 - **Headless mode**: no GUI dependencies, uses JUCE's `juce_audio_processors_headless`
+
 - **`AudioBuffer`**: planar float32 audio container, JUCE-backed, stdlib-only. DLPack-exported so it's accepted by any 2D float32 buffer-protocol consumer (`Plugin.process`, `numpy.asarray`, PyTorch, etc.) without explicit conversion.
+
 - **numpy is optional**: `pip install minihost` installs no Python runtime dependencies. `pip install minihost[numpy]` enables numpy-typed return values and numpy-array inputs.
+
 - **High-level offline processing**: `process_audio_to_file(chain, "in.wav", "out.wav")` collapses block iteration, latency compensation, sample-rate matching, and tail rendering into one call.
+
 - **Plugin chaining**: connect multiple plugins in series
+
 - **Real-time audio**: playback and capture via miniaudio, with duplex mode for effect processing
+
 - **Audio device selection**: enumerate and target specific playback/capture devices
+
 - **Real-time MIDI**: input/output via libremidi, virtual ports on macOS/Linux
+
 - **Audio file I/O**: read WAV/FLAC/MP3/Vorbis, write WAV and FLAC
+
 - **Sample rate conversion**: built-in resampling via miniaudio
+
 - **Batch processing**: glob patterns and directory output for processing multiple files
+
 - **Auto-tail detection**: automatic reverb/delay tail detection in offline rendering
+
 - **Sample-accurate automation**: parameter changes at sample resolution
+
 - **Parameter access by name**: case-insensitive `find_param()`, `get_param_by_name()`, `set_param_by_name()` on `Plugin`
+
 - **Async plugin loading**: `open_async()` returns a `Future` for background loading
+
 - **VST3 preset I/O**: read and write `.vstpreset` files from C, C++, and Python
+
 - **CLI tool**: 9 subcommands for plugin inspection, device listing, preset export, playback, processing, and resampling
 
 ## Quick Start
@@ -78,14 +95,15 @@ minihost resample input.wav -o output.wav -r 48000
 ## Requirements
 
 - CMake 3.20+, C++17 compiler
+
 - JUCE 8.0.11+ (auto-downloaded)
+
 - Vendored C libraries: miniaudio, tflac, libremidi, midifile ([details](vendored.md))
+
 - Python bindings: nanobind, scikit-build-core, uv
+
 - Runtime: no required Python dependencies. Install `minihost[numpy]` for numpy interop.
 
 See [Getting Started](getting_started.md) for full build instructions.
 
-If you're upgrading from a previous version, see the
-[Migration Guide](migration.md) for the breaking changes (default
-return type of `read_audio` / `render_midi*`, numpy moved to an optional
-extra) and the one-keyword fixes to keep existing code working.
+If you're upgrading from a previous version, see the [Migration Guide](migration.md) for the breaking changes (default return type of `read_audio` / `render_midi*`, numpy moved to an optional extra) and the one-keyword fixes to keep existing code working.

@@ -20,86 +20,106 @@ with (
     )
 ```
 
-`process_audio_to_file` handles block iteration, latency compensation,
-sample-rate matching, channel layout, and tail rendering. See the
-[Python API](#python-api) section for lower-level control.
+`process_audio_to_file` handles block iteration, latency compensation, sample-rate matching, channel layout, and tail rendering. See the [Python API](#python-api) section for lower-level control.
 
 ## Features
 
 - Load VST3 plugins (macOS, Windows, Linux)
+
 - Load AudioUnit plugins (macOS only)
+
 - Load LV2 plugins (macOS, Windows, Linux)
+
 - **Headless mode** (default) - no GUI dependencies, uses JUCE's `juce_audio_processors_headless` module
+
 - **Plugin chaining** - connect multiple plugins in series (synth -> reverb -> limiter)
-- **`AudioBuffer` -- the canonical audio container.** Planar float32, JUCE-backed, stdlib-only. Numpy-style 2-axis indexing (`buf[ch, frame_slice]`), JUCE DSP ops (`clear`, `apply_gain`, `magnitude`, `copy`), DLPack export so it's accepted directly by `Plugin.process` / `numpy.asarray` / PyTorch / etc.
+
+- **`AudioBuffer` -- the canonical audio container.** Planar float32, JUCE-backed, stdlib-only. Numpy-style 2-axis indexing (`buf[ch, frame_slice]`), JUCE DSP ops (`clear`, `apply_gain`, `magnitude`, `copy`), zero-copy channel-range views (`buf.channel_view(start, count)`), DLPack export so it's accepted directly by `Plugin.process` / `numpy.asarray` / PyTorch / etc.
+
 - **numpy is optional.** `pip install minihost` installs no Python runtime dependencies; the AudioBuffer API works without numpy. `pip install minihost[numpy]` enables numpy-typed APIs (`AudioBuffer.as_ndarray()`, `read_audio(as_=numpy.ndarray)`, accepting numpy arrays as inputs).
+
 - **High-level offline processing** -- `process_audio_to_file(plugin_or_chain, "in.wav", "out.wav")` collapses block iteration, latency compensation, sample-rate matching, and tail rendering into one call.
-- **Audio file I/O** via miniaudio + tflac -- read WAV/FLAC/MP3/Vorbis, write WAV (16/24/32-bit) and FLAC (16/24-bit)
+
+- **Audio file I/O** via miniaudio + tflac -- read WAV/FLAC/MP3/Vorbis, write WAV (16/24/32-bit) and FLAC (16/24-bit), optional Broadcast Wave (`bext`) metadata on WAV output (`write_audio(..., bwf={...})`)
+
 - **Sample rate conversion** via miniaudio resampler -- `minihost.resample()` API and `minihost resample` CLI subcommand
+
 - **Real-time audio playback** via miniaudio (cross-platform), with duplex capture mode for effect processing
+
 - **Audio device selection** -- enumerate and target specific playback/capture devices (`minihost devices` CLI, `audio_get_playback_devices()` / `audio_get_capture_devices()` API, `--playback-device` / `--capture-device` on `minihost play`)
+
 - **Real-time audio input** -- lock-free ring buffer API (`write_input()`) and duplex capture (`capture=True`) for routing system audio through effects
+
 - **Real-time MIDI I/O** via libremidi (cross-platform)
+
 - **Control surface mapping** -- `minihost.MidiMapper` translates incoming MIDI CCs from a USB control surface (Launch Control / MIDIMix / nanoKONTROL / X-Touch / etc.) onto plugin parameters with optional value-range and curve (`linear`/`exp`/`log`); CLI: `minihost play --map "channel:cc:param[:lo:hi[:curve]]"` (repeatable) or `--map-file PATH` for saved JSON mappings.
+
 - **Looped sources for live tweaking** -- `minihost play --loop-midi PATH` loops a MIDI file through the plugin (with All Notes Off between iterations); `--loop-audio PATH` loops an audio file into the plugin's input ring buffer at real time. Useful for parameter exploration against a repeating pattern.
+
 - **Virtual MIDI ports** - create named ports that DAWs can connect to (macOS, Linux)
+
 - **Standalone MIDI input** - monitor raw MIDI messages without a plugin (`MidiIn` class)
+
 - **Batch processing** -- glob patterns and directory output for processing multiple files (`minihost process -i "*.wav" -o output/`)
+
 - **Auto-tail detection** -- `tail_seconds="auto"` monitors output amplitude and stops rendering when reverb/delay tails decay below threshold
+
 - Process audio with sample-accurate parameter automation
+
 - Single and double precision processing
+
 - MIDI input/output support
+
 - Transport info for tempo-synced plugins
+
 - State save/restore for presets and per-program state
-- Thread-safe parameter access
+
+- **Preset morphing** -- `minihost.morph` interpolates between two parameter snapshots (A/B blend) for sound-design sweeps (`capture` / `lerp` / `apply` / `morph`)
+
+- **Thread-safe by design** -- construction, destruction, and thread-affine control operations are marshaled onto a dedicated native plugin thread, so a plugin can be built on one thread and used or closed from another (only the real-time `process*` path is single-thread/lock-free)
+
 - Change notifications (latency, parameter info, program, non-parameter state) with deferred dispatch via `poll_callbacks()`
+
 - Parameter gestures for automation bracketing
+
 - Bus layout validation and sidechain support
+
 - Track name/color metadata forwarding to plugins
+
 - Latency and tail time reporting
+
 - **Parameter access by name** -- `plugin.find_param("Cutoff")`, `plugin.get_param_by_name("Cutoff")`, `plugin.set_param_by_name("Cutoff", 0.5)` with case-insensitive lookup
-- **Async plugin loading** -- `minihost.open_async()` returns a `concurrent.futures.Future` for background loading of large sample-library plugins
+
+- **Async plugin loading** -- `minihost.open_async()` returns a `concurrent.futures.Future` that resolves to a ready-to-use `Plugin`, loaded off the calling thread (safe to use/close from any thread thanks to the dedicated plugin thread)
+
 - **VST3 preset I/O** -- read and write `.vstpreset` files from C (`minihost_vstpreset.h`), C++, and Python (`minihost.vstpreset`); `minihost presets` CLI subcommand exports the current plugin state, optionally after loading a program, state blob, or another `.vstpreset`
 
 ## Library structure
 
-minihost ships as two separate static libraries with a one-way dependency:
-`libminihost_audio` builds on `libminihost`, never the reverse.
+minihost ships as two separate static libraries with a one-way dependency: `libminihost_audio` builds on `libminihost`, never the reverse.
 
-- **`libminihost`** -- the plugin host core (`projects/libminihost/`). Loads and
-  runs VST3/AU/LV2 plugins and processes audio blocks you hand it: MIDI in/out,
-  parameters, state save/restore, sample-accurate automation, sidechain,
-  transport, bus layouts, and the routing abstractions (`PluginChain`,
-  `PluginBus`, `PluginGraph`). Depends only on JUCE. C ABI prefix: `mh_*` (e.g.
-  `mh_open`, `mh_process`, `mh_chain_*`, `mh_bus_*`, `mh_graph_*`). Header: `minihost.h`.
-  Link this alone to load a plugin and feed it your own buffers -- the offline
-  and embedded path, with no device or codec dependencies.
+- **`libminihost`** -- the plugin host core (`projects/libminihost/`). Loads and runs VST3/AU/LV2 plugins and processes audio blocks you hand it: MIDI in/out, parameters, state save/restore, sample-accurate automation, sidechain, transport, bus layouts, and the routing abstractions (`PluginChain`, `PluginBus`, `PluginGraph`). Depends only on JUCE. C ABI prefix: `mh_*` (e.g. `mh_open`, `mh_process`, `mh_chain_*`, `mh_bus_*`, `mh_graph_*`). Header: `minihost.h`. Link this alone to load a plugin and feed it your own buffers -- the offline and embedded path, with no device or codec dependencies.
 
-- **`libminihost_audio`** -- the I/O layer around the core
-  (`projects/libminihost_audio/`). It has no plugin-format knowledge; it gets
-  audio and MIDI in and out of the machine and drives a plugin or chain through
-  its real-time audio callback. Provides live audio device playback/capture
-  (miniaudio), audio file read/write (read WAV/FLAC/MP3/Vorbis; write WAV/FLAC
-  via miniaudio + tflac), MIDI ports (libremidi), and the lock-free ring
-  buffers. Depends on `libminihost` plus the vendored miniaudio, tflac, and
-  libremidi. C ABI prefix: `mh_audio_*`. Headers: `minihost_audio.h`,
-  `minihost_audiofile.h`, `minihost_midi.h`. Link this in addition to
-  `libminihost` when you want real-time devices, file I/O, or MIDI hardware.
+- **`libminihost_audio`** -- the I/O layer around the core (`projects/libminihost_audio/`). It has no plugin-format knowledge; it gets audio and MIDI in and out of the machine and drives a plugin or chain through its real-time audio callback. Provides live audio device playback/capture (miniaudio), audio file read/write (read WAV/FLAC/MP3/Vorbis; write WAV/FLAC via miniaudio + tflac), MIDI ports (libremidi), and the lock-free ring buffers. Depends on `libminihost` plus the vendored miniaudio, tflac, and libremidi. C ABI prefix: `mh_audio_*`. Headers: `minihost_audio.h`, `minihost_audiofile.h`, `minihost_midi.h`. Link this in addition to `libminihost` when you want real-time devices, file I/O, or MIDI hardware.
 
-In short: `libminihost` runs the plugin; `libminihost_audio` connects it to
-speakers, files, and MIDI hardware. The Python wheel links both.
+In short: `libminihost` runs the plugin; `libminihost_audio` connects it to speakers, files, and MIDI hardware. The Python wheel links both.
 
 ## Requirements
 
 - CMake 3.20+
+
 - C++17 compiler
+
 - JUCE framework (automatically downloaded if not present)
+
 - Vendored C libraries: miniaudio, tflac, libremidi, midifile (see [docs/vendored.md](docs/vendored.md))
 
 ### Platform-specific
 
 - **macOS**: Xcode command line tools
+
 - **Windows**: Visual Studio 2019+ or MinGW
+
 - **Linux**: Install the following development libraries:
 
   ```bash
@@ -285,13 +305,7 @@ minihost play /path/to/effect.vst3 --input --playback-device 0 --capture-device 
 
 ##### Map a control surface to plugin parameters
 
-`--map` wires incoming MIDI CCs from a USB control surface (Launch Control,
-MIDIMix, nanoKONTROL, X-Touch, etc.) onto plugin parameters. When set, MIDI
-is routed through Python via a `MidiMapper`; mapped CCs become parameter
-writes and unmapped events (notes, unmapped CCs) are forwarded to the plugin
-so notes still play. Format: `channel:cc:param[:lo:hi[:curve]]`. Curves:
-`linear` (default), `exp` (more resolution at low end), `log` (more
-resolution at high end).
+`--map` wires incoming MIDI CCs from a USB control surface (Launch Control, MIDIMix, nanoKONTROL, X-Touch, etc.) onto plugin parameters. When set, MIDI is routed through Python via a `MidiMapper`; mapped CCs become parameter writes and unmapped events (notes, unmapped CCs) are forwarded to the plugin so notes still play. Format: `channel:cc:param[:lo:hi[:curve]]`. Curves: `linear` (default), `exp` (more resolution at low end), `log` (more resolution at high end).
 
 ```bash
 # One mapping per --map flag, repeatable
@@ -301,8 +315,7 @@ minihost play /path/to/synth.vst3 --midi 0 \
   --map 0:74:Cutoff:0:1:exp
 ```
 
-For a permanent setup, save the mappings to a JSON file once and load it
-with `--map-file`:
+For a permanent setup, save the mappings to a JSON file once and load it with `--map-file`:
 
 ```json
 {
@@ -319,16 +332,11 @@ minihost play /path/to/synth.vst3 --midi 0 \
   --map-file ~/.config/minihost/launch_control.json
 ```
 
-`--map` and `--map-file` are combinable -- the file loads first, CLI args
-append. Required JSON fields per entry: `channel`, `cc`, `param`. Optional:
-`value_range` (default `[0.0, 1.0]`), `curve` (default `"linear"`).
+`--map` and `--map-file` are combinable -- the file loads first, CLI args append. Required JSON fields per entry: `channel`, `cc`, `param`. Optional: `value_range` (default `[0.0, 1.0]`), `curve` (default `"linear"`).
 
 ##### Loop a MIDI or audio file as the source
 
-`--loop-midi` loops a MIDI file into a synth (or any plugin that accepts
-MIDI), useful for live-tweaking parameters against a repeating pattern.
-A Python thread schedules events at wall-clock-correct times; All Notes Off
-is sent on every channel between iterations to silence sustained notes.
+`--loop-midi` loops a MIDI file into a synth (or any plugin that accepts MIDI), useful for live-tweaking parameters against a repeating pattern. A Python thread schedules events at wall-clock-correct times; All Notes Off is sent on every channel between iterations to silence sustained notes.
 
 ```bash
 # Loop a MIDI pattern through a synth while live-tweaking knobs
@@ -338,10 +346,7 @@ minihost play /path/to/synth.vst3 \
   --loop-midi tests/_wav/test_pattern.mid
 ```
 
-`--loop-audio` loops an audio file as the plugin's input, useful for
-testing effects against a known source without needing live audio. The
-ring buffer is auto-enabled; the file is resampled to the device rate if
-needed. Mutually exclusive with `--input`.
+`--loop-audio` loops an audio file as the plugin's input, useful for testing effects against a known source without needing live audio. The ring buffer is auto-enabled; the file is resampled to the device rate if needed. Mutually exclusive with `--input`.
 
 ```bash
 # Loop a guitar take into a reverb while turning the mix knob
@@ -351,8 +356,7 @@ minihost play /path/to/reverb.vst3 \
   --loop-audio guitar_dry.wav
 ```
 
-Both loop flags can run alongside live MIDI input (the file's events and
-your live notes are merged into the plugin).
+Both loop flags can run alongside live MIDI input (the file's events and your live notes are merged into the plugin).
 
 #### `minihost process` - Process audio/MIDI offline
 
@@ -404,13 +408,7 @@ pip install minihost              # AudioBuffer-only API; no numpy required
 pip install minihost[numpy]       # adds numpy-typed return values + numpy input acceptance
 ```
 
-The default audio container is `minihost.AudioBuffer` (planar float32,
-JUCE-backed, stdlib-only). It supports DLPack so any C extension that
-takes a 2D float32 c-contiguous buffer (including all of minihost's
-process methods) accepts it directly. Numpy is fully supported when
-installed -- pass `as_=numpy.ndarray` to receive numpy arrays from
-`read_audio` / `render_midi`, or call `.as_ndarray()` on any AudioBuffer
-for a zero-copy numpy view.
+The default audio container is `minihost.AudioBuffer` (planar float32, JUCE-backed, stdlib-only). It supports DLPack so any C extension that takes a 2D float32 c-contiguous buffer (including all of minihost's process methods) accepts it directly. Numpy is fully supported when installed -- pass `as_=numpy.ndarray` to receive numpy arrays from `read_audio` / `render_midi`, or call `.as_ndarray()` on any AudioBuffer for a zero-copy numpy view.
 
 ### Quick start: process a WAV file through a chain
 
@@ -428,11 +426,7 @@ with (
     )
 ```
 
-`process_audio_to_file` handles block iteration, latency compensation,
-sample-rate matching (input is auto-resampled to the plugin's rate),
-mono-to-stereo channel duplication, and tail rendering. For in-memory
-data use `process_audio(plugin_or_chain, audio, tail_seconds=...)`,
-which returns an `AudioBuffer`.
+`process_audio_to_file` handles block iteration, latency compensation, sample-rate matching (input is auto-resampled to the plugin's rate), mono-to-stereo channel duplication, and tail rendering. For in-memory data use `process_audio(plugin_or_chain, audio, tail_seconds=...)`, which returns an `AudioBuffer`.
 
 ### Lower-level processing
 
@@ -472,19 +466,47 @@ plugin.set_param_by_name("resonance", 0.4)  # case-insensitive
 plugin.set_param(idx, 0.5)
 ```
 
+### Preset Morphing
+
+Interpolate between two parameter snapshots (an A/B blend), useful for sound-design sweeps. Morphing operates on normalized per-parameter values (not opaque VST/AU state blobs).
+
+```python
+import minihost
+
+plugin = minihost.Plugin("/path/to/synth.vst3", sample_rate=48000)
+
+# Capture two states (e.g. after loading two presets)
+a = minihost.capture_params(plugin)
+# ... dial in a different sound ...
+b = minihost.capture_params(plugin)
+
+# Blend 30% of the way from A to B and apply to the plugin
+minihost.morph_params(plugin, a, b, 0.3)
+
+# Or compute a blend without applying; t can be a per-parameter sequence
+blended = minihost.lerp_params(a, b, 0.5)
+minihost.apply_params(plugin, blended)
+```
+
 ### Async Plugin Loading
 
 ```python
 import minihost
 
-# Load a heavy plugin in the background
+# Load a heavy plugin in the background (off the calling thread)
 future = minihost.open_async("/path/to/heavy_sampler.vst3", sample_rate=48000)
 
 # Do other work while plugin loads...
 
-# Block until ready
+# Block until ready -- returns a normal Plugin
 plugin = future.result()
 print(f"Loaded: {plugin.num_params} params")
+
+# The plugin is built on a loader thread but is safe to use and close from
+# any thread: minihost marshals thread-affine operations onto a dedicated
+# native plugin thread. Loads are serialized on that thread, so this is
+# non-blocking (not parallel) loading.
+plugin.close()
 ```
 
 ### Audio Device Enumeration and Selection
@@ -644,6 +666,16 @@ data_np, sample_rate = minihost.read_audio("input.wav", as_=np.ndarray)
 minihost.write_audio("output.wav", data, sample_rate, bit_depth=24)   # WAV (16/24/32-bit)
 minihost.write_audio("output.flac", data, sample_rate, bit_depth=24)  # FLAC (16/24-bit)
 
+# Broadcast Wave (bext) metadata for film/broadcast workflows (WAV only)
+minihost.write_audio("take.wav", data, sample_rate, bit_depth=24, bwf={
+    "description": "Scene 12 take 3",
+    "originator": "minihost",
+    "originator_reference": "REF-0012",
+    "origination_date": "2026-07-07",   # yyyy-mm-dd
+    "origination_time": "12:34:56",     # hh:mm:ss
+    "time_reference": 48000 * 3600,     # samples since midnight (timecode anchor)
+})
+
 # Get file info without decoding
 info = minihost.get_audio_info("song.wav")
 print(f"{info['channels']}ch, {info['sample_rate']}Hz, {info['duration']:.2f}s")
@@ -692,8 +724,7 @@ for event in events:
 
 ### MIDI File Rendering
 
-Render MIDI files through plugins to produce audio output. Returns
-`AudioBuffer` by default; pass `as_=numpy.ndarray` for numpy:
+Render MIDI files through plugins to produce audio output. Returns `AudioBuffer` by default; pass `as_=numpy.ndarray` for numpy:
 
 ```python
 import minihost
@@ -791,11 +822,7 @@ for i in range(chain.num_plugins):
 
 ### Parallel routing (PluginBus)
 
-`PluginChain` is series; `PluginBus` is parallel. A bus fans the same input
-to N branches (each a `PluginChain`) and sums their outputs with a per-branch
-gain -- parallel compression, dry-bus + reverb-send, multi-band processing.
-With `process_midi`, the same MIDI is delivered to every branch, which is the
-idiomatic way to layer one part across several instruments:
+`PluginChain` is series; `PluginBus` is parallel. A bus fans the same input to N branches (each a `PluginChain`) and sums their outputs with a per-branch gain -- parallel compression, dry-bus + reverb-send, multi-band processing. With `process_midi`, the same MIDI is delivered to every branch, which is the idiomatic way to layer one part across several instruments:
 
 ```python
 import minihost
@@ -816,13 +843,9 @@ note_on = [(0, 0x90, 60, 100)]           # C4 reaches ALL three synths
 bus.process_midi(silence, out, note_on)
 ```
 
-A complete, runnable version (block loop, chord, WAV output) is in
-[`examples/parallel_bus.py`](examples/parallel_bus.py).
+A complete, runnable version (block loop, chord, WAV output) is in [`examples/parallel_bus.py`](examples/parallel_bus.py).
 
-For arbitrary node-to-node topologies (multiple inputs/outputs, MIDI
-processors, channel pick/merge), use `PluginGraph` -- the general DAG executor
-that also backs project files (`minihost.load_project`). Branch MIDI *output*
-is not collected by the bus; reach for `PluginGraph` if you need that.
+For arbitrary node-to-node topologies (multiple inputs/outputs, MIDI processors, channel pick/merge), use `PluginGraph` -- the general DAG executor that also backs project files (`minihost.load_project`). Branch MIDI *output* is not collected by the bus; reach for `PluginGraph` if you need that.
 
 ### VST3 Presets
 
@@ -1096,16 +1119,24 @@ free(state);
 
 ## Thread Safety
 
-- `mh_process`, `mh_process_midi`, `mh_process_midi_io`, `mh_process_auto`: Call from audio thread only (no locking)
-- All other functions are thread-safe with internal locking
-- Do not call `mh_close` while another thread is using the plugin
+minihost runs a dedicated native plugin thread and marshals every thread-affine plugin operation onto it -- construction, destruction, and control-plane queries (state, parameter text, program names, `reset`, `set_sample_rate`, processing precision). This makes plugins safe to build on one thread and use or close from another (which is what makes `open_async` work), and hardens the whole library against cross-thread use.
+
+- **`process*` functions** (`process`, `process_midi`, `process_auto`, `process_double`, `process_sidechain`): the real-time path -- lock-free, call from a single thread (typically the audio thread). Not marshaled.
+
+- **All other (control) functions**: safe to call from any thread.
+
+- **Reconfiguring calls** (`set_sample_rate`, `set_state`, `set_processing_precision`, `set_non_realtime`, `reset`) must not overlap a `process*` call -- they reconfigure the audio pipeline while `process` runs unprotected. Stop processing before calling them.
+
+- Set the environment variable `MINIHOST_MESSAGE_THREAD=0` to disable the plugin thread (operations then run inline on the caller's thread; cross- thread plugin use, including `open_async`, becomes unsafe).
 
 ## API Reference
 
 Detailed API documentation:
 
 - [C API Reference](docs/api_c.md) -- `minihost.h`, `minihost_audio.h`, `minihost_audiofile.h`, `minihost_chain.h`, `minihost_midi.h`, `minihost_vstpreset.h`
+
 - [Python API Reference](docs/api_python.md) -- `Plugin`, `PluginChain`, `AudioDevice`, `MidiFile`, `MidiIn`, audio I/O, MIDI rendering, automation, VST3 presets
+
 - [Hosting Guide](docs/hosting_guide.md) -- practical guide with extended examples
 
 ## License

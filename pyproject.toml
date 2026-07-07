@@ -1,6 +1,6 @@
 [project]
 name = "minihost"
-version = "0.2.1"
+version = "0.3.0"
 description = "A minimal juce-based plugin host using nanobind"
 requires-python = ">=3.10"
 dependencies = []

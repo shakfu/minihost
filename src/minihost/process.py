@@ -305,6 +305,12 @@ def _iter_blocks(
 
     block = ctx.block
     in_ch_required = ctx.in_ch_required
+    # A synth reports 0 input channels, but the internal I/O buffers still
+    # need at least one channel to exist (and AudioBuffer materializes a
+    # minimum of one anyway). Size and slice the input/sidechain buffers by
+    # this effective width so a 0-input plugin round-trips cleanly; the plugin
+    # simply ignores the (silent) input channel.
+    work_in = max(in_ch_required, 1)
     out_ch = ctx.out_ch
     src = ctx.src
     src_frames = ctx.src_frames
@@ -318,9 +324,9 @@ def _iter_blocks(
     render_frames = ctx.render_frames
     plugin_or_chain = ctx.plugin_or_chain
 
-    in_block = AudioBuffer(in_ch_required, block)
+    in_block = AudioBuffer(work_in, block)
     out_block = AudioBuffer(out_ch, block)
-    sc_block = AudioBuffer(in_ch_required, block) if sc_buf is not None else None
+    sc_block = AudioBuffer(work_in, block) if sc_buf is not None else None
 
     midi_idx = 0
     auto_idx = 0
@@ -333,13 +339,13 @@ def _iter_blocks(
         in_block.clear()
         if src is not None and start < src_frames:
             copy = min(n, src_frames - start)
-            in_block[:in_ch_required, :copy] = src[:in_ch_required, start:start + copy]
+            in_block[:work_in, :copy] = src[:work_in, start:start + copy]
 
         if sc_block is not None and sc_buf is not None:
             sc_block.clear()
             if start < sc_buf.frames:
                 copy = min(n, sc_buf.frames - start)
-                sc_block[:in_ch_required, :copy] = sc_buf[:in_ch_required, start:start + copy]
+                sc_block[:work_in, :copy] = sc_buf[:work_in, start:start + copy]
 
         block_midi, midi_idx = (
             _slice_block_events(midi_events, midi_idx, start, start + n)
@@ -354,12 +360,12 @@ def _iter_blocks(
             pin, pout = in_block, out_block
             psc = sc_block
         else:
-            pin = AudioBuffer(in_ch_required, n)
-            pin[:in_ch_required, :n] = in_block[:in_ch_required, :n]
+            pin = AudioBuffer(work_in, n)
+            pin[:work_in, :n] = in_block[:work_in, :n]
             pout = AudioBuffer(out_ch, n)
             if sc_block is not None:
-                psc = AudioBuffer(in_ch_required, n)
-                psc[:in_ch_required, :n] = sc_block[:in_ch_required, :n]
+                psc = AudioBuffer(work_in, n)
+                psc[:work_in, :n] = sc_block[:work_in, :n]
             else:
                 psc = None
 

@@ -130,6 +130,7 @@ Set `MH_AudioConfig.playback_device_index` / `capture_device_index` to a 0-based
 **`MH_AudioDeviceInfo`** struct:
 
 - `char name[256]` -- device name (null-terminated)
+
 - `int is_default` -- `1` if this is the system default, else `0`
 
 Typical usage:
@@ -193,15 +194,21 @@ for (int i = 0; i < count; i++) {
 **`MH_AudioData`** -- returned by `mh_audio_read()`:
 
 - `float* data` -- interleaved float32 samples
+
 - `unsigned int channels`
+
 - `unsigned int frames`
+
 - `unsigned int sample_rate`
 
 **`MH_AudioFileInfo`** -- populated by `mh_audio_get_file_info()`:
 
 - `unsigned int channels`
+
 - `unsigned int sample_rate`
+
 - `unsigned long long frames`
+
 - `double duration`
 
 ---
@@ -230,9 +237,7 @@ for (int i = 0; i < count; i++) {
 
 ## Plugin Bus Functions (minihost_graph.h)
 
-Parallel-branches-summed routing: fan one input to N `MH_PluginChain` branches
-and sum their outputs with per-branch gain. Python: `PluginBus`.
-(File name retained from before the 0.2.0 rename; symbols are `mh_bus_*`.)
+Parallel-branches-summed routing: fan one input to N `MH_PluginChain` branches and sum their outputs with per-branch gain. Python: `PluginBus`. (File name retained from before the 0.2.0 rename; symbols are `mh_bus_*`.)
 
 | Function | Description |
 |----------|-------------|
@@ -247,11 +252,7 @@ and sum their outputs with per-branch gain. Python: `PluginBus`.
 | `mh_bus_get_sample_rate` / `mh_bus_get_max_block_size` | Configured sample rate / block size |
 | `mh_bus_get_latency_samples` / `mh_bus_get_tail_seconds` | Maximum latency / tail across branches |
 
-The general DAG executor (Python `PluginGraph`) lives in `minihost_graph_v2.h`
-as the `mh_graph_*` / `MH_PluginGraph` family, with a C++ RAII wrapper
-`minihost::PluginGraph` in `minihost_graph_v2.hpp`. Its surface is large
-(node add/connect, MIDI routing, automation, `mh_graph_compile`,
-`mh_graph_render_block`); see the header for the full API.
+The general DAG executor (Python `PluginGraph`) lives in `minihost_graph_v2.h` as the `mh_graph_*` / `MH_PluginGraph` family, with a C++ RAII wrapper `minihost::PluginGraph` in `minihost_graph_v2.hpp`. Its surface is large (node add/connect, MIDI routing, automation, `mh_graph_compile`, `mh_graph_render_block`); see the header for the full API.
 
 ---
 
@@ -298,9 +299,13 @@ Portable Steinberg `.vstpreset` reader/writer with no external dependencies (lit
 **`MH_VstPreset`** -- populated by `mh_vstpreset_read()`:
 
 - `char class_id[33]` -- 32-char FUID plus null terminator (`MH_VSTPRESET_CLASS_ID_LEN` = 32)
+
 - `void* component_state` -- processor (`Comp`) chunk, heap-allocated
+
 - `int component_size`
+
 - `void* controller_state` -- controller (`Cont`) chunk, heap-allocated (may be `NULL`)
+
 - `int controller_size`
 
 Typical usage:
@@ -342,7 +347,11 @@ free(state);
 ### Notes on `mh_vstpreset_read_class_id_from_bundle`
 
 - Returns 1 on success and writes a 32-character uppercase hex FUID into `out_class_id` (which must be at least `MH_VSTPRESET_CLASS_ID_LEN + 1` bytes).
+
 - Selects the first entry in the bundle's `Classes` array whose `Category` is `"Audio Module Class"` (the processor component, not the controller).
+
 - Tolerates JSON5-style trailing commas, which appear in real-world bundles (e.g., Dexed, Strokes).
+
 - Returns 0 with a descriptive error in `err_buf` for: missing `moduleinfo.json` (plugin predates VST3 SDK 3.7.5), file unreadable, file > 1 MB, JSON malformed, no Audio Module Class entry, or CID not exactly 32 hex characters.
+
 - VST3 only -- AudioUnit and LV2 plugins do not have `.vstpreset` files or moduleinfo.json.

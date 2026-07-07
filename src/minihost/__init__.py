@@ -57,6 +57,7 @@ from minihost._core import (
     MH_CHANGE_NON_PARAM_STATE,
     MH_PRECISION_SINGLE,
     MH_PRECISION_DOUBLE,
+    MIDI_OUT_CAPACITY,
 )
 
 from minihost.render import (
@@ -127,6 +128,14 @@ from minihost.automation import (
     parse_automation_file,
 )
 
+from minihost import morph
+from minihost.morph import (
+    capture as capture_params,
+    apply as apply_params,
+    lerp as lerp_params,
+    morph as morph_params,
+)
+
 from minihost._async import open_async
 
 from minihost.vstpreset import (
@@ -193,6 +202,12 @@ __all__ = [
     "find_param_by_name",
     "parse_param_arg",
     "parse_automation_file",
+    # Preset morphing
+    "morph",
+    "capture_params",
+    "apply_params",
+    "lerp_params",
+    "morph_params",
     # VST3 presets
     "VstPreset",
     "read_vstpreset",
@@ -207,6 +222,8 @@ __all__ = [
     # Processing precision constants
     "MH_PRECISION_SINGLE",
     "MH_PRECISION_DOUBLE",
+    # MIDI-output buffer default capacity
+    "MIDI_OUT_CAPACITY",
     # ABI versioning
     "api_version",
     "api_version_string",
@@ -216,4 +233,4 @@ __all__ = [
     "MH_API_VERSION_NUMBER",
     "MH_API_VERSION_STRING",
 ]
-__version__ = "0.2.1"
+__version__ = "0.3.0"

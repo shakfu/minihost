@@ -456,16 +456,12 @@ int mh_chain_process_auto(MH_PluginChain* chain,
 
     while (current_sample < nframes)
     {
-        // Find next chunk boundary (next unique sample_offset or end of buffer)
-        int chunk_end = nframes;
-        if (param_idx < num_param_changes)
-        {
-            int next_change = param_changes[param_idx].sample_offset;
-            if (next_change > current_sample && next_change < chunk_end)
-                chunk_end = next_change;
-        }
-
-        // Apply all parameter changes at or before current_sample
+        // Apply all parameter changes due at or before current_sample,
+        // advancing param_idx past them. This must precede the chunk-boundary
+        // computation below: a change due exactly at current_sample is not
+        // > current_sample, so if the boundary were computed first it would
+        // not bound the chunk, chunk_end would jump to nframes, and any later
+        // change in this block would be silently dropped.
         while (param_idx < num_param_changes &&
                param_changes[param_idx].sample_offset <= current_sample)
         {
@@ -476,6 +472,15 @@ int mh_chain_process_auto(MH_PluginChain* chain,
                 mh_set_param(plugin, pc.param_index, pc.value);
             }
             ++param_idx;
+        }
+
+        // Chunk boundary = next still-pending change's offset, or end of buffer.
+        int chunk_end = nframes;
+        if (param_idx < num_param_changes)
+        {
+            int next_change = param_changes[param_idx].sample_offset;
+            if (next_change > current_sample && next_change < chunk_end)
+                chunk_end = next_change;
         }
 
         int chunk_size = chunk_end - current_sample;

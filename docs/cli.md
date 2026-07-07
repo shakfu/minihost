@@ -100,7 +100,9 @@ Without `--save`, `presets` lists all factory presets (no truncation). With `--s
 The output `.vstpreset`'s processor class ID (FUID) is determined as follows, in order:
 
 1. If `--load-vstpreset` was used, the source file's `class_id` is preserved in the output.
+
 2. Otherwise, the FUID is auto-detected from the plugin bundle's `Contents/Resources/moduleinfo.json` (requires VST3 SDK 3.7.5+, which all modern plugins ship).
+
 3. If neither path yields a valid FUID, the command fails with a helpful error rather than writing a `.vstpreset` with a bogus class ID. For legacy plugins, use `--load-vstpreset` to inherit a real FUID from an existing preset.
 
 ### `midi` -- List or monitor MIDI ports
@@ -190,9 +192,13 @@ minihost process /path/to/effect.vst3 -i "*.wav" -o output/ -y
 When the output path is a directory (ends with `/` or is an existing directory) and input contains glob patterns, batch mode activates:
 
 - Each matched input file is processed independently
+
 - Plugin is loaded once and reset between files
+
 - Output files keep the input filename (e.g., `input/kick.wav` becomes `output/kick.wav`)
+
 - Mismatched sample rates are automatically resampled to match the first file
+
 - Existing output files are skipped unless `-y` is set
 
 ### `resample` -- Resample audio files

@@ -2,11 +2,7 @@
 
 ## AudioBuffer
 
-`minihost.AudioBuffer` is the canonical container for audio data: planar
-float32, JUCE-backed, stdlib-only (numpy not required). Exposes the
-DLPack and `__array__` protocols, so it is accepted directly by every
-process method, by `numpy.asarray`, and by any other 2D float32
-c-contiguous buffer-protocol consumer.
+`minihost.AudioBuffer` is the canonical container for audio data: planar float32, JUCE-backed, stdlib-only (numpy not required). Exposes the DLPack and `__array__` protocols, so it is accepted directly by every process method, by `numpy.asarray`, and by any other 2D float32 c-contiguous buffer-protocol consumer.
 
 ### Constructor
 
@@ -36,9 +32,7 @@ Numpy-style 2-axis indexing with deliberate limits:
 | `buf[ch_slice, frame_slice] = scalar` | `None` | Scalar broadcast assignment |
 | `buf[ch_slice, frame_slice] = buf2` | `None` | Source must match exact shape |
 
-Negative indices supported. Strided slices (`step != 1`), fancy
-indexing, boolean indexing, Ellipsis, and single-axis `buf[ch]` raise
-`TypeError` directing to `.as_ndarray()`.
+Negative indices supported. Strided slices (`step != 1`), fancy indexing, boolean indexing, Ellipsis, and single-axis `buf[ch]` raise `TypeError` directing to `.as_ndarray()`.
 
 ### DSP Operations
 
@@ -102,8 +96,7 @@ Plugin(
 
 ### Audio Processing
 
-All audio inputs accept `AudioBuffer`, `numpy.ndarray`, or any 2D
-float32 c-contiguous buffer-protocol producer.
+All audio inputs accept `AudioBuffer`, `numpy.ndarray`, or any 2D float32 c-contiguous buffer-protocol producer.
 
 | Method | Description |
 |--------|-------------|
@@ -113,8 +106,7 @@ float32 c-contiguous buffer-protocol producer.
 | `process_sidechain(main_in, main_out, sidechain_in)` | Process with sidechain input |
 | `process_double(input, output)` | Process with 64-bit double precision. Buffers dtype: `float64` (currently numpy-only) |
 
-MIDI events are tuples of `(sample_offset, status, data1, data2)`.
-Parameter changes are tuples of `(sample_offset, param_index, value)`.
+MIDI events are tuples of `(sample_offset, status, data1, data2)`. Parameter changes are tuples of `(sample_offset, param_index, value)`.
 
 ### Parameters
 
@@ -158,8 +150,7 @@ Parameter changes are tuples of `(sample_offset, param_index, value)`.
 
 ### Change Notifications
 
-Callback events are queued internally and never dispatched on the audio thread.
-Call `poll_callbacks()` from your main/UI thread to drain the queue and invoke registered callbacks.
+Callback events are queued internally and never dispatched on the audio thread. Call `poll_callbacks()` from your main/UI thread to drain the queue and invoke registered callbacks.
 
 | Method | Description |
 |--------|-------------|
@@ -212,17 +203,13 @@ All plugins must share the same sample rate.
 | `reset()` | Reset all plugins |
 | `set_non_realtime(enabled)` | Set non-realtime mode for all plugins |
 
-MIDI events are tuples of `(sample_offset, status, data1, data2)`.
-Chain parameter changes are tuples of `(sample_offset, plugin_index, param_index, value)` -- the extra `plugin_index` field (0-based) targets a specific plugin in the chain.
+MIDI events are tuples of `(sample_offset, status, data1, data2)`. Chain parameter changes are tuples of `(sample_offset, plugin_index, param_index, value)` -- the extra `plugin_index` field (0-based) targets a specific plugin in the chain.
 
 ---
 
 ## PluginBus
 
-Run N `PluginChain` branches in parallel against the same input and sum their
-outputs with a per-branch gain (a mix bus). Use it for parallel compression,
-dry-bus + reverb-send, multi-band processing, and -- via `process_midi` --
-layering one MIDI part across several instruments.
+Run N `PluginChain` branches in parallel against the same input and sum their outputs with a per-branch gain (a mix bus). Use it for parallel compression, dry-bus + reverb-send, multi-band processing, and -- via `process_midi` -- layering one MIDI part across several instruments.
 
 ### Constructor
 
@@ -230,9 +217,7 @@ layering one MIDI part across several instruments.
 PluginBus(num_in_channels, num_out_channels, max_block_size=8192, sample_rate=48000.0)
 ```
 
-Every branch added later must accept exactly `num_in_channels` inputs, produce
-exactly `num_out_channels` outputs, and run at `sample_rate`; `add_branch`
-rejects mismatches with a descriptive error.
+Every branch added later must accept exactly `num_in_channels` inputs, produce exactly `num_out_channels` outputs, and run at `sample_rate`; `add_branch` rejects mismatches with a descriptive error.
 
 ### Properties
 
@@ -263,11 +248,7 @@ Supports the context-manager protocol (`with minihost.PluginBus(...) as bus:`).
 
 ## PluginGraph
 
-General-DAG executor: arbitrary node-to-node audio and MIDI routing (plugin,
-input, output, mix, channel pick/merge, and MIDI nodes). It backs project
-files (`load_project` / `render_project`); most users reach it through those
-rather than wiring nodes by hand. Build the graph (`add_*`, `connect`,
-`set_mix_gain`), call `compile()`, then `render_block()`.
+General-DAG executor: arbitrary node-to-node audio and MIDI routing (plugin, input, output, mix, channel pick/merge, and MIDI nodes). It backs project files (`load_project` / `render_project`); most users reach it through those rather than wiring nodes by hand. Build the graph (`add_*`, `connect`, `set_mix_gain`), call `compile()`, then `render_block()`.
 
 ```python
 g = minihost.PluginGraph(max_block_size, sample_rate)
@@ -277,15 +258,9 @@ g.compile()
 g.render_block([in_buf], [out_buf], nframes)
 ```
 
-Key methods: `add_input`, `add_output`, `add_plugin`, `add_mix`,
-`add_pick_channel`, `add_merge_channels`, `add_midi_input`, `add_midi_output`,
-`add_midi_processor`, `add_midi_merge`, `connect`, `connect_midi`,
-`connect_midi_port`, `set_mix_gain`, `set_node_automation`,
-`set_midi_input_events`, `get_midi_output_events`, `compile`, `render_block`,
-`close`. See `_core.pyi` for full signatures.
+Key methods: `add_input`, `add_output`, `add_plugin`, `add_mix`, `add_pick_channel`, `add_merge_channels`, `add_midi_input`, `add_midi_output`, `add_midi_processor`, `add_midi_merge`, `connect`, `connect_midi`, `connect_midi_port`, `set_mix_gain`, `set_node_automation`, `set_midi_input_events`, `get_midi_output_events`, `compile`, `render_block`, `close`. See `_core.pyi` for full signatures.
 
-> Renamed in 0.2.0: this is the former `GraphV2`; the former `PluginGraph`
-> (parallel bus) is now `PluginBus`. See the [migration guide](migration.md).
+> Renamed in 0.2.0: this is the former `GraphV2`; the former `PluginGraph` > (parallel bus) is now `PluginBus`. See the [migration guide](migration.md).
 
 ---
 
@@ -442,8 +417,7 @@ render_midi(
 ) -> AudioBuffer | np.ndarray
 ```
 
-Render MIDI to a single buffer of shape `(channels, total_samples)`.
-Returns `AudioBuffer` by default; pass `as_=numpy.ndarray` for numpy.
+Render MIDI to a single buffer of shape `(channels, total_samples)`. Returns `AudioBuffer` by default; pass `as_=numpy.ndarray` for numpy.
 
 ```python
 render_midi_stream(
@@ -457,8 +431,7 @@ render_midi_stream(
 ) -> Iterator[AudioBuffer | np.ndarray]
 ```
 
-Generator yielding audio blocks of shape `(channels, n)` where `n <= block_size`.
-Yields `AudioBuffer` by default; pass `as_=numpy.ndarray` for numpy.
+Generator yielding audio blocks of shape `(channels, n)` where `n <= block_size`. Yields `AudioBuffer` by default; pass `as_=numpy.ndarray` for numpy.
 
 ```python
 render_midi_to_file(
@@ -485,7 +458,9 @@ audio = render_midi(plugin, "song.mid", tail_seconds="auto", tail_threshold=1e-2
 ```
 
 - `tail_threshold`: peak amplitude threshold in linear (default: `1e-4`, ~-80 dB)
+
 - `max_tail_seconds`: safety cap (default: 30s)
+
 - Rendering stops after 4 consecutive blocks below threshold
 
 ### MidiRenderer Class
@@ -537,10 +512,7 @@ read_audio(
 ) -> tuple[AudioBuffer | np.ndarray, int]
 ```
 
-Read audio file. Returns `(data, sample_rate)` where data has shape
-`(channels, samples)` and float32 dtype. Default container is
-`AudioBuffer`; pass `as_=numpy.ndarray` to receive a numpy array
-(requires numpy installed).
+Read audio file. Returns `(data, sample_rate)` where data has shape `(channels, samples)` and float32 dtype. Default container is `AudioBuffer`; pass `as_=numpy.ndarray` to receive a numpy array (requires numpy installed).
 
 Supported formats: WAV, FLAC, MP3, Vorbis.
 
@@ -553,10 +525,7 @@ write_audio(
 ) -> None
 ```
 
-Write WAV or FLAC file. Data shape: `(channels, samples)`. Accepts
-`AudioBuffer`, numpy ndarray, or any 2D float32 c-contiguous
-buffer-protocol producer (DLPack-compatible). Bit depth 16 and 24 write
-integer PCM; 32 writes IEEE float.
+Write WAV or FLAC file. Data shape: `(channels, samples)`. Accepts `AudioBuffer`, numpy ndarray, or any 2D float32 c-contiguous buffer-protocol producer (DLPack-compatible). Bit depth 16 and 24 write integer PCM; 32 writes IEEE float.
 
 ```python
 get_audio_info(path: str | Path) -> dict
@@ -583,21 +552,13 @@ resample(
 ) -> AudioBuffer | np.ndarray
 ```
 
-Resample audio data to a different sample rate. Input/output shape:
-`(channels, frames)`, float32. Accepts AudioBuffer, numpy ndarray, or
-any 2D float32 c-contiguous buffer-protocol producer. Return type
-matches the input type (AudioBuffer in -> AudioBuffer out;
-numpy.ndarray in -> numpy.ndarray out). Uses miniaudio's linear
-resampler with 4th-order low-pass anti-aliasing. Returns a copy when
-rates are equal.
+Resample audio data to a different sample rate. Input/output shape: `(channels, frames)`, float32. Accepts AudioBuffer, numpy ndarray, or any 2D float32 c-contiguous buffer-protocol producer. Return type matches the input type (AudioBuffer in -> AudioBuffer out; numpy.ndarray in -> numpy.ndarray out). Uses miniaudio's linear resampler with 4th-order low-pass anti-aliasing. Returns a copy when rates are equal.
 
 ---
 
 ## Offline Processing
 
-High-level helpers that collapse the typical block-iteration loop. See
-the `process_audio` / `process_audio_to_file` source for the exact
-contract; the headline form is:
+High-level helpers that collapse the typical block-iteration loop. See the `process_audio` / `process_audio_to_file` source for the exact contract; the headline form is:
 
 ```python
 process_audio(
@@ -609,10 +570,7 @@ process_audio(
 ) -> AudioBuffer
 ```
 
-Process in-memory audio through a plugin or chain. Returns a new
-`AudioBuffer`. Handles latency compensation (renders extra
-`latency_samples` and trims the matching head from output) and tail
-rendering (input is zero-padded past the source by `tail_seconds`).
+Process in-memory audio through a plugin or chain. Returns a new `AudioBuffer`. Handles latency compensation (renders extra `latency_samples` and trims the matching head from output) and tail rendering (input is zero-padded past the source by `tail_seconds`).
 
 ```python
 process_audio_to_file(
@@ -628,10 +586,7 @@ process_audio_to_file(
 ) -> int
 ```
 
-Read, process, and write in one call. Auto-resamples the input to the
-plugin's sample rate when they differ; auto-duplicates a mono source to
-match the plugin's expected channel count when it expects more.
-Returns the number of frames written.
+Read, process, and write in one call. Auto-resamples the input to the plugin's sample rate when they differ; auto-duplicates a mono source to match the plugin's expected channel count when it expects more. Returns the number of frames written.
 
 ---
 

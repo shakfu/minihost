@@ -35,6 +35,32 @@ int mh_audio_write(const char* path, const float* data,
                    unsigned int sample_rate, int bit_depth,
                    char* err, size_t err_size);
 
+// Broadcast Wave Format (BWF) metadata written into a WAV `bext` chunk
+// (EBU Tech 3285). All string fields are optional (NULL is treated as empty)
+// and are truncated to the field's fixed size. Dates/times follow the BWF
+// convention: origination_date "yyyy-mm-dd" (<=10 chars), origination_time
+// "hh:mm:ss" (<=8 chars). time_reference is the sample count from midnight of
+// the recording's start (a timecode anchor for film/broadcast alignment).
+typedef struct {
+    const char* description;            // free text, <=256 chars
+    const char* originator;             // <=32 chars
+    const char* originator_reference;   // <=32 chars
+    const char* origination_date;       // "yyyy-mm-dd", <=10 chars
+    const char* origination_time;       // "hh:mm:ss", <=8 chars
+    unsigned long long time_reference;  // samples since midnight
+} MH_BwfMetadata;
+
+// Write interleaved float32 data to a WAV file, optionally embedding a BWF
+// `bext` chunk. Identical to mh_audio_write when `bwf` is NULL. BWF metadata
+// is only supported for WAV output (bit_depth 16/24/32); passing non-NULL
+// `bwf` with a non-WAV path returns an error. Returns 1 on success, 0 on
+// error.
+int mh_audio_write_bwf(const char* path, const float* data,
+                       unsigned int channels, unsigned int frames,
+                       unsigned int sample_rate, int bit_depth,
+                       const MH_BwfMetadata* bwf,
+                       char* err, size_t err_size);
+
 // Audio file metadata (without full decode)
 typedef struct {
     unsigned int channels;

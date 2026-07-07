@@ -1,18 +1,15 @@
 # Migration guide
 
-This guide covers the breaking changes shipping in **0.2.0** (see CHANGELOG
-`[Unreleased]`): the `AudioBuffer` / numpy-optional migration, and the routing
-type rename (`PluginGraph` -> `PluginBus`, `GraphV2` -> `PluginGraph`).
+This guide covers the breaking changes shipping in **0.2.0** (see CHANGELOG `[Unreleased]`): the `AudioBuffer` / numpy-optional migration, and the routing type rename (`PluginGraph` -> `PluginBus`, `GraphV2` -> `PluginGraph`).
 
-The `AudioBuffer` changes each have a one-keyword fix to keep existing code
-working; the recommended patterns shown below are improvements, not
-requirements. The routing rename (section 5) is the exception -- it is a hard
-rename with no compatibility shim, because minihost is still alpha (0.x).
+The `AudioBuffer` changes each have a one-keyword fix to keep existing code working; the recommended patterns shown below are improvements, not requirements. The routing rename (section 5) is the exception -- it is a hard rename with no compatibility shim, because minihost is still alpha (0.x).
 
 ## TL;DR
 
 **Install:**
+
 - Was: `pip install minihost` (numpy was a hard dependency, installed transparently)
+
 - Now: `pip install minihost` (no numpy) **or** `pip install minihost[numpy]` (with numpy interop)
 
 **Smallest possible code change:** add `as_=np.ndarray` to your `read_audio` / `render_midi*` calls and you're done.
@@ -47,22 +44,30 @@ pip install minihost[numpy]
 What requires the `[numpy]` extra:
 
 - `read_audio(path, as_=np.ndarray)` (and the equivalent on `render_midi*`)
+
 - `AudioBuffer.as_ndarray()`
+
 - Passing a `np.ndarray` as input to `write_audio`, `resample`, `process_audio*`, `Plugin.process*`, `PluginChain.process*`
 
 What does **not** require numpy:
 
 - All `Plugin` / `PluginChain` plugin loading and processing (when fed `AudioBuffer` inputs)
+
 - `read_audio(path)` (returns `AudioBuffer`)
+
 - `write_audio(path, audio_buffer, sr)`
+
 - `resample(audio_buffer, sr_in, sr_out)`
+
 - `process_audio` / `process_audio_to_file`
+
 - `render_midi*` / `MidiRenderer` (with default `as_=AudioBuffer`)
+
 - `MidiMapper`, `AudioDevice`, `MidiIn`, `MidiFile`, all CLI commands
 
 **Symptom if you forget the extra:** the package imports fine, but the first call into a numpy-typed code path raises:
 
-```
+```text
 ImportError: AudioBuffer.as_ndarray() requires numpy. Install minihost
 with the numpy extra: 'pip install minihost[numpy]'.
 ```
@@ -124,9 +129,7 @@ while not renderer.is_finished:
 
 ### 5. Routing types renamed (`PluginGraph` -> `PluginBus`, `GraphV2` -> `PluginGraph`)
 
-0.2.0 gives the routing types a clean three-tier model. Unlike the
-`AudioBuffer` changes above, **this is a hard rename with no compatibility
-shim** -- the old names are gone in both Python and the C/C++ ABI.
+0.2.0 gives the routing types a clean three-tier model. Unlike the `AudioBuffer` changes above, **this is a hard rename with no compatibility shim** -- the old names are gone in both Python and the C/C++ ABI.
 
 | Concept | Old name | New name |
 | --- | --- | --- |
@@ -134,9 +137,7 @@ shim** -- the old names are gone in both Python and the C/C++ ABI.
 | Parallel, summed (a mix bus) | `PluginGraph` | **`PluginBus`** |
 | Arbitrary node-to-node DAG | `GraphV2` | **`PluginGraph`** |
 
-Watch the swap: **`PluginGraph` now means the DAG executor**, not the parallel
-bus. Code that used the old `PluginGraph` (the bus) must move to `PluginBus`;
-code that used `GraphV2` must move to `PluginGraph`.
+Watch the swap: **`PluginGraph` now means the DAG executor**, not the parallel bus. Code that used the old `PluginGraph` (the bus) must move to `PluginBus`; code that used `GraphV2` must move to `PluginGraph`.
 
 **Python:**
 
@@ -152,12 +153,9 @@ g = minihost.GraphV2(512, 48000.0)
 g = minihost.PluginGraph(512, 48000.0)
 ```
 
-Project files (`load_project` / `render_project`) are **unaffected**: the JSON
-schema is identical; only the Python class backing it was renamed.
+Project files (`load_project` / `render_project`) are **unaffected**: the JSON schema is identical; only the Python class backing it was renamed.
 
-New in the same release: `PluginBus.process_midi(input, output, midi_in)` fans
-the same MIDI to every branch, so one part can layer across parallel
-instruments. See the README "Parallel routing (PluginBus)" section.
+New in the same release: `PluginBus.process_midi(input, output, midi_in)` fans the same MIDI to every branch, so one part can layer across parallel instruments. See the README "Parallel routing (PluginBus)" section.
 
 **C / C++ ABI** (`MH_API_VERSION` bumped to **2.0.0**):
 
@@ -169,14 +167,9 @@ instruments. See the README "Parallel routing (PluginBus)" section.
 | DAG type | `MH_GraphV2` | `MH_PluginGraph` |
 | DAG C++ RAII wrapper | `minihost::GraphV2` | `minihost::PluginGraph` |
 
-Source file names are retained for git history (`minihost_graph.{h,cpp}` is the
-bus; `minihost_graph_v2.{h,cpp,hpp}` is the DAG); a header note in each maps the
-file to its symbol family. Binaries linked against minihost should validate the
-ABI at startup: `if (mh_api_version() < MH_API_VERSION_NUMBER) { /* mismatch */ }`.
+Source file names are retained for git history (`minihost_graph.{h,cpp}` is the bus; `minihost_graph_v2.{h,cpp,hpp}` is the DAG); a header note in each maps the file to its symbol family. Binaries linked against minihost should validate the ABI at startup: `if (mh_api_version() < MH_API_VERSION_NUMBER) { /* mismatch */ }`.
 
-To migrate a C/C++ codebase, apply the substitutions in this order -- the
-ordering matters because `mh_graph_` is a prefix of `mh_graph_v2_`, so a naive
-pass would corrupt the DAG symbols:
+To migrate a C/C++ codebase, apply the substitutions in this order -- the ordering matters because `mh_graph_` is a prefix of `mh_graph_v2_`, so a naive pass would corrupt the DAG symbols:
 
 ```sh
 # function symbols (placeholder avoids the prefix collision)
@@ -213,18 +206,25 @@ perl -pi -e 's/MH_GraphV2/MHTMP2/g; s/\bGraphV2\b/PluginGraph/g; s/MH_PluginGrap
 If you migrate to `AudioBuffer`, a few semantic differences from `np.ndarray`:
 
 - **Slicing returns copies, not views.** `buf[:, 100:200]` allocates a new buffer. To mutate the parent through a slice, write to it via `__setitem__`: `buf[:, 100:200] = source`.
+
 - **2-axis indexing only.** `buf[0]` raises `TypeError`; use `buf[0, :]`. The reasoning: a 2D buffer's single-axis indexing is ambiguous (channel? frame? a 1D array?), and the explicit form is unambiguous.
+
 - **No strided slicing, fancy indexing, boolean indexing, or `Ellipsis`.** Each raises a clear `TypeError` directing you to `.as_ndarray()`.
+
 - **`.shape` is a tuple `(channels, frames)`.** Same as numpy. `len(buf)` returns `channels` (matches numpy's `len()` on 2D arrays).
+
 - **`np.asarray(buf)` and `buf.as_ndarray()` both work** (zero-copy via DLPack / `__array__`). Use them at the boundary where you actually need numpy semantics.
 
 JUCE-backed DSP ops are exposed for the common cases so you rarely need numpy:
 
-- `buf.clear()`, `buf.apply_gain(g)`, `buf.apply_gain_ramp(start, count, lo, hi)`,
-  `buf.apply_gain_per_channel([g0, g1, ...])`
+- `buf.clear()`, `buf.apply_gain(g)`, `buf.apply_gain_ramp(start, count, lo, hi)`, `buf.apply_gain_per_channel([g0, g1, ...])`
+
 - `buf.magnitude()`, `buf.get_rms_level(channel)`
+
 - `buf.add_from(...)`, `buf.add_from_with_ramp(...)`
+
 - `buf.reverse()`, `buf.reverse_channel(ch)`
+
 - `buf.copy()`
 
 ---

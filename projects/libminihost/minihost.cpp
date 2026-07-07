@@ -22,13 +22,170 @@
   using LV2Format = juce::LV2PluginFormat;
  #endif
 #endif
+#include <juce_events/juce_events.h>
 #include <atomic>
+#include <condition_variable>
+#include <cstdlib>
+#include <deque>
+#include <functional>
+#include <future>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 using namespace juce;
+
+// ---------------------------------------------------------------------------
+// Dedicated JUCE plugin thread.
+//
+// JUCE VST3/AU plugin instances are thread-affine: construction, destruction,
+// and control-plane queries (parameter text, state, program names, ...) must
+// all run on one consistent thread. In a headless Python host there is no
+// natural message thread, and loading/using a plugin across threads (e.g.
+// open_async) deadlocks.
+//
+// This singleton owns one persistent background thread that becomes the JUCE
+// message thread and executes every thread-affine plugin operation. Callers on
+// any thread push a task + promise onto a plain mutex-protected queue and
+// block until it runs -- they never touch JUCE's own marshaling
+// (callFunctionOnMessageThread / posted CallbackMessage both proved unreliable
+// on macOS). The real-time process*() path is deliberately NOT marshaled.
+//
+// Enabled by default; set MINIHOST_MESSAGE_THREAD=0 to disable (run() then
+// executes inline on the caller's thread, the pre-existing behavior).
+// ---------------------------------------------------------------------------
+namespace {
+
+class MinihostMessageThread
+{
+public:
+    static MinihostMessageThread& instance()
+    {
+        static MinihostMessageThread inst;
+        return inst;
+    }
+
+    void init()
+    {
+        std::call_once(initFlag_, [this]()
+        {
+            const char* env = std::getenv("MINIHOST_MESSAGE_THREAD");
+            if (env != nullptr && env[0] == '0')
+                return;   // explicitly disabled
+
+            std::promise<void> ready;
+            auto fut = ready.get_future();
+            std::thread([this, &ready]()
+            {
+                juce::initialiseJuce_GUI();   // this thread becomes the message thread
+                enabled_.store(true);
+                ready.set_value();
+                // Execute queued tasks directly on this (message) thread. They
+                // are self-contained -- construction ran to completion
+                // synchronously in earlier experiments -- so no JUCE dispatch
+                // loop is needed (runDispatchLoopUntil is unavailable in the
+                // headless build anyway). A condition variable gives immediate
+                // wake-up with no busy polling.
+                for (;;)
+                {
+                    Task t{ nullptr, nullptr };
+                    {
+                        std::unique_lock<std::mutex> lk(mtx_);
+                        cv_.wait(lk, [this] {
+                            return ! queue_.empty() || ! running_.load();
+                        });
+                        if (queue_.empty())
+                            break;   // woken for shutdown with nothing pending
+                        t = queue_.front();
+                        queue_.pop_front();
+                    }
+                    try
+                    {
+                        (*t.fn)();
+                        t.prom->set_value();
+                    }
+                    catch (...)
+                    {
+                        t.prom->set_exception(std::current_exception());
+                    }
+                }
+                juce::shutdownJuce_GUI();
+            }).detach();
+            fut.wait();
+        });
+    }
+
+    // Run fn on the message thread and block until it finishes. Inline when the
+    // message thread is disabled or we are already on it.
+    void run(const std::function<void()>& fn)
+    {
+        if (! enabled_.load())
+        {
+            fn();
+            return;
+        }
+        auto* mm = juce::MessageManager::getInstanceWithoutCreating();
+        if (mm != nullptr && mm->isThisTheMessageThread())
+        {
+            fn();
+            return;
+        }
+        std::promise<void> prom;
+        auto fut = prom.get_future();
+        {
+            std::lock_guard<std::mutex> lk(mtx_);
+            queue_.push_back(Task{ &fn, &prom });
+        }
+        cv_.notify_one();
+        fut.get();   // blocks; rethrows if the task threw
+    }
+
+private:
+    MinihostMessageThread() = default;
+
+    struct Task
+    {
+        const std::function<void()>* fn;
+        std::promise<void>* prom;
+    };
+
+    std::once_flag initFlag_;
+    std::atomic<bool> enabled_{false};
+    std::atomic<bool> running_{true};
+    std::mutex mtx_;
+    std::condition_variable cv_;
+    std::deque<Task> queue_;
+};
+
+} // namespace
+
+extern "C" void mh_message_thread_init(void)
+{
+    MinihostMessageThread::instance().init();
+}
+
+// Run a callable on the JUCE plugin thread and return its result (or void).
+// Wrap the body of any thread-affine control function in this. When the plugin
+// thread is disabled, it runs inline. NOT for the process*() hot path.
+namespace {
+template <typename Fn>
+static auto runOnMsg(Fn&& fn) -> decltype(fn())
+{
+    using R = decltype(fn());
+    if constexpr (std::is_void_v<R>)
+    {
+        MinihostMessageThread::instance().run([&]() { fn(); });
+    }
+    else
+    {
+        R result{};
+        MinihostMessageThread::instance().run([&]() { result = fn(); });
+        return result;
+    }
+}
+} // namespace
 
 // ABI version reporting. The number returned reflects the version the
 // implementation was built against. Callers should compare with the
@@ -309,12 +466,17 @@ extern "C" MH_Plugin* mh_open(const char* plugin_path,
 extern "C" void mh_close(MH_Plugin* p)
 {
     if (! p) return;
-    if (p->inst)
+    // Destruction is thread-affine to JUCE's message thread, same as
+    // construction. Marshal there when enabled (inline no-op otherwise).
+    MinihostMessageThread::instance().run([&]()
     {
-        p->inst->removeListener(&p->listener);
-        p->inst->releaseResources();
-    }
-    delete p;
+        if (p->inst)
+        {
+            p->inst->removeListener(&p->listener);
+            p->inst->releaseResources();
+        }
+        delete p;
+    });
 }
 
 extern "C" const char* mh_get_path(const MH_Plugin* p)
@@ -486,9 +648,12 @@ extern "C" int mh_set_param(MH_Plugin* p, int index, float normalized_0_1)
 extern "C" int mh_get_param_info(MH_Plugin* p, int index, MH_ParamInfo* out_info)
 {
     if (!p || !p->inst || !out_info) return 0;
+    int result = 0;
+    MinihostMessageThread::instance().run([&]()
+    {
     std::lock_guard<std::mutex> lock(p->stateMutex);
     auto& params = p->inst->getParameters();
-    if (index < 0 || index >= params.size()) return 0;
+    if (index < 0 || index >= params.size()) return;
 
     auto* param = params.getUnchecked(index);
 
@@ -522,41 +687,49 @@ extern "C" int mh_get_param_info(MH_Plugin* p, int index, MH_ParamInfo* out_info
     out_info->is_boolean = param->isBoolean() ? 1 : 0;
     out_info->category = static_cast<int>(param->getCategory());
 
-    return 1;
+    result = 1;
+    });
+    return result;
 }
 
 extern "C" int mh_get_state_size(MH_Plugin* p)
 {
     if (!p || !p->inst) return 0;
-    std::lock_guard<std::mutex> lock(p->stateMutex);
-
-    MemoryBlock mb;
-    p->inst->getStateInformation(mb);
-    return (int) mb.getSize();
+    return runOnMsg([&]() -> int
+    {
+        std::lock_guard<std::mutex> lock(p->stateMutex);
+        MemoryBlock mb;
+        p->inst->getStateInformation(mb);
+        return (int) mb.getSize();
+    });
 }
 
 extern "C" int mh_get_state(MH_Plugin* p, void* buffer, int buffer_size)
 {
     if (!p || !p->inst || !buffer || buffer_size <= 0) return 0;
-    std::lock_guard<std::mutex> lock(p->stateMutex);
+    return runOnMsg([&]() -> int
+    {
+        std::lock_guard<std::mutex> lock(p->stateMutex);
+        MemoryBlock mb;
+        p->inst->getStateInformation(mb);
 
-    MemoryBlock mb;
-    p->inst->getStateInformation(mb);
+        if ((int) mb.getSize() > buffer_size)
+            return 0;
 
-    if ((int) mb.getSize() > buffer_size)
-        return 0;
-
-    std::memcpy(buffer, mb.getData(), mb.getSize());
-    return 1;
+        std::memcpy(buffer, mb.getData(), mb.getSize());
+        return 1;
+    });
 }
 
 extern "C" int mh_set_state(MH_Plugin* p, const void* data, int data_size)
 {
     if (!p || !p->inst || !data || data_size <= 0) return 0;
-    std::lock_guard<std::mutex> lock(p->stateMutex);
-
-    p->inst->setStateInformation(data, data_size);
-    return 1;
+    return runOnMsg([&]() -> int
+    {
+        std::lock_guard<std::mutex> lock(p->stateMutex);
+        p->inst->setStateInformation(data, data_size);
+        return 1;
+    });
 }
 
 extern "C" int mh_set_transport(MH_Plugin* p, const MH_TransportInfo* transport)
@@ -667,16 +840,12 @@ extern "C" int mh_process_auto(MH_Plugin* p,
 
     while (current_sample < nframes)
     {
-        // Find next chunk boundary (next param change or end of buffer)
-        int chunk_end = nframes;
-        if (param_idx < num_param_changes)
-        {
-            int next_change = param_changes[param_idx].sample_offset;
-            if (next_change > current_sample && next_change < chunk_end)
-                chunk_end = next_change;
-        }
-
-        // Apply any parameter changes at current_sample
+        // Apply every parameter change due at or before current_sample,
+        // advancing param_idx past them. This must happen BEFORE computing
+        // the chunk boundary: otherwise a change due exactly at
+        // current_sample (which is not > current_sample) fails to bound the
+        // chunk, chunk_end jumps to nframes, and any later change in this
+        // block is silently dropped.
         while (param_idx < num_param_changes &&
                param_changes[param_idx].sample_offset <= current_sample)
         {
@@ -688,6 +857,15 @@ extern "C" int mh_process_auto(MH_Plugin* p,
                 params.getUnchecked(pc.param_index)->setValueNotifyingHost(val);
             }
             ++param_idx;
+        }
+
+        // Chunk boundary = the next still-pending change, or end of buffer.
+        int chunk_end = nframes;
+        if (param_idx < num_param_changes)
+        {
+            int next_change = param_changes[param_idx].sample_offset;
+            if (next_change > current_sample && next_change < chunk_end)
+                chunk_end = next_change;
         }
 
         int chunk_size = chunk_end - current_sample;
@@ -774,17 +952,23 @@ extern "C" int mh_process_auto(MH_Plugin* p,
 extern "C" int mh_reset(MH_Plugin* p)
 {
     if (!p || !p->inst) return 0;
-    std::lock_guard<std::mutex> lock(p->stateMutex);
-    p->inst->reset();
-    return 1;
+    return runOnMsg([&]() -> int
+    {
+        std::lock_guard<std::mutex> lock(p->stateMutex);
+        p->inst->reset();
+        return 1;
+    });
 }
 
 extern "C" int mh_set_non_realtime(MH_Plugin* p, int non_realtime)
 {
     if (!p || !p->inst) return 0;
-    std::lock_guard<std::mutex> lock(p->stateMutex);
-    p->inst->setNonRealtime(non_realtime != 0);
-    return 1;
+    return runOnMsg([&]() -> int
+    {
+        std::lock_guard<std::mutex> lock(p->stateMutex);
+        p->inst->setNonRealtime(non_realtime != 0);
+        return 1;
+    });
 }
 
 // Populate a format manager with all supported plugin formats.
@@ -887,80 +1071,86 @@ extern "C" int mh_probe(const char* plugin_path,
 extern "C" int mh_param_to_text(MH_Plugin* p, int index, float value, char* buf, size_t buf_size)
 {
     if (!p || !p->inst || !buf || buf_size == 0) return 0;
-    std::lock_guard<std::mutex> lock(p->stateMutex);
+    return runOnMsg([&]() -> int
+    {
+        std::lock_guard<std::mutex> lock(p->stateMutex);
+        auto& params = p->inst->getParameters();
+        if (index < 0 || index >= params.size()) return 0;
 
-    auto& params = p->inst->getParameters();
-    if (index < 0 || index >= params.size()) return 0;
+        auto* param = params.getUnchecked(index);
+        value = jlimit(0.0f, 1.0f, value);
 
-    auto* param = params.getUnchecked(index);
-    value = jlimit(0.0f, 1.0f, value);
-
-    // getText returns the display string for a given normalized value
-    // Second parameter is maximum string length hint
-    String text = param->getText(value, static_cast<int>(buf_size) - 1);
-    std::snprintf(buf, buf_size, "%s", text.toRawUTF8());
-
-    return 1;
+        // getText returns the display string for a given normalized value.
+        String text = param->getText(value, static_cast<int>(buf_size) - 1);
+        std::snprintf(buf, buf_size, "%s", text.toRawUTF8());
+        return 1;
+    });
 }
 
 extern "C" int mh_param_from_text(MH_Plugin* p, int index, const char* text, float* out_value)
 {
     if (!p || !p->inst || !text || !out_value) return 0;
-    std::lock_guard<std::mutex> lock(p->stateMutex);
+    return runOnMsg([&]() -> int
+    {
+        std::lock_guard<std::mutex> lock(p->stateMutex);
+        auto& params = p->inst->getParameters();
+        if (index < 0 || index >= params.size()) return 0;
 
-    auto& params = p->inst->getParameters();
-    if (index < 0 || index >= params.size()) return 0;
-
-    auto* param = params.getUnchecked(index);
-
-    // getValueForText converts display string to normalized value
-    // Note: Many plugins don't implement this properly and return 0
-    float value = param->getValueForText(String::fromUTF8(text));
-
-    // Clamp to valid range
-    *out_value = jlimit(0.0f, 1.0f, value);
-
-    return 1;
+        auto* param = params.getUnchecked(index);
+        // getValueForText converts display string to normalized value.
+        float value = param->getValueForText(String::fromUTF8(text));
+        *out_value = jlimit(0.0f, 1.0f, value);
+        return 1;
+    });
 }
 
 extern "C" int mh_get_num_programs(MH_Plugin* p)
 {
     if (!p || !p->inst) return 0;
-    std::lock_guard<std::mutex> lock(p->stateMutex);
-    return p->inst->getNumPrograms();
+    return runOnMsg([&]() -> int
+    {
+        std::lock_guard<std::mutex> lock(p->stateMutex);
+        return p->inst->getNumPrograms();
+    });
 }
 
 extern "C" int mh_get_program_name(MH_Plugin* p, int index, char* buf, size_t buf_size)
 {
     if (!p || !p->inst || !buf || buf_size == 0) return 0;
-    std::lock_guard<std::mutex> lock(p->stateMutex);
+    return runOnMsg([&]() -> int
+    {
+        std::lock_guard<std::mutex> lock(p->stateMutex);
+        int numPrograms = p->inst->getNumPrograms();
+        if (index < 0 || index >= numPrograms) return 0;
 
-    int numPrograms = p->inst->getNumPrograms();
-    if (index < 0 || index >= numPrograms) return 0;
-
-    String name = p->inst->getProgramName(index);
-    std::snprintf(buf, buf_size, "%s", name.toRawUTF8());
-
-    return 1;
+        String name = p->inst->getProgramName(index);
+        std::snprintf(buf, buf_size, "%s", name.toRawUTF8());
+        return 1;
+    });
 }
 
 extern "C" int mh_get_program(MH_Plugin* p)
 {
     if (!p || !p->inst) return -1;
-    std::lock_guard<std::mutex> lock(p->stateMutex);
-    return p->inst->getCurrentProgram();
+    return runOnMsg([&]() -> int
+    {
+        std::lock_guard<std::mutex> lock(p->stateMutex);
+        return p->inst->getCurrentProgram();
+    });
 }
 
 extern "C" int mh_set_program(MH_Plugin* p, int index)
 {
     if (!p || !p->inst) return 0;
-    std::lock_guard<std::mutex> lock(p->stateMutex);
+    return runOnMsg([&]() -> int
+    {
+        std::lock_guard<std::mutex> lock(p->stateMutex);
+        int numPrograms = p->inst->getNumPrograms();
+        if (index < 0 || index >= numPrograms) return 0;
 
-    int numPrograms = p->inst->getNumPrograms();
-    if (index < 0 || index >= numPrograms) return 0;
-
-    p->inst->setCurrentProgram(index);
-    return 1;
+        p->inst->setCurrentProgram(index);
+        return 1;
+    });
 }
 
 extern "C" int mh_get_num_buses(MH_Plugin* p, int is_input)
@@ -1003,7 +1193,7 @@ extern "C" int mh_get_bus_info(MH_Plugin* p, int is_input, int bus_index, MH_Bus
 
 // Plugin-construction core. Takes an already-initialized format manager
 // (caller's responsibility) so a session can pass its shared manager.
-static MH_Plugin* createPluginWithFm(AudioPluginFormatManager& fm,
+static MH_Plugin* createPluginWithFm_impl(AudioPluginFormatManager& fm,
                                       const char* plugin_path,
                                       double sample_rate,
                                       int max_block_size,
@@ -1067,15 +1257,22 @@ static MH_Plugin* createPluginWithFm(AudioPluginFormatManager& fm,
     inst->setRateAndBufferSizeDetails(sample_rate, max_block_size);
     inst->prepareToPlay(sample_rate, max_block_size);
 
-    // Use actual channel counts after bus config and prepareToPlay
-    p->inCh  = jmax(1, inst->getTotalNumInputChannels());
-    p->outCh = jmax(1, inst->getTotalNumOutputChannels());
+    // Report the plugin's true channel counts after bus config and
+    // prepareToPlay. A synthesizer with no audio input honestly reports 0
+    // inputs (not an inflated 1), and the rare 0-output plugin reports 0
+    // outputs, so callers can distinguish instruments from effects. Buffer
+    // validation is "at least" (see validate_process_shape in the bindings),
+    // so honest lower counts never reject an over-provisioned caller.
+    p->inCh  = jmax(0, inst->getTotalNumInputChannels());
+    p->outCh = jmax(0, inst->getTotalNumOutputChannels());
 
     // Allocate the combined processing buffer once. Size: max channels
     // required across input (main + sidechain) and output. JUCE's processBlock
     // reads inputs from channels 0..inCh+sidechainCh-1 and writes outputs to
-    // channels 0..outCh-1, so the buffer must accommodate both.
-    int totalProcessCh = jmax(p->inCh + p->sidechainCh, p->outCh);
+    // channels 0..outCh-1, so the buffer must accommodate both. Keep at least
+    // one channel so a pure-MIDI plugin (0 in / 0 out) still receives a valid
+    // (if unused) buffer to hand to processBlock.
+    int totalProcessCh = jmax(1, jmax(p->inCh + p->sidechainCh, p->outCh));
     p->processBuf.setSize(totalProcessCh, max_block_size, false, false, true);
     p->processBufD.setSize(totalProcessCh, max_block_size, false, false, true);
 
@@ -1086,6 +1283,28 @@ static MH_Plugin* createPluginWithFm(AudioPluginFormatManager& fm,
     p->inst = std::move(inst);
     p->inst->addListener(&p->listener);
     return p.release();
+}
+
+// Thread-marshaling wrapper: run construction on the JUCE message thread when
+// enabled (SPIKE), else inline on the caller's thread (default behavior).
+static MH_Plugin* createPluginWithFm(AudioPluginFormatManager& fm,
+                                     const char* plugin_path,
+                                     double sample_rate,
+                                     int max_block_size,
+                                     int main_in_ch,
+                                     int main_out_ch,
+                                     int sidechain_in_ch,
+                                     char* err_buf,
+                                     size_t err_buf_size)
+{
+    MH_Plugin* result = nullptr;
+    MinihostMessageThread::instance().run([&]()
+    {
+        result = createPluginWithFm_impl(fm, plugin_path, sample_rate,
+                                         max_block_size, main_in_ch, main_out_ch,
+                                         sidechain_in_ch, err_buf, err_buf_size);
+    });
+    return result;
 }
 
 extern "C" MH_Plugin* mh_open_ex(const char* plugin_path,
@@ -1244,35 +1463,41 @@ extern "C" int mh_end_param_gesture(MH_Plugin* p, int index)
 extern "C" int mh_get_program_state_size(MH_Plugin* p)
 {
     if (!p || !p->inst) return 0;
-    std::lock_guard<std::mutex> lock(p->stateMutex);
-
-    MemoryBlock mb;
-    p->inst->getCurrentProgramStateInformation(mb);
-    return (int) mb.getSize();
+    return runOnMsg([&]() -> int
+    {
+        std::lock_guard<std::mutex> lock(p->stateMutex);
+        MemoryBlock mb;
+        p->inst->getCurrentProgramStateInformation(mb);
+        return (int) mb.getSize();
+    });
 }
 
 extern "C" int mh_get_program_state(MH_Plugin* p, void* buffer, int buffer_size)
 {
     if (!p || !p->inst || !buffer || buffer_size <= 0) return 0;
-    std::lock_guard<std::mutex> lock(p->stateMutex);
+    return runOnMsg([&]() -> int
+    {
+        std::lock_guard<std::mutex> lock(p->stateMutex);
+        MemoryBlock mb;
+        p->inst->getCurrentProgramStateInformation(mb);
 
-    MemoryBlock mb;
-    p->inst->getCurrentProgramStateInformation(mb);
+        if ((int) mb.getSize() > buffer_size)
+            return 0;
 
-    if ((int) mb.getSize() > buffer_size)
-        return 0;
-
-    std::memcpy(buffer, mb.getData(), mb.getSize());
-    return 1;
+        std::memcpy(buffer, mb.getData(), mb.getSize());
+        return 1;
+    });
 }
 
 extern "C" int mh_set_program_state(MH_Plugin* p, const void* data, int data_size)
 {
     if (!p || !p->inst || !data || data_size <= 0) return 0;
-    std::lock_guard<std::mutex> lock(p->stateMutex);
-
-    p->inst->setCurrentProgramStateInformation(data, data_size);
-    return 1;
+    return runOnMsg([&]() -> int
+    {
+        std::lock_guard<std::mutex> lock(p->stateMutex);
+        p->inst->setCurrentProgramStateInformation(data, data_size);
+        return 1;
+    });
 }
 
 extern "C" int mh_set_sample_rate(MH_Plugin* p, double new_sample_rate)
@@ -1283,6 +1508,8 @@ extern "C" int mh_set_sample_rate(MH_Plugin* p, double new_sample_rate)
     // negative/zero/NaN must fail fast.
     if (!(new_sample_rate > 0.0)) return 0;
 
+    return runOnMsg([&]() -> int
+    {
     std::lock_guard<std::mutex> lock(p->stateMutex);
 
     // Save current state (both blob and individual param values as fallback)
@@ -1336,6 +1563,7 @@ extern "C" int mh_set_sample_rate(MH_Plugin* p, double new_sample_rate)
     }
 
     return 1;
+    });
 }
 
 extern "C" double mh_get_sample_rate(MH_Plugin* p)
@@ -1413,6 +1641,8 @@ extern "C" int mh_set_processing_precision(MH_Plugin* p, int precision)
     if (!p || !p->inst) return 0;
     if (precision != MH_PRECISION_SINGLE && precision != MH_PRECISION_DOUBLE) return 0;
 
+    return runOnMsg([&]() -> int
+    {
     // Double precision requires plugin support
     if (precision == MH_PRECISION_DOUBLE && !p->inst->supportsDoublePrecisionProcessing())
         return 0;
@@ -1454,6 +1684,7 @@ extern "C" int mh_set_processing_precision(MH_Plugin* p, int precision)
         p->inst->setStateInformation(stateData.getData(), static_cast<int>(stateData.getSize()));
 
     return 1;
+    });
 }
 
 extern "C" int mh_set_track_properties(MH_Plugin* p, const char* name,

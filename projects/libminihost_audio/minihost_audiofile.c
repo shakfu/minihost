@@ -292,19 +292,126 @@ static int strcasecmp_ext(const char* a, const char* b) {
     return (unsigned char)*a - (unsigned char)*b;
 }
 
-int mh_audio_write(const char* path, const float* data,
-                   unsigned int channels, unsigned int frames,
-                   unsigned int sample_rate, int bit_depth,
-                   char* err, size_t err_size) {
+// ---- BWF (Broadcast Wave Format) bext chunk ----
+
+// Copy a source string into a fixed-size, null-padded destination field,
+// truncating if longer (BWF fields are fixed width). NULL source => all zeros.
+static void bwf_copy_field(unsigned char* dst, size_t field_size, const char* src) {
+    memset(dst, 0, field_size);
+    if (!src) return;
+    size_t n = strlen(src);
+    if (n > field_size) n = field_size;
+    memcpy(dst, src, n);
+}
+
+static void put_u16_le(unsigned char* p, unsigned int v) {
+    p[0] = (unsigned char)(v & 0xFF);
+    p[1] = (unsigned char)((v >> 8) & 0xFF);
+}
+
+static void put_u32_le(unsigned char* p, unsigned long v) {
+    p[0] = (unsigned char)(v & 0xFFUL);
+    p[1] = (unsigned char)((v >> 8) & 0xFFUL);
+    p[2] = (unsigned char)((v >> 16) & 0xFFUL);
+    p[3] = (unsigned char)((v >> 24) & 0xFFUL);
+}
+
+static unsigned long get_u32_le(const unsigned char* p) {
+    return (unsigned long)p[0] | ((unsigned long)p[1] << 8) |
+           ((unsigned long)p[2] << 16) | ((unsigned long)p[3] << 24);
+}
+
+// EBU Tech 3285 fixed-size portion of the bext chunk (no coding history).
+#define BWF_BEXT_FIXED_SIZE 602
+
+// Append a BWF `bext` chunk to an existing, finalized WAV file and fix up the
+// RIFF chunk size. The chunk is written after the data chunk; compliant WAV
+// readers (including miniaudio) locate chunks by scanning, so ordering does
+// not matter. Returns 1 on success, 0 on error.
+static int append_bext_chunk(const char* path, const MH_BwfMetadata* bwf,
+                             char* err, size_t err_size) {
+    unsigned char bext[BWF_BEXT_FIXED_SIZE];
+    memset(bext, 0, sizeof(bext));
+    // Field offsets per EBU Tech 3285.
+    bwf_copy_field(bext + 0,   256, bwf->description);
+    bwf_copy_field(bext + 256, 32,  bwf->originator);
+    bwf_copy_field(bext + 288, 32,  bwf->originator_reference);
+    bwf_copy_field(bext + 320, 10,  bwf->origination_date);
+    bwf_copy_field(bext + 330, 8,   bwf->origination_time);
+    put_u32_le(bext + 338, (unsigned long)(bwf->time_reference & 0xFFFFFFFFULL));
+    put_u32_le(bext + 342, (unsigned long)((bwf->time_reference >> 32) & 0xFFFFFFFFULL));
+    put_u16_le(bext + 346, 1);  // Version = 1
+    // UMID (348..411), loudness values (412..421) and Reserved (422..601)
+    // remain zero-filled.
+
+    FILE* f = fopen(path, "r+b");
+    if (!f) {
+        if (err && err_size > 0)
+            snprintf(err, err_size, "Failed to reopen WAV for BWF metadata: %s", path);
+        return 0;
+    }
+
+    unsigned char sizebuf[4];
+    if (fseek(f, 4, SEEK_SET) != 0 || fread(sizebuf, 1, 4, f) != 4) {
+        fclose(f);
+        if (err && err_size > 0) snprintf(err, err_size, "Failed to read RIFF header");
+        return 0;
+    }
+    unsigned long riff_size = get_u32_le(sizebuf);
+
+    unsigned char hdr[8];
+    memcpy(hdr, "bext", 4);
+    put_u32_le(hdr + 4, (unsigned long)BWF_BEXT_FIXED_SIZE);
+
+    if (fseek(f, 0, SEEK_END) != 0 ||
+        fwrite(hdr, 1, 8, f) != 8 ||
+        fwrite(bext, 1, BWF_BEXT_FIXED_SIZE, f) != BWF_BEXT_FIXED_SIZE) {
+        fclose(f);
+        if (err && err_size > 0) snprintf(err, err_size, "Failed to append bext chunk");
+        return 0;
+    }
+
+    // The chunk added 8 (header) + 602 (payload) bytes; 602 is even so no pad
+    // byte is required. Grow the RIFF size by the same amount.
+    unsigned long new_size = riff_size + 8 + BWF_BEXT_FIXED_SIZE;
+    put_u32_le(sizebuf, new_size);
+    if (fseek(f, 4, SEEK_SET) != 0 || fwrite(sizebuf, 1, 4, f) != 4) {
+        fclose(f);
+        if (err && err_size > 0) snprintf(err, err_size, "Failed to update RIFF size");
+        return 0;
+    }
+
+    fclose(f);
+    return 1;
+}
+
+int mh_audio_write_bwf(const char* path, const float* data,
+                       unsigned int channels, unsigned int frames,
+                       unsigned int sample_rate, int bit_depth,
+                       const MH_BwfMetadata* bwf,
+                       char* err, size_t err_size) {
     if (!path || !data) {
         if (err && err_size > 0) snprintf(err, err_size, "Invalid arguments");
         return 0;
     }
 
     const char* ext = get_extension(path);
+    int is_wav = (strcasecmp_ext(ext, ".wav") == 0);
 
-    if (strcasecmp_ext(ext, ".wav") == 0) {
-        return write_wav(path, data, channels, frames, sample_rate, bit_depth, err, err_size);
+    if (bwf && !is_wav) {
+        if (err && err_size > 0)
+            snprintf(err, err_size, "BWF metadata is only supported for WAV output");
+        return 0;
+    }
+
+    if (is_wav) {
+        if (!write_wav(path, data, channels, frames, sample_rate, bit_depth, err, err_size))
+            return 0;
+        if (bwf && !append_bext_chunk(path, bwf, err, err_size)) {
+            remove(path);
+            return 0;
+        }
+        return 1;
     } else if (strcasecmp_ext(ext, ".flac") == 0) {
         return write_flac(path, data, channels, frames, sample_rate, bit_depth, err, err_size);
     } else {
@@ -312,6 +419,14 @@ int mh_audio_write(const char* path, const float* data,
             snprintf(err, err_size, "Unsupported format '%s' (use .wav or .flac)", ext);
         return 0;
     }
+}
+
+int mh_audio_write(const char* path, const float* data,
+                   unsigned int channels, unsigned int frames,
+                   unsigned int sample_rate, int bit_depth,
+                   char* err, size_t err_size) {
+    return mh_audio_write_bwf(path, data, channels, frames, sample_rate,
+                              bit_depth, NULL, err, err_size);
 }
 
 int mh_audio_get_file_info(const char* path, MH_AudioFileInfo* info,

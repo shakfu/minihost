@@ -449,8 +449,14 @@ class MidiRenderer:
         # Get parameters
         self.sample_rate = plugin.sample_rate
         self._tpq = self._midi_file.ticks_per_quarter
+        # Input is silence for a MIDI-driven render, so provisioning a
+        # generous stereo-minimum input buffer is harmless. Output, however,
+        # should match the plugin's real channel count: a genuine mono plugin
+        # renders one channel (floored at 1 so a 0-output plugin still gets a
+        # valid buffer), rather than a stereo file with a silent second
+        # channel.
         self._in_channels = max(plugin.num_input_channels, 2)
-        self._out_channels = max(plugin.num_output_channels, 2)
+        self._out_channels = max(plugin.num_output_channels, 1)
 
         # Determine tail length
         if self._auto_tail:

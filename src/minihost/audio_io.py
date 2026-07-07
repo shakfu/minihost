@@ -98,6 +98,7 @@ def write_audio(
     data: Any,
     sample_rate: int,
     bit_depth: int = 24,
+    bwf: dict | None = None,
 ) -> None:
     """Write audio data to an audio file (WAV or FLAC).
 
@@ -110,6 +111,12 @@ def write_audio(
         bit_depth: Bit depth (16, 24, or 32). Default 24.
             16 and 24 write integer PCM; 32 writes IEEE float (WAV only).
             FLAC supports 16 and 24 only.
+        bwf: Optional Broadcast Wave (bext) metadata for WAV output. A dict
+            with any of: ``description``, ``originator``,
+            ``originator_reference``, ``origination_date`` ('yyyy-mm-dd'),
+            ``origination_time`` ('hh:mm:ss'), ``time_reference`` (int samples
+            since midnight). Only valid for WAV; passing it with a FLAC path
+            raises.
 
     Raises:
         ValueError: If bit_depth is invalid or extension is unsupported.
@@ -132,6 +139,9 @@ def write_audio(
     if bit_depth not in _VALID_BIT_DEPTHS:
         raise ValueError(f"bit_depth must be 16, 24, or 32, got {bit_depth}")
 
+    if bwf is not None and ext != ".wav":
+        raise ValueError("BWF (bext) metadata is only supported for WAV output.")
+
     # AudioBuffer satisfies _write directly via DLPack (no numpy needed).
     # For other inputs (numpy ndarray, list-of-lists, etc.) we may need
     # numpy to coerce to a 2D float32 c-contiguous buffer. Detect.
@@ -144,7 +154,7 @@ def write_audio(
         if write_data.ndim == 1:
             write_data = write_data.reshape(1, -1)
 
-    _write(str(path), write_data, int(sample_rate), bit_depth)
+    _write(str(path), write_data, int(sample_rate), bit_depth, bwf)
 
 
 def resample(

@@ -3,14 +3,19 @@
 ## Requirements
 
 - CMake 3.20+
+
 - C++17 compiler
+
 - JUCE framework (automatically downloaded if not present)
+
 - Vendored C libraries: miniaudio, tflac, libremidi, midifile (see [Vendored Dependencies](vendored.md))
 
 ### Platform-specific
 
 - **macOS**: Xcode command line tools
+
 - **Windows**: Visual Studio 2019+ or MinGW
+
 - **Linux**:
 
   ```bash

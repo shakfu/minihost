@@ -18,7 +18,7 @@ Non-goals for v1: GUI, realtime audio device callback, plugin sidechain inputs, 
 
 ### Nodes
 
-```
+```text
 Node
   id: str
   kind: "plugin" | "input" | "output" | "gain" | "mix"
@@ -32,7 +32,7 @@ Built-in non-plugin nodes are kept tiny and pure-Python: `input` (graph source, 
 
 ### Edges
 
-```
+```text
 Edge
   src: (node_id, port_idx)
   dst: (node_id, port_idx)
@@ -52,8 +52,11 @@ Reuse the existing `MH_ParamChange` model. Per-node automation is a sorted list 
 `Graph.compile()` produces an immutable `CompiledGraph`:
 
 1. Validate: no cycles (Kahn's algorithm), all edges have matching channel counts, every plugin node has been `prepare`d.
+
 2. Topological sort -> linear `schedule: list[NodeId]`.
+
 3. Allocate buffer pool: one `np.ndarray(shape=(channels, block_size), dtype=f32)` per edge. Reuse via liveness analysis (an edge's buffer is free after its last consumer runs in the schedule) — this matters once graphs get wide; v1 can skip and allocate per-edge.
+
 4. Resolve each node's input/output buffer views into the pool.
 
 Recompilation is required on any topology change. Parameter and automation changes do not recompile.
@@ -111,9 +114,13 @@ cg.render(duration_seconds=10.0)
 ## Open questions
 
 - **Latency compensation (PDC).** Plugins report latency via `mh_get_latency`; correct PDC requires per-path delay insertion at fan-in points. Defer to v2; document that mixed wet/dry paths will phase until then.
+
 - **Feedback loops.** Require a one-block delay node on the back-edge to break the cycle. v2.
+
 - **Sidechain inputs.** Plugins with multiple input buses need port metadata from JUCE we don't currently expose. Track as a C ABI gap, not a graph problem.
+
 - **MIDI routing.** Same model as audio edges, separate buffer type. Straightforward but adds a second scheduling lane; defer to v1.5.
+
 - **Realtime mode.** Same scheduler driven from an `AudioDevice` callback. The Python GIL is the obvious risk; if it bites, the scheduler is the right thing to port to C++.
 
 ## Validation plan
@@ -121,7 +128,9 @@ cg.render(duration_seconds=10.0)
 Before committing to the design, prove out:
 
 1. Linear chain through the graph executor matches `PluginChain.process_auto` sample-for-sample on a fixed input.
+
 2. Fan-out + `mix` produces bit-identical output to manually summing two `PluginChain` renders.
+
 3. Automation slicing across block boundaries matches single-node `process_auto` behavior.
 
 If those three hold, the scheduler is correct enough to build a UI against.

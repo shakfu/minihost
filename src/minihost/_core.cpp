@@ -51,6 +51,19 @@ public:
         buf_.clear();
     }
 
+    // Non-owning view constructor: alias an existing, externally-owned
+    // contiguous channel block (JUCE's setDataToReferTo neither copies nor
+    // frees the referenced data). Because the parent's channels are laid out
+    // planar and contiguous, a contiguous channel range is itself a valid
+    // contiguous planar block, so the c_contig invariant carries over. The
+    // caller MUST keep the backing memory alive for the view's lifetime
+    // (the Python binding does this via nanobind keep_alive).
+    struct AliasTag {};
+    MhAudioBufferT(AliasTag, T* const* channelPtrs, int numChannels, int numFrames)
+    {
+        buf_.setDataToReferTo(const_cast<T**>(channelPtrs), numChannels, numFrames);
+    }
+
     int channels() const { return buf_.getNumChannels(); }
     int frames()   const { return buf_.getNumSamples(); }
     T*       data()       { return buf_.getWritePointer(0); }
@@ -2517,6 +2530,12 @@ private:
 NB_MODULE(_core, m) {
     m.doc() = "minihost - Python bindings for audio plugin hosting";
 
+    // Bring up the dedicated JUCE plugin thread before any plugin can be
+    // loaded, so plugin construction/destruction/affine ops are marshaled onto
+    // it and plugins are safe to use across threads. Opt out with
+    // MINIHOST_MESSAGE_THREAD=0.
+    mh_message_thread_init();
+
     // ABI version of the linked C library. Header constants
     // MH_API_VERSION_{MAJOR,MINOR,PATCH} are exposed so a wheel built against
     // one header version can detect a mismatch with a separately-installed
@@ -2703,6 +2722,14 @@ NB_MODULE(_core, m) {
     // Processing precision constants
     m.attr("MH_PRECISION_SINGLE") = MH_PRECISION_SINGLE;
     m.attr("MH_PRECISION_DOUBLE") = MH_PRECISION_DOUBLE;
+
+    // Default capacity of the MIDI-output buffer used by process_midi /
+    // process_auto when the caller does not pass an explicit
+    // midi_out_capacity. Events beyond the active capacity are dropped by
+    // the C layer; a returned MIDI-out list whose length equals the
+    // capacity means output may have been truncated -- raise the per-call
+    // midi_out_capacity argument for dense streams (e.g. MPE aftertouch).
+    m.attr("MIDI_OUT_CAPACITY") = MIDI_OUT_CAPACITY;
 
     // ----------------------------------------------------------------------
     // AudioBuffer (wrapper around juce::AudioBuffer<float>)
@@ -3051,6 +3078,35 @@ NB_MODULE(_core, m) {
              "Reverse a single channel's sample order in place over "
              "[start, start+count). Defaults to the whole channel.")
 
+        // ---- Zero-copy channel-range view ----
+        .def("channel_view",
+             [](nb::handle self_h, int start, int count) {
+                 auto& self = nb::cast<MhAudioBuffer&>(self_h);
+                 if (start < 0 || count < 1 ||
+                     start + count > self.channels()) {
+                     throw nb::value_error(
+                         "channel_view range out of bounds "
+                         "(need start >= 0, count >= 1, "
+                         "start + count <= channels)");
+                 }
+                 std::vector<T*> ptrs((size_t)count);
+                 for (int i = 0; i < count; ++i) {
+                     ptrs[(size_t)i] = self.juce().getWritePointer(start + i);
+                 }
+                 auto* view = new MhAudioBuffer(
+                     typename MhAudioBuffer::AliasTag{},
+                     ptrs.data(), count, self.frames());
+                 return nb::cast(view, nb::rv_policy::take_ownership);
+             },
+             "start"_a, "count"_a, nb::keep_alive<0, 1>(),
+             "Return a new AudioBuffer aliasing (zero-copy) the contiguous "
+             "channel range [start, start+count) of this buffer. Writes "
+             "through the view are visible in the parent and vice versa. The "
+             "parent is kept alive for the view's lifetime; do not resize the "
+             "parent while a view exists. Only channel ranges are supported "
+             "(channels are contiguous); frame slicing would require strided "
+             "views and is not offered.")
+
         // ---- Buffer-protocol export (DLPack) ----
         // Allows Plugin.process(buf, out) etc. to consume AudioBuffer
         // directly without an explicit .as_ndarray() / memoryview conversion.
@@ -3125,7 +3181,21 @@ NB_MODULE(_core, m) {
     bind_audio_buffer(float{},  "AudioBuffer",  "float32");
     bind_audio_buffer(double{}, "AudioBufferD", "float64");
 
-    nb::class_<Plugin>(m, "Plugin")
+    nb::class_<Plugin>(m, "Plugin",
+        "A loaded audio plugin (VST3 or AudioUnit).\n\n"
+        "Threading: construction, destruction, and thread-affine control "
+        "operations (state, parameter text, program names, reset, sample_rate, "
+        "processing precision, ...) are marshaled onto a dedicated native "
+        "plugin thread, so a plugin may be built on one thread and used or "
+        "closed from another (this is what makes open_async safe). Disable "
+        "with the MINIHOST_MESSAGE_THREAD=0 environment variable. The process "
+        "methods (process, process_midi, process_auto, process_double, "
+        "process_sidechain) are the exception: they run lock-free on the "
+        "caller's thread for real-time use and must be called from a single "
+        "thread. Reconfiguring methods (set_sample_rate, set_state, "
+        "set_processing_precision, set_non_realtime, reset) still must not "
+        "overlap a process call -- they reconfigure the audio pipeline while "
+        "process runs unprotected. Stop processing before calling them.")
         .def(nb::init<const std::string&, double, int, int, int, int>(),
              nb::arg("path"),
              nb::arg("sample_rate") = 48000.0,
@@ -3819,7 +3889,8 @@ NB_MODULE(_core, m) {
     m.def("audio_write", [](const std::string& path,
                             nb::ndarray<const float, nb::shape<-1, -1>, nb::c_contig, nb::device::cpu> data,
                             unsigned int sample_rate,
-                            int bit_depth) {
+                            int bit_depth,
+                            nb::object bwf) {
         size_t channels = data.shape(0);
         size_t frames = data.shape(1);
 
@@ -3828,14 +3899,51 @@ NB_MODULE(_core, m) {
         planar_to_interleaved(data.data(), interleaved.data(), channels, frames);
 
         char err[1024] = {0};
-        int ok = mh_audio_write(path.c_str(), interleaved.data(),
+        int ok;
+        if (bwf.is_none()) {
+            ok = mh_audio_write(path.c_str(), interleaved.data(),
                                 (unsigned int)channels, (unsigned int)frames,
                                 sample_rate, bit_depth, err, sizeof(err));
+        } else {
+            nb::dict d = nb::cast<nb::dict>(bwf);
+            auto get_str = [&](const char* key) -> std::string {
+                return d.contains(key) ? nb::cast<std::string>(d[key])
+                                       : std::string();
+            };
+            // Keep the backing strings alive for the duration of the C call;
+            // MH_BwfMetadata holds borrowed const char* pointers.
+            std::string desc    = get_str("description");
+            std::string orig    = get_str("originator");
+            std::string origref = get_str("originator_reference");
+            std::string date    = get_str("origination_date");
+            std::string time    = get_str("origination_time");
+            unsigned long long tref = 0;
+            if (d.contains("time_reference")) {
+                tref = nb::cast<unsigned long long>(d["time_reference"]);
+            }
+            MH_BwfMetadata meta;
+            meta.description          = desc.empty()    ? nullptr : desc.c_str();
+            meta.originator           = orig.empty()    ? nullptr : orig.c_str();
+            meta.originator_reference = origref.empty() ? nullptr : origref.c_str();
+            meta.origination_date     = date.empty()    ? nullptr : date.c_str();
+            meta.origination_time     = time.empty()    ? nullptr : time.c_str();
+            meta.time_reference       = tref;
+            ok = mh_audio_write_bwf(path.c_str(), interleaved.data(),
+                                    (unsigned int)channels, (unsigned int)frames,
+                                    sample_rate, bit_depth, &meta,
+                                    err, sizeof(err));
+        }
         if (!ok) {
             throw std::runtime_error(std::string(err));
         }
-    }, nb::arg("path"), nb::arg("data"), nb::arg("sample_rate"), nb::arg("bit_depth") = 24,
-       "Write audio data to a WAV file. Data shape: (channels, frames).");
+    }, nb::arg("path"), nb::arg("data"), nb::arg("sample_rate"),
+       nb::arg("bit_depth") = 24, nb::arg("bwf") = nb::none(),
+       "Write audio data to a WAV or FLAC file. Data shape: (channels, "
+       "frames). Pass bwf=dict(...) to embed Broadcast Wave (bext) metadata "
+       "(WAV only); recognized keys: description, originator, "
+       "originator_reference, origination_date ('yyyy-mm-dd'), "
+       "origination_time ('hh:mm:ss'), time_reference (int samples since "
+       "midnight).");
 
     m.def("audio_resample", [](
                 nb::ndarray<const float, nb::shape<-1, -1>, nb::c_contig, nb::device::cpu> data,
