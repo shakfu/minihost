@@ -103,13 +103,16 @@ extern "C" {
 // Compare with MH_API_VERSION_NUMBER (header-side) to detect mismatches.
 int mh_api_version(void);
 
-// Bring up the dedicated JUCE plugin thread. Idempotent; call once before any
-// plugin is loaded (e.g. at module import). All plugin construction,
-// destruction, and thread-affine control operations are marshaled onto this
-// thread, which makes plugins safe to build on one thread and use/close on
-// another (e.g. open_async). Enabled by default; set MINIHOST_MESSAGE_THREAD=0
-// to disable (operations then run inline on the caller's thread, and
-// cross-thread plugin use is unsafe again). See minihost.cpp.
+// Bring up the dedicated JUCE plugin thread. Idempotent. Called automatically
+// on the first plugin load (not at import), so a process that never loads a
+// plugin does no JUCE initialization -- important on headless systems.
+// Creates the JUCE MessageManager on a background thread (no GUI/display init)
+// and marshals all plugin construction, destruction, and thread-affine control
+// operations onto it, which makes plugins safe to build on one thread and
+// use/close on another (e.g. open_async). Enabled by default; set
+// MINIHOST_MESSAGE_THREAD=0 to disable (operations then run inline on the
+// caller's thread, and cross-thread plugin use is unsafe again). Call it
+// explicitly only to force the thread up early. See minihost.cpp.
 void mh_message_thread_init(void);
 
 // Returns the implementation's API version as a "MAJOR.MINOR.PATCH" string.

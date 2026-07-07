@@ -83,6 +83,10 @@ jobs:
   build-wheels:
     name: Build wheels (${{ matrix.os }}, ${{ matrix.cibw_archs }})
     runs-on: ${{ matrix.os }}
+    # Backstop: build+test of all CPython versions completes in ~25 min; cap
+    # well below the 6h default so a hang (e.g. a headless-init deadlock) fails
+    # fast instead of burning runners.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:

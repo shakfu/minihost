@@ -53,8 +53,12 @@ using namespace juce;
 // (callFunctionOnMessageThread / posted CallbackMessage both proved unreliable
 // on macOS). The real-time process*() path is deliberately NOT marshaled.
 //
-// Enabled by default; set MINIHOST_MESSAGE_THREAD=0 to disable (run() then
-// executes inline on the caller's thread, the pre-existing behavior).
+// The thread is created lazily on the first plugin load (see createPluginWithFm),
+// not at import, so a process that never loads a plugin does no JUCE init --
+// this keeps headless environments (e.g. a Linux CI container with no display)
+// from ever touching JUCE. Enabled by default; set MINIHOST_MESSAGE_THREAD=0 to
+// disable (run() then executes inline on the caller's thread, the pre-existing
+// behavior).
 // ---------------------------------------------------------------------------
 namespace {
 
@@ -79,15 +83,20 @@ public:
             auto fut = ready.get_future();
             std::thread([this, &ready]()
             {
-                juce::initialiseJuce_GUI();   // this thread becomes the message thread
+                // Create the MessageManager on THIS thread so it becomes the
+                // JUCE message thread. We deliberately do NOT call
+                // initialiseJuce_GUI(): that pulls in GUI/display setup which
+                // blocks in a headless environment (e.g. a Linux CI container
+                // with no X server). Plain plugin hosting only needs the
+                // MessageManager, which is exactly what plugin construction
+                // itself creates on its calling thread when no message thread
+                // exists -- so this matches the pre-existing headless path.
+                juce::MessageManager::getInstance();
                 enabled_.store(true);
                 ready.set_value();
-                // Execute queued tasks directly on this (message) thread. They
-                // are self-contained -- construction ran to completion
-                // synchronously in earlier experiments -- so no JUCE dispatch
-                // loop is needed (runDispatchLoopUntil is unavailable in the
-                // headless build anyway). A condition variable gives immediate
-                // wake-up with no busy polling.
+                // Execute queued tasks directly on this (message) thread; they
+                // are self-contained, so no JUCE dispatch loop is needed. A
+                // condition variable gives immediate wake-up with no polling.
                 for (;;)
                 {
                     Task t{ nullptr, nullptr };
@@ -111,7 +120,6 @@ public:
                         t.prom->set_exception(std::current_exception());
                     }
                 }
-                juce::shutdownJuce_GUI();
             }).detach();
             fut.wait();
         });
@@ -1285,8 +1293,8 @@ static MH_Plugin* createPluginWithFm_impl(AudioPluginFormatManager& fm,
     return p.release();
 }
 
-// Thread-marshaling wrapper: run construction on the JUCE message thread when
-// enabled (SPIKE), else inline on the caller's thread (default behavior).
+// Thread-marshaling wrapper: run construction on the JUCE plugin thread when
+// enabled, else inline on the caller's thread (default when disabled).
 static MH_Plugin* createPluginWithFm(AudioPluginFormatManager& fm,
                                      const char* plugin_path,
                                      double sample_rate,
@@ -1297,6 +1305,12 @@ static MH_Plugin* createPluginWithFm(AudioPluginFormatManager& fm,
                                      char* err_buf,
                                      size_t err_buf_size)
 {
+    // Lazily bring up the plugin thread on the first load (not at import), so a
+    // process that never loads a plugin -- e.g. CI test collection -- never
+    // touches JUCE. init() is idempotent and claims the message thread before
+    // the construction below is marshaled onto it.
+    MinihostMessageThread::instance().init();
+
     MH_Plugin* result = nullptr;
     MinihostMessageThread::instance().run([&]()
     {

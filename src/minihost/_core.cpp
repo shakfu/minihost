@@ -2530,12 +2530,6 @@ private:
 NB_MODULE(_core, m) {
     m.doc() = "minihost - Python bindings for audio plugin hosting";
 
-    // Bring up the dedicated JUCE plugin thread before any plugin can be
-    // loaded, so plugin construction/destruction/affine ops are marshaled onto
-    // it and plugins are safe to use across threads. Opt out with
-    // MINIHOST_MESSAGE_THREAD=0.
-    mh_message_thread_init();
-
     // ABI version of the linked C library. Header constants
     // MH_API_VERSION_{MAJOR,MINOR,PATCH} are exposed so a wheel built against
     // one header version can detect a mismatch with a separately-installed

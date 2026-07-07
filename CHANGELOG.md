@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [0.3.1]
+
+### Fixed
+
+- **Headless / CI hang from the dedicated plugin thread (regression in 0.3.0).**
+  0.3.0 started the plugin thread eagerly at `import minihost` and initialized
+  it with `juce::initialiseJuce_GUI()`. That pulls in GUI/display setup which
+  blocks in a headless environment with no X server (e.g. a Linux
+  manylinux/CI container), so `import minihost` -- and therefore any process
+  using the package -- could hang. macOS and Windows were unaffected. Two
+  fixes: (1) the plugin thread now creates only the JUCE `MessageManager`
+  (`MessageManager::getInstance()`), not the GUI subsystem -- the same
+  MessageManager that plugin construction already created on the headless
+  path before 0.3.0; and (2) the thread starts lazily on the first plugin
+  load instead of at import, so a process that never loads a plugin does no
+  JUCE initialization at all. `open_async` and cross-thread plugin use are
+  unchanged. (The CI wheel job also gained a `timeout-minutes` backstop so a
+  future hang fails fast instead of running to the 6-hour ceiling.)
+
 ## [0.3.0]
 
 Bug fixes on flagship paths (sample-accurate automation, honest channel counts), additive features (preset morphing, zero-copy channel views, BWF metadata, a `MIDI_OUT_CAPACITY` constant), and a threading overhaul: minihost now runs a dedicated native plugin thread so plugins are safe to use across threads and `open_async` works for real. Additive C symbols only (`mh_message_thread_init` in `minihost.h`, `mh_audio_write_bwf` in the audio-file library); the process/parameter ABI is unchanged. From a code-review pass over the native layer, the Python bindings, and the test suite.
