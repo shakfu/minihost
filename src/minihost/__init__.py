@@ -233,4 +233,13 @@ __all__ = [
     "MH_API_VERSION_NUMBER",
     "MH_API_VERSION_STRING",
 ]
-__version__ = "0.3.1"
+__version__ = "0.3.2"
+
+
+# Cleanly stop the native plugin thread at interpreter exit. Without this, a
+# JUCE MessageManager left alive on the background thread deadlocks process
+# exit on Linux. No-op if the thread was never started.
+import atexit as _atexit  # noqa: E402
+from minihost._core import _message_thread_shutdown as _message_thread_shutdown  # noqa: E402
+
+_atexit.register(_message_thread_shutdown)

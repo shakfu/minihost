@@ -81,7 +81,7 @@ public:
 
             std::promise<void> ready;
             auto fut = ready.get_future();
-            std::thread([this, &ready]()
+            thread_ = std::thread([this, &ready]()
             {
                 // Create the MessageManager on THIS thread so it becomes the
                 // JUCE message thread. We deliberately do NOT call
@@ -120,9 +120,30 @@ public:
                         t.prom->set_exception(std::current_exception());
                     }
                 }
-            }).detach();
+                // Delete the MessageManager on its own (this) thread before the
+                // thread ends. Leaving it alive on a background thread past
+                // process exit deadlocks JUCE's static teardown on Linux.
+                juce::MessageManager::deleteInstance();
+            });
             fut.wait();
         });
+    }
+
+    // Stop the message thread and join it. Idempotent. Called at process exit
+    // (via a Python atexit handler) so the MessageManager is torn down on its
+    // own thread rather than left dangling into JUCE's static teardown, which
+    // deadlocks on Linux. Safe no-op if the thread was never started.
+    void shutdown()
+    {
+        if (! enabled_.exchange(false))
+            return;   // never started, or already shut down
+        {
+            std::lock_guard<std::mutex> lk(mtx_);
+            running_.store(false);
+        }
+        cv_.notify_one();
+        if (thread_.joinable())
+            thread_.join();
     }
 
     // Run fn on the message thread and block until it finishes. Inline when the
@@ -165,6 +186,7 @@ private:
     std::mutex mtx_;
     std::condition_variable cv_;
     std::deque<Task> queue_;
+    std::thread thread_;
 };
 
 } // namespace
@@ -172,6 +194,11 @@ private:
 extern "C" void mh_message_thread_init(void)
 {
     MinihostMessageThread::instance().init();
+}
+
+extern "C" void mh_message_thread_shutdown(void)
+{
+    MinihostMessageThread::instance().shutdown();
 }
 
 // Run a callable on the JUCE plugin thread and return its result (or void).
@@ -1305,11 +1332,17 @@ static MH_Plugin* createPluginWithFm(AudioPluginFormatManager& fm,
                                      char* err_buf,
                                      size_t err_buf_size)
 {
-    // Lazily bring up the plugin thread on the first load (not at import), so a
-    // process that never loads a plugin -- e.g. CI test collection -- never
-    // touches JUCE. init() is idempotent and claims the message thread before
-    // the construction below is marshaled onto it.
-    MinihostMessageThread::instance().init();
+    // Lazily bring up the plugin thread on the first *real* load, but only if
+    // the plugin actually exists. This keeps a process that never
+    // successfully loads a plugin -- e.g. CI, or an app probing a bad path --
+    // from ever creating the JUCE MessageManager (which otherwise leaves a
+    // thread + MessageManager alive that deadlocks process exit on Linux).
+    // A nonexistent path then fails fast, inline, exactly as before.
+    const bool pluginExists =
+        plugin_path && plugin_path[0] != '\0'
+        && juce::File(juce::String::fromUTF8(plugin_path)).exists();
+    if (pluginExists)
+        MinihostMessageThread::instance().init();
 
     MH_Plugin* result = nullptr;
     MinihostMessageThread::instance().run([&]()

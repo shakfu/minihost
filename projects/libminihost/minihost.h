@@ -115,6 +115,13 @@ int mh_api_version(void);
 // explicitly only to force the thread up early. See minihost.cpp.
 void mh_message_thread_init(void);
 
+// Stop the dedicated JUCE plugin thread and tear down the MessageManager on
+// that thread. Idempotent; safe no-op if the thread was never started. Must be
+// called at process exit (the Python bindings register it with atexit):
+// leaving the MessageManager alive on a background thread into JUCE's static
+// teardown deadlocks process exit on Linux.
+void mh_message_thread_shutdown(void);
+
 // Returns the implementation's API version as a "MAJOR.MINOR.PATCH" string.
 // Storage is owned by the library; do not free.
 const char* mh_api_version_string(void);

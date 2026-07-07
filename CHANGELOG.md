@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.3.2]
+
+### Fixed
+
+- **Process-exit hang on Linux from the dedicated plugin thread (completes the
+  0.3.1 fix).** 0.3.1 fixed the *import* hang, but the plugin thread could
+  still be started by a plugin-load *attempt* -- including a load of a
+  nonexistent path -- which created a JUCE `MessageManager` on a background
+  thread. Left alive, that MessageManager deadlocked process exit on Linux:
+  the test suite passed, then the process hung until killed. (macOS/Windows
+  tolerated it.) Two changes: (1) the plugin thread is now only started for a
+  plugin that actually exists on disk, so a failing/probing load never touches
+  JUCE; and (2) the thread is cleanly stopped and its MessageManager torn down
+  on its own thread at interpreter exit, via an `atexit` handler
+  (`mh_message_thread_shutdown`). Well-behaved processes now exit promptly
+  after using a plugin.
+
 ## [0.3.1]
 
 ### Fixed

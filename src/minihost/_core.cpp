@@ -2530,6 +2530,12 @@ private:
 NB_MODULE(_core, m) {
     m.doc() = "minihost - Python bindings for audio plugin hosting";
 
+    // Cleanly stop the native plugin thread at interpreter exit. Registered
+    // with atexit in __init__.py; without it, a MessageManager left alive on
+    // the background thread deadlocks process exit on Linux.
+    m.def("_message_thread_shutdown", &mh_message_thread_shutdown,
+          "Stop the dedicated native plugin thread (registered with atexit).");
+
     // ABI version of the linked C library. Header constants
     // MH_API_VERSION_{MAJOR,MINOR,PATCH} are exposed so a wheel built against
     // one header version can detect a mismatch with a separately-installed
