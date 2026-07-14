@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **C and C++ front-ends aborted (SIGABRT) at process exit after loading a plugin.** Neither `minihost_c` nor `minihost_cpp` shut the dedicated JUCE plugin thread down, so on exit its `std::thread` was still joinable and `std::terminate` fired -- any command that loaded a plugin (`params`, `load-preset`, `process`, `morph`, ...) exited with code 134 after printing correct output. Latent since the plugin-thread work in 0.3.0 (the front-ends were last synced at 0.2.x). Fixed by bringing the thread up with `mh_message_thread_init()` and registering `mh_message_thread_shutdown()` via `atexit` at the top of `main`; constructing the thread before the registration makes C++ teardown ordering run the shutdown before the thread's own destructor. Surfaced by the new CLI conformance test's exit-code check.
+
+### Testing
+
+- **CLI conformance test (`tests/test_cli_conformance.py`).** Runs the same deterministic data commands (`probe`, `info`, `params`, `presets`, `morph`) through both `minihost_c` and `minihost_cpp` and asserts their stdout is byte-identical and both exit cleanly, so the two independently-written front-ends can no longer drift apart silently. Discovers the binaries via `MINIHOST_C_BIN` / `MINIHOST_CPP_BIN` or the build tree (preferring the most recently built), and skips when the binaries or a test plugin are absent (same plugin-gated pattern as the other integration tests).
+
 ## [0.4.0]
 
 Additive release: a callable composition layer over the existing routing classes (Python), plus parameter morphing pushed down into the C library and its C/C++ front-ends. The C ABI bumps to **2.2.0** (additive).

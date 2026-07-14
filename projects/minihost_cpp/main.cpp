@@ -1887,6 +1887,18 @@ int cmd_resample(const std::string& input_path, const std::string& output_path,
 // ============================================================================
 
 int main(int argc, char** argv) {
+    // Cleanly stop the dedicated JUCE plugin thread at process exit. Without
+    // this, any command that loads a plugin leaves the message thread's
+    // std::thread joinable at static teardown, which calls std::terminate
+    // (SIGABRT on exit). We bring the thread up now and register the shutdown
+    // with std::atexit: because the thread is constructed *before* this atexit
+    // registration, C++ teardown ordering runs our shutdown handler before the
+    // thread object's own destructor -- and it also fires on the std::exit()
+    // calls in the subcommand callbacks. Both calls are idempotent, and no-ops
+    // when the message thread is disabled (MINIHOST_MESSAGE_THREAD=0).
+    mh_message_thread_init();
+    std::atexit(mh_message_thread_shutdown);
+
     CLI::App app{"minihost - Audio plugin hosting CLI"};
     app.require_subcommand(1);
 

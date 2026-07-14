@@ -1968,6 +1968,17 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // Cleanly stop the dedicated JUCE plugin thread at process exit. Without
+    // this, any command that loads a plugin leaves the message thread's
+    // std::thread joinable at static teardown, which calls std::terminate
+    // (SIGABRT on exit). We bring the thread up now and register the shutdown
+    // with atexit: because the thread is constructed *before* this atexit
+    // registration, C++ teardown ordering runs our shutdown handler before the
+    // thread object's own destructor. Both calls are idempotent, and no-ops
+    // when the message thread is disabled (MINIHOST_MESSAGE_THREAD=0).
+    mh_message_thread_init();
+    atexit(mh_message_thread_shutdown);
+
     // Default options
     double sample_rate = 48000.0;
     int block_size = 512;
