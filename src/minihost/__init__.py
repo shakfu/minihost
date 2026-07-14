@@ -110,6 +110,19 @@ from minihost.process import (
 
 from minihost.chain import load_chain
 
+from minihost.compose import (
+    Compose,
+    Gain,
+    Normalize,
+    Trim,
+    Fade,
+    Maybe,
+    OneOf,
+    SomeOf,
+    RandomParam,
+    AddGaussianNoise,
+)
+
 from minihost.project import (
     LoadedProject,
     ProjectError,
@@ -184,6 +197,17 @@ __all__ = [
     "process_audio_to_file",
     # Declarative chains
     "load_chain",
+    # Callable composition pipelines
+    "Compose",
+    "Gain",
+    "Normalize",
+    "Trim",
+    "Fade",
+    "Maybe",
+    "OneOf",
+    "SomeOf",
+    "RandomParam",
+    "AddGaussianNoise",
     # Project files (graph executor v2)
     "LoadedProject",
     "ProjectError",
@@ -233,7 +257,7 @@ __all__ = [
     "MH_API_VERSION_NUMBER",
     "MH_API_VERSION_STRING",
 ]
-__version__ = "0.3.2"
+__version__ = "0.4.0"
 
 
 # Cleanly stop the native plugin thread at interpreter exit. Without this, a

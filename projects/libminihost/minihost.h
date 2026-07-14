@@ -12,6 +12,8 @@
 //
 //   2. CONCURRENT WITH AUDIO (atomic / brief lock; safe to overlap mh_process):
 //        mh_set_param, mh_get_param, mh_get_param_info,
+//        mh_morph_capture, mh_morph_apply, mh_morph_lerp,
+//        mh_morph_lerp_per_param, mh_morph,
 //        mh_get_num_params, mh_get_info, mh_get_path,
 //        mh_get_latency_samples, mh_get_tail_seconds,
 //        mh_get_bypass, mh_set_bypass,
@@ -78,13 +80,15 @@ extern "C" {
 #endif
 
 // API version components. Bump per the policy described above.
+// 2.2.0: added parameter morphing -- mh_morph_capture / mh_morph_apply /
+//   mh_morph_lerp / mh_morph_lerp_per_param / mh_morph (additive).
 // 2.1.0: added mh_bus_process_midi_io -- collects and merges the MIDI
 //   produced by each bus branch into one time-ordered stream (additive).
 // 2.0.0: routing symbols renamed for the chain/bus/graph tier --
 //   mh_graph_* (parallel bus) -> mh_bus_* / MH_PluginGraph -> MH_PluginBus,
 //   and mh_graph_v2_* (DAG) -> mh_graph_* / MH_GraphV2 -> MH_PluginGraph.
 #define MH_API_VERSION_MAJOR 2
-#define MH_API_VERSION_MINOR 1
+#define MH_API_VERSION_MINOR 2
 #define MH_API_VERSION_PATCH 0
 
 // Single packed integer for compile-time comparison.
@@ -291,6 +295,48 @@ int   mh_set_param(MH_Plugin* p, int index, float normalized_0_1);
 
 // Get parameter metadata (returns 1 on success, 0 on failure)
 int   mh_get_param_info(MH_Plugin* p, int index, MH_ParamInfo* out_info);
+
+// Parameter morphing (A/B interpolation over normalized parameter values)
+//
+// A "snapshot" is an array of normalized parameter values (each in [0, 1]),
+// one entry per plugin parameter. Morphing linearly interpolates two snapshots
+// so a whole patch can be blended or swept along a single control. It operates
+// on the normalized per-parameter values, NOT on opaque state blobs
+// (mh_get_state / mh_set_state), which are not interpolatable.
+//
+// Only continuous parameters interpolate smoothly. Stepped / boolean / enum
+// parameters are quantized by the plugin, so intermediate normalized values
+// may jump rather than glide.
+
+// Capture the current normalized value of every parameter into out_values.
+// capacity is the number of floats available in out_values; it must be at
+// least mh_get_num_params(p). Returns the number of values written (the
+// parameter count) on success, or -1 on error (NULL args or capacity too
+// small).
+int mh_morph_capture(MH_Plugin* p, float* out_values, int capacity);
+
+// Apply a snapshot: set every parameter from values[i], clamped to [0, 1].
+// count must equal mh_get_num_params(p). Returns 1 on success, 0 on failure
+// (NULL args or count mismatch).
+int mh_morph_apply(MH_Plugin* p, const float* values, int count);
+
+// Linearly interpolate two snapshots with one blend amount t:
+//   out[i] = clamp01(a[i] + (b[i] - a[i]) * t)
+// t=0 yields a, t=1 yields b; results are clamped so an extrapolated t (outside
+// [0, 1]) still yields valid normalized values. Pure array math, no plugin
+// access; out may alias a or b. Returns 1 on success, 0 on failure (NULL args
+// or negative count).
+int mh_morph_lerp(const float* a, const float* b, float* out, int count, float t);
+
+// Per-parameter interpolation: out[i] = clamp01(a[i] + (b[i]-a[i]) * t[i]).
+// t is an array of count blend amounts. Returns 1 on success, 0 on failure.
+int mh_morph_lerp_per_param(const float* a, const float* b, float* out,
+                            int count, const float* t);
+
+// Convenience: interpolate snapshots a and b at scalar t and apply the result
+// to the plugin. count must equal mh_get_num_params(p). Returns 1 on success,
+// 0 on failure.
+int mh_morph(MH_Plugin* p, const float* a, const float* b, int count, float t);
 
 // State save/load (for presets and session recall)
 // Returns size in bytes needed to store state, or 0 on error

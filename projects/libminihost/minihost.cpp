@@ -680,6 +680,66 @@ extern "C" int mh_set_param(MH_Plugin* p, int index, float normalized_0_1)
     return 1;
 }
 
+// ---------------------------------------------------------------------------
+// Parameter morphing (A/B interpolation over normalized parameter values)
+// ---------------------------------------------------------------------------
+//
+// Composed from the public mh_get_param / mh_set_param / mh_get_num_params
+// entry points, so each per-parameter access takes and releases the state
+// mutex exactly as a direct call would (class-2 thread safety: safe to
+// overlap mh_process). The lerp helpers are pure array math and touch no
+// plugin state.
+
+extern "C" int mh_morph_capture(MH_Plugin* p, float* out_values, int capacity)
+{
+    if (!p || !p->inst || !out_values) return -1;
+    const int n = mh_get_num_params(p);
+    if (capacity < n) return -1;
+    for (int i = 0; i < n; ++i)
+        out_values[i] = mh_get_param(p, i);
+    return n;
+}
+
+extern "C" int mh_morph_apply(MH_Plugin* p, const float* values, int count)
+{
+    if (!p || !p->inst || !values) return 0;
+    const int n = mh_get_num_params(p);
+    if (count != n) return 0;
+    for (int i = 0; i < n; ++i)
+        mh_set_param(p, i, jlimit(0.0f, 1.0f, values[i]));
+    return 1;
+}
+
+extern "C" int mh_morph_lerp(const float* a, const float* b, float* out,
+                             int count, float t)
+{
+    if (!a || !b || !out || count < 0) return 0;
+    for (int i = 0; i < count; ++i)
+        out[i] = jlimit(0.0f, 1.0f, a[i] + (b[i] - a[i]) * t);
+    return 1;
+}
+
+extern "C" int mh_morph_lerp_per_param(const float* a, const float* b, float* out,
+                                       int count, const float* t)
+{
+    if (!a || !b || !out || !t || count < 0) return 0;
+    for (int i = 0; i < count; ++i)
+        out[i] = jlimit(0.0f, 1.0f, a[i] + (b[i] - a[i]) * t[i]);
+    return 1;
+}
+
+extern "C" int mh_morph(MH_Plugin* p, const float* a, const float* b,
+                        int count, float t)
+{
+    if (!p || !p->inst || !a || !b) return 0;
+    const int n = mh_get_num_params(p);
+    if (count != n) return 0;
+    if (n == 0) return 1;  // nothing to morph
+    std::vector<float> tmp((size_t) n);
+    if (!mh_morph_lerp(a, b, tmp.data(), n, t)) return 0;
+    return mh_morph_apply(p, tmp.data(), n);
+}
+
 extern "C" int mh_get_param_info(MH_Plugin* p, int index, MH_ParamInfo* out_info)
 {
     if (!p || !p->inst || !out_info) return 0;

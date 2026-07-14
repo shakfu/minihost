@@ -55,6 +55,7 @@ static void print_usage(const char* prog) {
     printf("  save-state PLUGIN F     Save plugin state to file F\n");
     printf("  load-state PLUGIN F     Load plugin state from file F\n");
     printf("  process PLUGIN          Process audio through plugin\n");
+    printf("  morph PLUGIN            Interpolate between two parameter snapshots\n");
     printf("  resample INPUT OUTPUT   Resample audio file\n\n");
     printf("Options for specific commands:\n");
     printf("  -j, --json              Output as JSON (probe, scan, params, info)\n");
@@ -74,6 +75,14 @@ static void print_usage(const char* prog) {
     printf("  --bpm BPM              Set transport BPM\n");
     printf("  --bit-depth N           Output bit depth (16, 24, 32)\n");
     printf("  --tail SECONDS          Extra tail time for reverb/delay (process)\n\n");
+    printf("Morph command options:\n");
+    printf("  --a-program N           Snapshot A from factory program N\n");
+    printf("  --b-program N           Snapshot B from factory program N\n");
+    printf("  --a-state FILE          Snapshot A from a saved state file\n");
+    printf("  --b-state FILE          Snapshot B from a saved state file\n");
+    printf("  -t, --blend T           Blend amount 0..1 (default 0.5)\n");
+    printf("  --apply                 Apply the morphed snapshot to the plugin\n");
+    printf("  --save FILE             Apply and save morphed state to FILE\n\n");
     printf("MIDI command options:\n");
     printf("  --monitor               Monitor MIDI input (Ctrl-C to stop)\n");
     printf("  --port N                MIDI port index\n");
@@ -267,6 +276,21 @@ static int load_state_file(MH_Plugin* p, const char* path) {
     int ok = mh_set_state(p, data, (int)size);
     free(data);
     return ok;
+}
+
+// Save the plugin's full state blob to a file. Returns 1 on success, 0 on failure.
+static int save_state_file(MH_Plugin* p, const char* path) {
+    int size = mh_get_state_size(p);
+    if (size <= 0) return 0;
+    void* data = malloc((size_t)size);
+    if (!data) return 0;
+    if (!mh_get_state(p, data, size)) { free(data); return 0; }
+    FILE* f = fopen(path, "wb");
+    if (!f) { free(data); return 0; }
+    size_t wrote = fwrite(data, 1, (size_t)size, f);
+    fclose(f);
+    free(data);
+    return wrote == (size_t)size;
 }
 
 // ============================================================================
@@ -1801,6 +1825,140 @@ static int cmd_resample(const char* input_file, const char* output_file,
 }
 
 // ============================================================================
+// Command: morph
+// ============================================================================
+
+// Resolve a snapshot source onto the plugin, then capture its normalized
+// parameter values into `out`. `program` >= 0 selects a factory program;
+// otherwise `state` (if non-NULL) loads a state blob; otherwise the plugin's
+// current values are captured. Returns the param count, or -1 on error.
+static int morph_capture_source(MH_Plugin* p, int program, const char* state,
+                                float* out, int cap, const char* label) {
+    if (state && state[0] != '\0') {
+        if (!load_state_file(p, state)) {
+            fprintf(stderr, "Error: failed to load snapshot %s state from %s\n", label, state);
+            return -1;
+        }
+    } else if (program >= 0) {
+        int np = mh_get_num_programs(p);
+        if (program >= np) {
+            fprintf(stderr, "Error: snapshot %s program %d out of range (plugin has %d)\n",
+                    label, program, np);
+            return -1;
+        }
+        mh_set_program(p, program);
+    }
+    int n = mh_morph_capture(p, out, cap);
+    if (n < 0) {
+        fprintf(stderr, "Error: failed to capture snapshot %s\n", label);
+        return -1;
+    }
+    return n;
+}
+
+static int cmd_morph(const char* plugin_path, double sample_rate, int block_size,
+                     int a_program, int b_program,
+                     const char* a_state, const char* b_state,
+                     double blend, int apply, const char* save_file,
+                     int json_output) {
+    char err[1024] = {0};
+    MH_Plugin* p = mh_open(plugin_path, sample_rate, block_size, 2, 2, err, sizeof(err));
+    if (!p) {
+        fprintf(stderr, "Error: %s\n", err);
+        return 1;
+    }
+
+    int n = mh_get_num_params(p);
+    if (n <= 0) {
+        fprintf(stderr, "Error: plugin has no parameters to morph\n");
+        mh_close(p);
+        return 1;
+    }
+
+    // Default sources: factory programs 0 and 1 when nothing is specified.
+    int have_sources = (a_program >= 0 || b_program >= 0 || a_state || b_state);
+    if (!have_sources) {
+        int np = mh_get_num_programs(p);
+        if (np >= 2) {
+            a_program = 0;
+            b_program = 1;
+        } else {
+            fprintf(stderr,
+                    "Error: no snapshot sources given and plugin has < 2 factory programs.\n"
+                    "       Pass --a-program/--b-program or --a-state/--b-state.\n");
+            mh_close(p);
+            return 1;
+        }
+    }
+
+    float* a = (float*)malloc(sizeof(float) * (size_t)n);
+    float* b = (float*)malloc(sizeof(float) * (size_t)n);
+    float* m = (float*)malloc(sizeof(float) * (size_t)n);
+    if (!a || !b || !m) {
+        fprintf(stderr, "Error: out of memory\n");
+        free(a); free(b); free(m);
+        mh_close(p);
+        return 1;
+    }
+
+    if (morph_capture_source(p, a_program, a_state, a, n, "A") < 0 ||
+        morph_capture_source(p, b_program, b_state, b, n, "B") < 0) {
+        free(a); free(b); free(m);
+        mh_close(p);
+        return 1;
+    }
+
+    if (!mh_morph_lerp(a, b, m, n, (float)blend)) {
+        fprintf(stderr, "Error: morph interpolation failed\n");
+        free(a); free(b); free(m);
+        mh_close(p);
+        return 1;
+    }
+
+    // Report the A/B/blend snapshot table.
+    if (json_output) {
+        printf("{\n  \"blend\": %.6f,\n  \"num_params\": %d,\n  \"params\": [\n", blend, n);
+        for (int i = 0; i < n; i++) {
+            printf("    {\"index\": %d, \"a\": %.6f, \"b\": %.6f, \"blend\": %.6f}%s\n",
+                   i, a[i], b[i], m[i], (i + 1 < n) ? "," : "");
+        }
+        printf("  ]\n}\n");
+    } else {
+        fprintf(stderr, "Morph between A and B at t=%.3f (%d params)\n", blend, n);
+        printf("%-4s %-28s %9s %9s %9s\n", "idx", "name", "A", "B", "blend");
+        for (int i = 0; i < n; i++) {
+            MH_ParamInfo pi;
+            char name[MH_PARAM_NAME_LEN] = {0};
+            memset(&pi, 0, sizeof(pi));
+            if (mh_get_param_info(p, i, &pi))
+                snprintf(name, sizeof(name), "%s", pi.name);
+            printf("%-4d %-28s %9.4f %9.4f %9.4f\n", i, name, a[i], b[i], m[i]);
+        }
+    }
+
+    // Apply and optionally persist the morphed snapshot.
+    if (apply || (save_file && save_file[0] != '\0')) {
+        if (!mh_morph_apply(p, m, n)) {
+            fprintf(stderr, "Error: failed to apply morphed snapshot\n");
+            free(a); free(b); free(m);
+            mh_close(p);
+            return 1;
+        }
+        fprintf(stderr, "Applied morphed snapshot to plugin.\n");
+        if (save_file && save_file[0] != '\0') {
+            if (save_state_file(p, save_file))
+                fprintf(stderr, "Saved morphed state to %s\n", save_file);
+            else
+                fprintf(stderr, "Warning: failed to save state to %s\n", save_file);
+        }
+    }
+
+    free(a); free(b); free(m);
+    mh_close(p);
+    return 0;
+}
+
+// ============================================================================
 // Main
 // ============================================================================
 
@@ -1843,6 +2001,13 @@ int main(int argc, char** argv) {
     int program_index = -1;
     const char* load_vstpreset_file = NULL;
     int overwrite = 0;
+    // morph subcommand
+    int morph_a_program = -1;
+    int morph_b_program = -1;
+    const char* morph_a_state = NULL;
+    const char* morph_b_state = NULL;
+    double morph_blend = 0.5;
+    int morph_apply = 0;
 
     // Parse global options and find command
     int cmd_index = 1;
@@ -1958,6 +2123,18 @@ int main(int argc, char** argv) {
             tail_seconds = atof(args[++i]);
         } else if ((str_eq(args[i], "-m") || str_eq(args[i], "--midi")) && i + 1 < remaining) {
             midi_input_file = args[++i];
+        } else if (str_eq(args[i], "--a-program") && i + 1 < remaining) {
+            morph_a_program = atoi(args[++i]);
+        } else if (str_eq(args[i], "--b-program") && i + 1 < remaining) {
+            morph_b_program = atoi(args[++i]);
+        } else if (str_eq(args[i], "--a-state") && i + 1 < remaining) {
+            morph_a_state = args[++i];
+        } else if (str_eq(args[i], "--b-state") && i + 1 < remaining) {
+            morph_b_state = args[++i];
+        } else if ((str_eq(args[i], "-t") || str_eq(args[i], "--blend")) && i + 1 < remaining) {
+            morph_blend = atof(args[++i]);
+        } else if (str_eq(args[i], "--apply")) {
+            morph_apply = 1;
         } else {
             // Positional argument
             if (num_pos_args < 16) {
@@ -2105,6 +2282,20 @@ int main(int argc, char** argv) {
                            preset_index, param_specs, num_param_specs,
                            use_double, non_realtime, bpm, bit_depth,
                            tail_seconds);
+    }
+    else if (str_eq(cmd, "morph")) {
+        if (num_pos_args < 1) {
+            fprintf(stderr,
+                    "Usage: %s morph PLUGIN [--a-program N | --a-state FILE]\n"
+                    "                      [--b-program N | --b-state FILE]\n"
+                    "                      [-t BLEND] [--apply] [--save FILE] [-j]\n",
+                    argv[0]);
+            return 1;
+        }
+        return cmd_morph(args[pos_args[0]], sample_rate, block_size,
+                         morph_a_program, morph_b_program,
+                         morph_a_state, morph_b_state,
+                         morph_blend, morph_apply, save_file, json_output);
     }
     else {
         fprintf(stderr, "Error: Unknown command '%s'\n", cmd);

@@ -122,6 +122,11 @@ MIDI events are tuples of `(sample_offset, status, data1, data2)`. Parameter cha
 | `param_from_text(index, text)` | Convert display string to normalized value |
 | `begin_param_gesture(index)` | Signal start of parameter change gesture |
 | `end_param_gesture(index)` | Signal end of parameter change gesture |
+| `morph_capture()` | Capture a snapshot (list of normalized values, one per parameter) |
+| `morph_apply(values)` | Apply a snapshot (values clamped to 0--1). Raises `ValueError` on length mismatch |
+| `morph(a, b, t)` | Interpolate snapshots `a` and `b` at blend `t`, apply, and return the applied snapshot |
+
+These three methods are native (C-backed) bindings over the libminihost `mh_morph_*` API, exposing parameter morphing at the binding layer for parity with the C/C++ front-ends. They are distinct from the pure-Python `minihost.morph` module (`capture_params` / `apply_params` / `lerp_params` / `morph_params`), which is duck-typed and works with any object exposing `get_param` / `set_param` / `num_params`. Use the module for A/B snapshot math on plain lists (including per-parameter `t` via `lerp_params`), and these methods when you want the native single-call path on a real `Plugin`.
 
 ### State Management
 
@@ -587,6 +592,8 @@ process_audio_to_file(
 ```
 
 Read, process, and write in one call. Auto-resamples the input to the plugin's sample rate when they differ; auto-duplicates a mono source to match the plugin's expected channel count when it expects more. Returns the number of frames written.
+
+For a callable, composable layer over these helpers -- mixing plugins with pure-python DSP transforms and randomized augmentation combinators -- see [Composition Pipelines](composition.md) (`minihost.Compose`).
 
 ---
 

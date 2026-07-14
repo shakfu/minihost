@@ -715,6 +715,47 @@ int load_state_from_file_cpp(MH_Plugin* p, const std::string& path) {
     }
     return 1;
 }
+
+// Save the plugin's full state blob to a file. Returns 1 on success, 0 on failure.
+int save_state_to_file_cpp(MH_Plugin* p, const std::string& path) {
+    int size = mh_get_state_size(p);
+    if (size <= 0) return 0;
+    std::vector<char> data(static_cast<size_t>(size));
+    if (!mh_get_state(p, data.data(), size)) return 0;
+    std::ofstream f(path, std::ios::binary);
+    if (!f) return 0;
+    f.write(data.data(), size);
+    return static_cast<bool>(f) ? 1 : 0;
+}
+
+// Resolve a snapshot source onto the plugin, then capture its normalized
+// parameter values into `out`. `program` >= 0 selects a factory program;
+// otherwise a non-empty `state` loads a state blob; otherwise the plugin's
+// current values are captured. Returns the param count, or -1 on error.
+int morph_capture_source_cpp(MH_Plugin* p, int program, const std::string& state,
+                             std::vector<float>& out, const char* label) {
+    if (!state.empty()) {
+        if (!load_state_from_file_cpp(p, state)) {
+            std::fprintf(stderr, "Error: failed to load snapshot %s state from %s\n",
+                         label, state.c_str());
+            return -1;
+        }
+    } else if (program >= 0) {
+        int np = mh_get_num_programs(p);
+        if (program >= np) {
+            std::fprintf(stderr, "Error: snapshot %s program %d out of range (plugin has %d)\n",
+                         label, program, np);
+            return -1;
+        }
+        mh_set_program(p, program);
+    }
+    int n = mh_morph_capture(p, out.data(), static_cast<int>(out.size()));
+    if (n < 0) {
+        std::fprintf(stderr, "Error: failed to capture snapshot %s\n", label);
+        return -1;
+    }
+    return n;
+}
 }  // namespace
 
 int cmd_presets(const std::string& plugin_path,
@@ -1017,6 +1058,103 @@ int cmd_load_state(const std::string& plugin_path,
                 float value = mh_get_param(p, i);
                 print_param_info(i, info, value);
             }
+        }
+    }
+
+    mh_close(p);
+    return 0;
+}
+
+// ============================================================================
+// Command: morph
+// ============================================================================
+
+int cmd_morph(const std::string& plugin_path, double sample_rate, int block_size,
+              int a_program, int b_program,
+              const std::string& a_state, const std::string& b_state,
+              double blend, bool apply, const std::string& save_file,
+              bool json_output) {
+    char err[1024] = {0};
+    MH_Plugin* p = mh_open(plugin_path.c_str(), sample_rate, block_size, 2, 2, err, sizeof(err));
+    if (!p) {
+        print_error(err);
+        return 1;
+    }
+
+    int n = mh_get_num_params(p);
+    if (n <= 0) {
+        std::fprintf(stderr, "Error: plugin has no parameters to morph\n");
+        mh_close(p);
+        return 1;
+    }
+
+    // Default sources: factory programs 0 and 1 when nothing is specified.
+    bool have_sources = (a_program >= 0 || b_program >= 0 ||
+                         !a_state.empty() || !b_state.empty());
+    if (!have_sources) {
+        int np = mh_get_num_programs(p);
+        if (np >= 2) {
+            a_program = 0;
+            b_program = 1;
+        } else {
+            std::fprintf(stderr,
+                "Error: no snapshot sources given and plugin has < 2 factory programs.\n"
+                "       Pass --a-program/--b-program or --a-state/--b-state.\n");
+            mh_close(p);
+            return 1;
+        }
+    }
+
+    std::vector<float> a(static_cast<size_t>(n));
+    std::vector<float> b(static_cast<size_t>(n));
+    std::vector<float> m(static_cast<size_t>(n));
+
+    if (morph_capture_source_cpp(p, a_program, a_state, a, "A") < 0 ||
+        morph_capture_source_cpp(p, b_program, b_state, b, "B") < 0) {
+        mh_close(p);
+        return 1;
+    }
+
+    if (!mh_morph_lerp(a.data(), b.data(), m.data(), n, static_cast<float>(blend))) {
+        std::fprintf(stderr, "Error: morph interpolation failed\n");
+        mh_close(p);
+        return 1;
+    }
+
+    // Report the A/B/blend snapshot table.
+    if (json_output) {
+        std::printf("{\n  \"blend\": %.6f,\n  \"num_params\": %d,\n  \"params\": [\n", blend, n);
+        for (int i = 0; i < n; i++) {
+            std::printf("    {\"index\": %d, \"a\": %.6f, \"b\": %.6f, \"blend\": %.6f}%s\n",
+                        i, a[i], b[i], m[i], (i + 1 < n) ? "," : "");
+        }
+        std::printf("  ]\n}\n");
+    } else {
+        std::fprintf(stderr, "Morph between A and B at t=%.3f (%d params)\n", blend, n);
+        std::printf("%-4s %-28s %9s %9s %9s\n", "idx", "name", "A", "B", "blend");
+        for (int i = 0; i < n; i++) {
+            MH_ParamInfo pi;
+            std::memset(&pi, 0, sizeof(pi));
+            char name[MH_PARAM_NAME_LEN] = {0};
+            if (mh_get_param_info(p, i, &pi))
+                std::snprintf(name, sizeof(name), "%s", pi.name);
+            std::printf("%-4d %-28s %9.4f %9.4f %9.4f\n", i, name, a[i], b[i], m[i]);
+        }
+    }
+
+    // Apply and optionally persist the morphed snapshot.
+    if (apply || !save_file.empty()) {
+        if (!mh_morph_apply(p, m.data(), n)) {
+            std::fprintf(stderr, "Error: failed to apply morphed snapshot\n");
+            mh_close(p);
+            return 1;
+        }
+        std::fprintf(stderr, "Applied morphed snapshot to plugin.\n");
+        if (!save_file.empty()) {
+            if (save_state_to_file_cpp(p, save_file))
+                std::fprintf(stderr, "Saved morphed state to %s\n", save_file.c_str());
+            else
+                std::fprintf(stderr, "Warning: failed to save state to %s\n", save_file.c_str());
         }
     }
 
@@ -2006,6 +2144,40 @@ int main(int argc, char** argv) {
                               process_preset, process_params,
                               process_double, process_nrt, process_bpm,
                               process_bit_depth, process_tail));
+    });
+
+    // ========================================================================
+    // Subcommand: morph
+    // ========================================================================
+    auto* morph_cmd = app.add_subcommand(
+        "morph", "Interpolate between two parameter snapshots (A/B morph)");
+    std::string morph_plugin;
+    int morph_a_program = -1;
+    int morph_b_program = -1;
+    std::string morph_a_state;
+    std::string morph_b_state;
+    double morph_blend = 0.5;
+    bool morph_apply = false;
+    std::string morph_save;
+    bool morph_json = false;
+
+    morph_cmd->add_option("plugin", morph_plugin, "Path to plugin")
+        ->required();
+    morph_cmd->add_option("--a-program", morph_a_program, "Snapshot A from factory program N");
+    morph_cmd->add_option("--b-program", morph_b_program, "Snapshot B from factory program N");
+    morph_cmd->add_option("--a-state", morph_a_state, "Snapshot A from a saved state file");
+    morph_cmd->add_option("--b-state", morph_b_state, "Snapshot B from a saved state file");
+    morph_cmd->add_option("-t,--blend", morph_blend, "Blend amount 0..1 (default 0.5)")
+        ->default_val(0.5);
+    morph_cmd->add_flag("--apply", morph_apply, "Apply the morphed snapshot to the plugin");
+    morph_cmd->add_option("--save", morph_save, "Apply and save morphed state to file");
+    morph_cmd->add_flag("-j,--json", morph_json, "Output as JSON");
+
+    morph_cmd->callback([&]() {
+        std::exit(cmd_morph(morph_plugin, sample_rate, block_size,
+                            morph_a_program, morph_b_program,
+                            morph_a_state, morph_b_state,
+                            morph_blend, morph_apply, morph_save, morph_json));
     });
 
     // ========================================================================

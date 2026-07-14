@@ -44,6 +44,7 @@ nav:
   - Getting Started: getting_started.md
   - CLI Reference: cli.md
   - Python API: api_python.md
+  - Composition Pipelines: composition.md
   - C API: api_c.md
   - Hosting Guide: hosting_guide.md
   - Migration Guide: migration.md

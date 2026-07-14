@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [0.4.0]
+
+Additive release: a callable composition layer over the existing routing classes (Python), plus parameter morphing pushed down into the C library and its C/C++ front-ends. The C ABI bumps to **2.2.0** (additive).
+
+### Added
+
+- **Parameter morphing in the C library (`libminihost`).** The A/B parameter-interpolation capability that previously existed only as the pure-Python `minihost.morph` module is now a first-class part of the C API: `mh_morph_capture` (snapshot every parameter's normalized value), `mh_morph_apply` (restore a snapshot, clamped to `[0, 1]`), `mh_morph_lerp` / `mh_morph_lerp_per_param` (interpolate two snapshots with a scalar or per-parameter blend), and `mh_morph` (interpolate and apply in one call). Composed from the existing `mh_get_param` / `mh_set_param` / `mh_get_num_params` entry points, so each per-parameter access keeps class-2 thread safety (safe to overlap `mh_process`); the lerp helpers are pure array math. Additive symbols only; the C ABI moves to 2.2.0.
+
+- **`morph` command in the C and C++ front-ends.** Both `minihost_c` and `minihost_cpp` gain a `morph PLUGIN` subcommand exposing the new API: capture snapshots A and B from factory programs (`--a-program` / `--b-program`) or saved state files (`--a-state` / `--b-state`), interpolate at a blend `-t` (default 0.5), print an A/B/blend table (or `--json`), and optionally `--apply` and `--save` the morphed state. Defaults to morphing factory programs 0 and 1 when no source is given. The two front-ends produce byte-identical output.
+
+- **Native morph bindings on `Plugin` (Python).** For parity with the C/C++ front-ends, the morph C API is now bound at the nanobind layer: `Plugin.morph_capture()` (snapshot as a list, one value per parameter), `Plugin.morph_apply(values)` (restore, clamped; `ValueError` on length mismatch), and `Plugin.morph(a, b, t)` (interpolate, apply, and return the applied snapshot). These run natively in a single call and are distinct from the existing duck-typed pure-Python `minihost.morph` module, which is unchanged.
+
+- **`minihost.Compose` -- callable, composable audio pipelines.** An [audiomentations](https://github.com/iver56/audiomentations)-style layer over the native `Plugin` / `PluginChain` / `PluginBus` classes. Where those model *real-time* signal routing, `Compose` models an *offline* pipeline: an ordered list of transforms applied to a whole buffer and returned as a new one. A pipeline is callable in the audiomentations idiom (`fx(samples, sample_rate=...)`), preserves the input container family (`AudioBuffer` in -> `AudioBuffer` out; numpy in -> numpy out; 1-D in -> 1-D out), and owns/closes the plugins it holds (`close_children=True` by default) so an effect chain collapses to a single `with`. A `.to_file(input, output)` convenience reads, processes, and writes in one call. Tails are handled once at the pipeline boundary: a numeric `tail_seconds` pads the input up front so every element rings out, and `tail_seconds="auto"` over-renders then trims trailing silence. Sample rate is validated against each native processor's construction rate and never silently resampled (a mismatch raises).
+
+  A *transform* is a native processor, a nested `Compose`, one of the pure-python transforms below, one of the stochastic combinators below, or any callable `fn(audio, sample_rate) -> audio`. The working type is `AudioBuffer`, so numpy stays an optional dependency (imported only for numpy input, `tail_seconds="auto"`, or the transforms that need it).
+
+- **Pure-python transforms.** Deterministic, `AudioBuffer`-native, usable inside or outside a pipeline: `Gain(db)`, `Normalize(peak_dbfs=-1.0)` (silence passes through), `Trim(start, duration)` (time window in seconds), and `Fade(fade_in, fade_out)` (linear fades in seconds). Each returns a new buffer.
+
+- **Stochastic combinators for data augmentation.** `Maybe(transform, p=)`, `OneOf([...], weights=)`, `SomeOf(n, [...])` (fixed count or a `(min, max)` range), `RandomParam(plugin, param, lo, hi)` (set a plugin parameter at random in normalized units, then process), and `AddGaussianNoise(min_amplitude, max_amplitude)`. `Compose(seed=...)` seeds the pipeline RNG and `Compose(shuffle=True)` randomizes transform order per call, so a pipeline is reproducible across runs but varied across calls. The routing combinators use Python's `random` module (no numpy); only `AddGaussianNoise` uses numpy, seeded deterministically from the pipeline RNG.
+
+  All exported at the package top level. Coverage in `tests/test_compose.py` (34 numpy-only tests plus 6 gated on a real plugin). A runnable walkthrough in `examples/compose.py` and a dedicated [Composition Pipelines](composition.md) documentation page.
+
 ## [0.3.2]
 
 ### Fixed

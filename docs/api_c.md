@@ -38,6 +38,26 @@
 | `mh_begin_param_gesture` | Signal start of parameter change gesture |
 | `mh_end_param_gesture` | Signal end of parameter change gesture |
 
+### Parameter Morphing
+
+A/B interpolation over the normalized parameter values (a "snapshot" is one value per parameter). Operates on parameters, not opaque state blobs, since only parameters interpolate. Only continuous parameters glide; stepped/boolean parameters are quantized by the plugin.
+
+| Function | Description |
+|----------|-------------|
+| `mh_morph_capture` | Capture every parameter's current normalized value into an array (returns the count) |
+| `mh_morph_apply` | Set every parameter from a snapshot array (values clamped to 0..1) |
+| `mh_morph_lerp` | Interpolate two snapshots with one blend amount `t`: `out = clamp01(a + (b - a) * t)` (pure math) |
+| `mh_morph_lerp_per_param` | Interpolate two snapshots with a per-parameter `t` array |
+| `mh_morph` | Interpolate two snapshots at scalar `t` and apply to the plugin in one call |
+
+```c
+int n = mh_get_num_params(p);
+float a[512], b[512];               // n <= 512 for this example
+mh_set_program(p, 0); mh_morph_capture(p, a, n);   // snapshot A
+mh_set_program(p, 1); mh_morph_capture(p, b, n);   // snapshot B
+mh_morph(p, a, b, n, 0.5f);         // apply the 50% blend
+```
+
 ### State Management
 
 | Function | Description |

@@ -507,6 +507,50 @@ public:
         }
     }
 
+    // Parameter morphing (A/B interpolation over normalized parameter values).
+    // Native bindings over the libminihost mh_morph_* C API. A snapshot is a
+    // list of one normalized value per parameter.
+    std::vector<float> morph_capture() const {
+        int n = mh_get_num_params(plugin_);
+        std::vector<float> out(static_cast<size_t>(n < 0 ? 0 : n));
+        if (n > 0 && mh_morph_capture(plugin_, out.data(), n) < 0) {
+            throw std::runtime_error("Failed to capture parameter snapshot");
+        }
+        return out;
+    }
+
+    void morph_apply(const std::vector<float>& values) {
+        int n = mh_get_num_params(plugin_);
+        if (static_cast<int>(values.size()) != n) {
+            throw std::invalid_argument(
+                "snapshot has " + std::to_string(values.size()) +
+                " values but plugin has " + std::to_string(n) + " parameters");
+        }
+        if (n > 0 && !mh_morph_apply(plugin_, values.data(), n)) {
+            throw std::runtime_error("Failed to apply parameter snapshot");
+        }
+    }
+
+    std::vector<float> morph(const std::vector<float>& a,
+                             const std::vector<float>& b, float t) {
+        int n = mh_get_num_params(plugin_);
+        if (static_cast<int>(a.size()) != n || static_cast<int>(b.size()) != n) {
+            throw std::invalid_argument(
+                "snapshots must each have " + std::to_string(n) +
+                " values (plugin parameter count)");
+        }
+        std::vector<float> out(static_cast<size_t>(n < 0 ? 0 : n));
+        if (n > 0) {
+            if (!mh_morph_lerp(a.data(), b.data(), out.data(), n, t)) {
+                throw std::runtime_error("Failed to interpolate snapshots");
+            }
+            if (!mh_morph_apply(plugin_, out.data(), n)) {
+                throw std::runtime_error("Failed to apply morphed snapshot");
+            }
+        }
+        return out;
+    }
+
     // Parameter text conversion
     std::string param_to_text(int index, float value) const {
         char buf[256] = {0};
@@ -3259,6 +3303,22 @@ NB_MODULE(_core, m) {
         .def("set_param_by_name", &Plugin::set_param_by_name,
              nb::arg("name"), nb::arg("value"),
              "Set parameter value by name (case-insensitive)")
+
+        // Parameter morphing (native mh_morph_* C API)
+        .def("morph_capture", &Plugin::morph_capture,
+             "Capture a snapshot of every parameter's current normalized "
+             "value. Returns a list of floats, one per parameter (native "
+             "single-call equivalent of minihost.morph.capture).")
+        .def("morph_apply", &Plugin::morph_apply,
+             nb::arg("values"),
+             "Apply a snapshot: set every parameter from values (clamped to "
+             "[0, 1]). Raises ValueError if len(values) != num_params.")
+        .def("morph", &Plugin::morph,
+             nb::arg("a"), nb::arg("b"), nb::arg("t"),
+             "Interpolate snapshots a and b at blend t (a + (b-a)*t, clamped "
+             "to [0, 1]) and apply the result to the plugin. Returns the "
+             "applied snapshot. Raises ValueError on length mismatch.")
+
         .def("param_to_text", &Plugin::param_to_text,
              nb::arg("index"), nb::arg("value"),
              "Convert normalized value (0-1) to display string (e.g., '2500 Hz')")
