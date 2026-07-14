@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.1]
+
 ### Fixed
 
 - **C and C++ front-ends aborted (SIGABRT) at process exit after loading a plugin.** Neither `minihost_c` nor `minihost_cpp` shut the dedicated JUCE plugin thread down, so on exit its `std::thread` was still joinable and `std::terminate` fired -- any command that loaded a plugin (`params`, `load-preset`, `process`, `morph`, ...) exited with code 134 after printing correct output. Latent since the plugin-thread work in 0.3.0 (the front-ends were last synced at 0.2.x). Fixed by bringing the thread up with `mh_message_thread_init()` and registering `mh_message_thread_shutdown()` via `atexit` at the top of `main`; constructing the thread before the registration makes C++ teardown ordering run the shutdown before the thread's own destructor. Surfaced by the new CLI conformance test's exit-code check.

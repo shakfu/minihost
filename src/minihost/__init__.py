@@ -257,7 +257,7 @@ __all__ = [
     "MH_API_VERSION_NUMBER",
     "MH_API_VERSION_STRING",
 ]
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 
 # Cleanly stop the native plugin thread at interpreter exit. Without this, a
