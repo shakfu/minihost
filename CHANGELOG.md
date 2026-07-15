@@ -2,7 +2,9 @@
 
 ## [Unreleased]
 
-## [0.4.1]
+### Added
+
+- **`morph` command in the Python CLI.** Brings the `minihost` CLI to parity with the C/C++ front-ends and the library API: `minihost morph PLUGIN [-t T]` captures snapshots A and B from factory programs (`--a-program` / `--b-program`) or saved state files (`--a-state` / `--b-state`), interpolates at blend `-t` (default 0.5), prints an A/B/blend table (or `--json`), and optionally `--apply` / `--save`s the result. Built on the native `Plugin.morph_capture` / `morph_apply` bindings plus `minihost.lerp_params`. Documented in the CLI reference.
 
 ### Fixed
 

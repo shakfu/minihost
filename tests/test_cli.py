@@ -18,6 +18,7 @@ from minihost.cli import (
     cmd_devices,
     cmd_info,
     cmd_midi,
+    cmd_morph,
     cmd_params,
     cmd_play,
     cmd_presets,
@@ -1675,3 +1676,89 @@ class TestCmdPresets:
         assert "cannot determine VST3 class_id" in err
         assert "--load-vstpreset" in err
         assert not out_path.exists()
+
+
+class TestMorphCommand:
+    """cmd_morph: A/B parameter-snapshot interpolation (mocked plugin)."""
+
+    def _mock_plugin(self, snapshots=None, num_programs=2):
+        """A MagicMock plugin whose morph_capture() returns the snapshot for
+        the currently selected program, so A and B differ by program."""
+        if snapshots is None:
+            snapshots = {0: [0.0, 0.0, 0.0], 1: [1.0, 1.0, 1.0]}
+        p = MagicMock()
+        p.num_params = len(next(iter(snapshots.values())))
+        p.num_programs = num_programs
+        p.program = 0
+        p.morph_capture.side_effect = lambda: list(snapshots[p.program])
+        p.get_param_info.side_effect = lambda i: {"name": f"p{i}"}
+        p.get_state.return_value = b"STATE"
+        return p
+
+    def _args(self, **over):
+        base = dict(
+            plugin="/synth.vst3",
+            sample_rate=48000,
+            block_size=512,
+            a_program=None,
+            b_program=None,
+            a_state=None,
+            b_state=None,
+            blend=0.5,
+            apply=False,
+            save=None,
+            json=False,
+        )
+        base.update(over)
+        return argparse.Namespace(**base)
+
+    def test_morph_default_programs_blends(self, capsys):
+        p = self._mock_plugin()
+        with patch("minihost.Plugin", return_value=p):
+            ret = cmd_morph(self._args(blend=0.5))
+        assert ret == 0
+        # 0.5 blend of [0,0,0] and [1,1,1] -> 0.5000 in the table.
+        assert "0.5000" in capsys.readouterr().out
+        p.morph_apply.assert_not_called()
+
+    def test_morph_json_output(self, capsys):
+        p = self._mock_plugin()
+        with patch("minihost.Plugin", return_value=p):
+            ret = cmd_morph(self._args(blend=0.0, json=True))
+        assert ret == 0
+        import json
+
+        data = json.loads(capsys.readouterr().out)
+        assert data["num_params"] == 3
+        assert data["params"][0]["a"] == 0.0
+        assert data["params"][0]["b"] == 1.0
+        assert data["params"][0]["blend"] == 0.0  # t=0 -> A
+
+    def test_morph_apply_and_save(self, tmp_path):
+        p = self._mock_plugin()
+        save = tmp_path / "morphed.state"
+        with patch("minihost.Plugin", return_value=p):
+            ret = cmd_morph(self._args(blend=0.5, save=str(save)))
+        assert ret == 0
+        p.morph_apply.assert_called_once()
+        assert save.read_bytes() == b"STATE"
+
+    def test_morph_no_sources_few_programs_errors(self, capsys):
+        p = self._mock_plugin(num_programs=1)
+        with patch("minihost.Plugin", return_value=p):
+            ret = cmd_morph(self._args())
+        assert ret == 1
+        assert "< 2 factory programs" in capsys.readouterr().err
+
+    def test_morph_bad_program_errors(self, capsys):
+        p = self._mock_plugin()
+        with patch("minihost.Plugin", return_value=p):
+            ret = cmd_morph(self._args(a_program=0, b_program=99))
+        assert ret == 1
+        assert "out of range" in capsys.readouterr().err
+
+    def test_morph_load_error(self, capsys):
+        with patch("minihost.Plugin", side_effect=RuntimeError("load failed")):
+            ret = cmd_morph(self._args())
+        assert ret == 1
+        assert "load failed" in capsys.readouterr().err

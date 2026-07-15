@@ -636,6 +636,125 @@ def cmd_presets(args: argparse.Namespace) -> int:
     return 0
 
 
+def _morph_capture_source(
+    plugin: "minihost.Plugin", program: int | None, state: str | None, label: str
+) -> list[float]:
+    """Resolve a snapshot source onto the plugin, then capture its params.
+
+    ``state`` (a file path) takes precedence over ``program`` (a factory
+    program index); if neither is given the plugin's current values are
+    captured. Returns the normalized snapshot via the native
+    ``Plugin.morph_capture`` binding.
+    """
+    if state:
+        with open(state, "rb") as f:
+            plugin.set_state(f.read())
+    elif program is not None:
+        if program < 0 or program >= plugin.num_programs:
+            raise ValueError(
+                f"snapshot {label} program {program} out of range "
+                f"(plugin has {plugin.num_programs})"
+            )
+        plugin.program = program
+    return plugin.morph_capture()
+
+
+def cmd_morph(args: argparse.Namespace) -> int:
+    """Interpolate between two parameter snapshots (A/B morph).
+
+    Mirrors the ``morph`` command in the C/C++ front-ends: capture snapshots
+    A and B from factory programs or saved state files, blend them at ``-t``,
+    print an A/B/blend table (or JSON), and optionally apply and save the
+    result. Uses the native ``Plugin.morph_capture`` / ``morph_apply``
+    bindings and ``minihost.lerp_params`` for the interpolation.
+    """
+    try:
+        plugin = minihost.Plugin(
+            args.plugin, sample_rate=args.sample_rate, max_block_size=args.block_size
+        )
+    except RuntimeError as e:
+        print(f"Error loading plugin: {e}", file=sys.stderr)
+        return 1
+
+    try:
+        n = plugin.num_params
+        if n == 0:
+            print("Error: plugin has no parameters to morph.", file=sys.stderr)
+            return 1
+
+        a_program, b_program = args.a_program, args.b_program
+        a_state, b_state = args.a_state, args.b_state
+
+        # Default sources: factory programs 0 and 1 when nothing is given.
+        if (
+            a_program is None
+            and b_program is None
+            and a_state is None
+            and b_state is None
+        ):
+            if plugin.num_programs >= 2:
+                a_program, b_program = 0, 1
+            else:
+                print(
+                    "Error: no snapshot sources given and plugin has < 2 "
+                    "factory programs. Pass --a-program/--b-program or "
+                    "--a-state/--b-state.",
+                    file=sys.stderr,
+                )
+                return 1
+
+        try:
+            a = _morph_capture_source(plugin, a_program, a_state, "A")
+            b = _morph_capture_source(plugin, b_program, b_state, "B")
+        except (OSError, ValueError, RuntimeError) as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+
+        blend = minihost.lerp_params(a, b, args.blend)
+
+        if args.json:
+            import json
+
+            out = {
+                "blend": args.blend,
+                "num_params": n,
+                "params": [
+                    {"index": i, "a": a[i], "b": b[i], "blend": blend[i]}
+                    for i in range(n)
+                ],
+            }
+            print(json.dumps(out, indent=2))
+        else:
+            print(
+                f"Morph between A and B at t={args.blend:.3f} ({n} params)",
+                file=sys.stderr,
+            )
+            print(f"{'idx':<4} {'name':<28} {'A':>9} {'B':>9} {'blend':>9}")
+            for i in range(n):
+                name = plugin.get_param_info(i)["name"]
+                print(
+                    f"{i:<4} {name:<28} {a[i]:>9.4f} {b[i]:>9.4f} {blend[i]:>9.4f}"
+                )
+
+        # Apply and optionally persist the morphed snapshot.
+        if args.apply or args.save:
+            plugin.morph_apply(blend)
+            print("Applied morphed snapshot to plugin.", file=sys.stderr)
+            if args.save:
+                try:
+                    with open(args.save, "wb") as f:
+                        f.write(plugin.get_state())
+                    print(f"Saved morphed state to {args.save}", file=sys.stderr)
+                except OSError as e:
+                    print(
+                        f"Warning: failed to save state to {args.save}: {e}",
+                        file=sys.stderr,
+                    )
+        return 0
+    finally:
+        plugin.close()
+
+
 def cmd_devices(args: argparse.Namespace) -> int:
     """List available audio input/output devices."""
     try:
@@ -2079,6 +2198,56 @@ Examples:
         help="Overwrite --save output file if it exists",
     )
     presets_p.set_defaults(func=cmd_presets)
+
+    # morph
+    morph_p = subparsers.add_parser(
+        "morph",
+        help="Interpolate between two parameter snapshots (A/B morph)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Morph 25% between factory programs 0 and 1 (default sources)
+  minihost morph /path/to/synth.vst3 -t 0.25
+
+  # Morph between two explicit programs, as JSON
+  minihost morph /path/to/synth.vst3 --a-program 0 --b-program 5 -t 0.5 -j
+
+  # Morph between two saved state files, apply, and save the result
+  minihost morph /path/to/synth.vst3 \\
+    --a-state a.state --b-state b.state -t 0.3 --save morphed.state
+""",
+    )
+    morph_p.add_argument("plugin", help="Path to plugin")
+    morph_p.add_argument("-j", "--json", action="store_true", help="Output as JSON")
+    morph_p.add_argument(
+        "--a-program", type=int, metavar="N", help="Snapshot A from factory program N"
+    )
+    morph_p.add_argument(
+        "--b-program", type=int, metavar="N", help="Snapshot B from factory program N"
+    )
+    morph_p.add_argument(
+        "--a-state", metavar="FILE", help="Snapshot A from a saved state file"
+    )
+    morph_p.add_argument(
+        "--b-state", metavar="FILE", help="Snapshot B from a saved state file"
+    )
+    morph_p.add_argument(
+        "-t",
+        "--blend",
+        type=float,
+        default=0.5,
+        metavar="T",
+        help="Blend amount 0..1 (default: 0.5)",
+    )
+    morph_p.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply the morphed snapshot to the plugin",
+    )
+    morph_p.add_argument(
+        "--save", metavar="FILE", help="Apply and save the morphed state to FILE"
+    )
+    morph_p.set_defaults(func=cmd_morph)
 
     # play
     play_p = subparsers.add_parser("play", help="Play plugin with real-time audio/MIDI")

@@ -1,6 +1,6 @@
 # CLI Reference
 
-The `minihost` command provides a CLI for plugin inspection, real-time playback, offline processing, and audio conversion.
+The `minihost` command provides a CLI for plugin inspection, real-time playback, offline processing, parameter morphing, and audio conversion.
 
 ```bash
 minihost [-r SAMPLE_RATE] [-b BLOCK_SIZE] <command> [options]
@@ -200,6 +200,33 @@ When the output path is a directory (ends with `/` or is an existing directory) 
 - Mismatched sample rates are automatically resampled to match the first file
 
 - Existing output files are skipped unless `-y` is set
+
+### `morph` -- Interpolate between two parameter snapshots
+
+```bash
+# Morph 25% between factory programs 0 and 1 (the default sources)
+minihost morph /path/to/synth.vst3 -t 0.25
+
+# Morph between two explicit programs, as JSON
+minihost morph /path/to/synth.vst3 --a-program 0 --b-program 5 -t 0.5 --json
+
+# Morph between two saved state files, apply, and save the result
+minihost morph /path/to/synth.vst3 \
+  --a-state a.state --b-state b.state -t 0.3 --save morphed.state
+```
+
+Captures two parameter snapshots (A and B), linearly interpolates them at blend `-t` (0..1, default 0.5), and prints an A/B/blend table (or `--json`). Each snapshot comes from a factory program (`--a-program` / `--b-program`) or a saved state file (`--a-state` / `--b-state`); with no source given it defaults to factory programs 0 and 1. Pass `--apply` to write the blended values back to the plugin, or `--save FILE` to apply and persist the resulting state.
+
+Morphing operates on normalized per-parameter values (not opaque state blobs), so only continuous parameters glide smoothly; stepped/boolean parameters are quantized by the plugin. This is the CLI counterpart of the `minihost.morph` module and the native `Plugin.morph_*` methods, and mirrors the `morph` command in the C and C++ front-ends.
+
+| Option | Description |
+|--------|-------------|
+| `--a-program N` / `--b-program N` | Snapshot A / B from factory program N |
+| `--a-state FILE` / `--b-state FILE` | Snapshot A / B from a saved state file |
+| `-t, --blend T` | Blend amount 0..1 (default 0.5) |
+| `--apply` | Apply the morphed snapshot to the plugin |
+| `--save FILE` | Apply and save the morphed state to FILE |
+| `-j, --json` | Output as JSON |
 
 ### `resample` -- Resample audio files
 
