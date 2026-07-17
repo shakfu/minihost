@@ -108,7 +108,9 @@ In short: `libminihost` runs the plugin; `libminihost_audio` connects it to spea
 
 `minihost_desktop` (`projects/minihost_desktop/`) is a developer-facing GUI host built on the same libraries. It loads VST3/AU/LV2 plugins, wires them into a node graph on a canvas, opens native plugin editor windows, renders the graph to disk offline, and drives a realtime audio device with live MIDI input and a transport (BPM / loop region). Project files are JSON, schema-versioned, and round-trip with the Python loader (`minihost.load_project` / `render_project`), so a graph built in the app renders identically from the command line.
 
-Status: functional and pre-release. Both the offline renderer and the realtime engine are built and tested. Not yet done: packaging (code signing, notarization, installers), and some UX polish (undo/redo, a persistent plugin browser). See [docs/dev/desktop_app.md](docs/dev/desktop_app.md) for the design and [docs/dev/desktop_app_todo.md](docs/dev/desktop_app_todo.md) for per-feature status.
+Status: functional and pre-release. Both the offline renderer and the realtime engine are built and tested. Not yet done: packaging (code signing, notarization, installers). See [docs/dev/desktop_app.md](docs/dev/desktop_app.md) for the design and [docs/dev/desktop_app_todo.md](docs/dev/desktop_app_todo.md) for per-feature status.
+
+Plugins run **in-process**, the same trust model a DAW uses: a misbehaving plugin can crash the whole app and lose unsaved canvas edits. Two mitigations bound the harm. Plugin *scanning* is out-of-process, so a plugin that crashes while being catalogued takes down only a disposable child. And the working project is **autosaved** to a sidecar every few seconds; after an unclean exit the app offers to recover it on the next launch, so a crash costs at most a few seconds of unsaved editing. Save often regardless.
 
 The app is opt-in and off by default (it requires a non-headless build, so it is excluded from the headless library, CLI, and Python wheel builds):
 

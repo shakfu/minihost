@@ -38,6 +38,13 @@
 //       production serializer. Exit 0 on success, 1 on any broken
 //       invariant. Driven by tests/test_desktop_undo.py.
 //
+//   minihost_desktop --autosave-selftest=<project.json>
+//       Headless self-test of the crash-recovery sidecar lifecycle
+//       (write snapshot + meta, read back, clear) through the production
+//       save/parse paths. Uses MINIHOST_DESKTOP_SETTINGS_DIR for a
+//       hermetic sidecar location. Exit 0 on success, 1 on any broken
+//       invariant. Driven by tests/test_desktop_autosave.py.
+//
 //   minihost_desktop --scan-plugins[=<dir1;dir2>] [--scan-out=<file.xml>]
 //                     [--scan-format=<VST3|AudioUnit|LV2>] [--scan-oop]
 //       (--scan-oop routes each probe through a disposable child process for
@@ -84,6 +91,21 @@ constexpr int     kChannels   = 2;
 constexpr double  kRenderSec  = 5.0;
 constexpr double  kNoteOffSec = 4.0;
 constexpr const char* kDefaultOut = "/tmp/minihost_smoke.wav";
+
+// How often the autosave timer fires (message thread). Bounds a crash's
+// blast radius to at most this much unsaved canvas editing.
+constexpr int     kAutosaveIntervalMs = 5000;
+
+// A juce::Timer that forwards each tick to a std::function. Used for the
+// autosave heartbeat (JUCE ships no lambda-timer of its own).
+class CallbackTimer : public juce::Timer
+{
+public:
+    explicit CallbackTimer(std::function<void()> fn) : fn_(std::move(fn)) {}
+    void timerCallback() override { if (fn_) fn_(); }
+private:
+    std::function<void()> fn_;
+};
 } // namespace
 
 // Per-window mode. The smoke / probe / auto-render bits drive
@@ -636,8 +658,12 @@ public:
                         on_open_canvas_plugin_editor_(plugin_index);
                 });
             // Refresh the Edit menu's Undo/Redo enabled state whenever
-            // the document is edited or an undo/redo is applied.
-            canvas_->setOnDocumentEdited([this]() { menuItemsChanged(); });
+            // the document is edited or an undo/redo is applied, and
+            // notify the app (drives the autosave dirty flag).
+            canvas_->setOnDocumentEdited([this]() {
+                menuItemsChanged();
+                if (on_doc_edited_external_) on_doc_edited_external_();
+            });
             if (on_add_plugin_requested_)
                 canvas_->setOnAddPluginRequested(on_add_plugin_requested_);
         }
@@ -690,6 +716,12 @@ public:
     // unset, showOpenPluginChooser's raw file chooser is used as a fallback.
     void setOnRequestOpenPlugin(std::function<void()> cb)
     { on_request_open_plugin_ = std::move(cb); }
+
+    // Fired (in addition to the internal menu refresh) whenever a canvas
+    // edit / undo / redo mutates the document. The app uses it to mark the
+    // working document dirty for autosave.
+    void setOnDocumentEditedExternal(std::function<void()> cb)
+    { on_doc_edited_external_ = std::move(cb); }
 
     ~MainWindow() override
     {
@@ -896,7 +928,11 @@ private:
             "File > Open Plugin... hosts a single plugin in its own window.\n"
             "Right-click the canvas > Add Plugin... adds one to the graph.\n"
             "Both show your scanned plugin library (with a Browse-to-file "
-            "fallback); populate it via Plugins > Plugin Browser / Scan...");
+            "fallback); populate it via Plugins > Plugin Browser / Scan...\n\n"
+            "Note: plugins run in-process, so a misbehaving plugin can crash "
+            "the app and lose unsaved edits. Your work is autosaved every few "
+            "seconds; after an unclean exit minihost offers to recover it on "
+            "the next launch. Save often (Cmd/Ctrl+S).");
     }
 
     std::function<void(juce::String)>  on_open_plugin_;
@@ -918,6 +954,7 @@ private:
     std::function<void()>              on_add_library_plugin_;
     std::function<void()>              on_add_plugin_requested_;
     std::function<void()>              on_request_open_plugin_;
+    std::function<void()>              on_doc_edited_external_;
     juce::Label                        welcomeLabel_;
     std::unique_ptr<juce::FileChooser> chooser_;
     std::unique_ptr<CanvasComponent>   canvas_;
@@ -1050,7 +1087,17 @@ public:
         // before any mh_open, so construction runs inline on our own threads
         // and teardown is clean. Respect an explicit override if the user set
         // one. Must precede the scan-worker relaunch so children inherit it.
-        setenv("MINIHOST_MESSAGE_THREAD", "0", /*overwrite=*/0);
+        // (setenv is POSIX; MSVC has no setenv, so branch on the platform.
+        // Both paths honor an existing value -- POSIX via overwrite=0, Windows
+        // via the explicit getenv guard, since _putenv_s always overwrites.)
+        if (std::getenv("MINIHOST_MESSAGE_THREAD") == nullptr)
+        {
+           #if JUCE_WINDOWS
+            _putenv_s("MINIHOST_MESSAGE_THREAD", "0");
+           #else
+            setenv("MINIHOST_MESSAGE_THREAD", "0", /*overwrite=*/0);
+           #endif
+        }
 
         // Plugin-scan worker detection MUST come first: when the parent's
         // out-of-process scanner launches a child, it relaunches this same
@@ -1117,6 +1164,26 @@ public:
                 return;
             }
             runUndoSelfTest(juce::File(path));
+            return;
+        }
+
+        // Headless autosave self-test: exercises the crash-recovery sidecar
+        // lifecycle (write snapshot + meta, read it back, clear) through the
+        // production save/parse paths, with no GUI. Uses
+        // MINIHOST_DESKTOP_SETTINGS_DIR for a hermetic sidecar location. Exit
+        // 0 on success, 1 on any broken invariant. Driven by
+        // tests/test_desktop_autosave.py.
+        if (args.containsOption("--autosave-selftest"))
+        {
+            const auto path = args.removeValueForOption("--autosave-selftest");
+            if (path.isEmpty())
+            {
+                std::fprintf(stderr, "--autosave-selftest requires a path\n");
+                setApplicationReturnValue(2);
+                quit();
+                return;
+            }
+            runAutosaveSelfTest(juce::File(path));
             return;
         }
 
@@ -1256,11 +1323,35 @@ public:
                 std::make_unique<OutOfProcessPluginScanner>());
             loadKnownPlugins();
             owns_library_ = true;   // this process persists the library
+
+            // Autosave: the canvas marks the working document dirty on every
+            // edit; a heartbeat timer snapshots it to a sidecar so a plugin
+            // crash costs at most kAutosaveIntervalMs of unsaved editing. Only
+            // the GUI shell participates (headless modes share the settings
+            // dir but must not touch a crashed session's recovery file).
+            mainWindow_->setOnDocumentEditedExternal(
+                [this]() { doc_dirty_ = true; unsaved_changes_ = true; });
+            autosave_enabled_ = true;
+            autosave_timer_ = std::make_unique<CallbackTimer>(
+                [this]() { performAutosave(); });
+            autosave_timer_->startTimer(kAutosaveIntervalMs);
+
+            // A surviving sidecar means the previous session did not shut
+            // down cleanly (a clean exit deletes it) -- offer to recover.
+            maybeOfferCrashRecovery();
         }
     }
 
     void shutdown() override
     {
+        // Reaching shutdown() is a clean exit: stop the heartbeat and drop
+        // the recovery sidecar so the next launch does not offer to recover
+        // work the user is deliberately closing. Guarded to the GUI shell so
+        // a headless mode sharing the settings dir never clears a *different*
+        // (crashed) GUI session's sidecar.
+        if (autosave_timer_) autosave_timer_->stopTimer();
+        if (autosave_enabled_) clearAutosave();
+
         if (live_) saveSettingsToDisk();
         // Only the GUI app-shell loads and owns known_plugins_; persist it
         // only there. Headless modes (--scan-plugins writes its own local
@@ -1273,6 +1364,45 @@ public:
         live_.reset();
         editors_.clear();   // closes EditorWindows; each mh_close in dtor
         mainWindow_.reset();
+    }
+
+    // Intercept every quit request (window close button, File > Quit, Cmd+Q,
+    // OS logout) to guard unsaved work. With no unsaved changes -- or outside
+    // the GUI shell -- quit immediately. Otherwise show Save / Don't Save /
+    // Cancel and only proceed once the user resolves it. The dialog is async
+    // (JUCE modal loops are disabled), so quit() is deferred into the
+    // callback; "Save" quits only after the write lands (which may route
+    // through an async Save As chooser for an untitled project).
+    void systemRequestedQuit() override
+    {
+        if (!autosave_enabled_ || !unsaved_changes_ || !mainWindow_)
+        {
+            quit();
+            return;
+        }
+        if (quit_dialog_open_) return;   // already asking; ignore repeats
+        quit_dialog_open_ = true;
+
+        auto* aw = new juce::AlertWindow(
+            "Unsaved changes",
+            "This project has unsaved changes. Save before quitting?",
+            juce::AlertWindow::WarningIcon);
+        aw->addButton("Save",       1, juce::KeyPress(juce::KeyPress::returnKey));
+        aw->addButton("Don't Save", 2);
+        aw->addButton("Cancel",     0, juce::KeyPress(juce::KeyPress::escapeKey));
+        aw->enterModalState(true,
+            juce::ModalCallbackFunction::create(
+                [this, aw](int result) {
+                    delete aw;
+                    quit_dialog_open_ = false;
+                    if (result == 0) return;          // Cancel: stay open
+                    if (result == 2) { quit(); return; }  // Don't Save: discard
+                    // Save: persist first, quit only once it succeeds. A
+                    // cancelled Save As chooser drops the continuation, so the
+                    // app stays open with the work intact.
+                    saveCurrentProject([this]() { quit(); });
+                }),
+            /*deleteWhenDismissed=*/false);
     }
 
     // Settings live next to the app data dir. MINIHOST_DESKTOP_SETTINGS_DIR
@@ -1314,6 +1444,113 @@ public:
     juce::File knownPluginsFile() const
     {
         return settingsFile().getSiblingFile("known_plugins.xml");
+    }
+
+    // Crash-recovery sidecar. autosave.json holds the last-snapshotted
+    // ProjectDocument (same schema v1 as a normal save; all file paths are
+    // absolute, so the sidecar's own location is irrelevant to reload).
+    // autosave.meta records the working document's on-disk path (empty for
+    // an untitled project) so recovery can re-associate it for Save.
+    juce::File autosaveFile() const
+    {
+        return settingsFile().getSiblingFile("autosave.json");
+    }
+    juce::File autosaveMetaFile() const
+    {
+        return settingsFile().getSiblingFile("autosave.meta");
+    }
+
+    // Write the sidecar snapshot + its origin-path metadata. Atomic (the
+    // project writer renames a .tmp into place). Throws ProjectError on I/O
+    // failure. Factored out of performAutosave so the headless self-test can
+    // exercise the exact write path without a MainWindow.
+    void writeAutosaveSnapshot(const project::ProjectDocument& doc,
+                               const juce::File& orig_path)
+    {
+        project::saveProjectFile(autosaveFile(), doc);
+        autosaveMetaFile().replaceWithText(orig_path.getFullPathName());
+    }
+
+    // Snapshot the working document iff it changed since the last write.
+    // Runs on the message thread from the heartbeat timer. Best-effort:
+    // on failure the dirty flag stays set so the next tick retries.
+    void performAutosave()
+    {
+        if (!mainWindow_) return;
+        auto* doc = mainWindow_->currentDocument();
+        if (doc == nullptr) return;
+        if (!doc_dirty_) return;
+        try {
+            writeAutosaveSnapshot(*doc, mainWindow_->currentProjectPath());
+            doc_dirty_ = false;
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "autosave failed: %s\n", e.what());
+        }
+    }
+
+    // Remove the recovery sidecar (clean exit / explicit save / discard).
+    void clearAutosave()
+    {
+        autosaveFile().deleteFile();
+        autosaveMetaFile().deleteFile();
+        doc_dirty_ = false;
+    }
+
+    // On launch, a surviving sidecar means the last session ended without
+    // reaching shutdown() (a plugin crash, a kill, a power loss). Offer to
+    // reopen it. Recover loads the snapshot and re-associates its original
+    // path so Save writes back to the right file; the working copy is newer
+    // than disk, so it starts dirty. Discard drops the sidecar.
+    void maybeOfferCrashRecovery()
+    {
+        if (!mainWindow_) return;
+        if (!autosaveFile().existsAsFile()) return;
+
+        juce::String orig_path;
+        if (autosaveMetaFile().existsAsFile())
+            orig_path = autosaveMetaFile().loadFileAsString().trim();
+
+        const juce::String where = orig_path.isEmpty()
+            ? juce::String("an untitled project")
+            : juce::File(orig_path).getFileName();
+
+        juce::AlertWindow::showOkCancelBox(
+            juce::AlertWindow::WarningIcon,
+            "Recover unsaved work?",
+            "minihost did not shut down cleanly last time (a plugin may have "
+            "crashed the app). An autosaved copy of " + where + " was found.\n\n"
+            "Recover it, or discard and start fresh?",
+            "Recover", "Discard",
+            mainWindow_.get(),
+            juce::ModalCallbackFunction::create(
+                [this, orig_path](int result) {
+                    if (result == 1)   // Recover
+                    {
+                        try {
+                            auto doc = project::parseProjectFile(autosaveFile());
+                            mainWindow_->showProject(
+                                std::move(doc),
+                                orig_path.isEmpty() ? juce::File()
+                                                    : juce::File(orig_path));
+                            // Recovered content is newer than any on-disk
+                            // file: keep it dirty so it re-autosaves and the
+                            // user is prompted to Save (now and on quit).
+                            doc_dirty_       = true;
+                            unsaved_changes_ = true;
+                        } catch (const std::exception& e) {
+                            juce::AlertWindow::showMessageBoxAsync(
+                                juce::AlertWindow::WarningIcon,
+                                "Recovery failed",
+                                juce::String("Could not read the autosave "
+                                             "file: ") + e.what());
+                            clearAutosave();
+                        }
+                    }
+                    else               // Discard
+                    {
+                        clearAutosave();
+                    }
+                }));
     }
 
     void loadKnownPlugins()
@@ -1673,6 +1910,73 @@ private:
         }
     }
 
+    // Headless self-test for the autosave / crash-recovery sidecar. Drives
+    // the real write/parse/clear helpers against a hermetic settings dir
+    // (MINIHOST_DESKTOP_SETTINGS_DIR) and asserts the recovery contract:
+    //   1. before any write, no sidecar exists;
+    //   2. writeAutosaveSnapshot creates both files;
+    //   3. parsing the sidecar reproduces the document byte-for-byte
+    //      (through the production serializer);
+    //   4. the meta file records the origin path exactly;
+    //   5. clearAutosave removes both files.
+    // Exit 0 on success, 1 on any broken invariant.
+    void runAutosaveSelfTest(juce::File project_file)
+    {
+        auto fail = [this](const juce::String& m) {
+            std::fprintf(stderr, "autosave-selftest FAIL: %s\n", m.toRawUTF8());
+            setApplicationReturnValue(1);
+            quit();
+        };
+        try {
+            auto serialize = [](const project::ProjectDocument& d)
+                             -> juce::String {
+                auto tmp = juce::File::createTempFile(".json");
+                project::saveProjectFile(tmp, d);
+                const auto s = tmp.loadFileAsString();
+                tmp.deleteFile();
+                return s;
+            };
+
+            // Start from a clean slate so assertion (1) is meaningful.
+            clearAutosave();
+            if (autosaveFile().existsAsFile())
+                return fail("sidecar present before any write");
+
+            project::ProjectDocument doc =
+                project::parseProjectFile(project_file);
+            const juce::String expected = serialize(doc);
+
+            // A non-untitled origin path, mirroring a document opened from disk.
+            const juce::File orig_path = project_file;
+            writeAutosaveSnapshot(doc, orig_path);
+
+            if (!autosaveFile().existsAsFile())
+                return fail("snapshot did not create autosave.json");
+            if (!autosaveMetaFile().existsAsFile())
+                return fail("snapshot did not create autosave.meta");
+
+            project::ProjectDocument recovered =
+                project::parseProjectFile(autosaveFile());
+            if (serialize(recovered) != expected)
+                return fail("recovered document does not match original");
+
+            if (autosaveMetaFile().loadFileAsString().trim()
+                != orig_path.getFullPathName())
+                return fail("meta file did not record the origin path");
+
+            clearAutosave();
+            if (autosaveFile().existsAsFile()
+                || autosaveMetaFile().existsAsFile())
+                return fail("clearAutosave left a file behind");
+
+            std::fprintf(stderr, "autosave-selftest OK\n");
+            setApplicationReturnValue(0);
+            quit();
+        } catch (const std::exception& e) {
+            fail(juce::String("exception: ") + e.what());
+        }
+    }
+
     // Headless in-process scan. `paths_override` is a ';'-separated list of
     // directories (empty = each format's default locations). `out_override`
     // is the XML destination (empty = the real known_plugins.xml).
@@ -1754,18 +2058,26 @@ private:
         quit();
     }
 
-    void saveCurrentProject()
+    // on_success (if set) runs after a successful write -- used by the
+    // save-before-quit flow to quit only once the save lands.
+    void saveCurrentProject(std::function<void()> on_success = {})
     {
         if (!mainWindow_) return;
         auto* doc  = mainWindow_->currentDocument();
         const auto& path = mainWindow_->currentProjectPath();
         if (doc == nullptr) return;
         // Untitled (no path yet) -> fall through to Save As.
-        if (path == juce::File()) { saveCurrentProjectAs(); return; }
+        if (path == juce::File())
+        { saveCurrentProjectAs(std::move(on_success)); return; }
         try {
             project::saveProjectFile(path, *doc);
+            // The working copy now matches disk: no unsaved work to recover
+            // and nothing to prompt about on quit.
+            clearAutosave();
+            unsaved_changes_ = false;
             std::fprintf(stderr, "saved %s\n",
                          path.getFullPathName().toRawUTF8());
+            if (on_success) on_success();
         } catch (const std::exception& e) {
             juce::AlertWindow::showMessageBoxAsync(
                 juce::AlertWindow::WarningIcon,
@@ -1774,7 +2086,7 @@ private:
         }
     }
 
-    void saveCurrentProjectAs()
+    void saveCurrentProjectAs(std::function<void()> on_success = {})
     {
         if (!mainWindow_) return;
         auto* doc = mainWindow_->currentDocument();
@@ -1791,18 +2103,22 @@ private:
                         | juce::FileBrowserComponent::canSelectFiles
                         | juce::FileBrowserComponent::warnAboutOverwriting;
         save_chooser_->launchAsync(flags,
-            [this](const juce::FileChooser& fc) {
+            [this, on_success = std::move(on_success)]
+            (const juce::FileChooser& fc) {
                 auto file = fc.getResult();
-                if (file == juce::File()) return;
+                if (file == juce::File()) return;   // cancelled: no continuation
                 if (!file.hasFileExtension("json"))
                     file = file.withFileExtension("json");
                 auto* doc = mainWindow_->currentDocument();
                 if (doc == nullptr) return;
                 try {
                     project::saveProjectFile(file, *doc);
+                    clearAutosave();
+                    unsaved_changes_ = false;
                     mainWindow_->retitleAfterSaveAs(file);
                     std::fprintf(stderr, "saved %s\n",
                                  file.getFullPathName().toRawUTF8());
+                    if (on_success) on_success();
                 } catch (const std::exception& e) {
                     juce::AlertWindow::showMessageBoxAsync(
                         juce::AlertWindow::WarningIcon,
@@ -1828,6 +2144,10 @@ private:
         blank.sample_rate = 48000;
         blank.block_size  = 512;
         mainWindow_->showProject(std::move(blank), juce::File());
+        // A fresh empty project has nothing unsaved yet; don't autosave it
+        // or prompt to save it on quit until the user actually edits.
+        doc_dirty_       = false;
+        unsaved_changes_ = false;
     }
 
     // Opens a transient editor for a plugin referenced by the current
@@ -1954,6 +2274,10 @@ private:
         juce::Base64::convertToBase64(encoded, buf.data(), (size_t) got);
         doc->plugins[(size_t) plugin_index].state_b64
             = encoded.toString();
+        // Capturing state mutates the document outside the canvas edit path
+        // (which drives the dirty flags), so mark it dirty here too.
+        doc_dirty_       = true;
+        unsaved_changes_ = true;
         if (auto* cv = mainWindow_->canvas())
             cv->notifyDocumentChanged();
         std::fprintf(stderr,
@@ -1979,6 +2303,9 @@ private:
             auto doc = project::parseProjectFile(project_file);
             if (mainWindow_)
                 mainWindow_->showProject(std::move(doc), project_file);
+            // Just loaded from disk: the working copy matches the file.
+            doc_dirty_       = false;
+            unsaved_changes_ = false;
         } catch (const std::exception& e) {
             juce::AlertWindow::showMessageBoxAsync(
                 juce::AlertWindow::WarningIcon,
@@ -2071,7 +2398,10 @@ private:
                 port_names.add(juce::String::fromUTF8(buf));
 
         juce::PopupMenu m;
-        const int kNone = 1;
+        // static storage duration: usable inside the async menu lambda below
+        // without an explicit capture (MSVC requires capture for a plain
+        // `const int` local; GCC/Clang do not -- C3493).
+        static constexpr int kNone = 1;
         m.addItem(kNone, "None",
                   /*isActive=*/true,
                   /*isTicked=*/engine.midiInputDevice().isEmpty());
@@ -2182,6 +2512,23 @@ private:
     // True only in the GUI app-shell, which loads/owns known_plugins_ and is
     // the only process that should persist it on shutdown.
     bool owns_library_ = false;
+
+    // Autosave / crash recovery. The heartbeat timer writes autosaveFile()
+    // when doc_dirty_ is set; the flag is raised by canvas edits (via
+    // MainWindow's external-edited callback) and by state capture, and
+    // lowered on a successful write, explicit save, or discard. Only the GUI
+    // shell arms this (autosave_enabled_); see initialise()/shutdown().
+    std::unique_ptr<juce::Timer> autosave_timer_;
+    bool                         doc_dirty_        = false;
+    bool                         autosave_enabled_ = false;
+
+    // Unsaved-changes tracking for the save-before-quit prompt. Distinct from
+    // doc_dirty_ (which measures change since the last *autosave* and resets
+    // every heartbeat): unsaved_changes_ measures change since the last
+    // *explicit* Save and is only cleared by Save / Save As (or a fresh
+    // New / Open). quit_dialog_open_ guards against stacking prompts.
+    bool                         unsaved_changes_  = false;
+    bool                         quit_dialog_open_ = false;
 };
 
 } // namespace minihost_desktop
