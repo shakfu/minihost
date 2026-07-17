@@ -63,6 +63,19 @@ target_compile_definitions(minihost_desktop PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# On Windows this is a plain add_executable, i.e. the CONSOLE subsystem
+# (the console CRT startup references `main`). That is deliberate: the
+# headless modes (--render-project, --scan-plugins, the CI smoke step)
+# need working stdout/stderr, and the out-of-process scanner relaunches
+# this binary as a child worker. But START_JUCE_APPLICATION only emits an
+# int main() when _CONSOLE is defined -- otherwise it emits WinMain(),
+# leaving `main` unresolved (LNK2019). CMake does not define _CONSOLE for
+# a console executable the way the VS project templates do, so define it
+# here to keep JUCE's entry point matched to the subsystem.
+if(MSVC)
+    target_compile_definitions(minihost_desktop PRIVATE _CONSOLE)
+endif()
+
 if(APPLE)
     set_target_properties(minihost_desktop PROPERTIES
         MACOSX_BUNDLE TRUE
