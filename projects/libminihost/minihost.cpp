@@ -1286,6 +1286,109 @@ extern "C" int mh_get_bus_info(MH_Plugin* p, int is_input, int bus_index, MH_Bus
     return 1;
 }
 
+// Instantiation + configuration shared by the path-based and
+// descriptor-based open paths. `p` already has sampleRate/maxBlockSize/path
+// set; `desc` is a fully-resolved PluginDescription (from a file scan or a
+// deserialized descriptor). Consumes `p`: returns it released on success,
+// nullptr (with `p` freed) on failure. Format-agnostic -- createPluginInstance
+// does not consult a file path, so this works for AU descriptors as-is.
+static MH_Plugin* finishPluginFromDesc(AudioPluginFormatManager& fm,
+                                       const PluginDescription& desc,
+                                       std::unique_ptr<MH_Plugin> p,
+                                       double sample_rate,
+                                       int max_block_size,
+                                       int main_in_ch,
+                                       int main_out_ch,
+                                       int sidechain_in_ch,
+                                       char* err_buf,
+                                       size_t err_buf_size)
+{
+    String createErr;
+    std::unique_ptr<AudioPluginInstance> inst(
+        fm.createPluginInstance(desc, sample_rate, max_block_size, createErr)
+    );
+
+    if (! inst)
+    {
+        setErr(err_buf, err_buf_size, "createPluginInstance failed: " + createErr);
+        return nullptr;
+    }
+
+    // Extended bus/channel layout with sidechain
+    tryConfigureBusesEx(*inst, main_in_ch, main_out_ch, sidechain_in_ch);
+
+    // Determine actual sidechain channels
+    p->sidechainCh = 0;
+    if (sidechain_in_ch > 0 && inst->getBusCount(true) > 1)
+    {
+        auto* scBus = inst->getBus(true, 1);
+        if (scBus && scBus->isEnabled())
+        {
+            p->sidechainCh = scBus->getNumberOfChannels();
+        }
+    }
+
+    inst->setRateAndBufferSizeDetails(sample_rate, max_block_size);
+    inst->prepareToPlay(sample_rate, max_block_size);
+
+    p->inCh  = jmax(0, inst->getTotalNumInputChannels());
+    p->outCh = jmax(0, inst->getTotalNumOutputChannels());
+
+    int totalProcessCh = jmax(1, jmax(p->inCh + p->sidechainCh, p->outCh));
+    p->processBuf.setSize(totalProcessCh, max_block_size, false, false, true);
+    p->processBufD.setSize(totalProcessCh, max_block_size, false, false, true);
+
+    p->playHead.sampleRate = sample_rate;
+    inst->setPlayHead(&p->playHead);
+
+    p->inst = std::move(inst);
+    p->inst->addListener(&p->listener);
+    return p.release();
+}
+
+// Descriptor-based construction core. Deserializes a PluginDescription from
+// its XML (JUCE createXml() form) and instantiates it -- no file path
+// required, so AudioUnits (identified only by an AU id) load through here.
+static MH_Plugin* createPluginFromDescXml_impl(AudioPluginFormatManager& fm,
+                                      const char* pd_xml,
+                                      double sample_rate,
+                                      int max_block_size,
+                                      int main_in_ch,
+                                      int main_out_ch,
+                                      int sidechain_in_ch,
+                                      char* err_buf,
+                                      size_t err_buf_size)
+{
+    if (pd_xml == nullptr || pd_xml[0] == '\0')
+    {
+        setErr(err_buf, err_buf_size, "descriptor XML is empty");
+        return nullptr;
+    }
+
+    std::unique_ptr<XmlElement> xml(juce::parseXML(String::fromUTF8(pd_xml)).release());
+    if (xml == nullptr)
+    {
+        setErr(err_buf, err_buf_size, "descriptor XML parse failed");
+        return nullptr;
+    }
+
+    PluginDescription desc;
+    if (! desc.loadFromXml(*xml))
+    {
+        setErr(err_buf, err_buf_size, "descriptor loadFromXml failed");
+        return nullptr;
+    }
+
+    std::unique_ptr<MH_Plugin> p(new MH_Plugin());
+    p->sampleRate = sample_rate;
+    p->maxBlockSize = max_block_size;
+    p->path = desc.fileOrIdentifier.toStdString();  // for mh_get_path continuity
+
+    return finishPluginFromDesc(fm, desc, std::move(p), sample_rate,
+                                max_block_size, main_in_ch, main_out_ch,
+                                sidechain_in_ch, err_buf, err_buf_size);
+}
+
 // Plugin-construction core. Takes an already-initialized format manager
 // (caller's responsibility) so a session can pass its shared manager.
 static MH_Plugin* createPluginWithFm_impl(AudioPluginFormatManager& fm,
@@ -1324,60 +1427,9 @@ static MH_Plugin* createPluginWithFm_impl(AudioPluginFormatManager& fm,
         return nullptr;
     }
 
-    String createErr;
-    std::unique_ptr<AudioPluginInstance> inst(
-        fm.createPluginInstance(desc, sample_rate, max_block_size, createErr)
-    );
-
-    if (! inst)
-    {
-        setErr(err_buf, err_buf_size, "createPluginInstance failed: " + createErr);
-        return nullptr;
-    }
-
-    // Extended bus/channel layout with sidechain
-    tryConfigureBusesEx(*inst, main_in_ch, main_out_ch, sidechain_in_ch);
-
-    // Determine actual sidechain channels
-    p->sidechainCh = 0;
-    if (sidechain_in_ch > 0 && inst->getBusCount(true) > 1)
-    {
-        auto* scBus = inst->getBus(true, 1);
-        if (scBus && scBus->isEnabled())
-        {
-            p->sidechainCh = scBus->getNumberOfChannels();
-        }
-    }
-
-    inst->setRateAndBufferSizeDetails(sample_rate, max_block_size);
-    inst->prepareToPlay(sample_rate, max_block_size);
-
-    // Report the plugin's true channel counts after bus config and
-    // prepareToPlay. A synthesizer with no audio input honestly reports 0
-    // inputs (not an inflated 1), and the rare 0-output plugin reports 0
-    // outputs, so callers can distinguish instruments from effects. Buffer
-    // validation is "at least" (see validate_process_shape in the bindings),
-    // so honest lower counts never reject an over-provisioned caller.
-    p->inCh  = jmax(0, inst->getTotalNumInputChannels());
-    p->outCh = jmax(0, inst->getTotalNumOutputChannels());
-
-    // Allocate the combined processing buffer once. Size: max channels
-    // required across input (main + sidechain) and output. JUCE's processBlock
-    // reads inputs from channels 0..inCh+sidechainCh-1 and writes outputs to
-    // channels 0..outCh-1, so the buffer must accommodate both. Keep at least
-    // one channel so a pure-MIDI plugin (0 in / 0 out) still receives a valid
-    // (if unused) buffer to hand to processBlock.
-    int totalProcessCh = jmax(1, jmax(p->inCh + p->sidechainCh, p->outCh));
-    p->processBuf.setSize(totalProcessCh, max_block_size, false, false, true);
-    p->processBufD.setSize(totalProcessCh, max_block_size, false, false, true);
-
-    // Set up playhead for transport info
-    p->playHead.sampleRate = sample_rate;
-    inst->setPlayHead(&p->playHead);
-
-    p->inst = std::move(inst);
-    p->inst->addListener(&p->listener);
-    return p.release();
+    return finishPluginFromDesc(fm, desc, std::move(p), sample_rate,
+                                max_block_size, main_in_ch, main_out_ch,
+                                sidechain_in_ch, err_buf, err_buf_size);
 }
 
 // Thread-marshaling wrapper: run construction on the JUCE plugin thread when
@@ -1431,6 +1483,49 @@ extern "C" MH_Plugin* mh_open_ex(const char* plugin_path,
     return createPluginWithFm(fm, plugin_path, sample_rate, max_block_size,
                                main_in_ch, main_out_ch, sidechain_in_ch,
                                err_buf, err_buf_size);
+}
+
+// Descriptor-based thread-marshaling wrapper. Unlike the path-based wrapper,
+// there is no file to test for existence, and AU instantiation genuinely
+// needs the JUCE message thread, so always bring it up before constructing.
+static MH_Plugin* createPluginFromDescWithFm(AudioPluginFormatManager& fm,
+                                             const char* pd_xml,
+                                             double sample_rate,
+                                             int max_block_size,
+                                             int main_in_ch,
+                                             int main_out_ch,
+                                             int sidechain_in_ch,
+                                             char* err_buf,
+                                             size_t err_buf_size)
+{
+    MinihostMessageThread::instance().init();
+
+    MH_Plugin* result = nullptr;
+    MinihostMessageThread::instance().run([&]()
+    {
+        result = createPluginFromDescXml_impl(fm, pd_xml, sample_rate,
+                                              max_block_size, main_in_ch,
+                                              main_out_ch, sidechain_in_ch,
+                                              err_buf, err_buf_size);
+    });
+    return result;
+}
+
+extern "C" MH_Plugin* mh_open_desc(const char* pd_xml,
+                                   double sample_rate,
+                                   int max_block_size,
+                                   int requested_in_ch,
+                                   int requested_out_ch,
+                                   char* err_buf,
+                                   size_t err_buf_size)
+{
+    // One-shot format manager local to this call (mirrors mh_open_ex).
+    AudioPluginFormatManager fm;
+    initFormatManager(fm);
+    return createPluginFromDescWithFm(fm, pd_xml, sample_rate, max_block_size,
+                                      requested_in_ch, requested_out_ch,
+                                      /*sidechain_in_ch=*/0,
+                                      err_buf, err_buf_size);
 }
 
 extern "C" int mh_process_sidechain(MH_Plugin* p,
@@ -2028,6 +2123,28 @@ extern "C" MH_Plugin* mh_session_open(MH_Session* session,
                                sample_rate, max_block_size,
                                main_in_ch, main_out_ch, sidechain_in_ch,
                                err_buf, err_buf_size);
+}
+
+extern "C" MH_Plugin* mh_session_open_desc(MH_Session* session,
+                                           const char* pd_xml,
+                                           double sample_rate,
+                                           int max_block_size,
+                                           int requested_in_ch,
+                                           int requested_out_ch,
+                                           char* err_buf,
+                                           size_t err_buf_size)
+{
+    if (!session)
+    {
+        setErr(err_buf, err_buf_size, "session is null");
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> lock(session->mtx);
+    return createPluginFromDescWithFm(session->fm, pd_xml,
+                                      sample_rate, max_block_size,
+                                      requested_in_ch, requested_out_ch,
+                                      /*sidechain_in_ch=*/0,
+                                      err_buf, err_buf_size);
 }
 
 extern "C" int mh_session_probe(MH_Session* session,

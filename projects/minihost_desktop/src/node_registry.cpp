@@ -172,6 +172,8 @@ NodeKindEntry makeInput()
         s.id       = id;
         s.channels = require_int(n, "channels");
         s.source   = project_dir.getChildFile(require_string(n, "source"));
+        if (n.getDynamicObject()->hasProperty("resample"))
+            s.resample = (bool) n["resample"];
         d.inputs.push_back(std::move(s));
     };
     e.serialize_all = [](const ProjectDocument& d,
@@ -181,6 +183,10 @@ NodeKindEntry makeInput()
             auto* o = new juce::DynamicObject();
             o->setProperty("channels", n.channels);
             o->setProperty("source",   n.source.getFullPathName());
+            // Only emit when set, so default projects stay byte-identical
+            // and back-compatible with readers that predate the flag.
+            if (n.resample)
+                o->setProperty("resample", true);
             push(o, "input", n.id);
         }
     };
@@ -204,6 +210,11 @@ NodeKindEntry makeInput()
         const auto& s = d.inputs[(size_t) i];
         aw.addTextEditor("channels", juce::String(s.channels), "channels");
         aw.addTextEditor("source",   s.source.getFullPathName(), "source path");
+        // AlertWindow has no checkbox; a two-item combo stands in.
+        aw.addComboBox("resample", { "no", "yes" },
+                       "resample to project rate if mismatched");
+        aw.getComboBoxComponent("resample")
+          ->setSelectedItemIndex(s.resample ? 1 : 0);
     };
     e.dialog_apply = [](ProjectDocument& d, int i, juce::AlertWindow& aw,
                         const juce::String& new_id,
@@ -212,6 +223,8 @@ NodeKindEntry makeInput()
         if (s.id != new_id) { rename(s.id, new_id); s.id = new_id; }
         s.channels = read_int(aw, "channels", s.channels);
         s.source   = juce::File(aw.getTextEditorContents("source"));
+        s.resample = aw.getComboBoxComponent("resample")
+                       ->getSelectedItemIndex() == 1;
     };
 
     e.load_one = [](const ProjectDocument& d, int i,
@@ -240,7 +253,18 @@ NodeKindEntry makePlugin()
         (void) project_dir;
         project::PluginNodeSpec s;
         s.id   = id;
-        s.path = juce::File(require_string(n, "path"));
+        s.descriptor = prop_string(n, "descriptor", {});
+        if (s.descriptor.isNotEmpty())
+        {
+            // Descriptor-based (e.g. AudioUnit): path is optional.
+            s.path         = juce::File(prop_string(n, "path", {}));
+            s.display_name = prop_string(n, "name", {});
+        }
+        else
+        {
+            // Legacy / path-based (VST3, LV2): path is required.
+            s.path = juce::File(require_string(n, "path"));
+        }
         s.state_b64 = prop_string(n, "state_b64", {});
         const juce::Identifier kReceivesMidi("receives_midi");
         if (n.getDynamicObject()->hasProperty(kReceivesMidi))
@@ -256,7 +280,12 @@ NodeKindEntry makePlugin()
         for (const auto& n : d.plugins)
         {
             auto* o = new juce::DynamicObject();
-            o->setProperty("path", n.path.getFullPathName());
+            if (n.path != juce::File())
+                o->setProperty("path", n.path.getFullPathName());
+            if (n.descriptor.isNotEmpty())
+                o->setProperty("descriptor", n.descriptor);
+            if (n.display_name.isNotEmpty())
+                o->setProperty("name", n.display_name);
             if (n.state_b64.isNotEmpty())
                 o->setProperty("state_b64", n.state_b64);
             if (!n.receives_midi)
@@ -271,10 +300,11 @@ NodeKindEntry makePlugin()
         // port. -1 means unknown; assume effect (1 in port) until
         // re-probed.
         const int in_ports = (s.probed_in_channels == 0) ? 0 : 1;
-        return CanvasNodeInfo{
-            s.id + "\n" + s.path.getFileNameWithoutExtension(),
-            in_ports, 1
-        };
+        // Prefer the file name for the label; AU nodes have no path, so fall
+        // back to the stored plugin name.
+        juce::String label = s.path.getFileNameWithoutExtension();
+        if (label.isEmpty()) label = s.display_name;
+        return CanvasNodeInfo{ s.id + "\n" + label, in_ports, 1 };
     };
     e.channels_for = [](const ProjectDocument& d, int i, bool out) {
         const auto& s = d.plugins[(size_t) i];
@@ -287,7 +317,11 @@ NodeKindEntry makePlugin()
     e.dialog_emit = [](const ProjectDocument& d, int i,
                        juce::AlertWindow& aw) {
         const auto& s = d.plugins[(size_t) i];
-        aw.addTextEditor("path", s.path.getFullPathName(), "plugin path");
+        const bool is_desc = s.descriptor.isNotEmpty();
+        aw.addTextEditor("path",
+                         is_desc ? (s.display_name + "  (AudioUnit)")
+                                 : s.path.getFullPathName(),
+                         is_desc ? "plugin (descriptor)" : "plugin path");
         aw.getTextEditor("path")->setReadOnly(true);
         aw.addTextEditor("state_b64_size",
                          juce::String((int) s.state_b64.length()),
@@ -536,6 +570,9 @@ NodeKindEntry makeMidiInput()
         project::MidiInputNodeSpec s;
         s.id        = id;
         s.port_name = prop_string(n, "port_name", {});
+        const auto src = prop_string(n, "source", {});
+        if (src.isNotEmpty())
+            s.source = project_dir.getChildFile(src);  // absolute stays absolute
         d.midi_inputs.push_back(std::move(s));
     };
     e.serialize_all = [](const ProjectDocument& d,
@@ -544,6 +581,8 @@ NodeKindEntry makeMidiInput()
         {
             auto* o = new juce::DynamicObject();
             if (n.port_name.isNotEmpty()) o->setProperty("port_name", n.port_name);
+            if (n.source != juce::File())
+                o->setProperty("source", n.source.getFullPathName());
             push(o, "midi_input", n.id);
         }
     };
@@ -573,6 +612,10 @@ NodeKindEntry makeMidiInput()
         const auto& s = d.midi_inputs[(size_t) i];
         aw.addTextEditor("port_name", s.port_name,
                          "MIDI port name (empty = engine default)");
+        aw.addTextEditor("source",
+                         s.source != juce::File() ? s.source.getFullPathName()
+                                                  : juce::String(),
+                         ".mid file for offline render (empty = live only)");
     };
     e.dialog_apply = [](ProjectDocument& d, int i, juce::AlertWindow& aw,
                         const juce::String& new_id,
@@ -580,6 +623,8 @@ NodeKindEntry makeMidiInput()
         auto& s = d.midi_inputs[(size_t) i];
         if (s.id != new_id) { rename(s.id, new_id); s.id = new_id; }
         s.port_name = aw.getTextEditorContents("port_name").trim();
+        const auto src = aw.getTextEditorContents("source").trim();
+        s.source = src.isNotEmpty() ? juce::File(src) : juce::File();
     };
 
     e.load_one = [](const ProjectDocument& d, int i,
@@ -590,6 +635,20 @@ NodeKindEntry makeMidiInput()
         const auto nid = g.addMidiInput();
         id_to_node[s.id.toStdString()] = nid;
         lp.midi_input_node_ids.push_back(nid);
+        // File-sourced MIDI: read the .mid into sample-offset events so
+        // renderProject can stream it offline (live playback uses device
+        // MIDI and ignores this).
+        if (s.source != juce::File())
+        {
+            LoadedProject::FileMidiInput fmi;
+            fmi.node_id = nid;
+            if (! project::readMidiFileEvents(
+                      s.source, (double) d.sample_rate, fmi.events))
+                throw std::runtime_error(
+                    ("midi_input " + s.id + ": failed to read MIDI file "
+                     + s.source.getFullPathName()).toStdString());
+            lp.file_midi_inputs.push_back(std::move(fmi));
+        }
     };
     return e;
 }

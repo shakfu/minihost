@@ -4,6 +4,8 @@
 
 ### Added
 
+- **Opt-in input resampling in the project renderer.** Project inputs are still strict about sample rate by default (a file whose rate differs from the project rate is an error), but an input node now accepts an optional `resample: true` field that converts a mismatched file to the project rate at load time. Both loaders implement it over the same C resampler (`mh_audio_resample`, miniaudio linear + 4th-order anti-aliasing low-pass): Python's `render_project` resamples via `audio_io.resample`; the C++ desktop resamples in `loadProject`. Because it is the same underlying function, a resampled render is bit-identical between the two pipelines (asserted in `tests/test_desktop_smoke.py::test_resample_render_parity`). The desktop's "Add Input..." flow offers a Resample / Add-as-is choice on a rate mismatch instead of the old warning, and the per-input Properties dialog exposes the flag. The schema stays version 1 (additive; the field is only emitted when true). No new dependency -- `libsamplerate` is not required.
+
 - **`morph` command in the Python CLI.** Brings the `minihost` CLI to parity with the C/C++ front-ends and the library API: `minihost morph PLUGIN [-t T]` captures snapshots A and B from factory programs (`--a-program` / `--b-program`) or saved state files (`--a-state` / `--b-state`), interpolates at blend `-t` (default 0.5), prints an A/B/blend table (or `--json`), and optionally `--apply` / `--save`s the result. Built on the native `Plugin.morph_capture` / `morph_apply` bindings plus `minihost.lerp_params`. Documented in the CLI reference.
 
 ### Fixed

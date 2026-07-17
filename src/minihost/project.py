@@ -26,8 +26,10 @@ Schema notes:
     - Node IDs are user-readable strings; mapped to PluginGraph NodeIds at
       load time.
     - Input nodes have a `source` path (WAV/FLAC/MP3/Vorbis -- whatever
-      mh_audio_read supports). All input files must have the project's
-      sample_rate.
+      mh_audio_read supports). By default an input file must have the
+      project's sample_rate (a mismatch is an error). Set optional
+      `resample: true` on the input to convert a mismatched file to the
+      project rate at load time (via the shared mh_audio_resample).
     - Output nodes have a `sink` path (WAV/FLAC). Optional `bit_depth`
       (default 24).
     - Plugin nodes have a `path`. Optional `state_b64` for persisted
@@ -100,6 +102,11 @@ class _InputNode:
     id: str
     channels: int
     source: Path
+    # When True, a file whose sample rate differs from the project rate is
+    # resampled to the project rate at load time (via the shared
+    # mh_audio_resample). When False (default), a mismatch is an error --
+    # the project renderer is otherwise strict about input rates.
+    resample: bool = False
     audio: "Any" = field(repr=False, default=None)  # np.ndarray, lazy-typed
 
 
@@ -114,8 +121,11 @@ class _OutputNode:
 @dataclass
 class _PluginNode:
     id: str
-    path: Path
+    path: Path | None = None
     state_b64: str | None = None
+    # base64-encoded juce::PluginDescription XML. Set for plugins with no
+    # usable file path (AudioUnits); loaded via Plugin.from_descriptor.
+    descriptor: str | None = None
     plugin: minihost.Plugin | None = field(repr=False, default=None)
 
 
@@ -253,6 +263,7 @@ def load_project(project_path: str | Path) -> LoadedProject:
                 id=nid,
                 channels=_require_field(raw, "channels", int),
                 source=(project_dir / _require_field(raw, "source", str)).resolve(),
+                resample=bool(raw.get("resample", False)),
             )
             inputs.append(n)
             node_by_id[nid] = ("input", n)
@@ -266,11 +277,22 @@ def load_project(project_path: str | Path) -> LoadedProject:
             outputs.append(n)
             node_by_id[nid] = ("output", n)
         elif kind == "plugin":
-            n = _PluginNode(
-                id=nid,
-                path=Path(_require_field(raw, "path", str)),
-                state_b64=raw.get("state_b64"),
-            )
+            descriptor = raw.get("descriptor")
+            if descriptor:
+                # Descriptor-based (AudioUnit): path is optional.
+                path_val = raw.get("path")
+                n = _PluginNode(
+                    id=nid,
+                    path=Path(path_val) if path_val else None,
+                    state_b64=raw.get("state_b64"),
+                    descriptor=descriptor,
+                )
+            else:
+                n = _PluginNode(
+                    id=nid,
+                    path=Path(_require_field(raw, "path", str)),
+                    state_b64=raw.get("state_b64"),
+                )
             plugins.append(n)
             node_by_id[nid] = ("plugin", n)
         elif kind == "mix":
@@ -357,10 +379,13 @@ def load_project(project_path: str | Path) -> LoadedProject:
             raise ProjectError(f"input source not found: {n.source}")
         data, file_sr = audio_io.read_audio(n.source, as_=np.ndarray)  # type: ignore[union-attr]
         if int(file_sr) != int(sr):
-            raise ProjectError(
-                f"input {n.id!r}: file sample rate {file_sr} does not "
-                f"match project sample_rate {sr}"
-            )
+            if not n.resample:
+                raise ProjectError(
+                    f"input {n.id!r}: file sample rate {file_sr} does not "
+                    f"match project sample_rate {sr} (set resample=true on "
+                    f"the input to convert)"
+                )
+            data = audio_io.resample(data, int(file_sr), int(sr))
         if data.shape[0] != n.channels:
             raise ProjectError(
                 f"input {n.id!r}: file has {data.shape[0]} channels, "
@@ -393,16 +418,28 @@ def load_project(project_path: str | Path) -> LoadedProject:
                 f"midi_input {mi.id!r}: failed to read {mi.source}: {e}"
             ) from e
 
-    # Open plugin instances.
+    # Open plugin instances. Descriptor-based nodes (AudioUnits, which have
+    # no file path) open via Plugin.from_descriptor; path-based nodes open by
+    # path.
     for n in plugins:
-        if not n.path.exists():
-            raise ProjectError(f"plugin path not found: {n.path}")
         try:
-            n.plugin = minihost.Plugin(
-                str(n.path),
-                sample_rate=int(sr),
-                max_block_size=block,
-            )
+            if n.descriptor:
+                pd_xml = base64.b64decode(n.descriptor).decode("utf-8")
+                n.plugin = minihost.Plugin.from_descriptor(
+                    pd_xml,
+                    sample_rate=int(sr),
+                    max_block_size=block,
+                )
+            else:
+                if n.path is None or not n.path.exists():
+                    raise ProjectError(f"plugin path not found: {n.path}")
+                n.plugin = minihost.Plugin(
+                    str(n.path),
+                    sample_rate=int(sr),
+                    max_block_size=block,
+                )
+        except ProjectError:
+            raise
         except Exception as e:
             raise ProjectError(
                 f"plugin {n.id!r} failed to open: {e}"

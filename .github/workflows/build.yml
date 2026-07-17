@@ -80,6 +80,116 @@ jobs:
           name: ${{ matrix.artifact-name }}
           path: dist/
 
+  build-desktop:
+    name: Build desktop (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # Guard job: compiles the minihost_desktop GUI app (MINIHOST_BUILD_DESKTOP=ON,
+    # MINIHOST_HEADLESS=OFF) so the ~7k lines of desktop code cannot silently
+    # break under refactors of the C ABI or graph executor. Also runs a headless
+    # smoke (--save-roundtrip) to prove the binary is not dead on arrival.
+    # Backstop timeout well under the 6h default in case a headless-init hang
+    # slips through.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            cmake-args: -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+            bin: build/projects/minihost_desktop/minihost_desktop.app/Contents/MacOS/minihost_desktop
+            run-prefix: ""
+            artifact-name: desktop-macos-universal
+            artifact-path: build/projects/minihost_desktop/minihost_desktop.app
+          - os: ubuntu-22.04
+            cmake-args: ""
+            bin: build/projects/minihost_desktop/minihost_desktop
+            run-prefix: "xvfb-run -a"
+            artifact-name: desktop-linux-x64
+            artifact-path: build/projects/minihost_desktop/minihost_desktop
+          - os: windows-2022
+            cmake-args: -G "Visual Studio 17 2022"
+            bin: build/projects/minihost_desktop/Release/minihost_desktop.exe
+            run-prefix: ""
+            artifact-name: desktop-windows-x64
+            artifact-path: build/projects/minihost_desktop/Release/minihost_desktop.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libfreetype6-dev \
+            libfontconfig1-dev \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libgl1-mesa-dev \
+            libcurl4-openssl-dev \
+            xvfb \
+            pkg-config
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download JUCE
+        run: python scripts/download_juce.py
+
+      - name: Configure CMake
+        run: >
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          -DMINIHOST_BUILD_DESKTOP=ON -DMINIHOST_HEADLESS=OFF
+          ${{ matrix.cmake-args }}
+
+      - name: Build desktop app
+        run: cmake --build build --config Release --target minihost_desktop
+
+      - name: Headless smoke (save round-trip + error paths)
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          BIN="${{ matrix.run-prefix }} ${{ matrix.bin }}"
+          cat > smoke_project.json <<'EOF'
+          {
+            "minihost_project_version": 1,
+            "sample_rate": 48000,
+            "block_size": 512,
+            "nodes": [
+              {"id": "in",  "kind": "input",  "channels": 2, "source": "in.wav"},
+              {"id": "out", "kind": "output", "channels": 2, "sink": "out.wav", "bit_depth": 24}
+            ],
+            "edges": [{"src": "in", "dst": "out"}]
+          }
+          EOF
+
+          # Happy path: parse + re-save must succeed and produce output.
+          $BIN --save-roundtrip=smoke_project.json
+          test -f smoke_project.resaved.json
+          echo "round-trip output:"
+          cat smoke_project.resaved.json
+
+          # Error paths: the binary must fail cleanly, not crash or succeed.
+          # Missing project file -> exit 1 (load failure).
+          set +e
+          $BIN --render-project=does_not_exist.json ; code=$?
+          set -e
+          test "$code" -eq 1 || { echo "expected exit 1 for missing project, got $code"; exit 1; }
+
+          # Empty option value -> exit 2 (usage error).
+          set +e
+          $BIN --render-project= ; code=$?
+          set -e
+          test "$code" -eq 2 || { echo "expected exit 2 for empty value, got $code"; exit 1; }
+          echo "error-path exit codes OK"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: ${{ matrix.artifact-path }}
+
   build-wheels:
     name: Build wheels (${{ matrix.os }}, ${{ matrix.cibw_archs }})
     runs-on: ${{ matrix.os }}

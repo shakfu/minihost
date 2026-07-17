@@ -5,14 +5,54 @@
 #include "minihost_audiofile.h"
 #include "node_registry.h"
 
+#include "MidiFile.h"   // smf::MidiFile (projects/midifile)
+
 #include <juce_core/juce_core.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <unordered_map>
 #include <unordered_set>
 
 namespace minihost_desktop::project {
+
+bool readMidiFileEvents(const juce::File& midi_file, double sample_rate,
+                        std::vector<MH_MidiEvent>& out)
+{
+    out.clear();
+    smf::MidiFile mf;
+    if (! mf.read(midi_file.getFullPathName().toStdString()))
+        return false;
+    mf.doTimeAnalysis();   // populate MidiEvent::seconds from the tempo map
+
+    for (int t = 0; t < mf.getTrackCount(); ++t)
+    {
+        auto& track = mf[t];
+        for (int i = 0; i < track.getEventCount(); ++i)
+        {
+            auto& ev = track[i];
+            if (ev.size() < 1) continue;
+            const int status = ev[0];
+            // Keep channel-voice messages (0x80..0xEF); drop meta / sysex /
+            // system (0xF0..0xFF) and running-status stragglers.
+            if ((status & 0x80) == 0 || (status & 0xF0) == 0xF0) continue;
+            MH_MidiEvent e{};
+            // Truncate to match Python's int(seconds * sample_rate).
+            e.sample_offset = (int) (ev.seconds * sample_rate);
+            e.status = (unsigned char) status;
+            e.data1  = ev.size() > 1 ? (unsigned char) ev[1] : 0;
+            e.data2  = ev.size() > 2 ? (unsigned char) ev[2] : 0;
+            out.push_back(e);
+        }
+    }
+    std::sort(out.begin(), out.end(),
+              [](const MH_MidiEvent& a, const MH_MidiEvent& b) {
+                  return a.sample_offset < b.sample_offset;
+              });
+    return true;
+}
+
 
 namespace {
 
@@ -478,21 +518,44 @@ std::unique_ptr<LoadedProject> loadProject(const juce::File& path)
                      + ": " + juce::String(static_cast<const char*>(err)));
         struct Guard { MH_AudioData* p; ~Guard() { if (p) mh_audio_data_free(p); } } g{ad};
 
+        // `use` points at whichever buffer feeds the graph: the decoded
+        // file, or a resampled copy when the rate mismatches and the
+        // input opted in. resampled (if created) is freed by g2.
+        MH_AudioData* use = ad;
+        struct Guard2 { MH_AudioData* p; ~Guard2() { if (p) mh_audio_data_free(p); } } g2{nullptr};
+
         if ((int) ad->sample_rate != doc.sample_rate)
-            throwErr("input " + in.id + ": file sample rate "
-                     + juce::String((int) ad->sample_rate)
-                     + " does not match project sample_rate "
-                     + juce::String(doc.sample_rate));
-        if ((int) ad->channels != in.channels)
+        {
+            if (!in.resample)
+                throwErr("input " + in.id + ": file sample rate "
+                         + juce::String((int) ad->sample_rate)
+                         + " does not match project sample_rate "
+                         + juce::String(doc.sample_rate)
+                         + " (enable resample on the input to convert)");
+            char rerr[256] = {0};
+            MH_AudioData* rs = mh_audio_resample(
+                ad->data, ad->channels, (unsigned int) ad->frames,
+                ad->sample_rate, (unsigned int) doc.sample_rate,
+                rerr, sizeof(rerr));
+            if (!rs)
+                throwErr("input " + in.id + ": resample "
+                         + juce::String((int) ad->sample_rate) + " -> "
+                         + juce::String(doc.sample_rate) + " failed: "
+                         + juce::String(static_cast<const char*>(rerr)));
+            g2.p = rs;
+            use  = rs;
+        }
+
+        if ((int) use->channels != in.channels)
             throwErr("input " + in.id + ": file has "
-                     + juce::String((int) ad->channels)
+                     + juce::String((int) use->channels)
                      + " channels, project declares "
                      + juce::String(in.channels));
 
         std::vector<float> planar;
-        deinterleave(ad->data, in.channels, (int) ad->frames, planar);
+        deinterleave(use->data, in.channels, (int) use->frames, planar);
         loaded->input_audio.push_back(std::move(planar));
-        loaded->input_frames.push_back((int) ad->frames);
+        loaded->input_frames.push_back((int) use->frames);
     }
 
     // Compute render length. Only meaningful for file rendering;
@@ -517,17 +580,31 @@ std::unique_ptr<LoadedProject> loadProject(const juce::File& path)
         loaded->duration_frames = 0;
     }
 
-    // Open plugins.
+    // Open plugins. Prefer the descriptor (AudioUnits, which have no file
+    // path) via mh_open_desc; fall back to the path via mh_open.
     for (auto& pl : doc.plugins)
     {
-        if (!pl.path.exists())
-            throwErr("plugin path not found: " + pl.path.getFullPathName());
         char err[512] = {0};
-        MH_Plugin* p = mh_open(pl.path.getFullPathName().toRawUTF8(),
-                               (double) doc.sample_rate,
-                               doc.block_size,
-                               /*req_in=*/0, /*req_out=*/0,
-                               err, sizeof(err));
+        MH_Plugin* p = nullptr;
+        if (pl.descriptor.isNotEmpty())
+        {
+            juce::MemoryBlock db;
+            if (!decodeBase64(pl.descriptor, db))
+                throwErr("plugin " + pl.id + ": malformed descriptor");
+            const juce::String pd_xml = juce::String::fromUTF8(
+                static_cast<const char*>(db.getData()), (int) db.getSize());
+            p = mh_open_desc(pd_xml.toRawUTF8(),
+                             (double) doc.sample_rate, doc.block_size,
+                             /*req_in=*/0, /*req_out=*/0, err, sizeof(err));
+        }
+        else
+        {
+            if (!pl.path.exists())
+                throwErr("plugin path not found: " + pl.path.getFullPathName());
+            p = mh_open(pl.path.getFullPathName().toRawUTF8(),
+                        (double) doc.sample_rate, doc.block_size,
+                        /*req_in=*/0, /*req_out=*/0, err, sizeof(err));
+        }
         if (!p)
             throwErr("plugin " + pl.id + " failed to open: "
                      + juce::String(static_cast<const char*>(err)));
@@ -586,18 +663,30 @@ std::unique_ptr<LoadedProject> loadProject(const juce::File& path)
     // continues to drive them through the new routing path. The
     // ProjectDocument is left unchanged on disk; the migration only
     // affects the in-memory graph.
+    //
+    // Only wire plugins that actually accept MIDI. receives_midi defaults
+    // to true, so an effect-only graph would otherwise try to connect MIDI
+    // to a plugin the graph compiler rejects (connectMidi throws), aborting
+    // the whole load. The opened instance is authoritative -- the cached
+    // accepts_midi flag on the spec may be stale or absent for plugins
+    // loaded from disk without a fresh probe.
     if (doc.midi_inputs.empty())
     {
-        std::vector<std::string> recvs;
-        for (const auto& pl : doc.plugins)
-            if (pl.receives_midi)
-                recvs.push_back(pl.id.toStdString());
-        if (!recvs.empty())
+        std::vector<MH_NodeId> recv_nodes;
+        for (size_t i = 0; i < doc.plugins.size(); ++i)
+        {
+            const auto& pl = doc.plugins[i];
+            if (!pl.receives_midi) continue;
+            MH_Info info{};
+            if (mh_get_info(loaded->plugins[i], &info) && info.accepts_midi)
+                recv_nodes.push_back(id_to_node[pl.id.toStdString()]);
+        }
+        if (!recv_nodes.empty())
         {
             auto mi_node = g.addMidiInput();
             loaded->midi_input_node_ids.push_back(mi_node);
-            for (const auto& pid : recvs)
-                g.connectMidi(mi_node, id_to_node[pid]);
+            for (auto n : recv_nodes)
+                g.connectMidi(mi_node, n);
         }
     }
 
@@ -695,6 +784,11 @@ bool renderProject(LoadedProject& proj,
         accum[i].assign((size_t) ch, std::vector<float>((size_t) total, 0.0f));
     }
 
+    // Per-file-input cursors into each MIDI source's sorted event list, so
+    // staging a block is a forward walk rather than a rescan.
+    std::vector<size_t> midi_cursors(proj.file_midi_inputs.size(), 0);
+    std::vector<MH_MidiEvent> block_midi;   // reused scratch per block
+
     int frame = 0;
     while (frame < total)
     {
@@ -704,6 +798,30 @@ bool renderProject(LoadedProject& proj,
             return false;
         }
         const int n = std::min(block, total - frame);
+
+        // Stage MIDI inputs: events in [frame, frame + n), rebased to a
+        // block-local sample offset (mirrors the Python renderer). Must be
+        // re-staged every block; the graph clears pending events after each
+        // render_block.
+        const int block_end = frame + n;
+        for (size_t mi = 0; mi < proj.file_midi_inputs.size(); ++mi)
+        {
+            auto& fmi = proj.file_midi_inputs[mi];
+            size_t& cur = midi_cursors[mi];
+            block_midi.clear();
+            while (cur < fmi.events.size()
+                   && fmi.events[cur].sample_offset < block_end)
+            {
+                MH_MidiEvent e = fmi.events[cur];
+                e.sample_offset -= frame;
+                block_midi.push_back(e);
+                ++cur;
+            }
+            mh_graph_set_midi_input_events(
+                proj.graph->handle(), fmi.node_id,
+                block_midi.empty() ? nullptr : block_midi.data(),
+                (int) block_midi.size());
+        }
 
         // Stage inputs.
         for (size_t i = 0; i < proj.doc.inputs.size(); ++i)

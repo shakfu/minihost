@@ -1,7 +1,10 @@
-# minihost_desktop - GUI host application (stub)
+# minihost_desktop - GUI host application
 #
-# Status: scaffold only. See docs/dev/desktop_app.md for the full design
-# and docs/dev/desktop_app_todo.md for the work breakdown.
+# A working node-graph plugin host: load VST3/AU/LV2 plugins, wire them into a
+# DAG on a canvas, open plugin editor windows, render offline, and drive a
+# realtime audio device (Phase 2). See docs/dev/desktop_app.md for the design
+# and docs/dev/desktop_app_todo.md for the status of individual features.
+# Packaging (signing / notarization / installers) is not yet wired up.
 #
 # This sub-project is added by the top-level CMakeLists.txt only when
 # MINIHOST_BUILD_DESKTOP is ON. It links the `minihost_gui` sibling
@@ -27,15 +30,18 @@ add_executable(minihost_desktop
     src/canvas.cpp
     src/live.cpp
     src/node_registry.cpp
+    src/plugin_scanner.cpp
 )
 
 target_include_directories(minihost_desktop PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/projects/midifile/include
 )
 
 target_link_libraries(minihost_desktop PRIVATE
     minihost_gui
     minihost_audio_gui
+    midifile
     juce::juce_core
     juce::juce_data_structures
     juce::juce_events

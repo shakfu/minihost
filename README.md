@@ -104,6 +104,29 @@ minihost ships as two separate static libraries with a one-way dependency: `libm
 
 In short: `libminihost` runs the plugin; `libminihost_audio` connects it to speakers, files, and MIDI hardware. The Python wheel links both.
 
+## Desktop application
+
+`minihost_desktop` (`projects/minihost_desktop/`) is a developer-facing GUI host built on the same libraries. It loads VST3/AU/LV2 plugins, wires them into a node graph on a canvas, opens native plugin editor windows, renders the graph to disk offline, and drives a realtime audio device with live MIDI input and a transport (BPM / loop region). Project files are JSON, schema-versioned, and round-trip with the Python loader (`minihost.load_project` / `render_project`), so a graph built in the app renders identically from the command line.
+
+Status: functional and pre-release. Both the offline renderer and the realtime engine are built and tested. Not yet done: packaging (code signing, notarization, installers), and some UX polish (undo/redo, a persistent plugin browser). See [docs/dev/desktop_app.md](docs/dev/desktop_app.md) for the design and [docs/dev/desktop_app_todo.md](docs/dev/desktop_app_todo.md) for per-feature status.
+
+The app is opt-in and off by default (it requires a non-headless build, so it is excluded from the headless library, CLI, and Python wheel builds):
+
+```bash
+# Build the desktop app into its own build-desktop/ dir (keeps the
+# headless library / CLI / wheel build in build/ untouched)
+make desktop
+
+# Or configure it by hand (requires MINIHOST_HEADLESS=OFF):
+cmake -B build-desktop -DMINIHOST_BUILD_DESKTOP=ON -DMINIHOST_HEADLESS=OFF
+cmake --build build-desktop --config Release --target minihost_desktop
+
+# Build (if needed) and launch it (macOS)
+make run-desktop
+```
+
+Headless entry points for scripting and CI: `minihost_desktop --render-project=<project.json>` renders a project with no window, and `minihost_desktop --save-roundtrip=<project.json>` parses and re-saves a project (used as a build smoke test).
+
 ## Requirements
 
 - CMake 3.20+

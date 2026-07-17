@@ -449,6 +449,19 @@ MH_Plugin* mh_open_ex(const char* plugin_path,
                       char* err_buf,
                       size_t err_buf_size);
 
+// Open a plugin from a serialized juce::PluginDescription (its createXml()
+// form, as a NUL-terminated UTF-8 string). Unlike mh_open, this needs no file
+// path, so it is the way to load AudioUnits (identified by an AU id, not a
+// path). requested_in_ch / requested_out_ch mirror mh_open (0 = plugin default,
+// no sidechain). Returns NULL on failure (err_buf gets the reason).
+MH_Plugin* mh_open_desc(const char* pd_xml,
+                        double sample_rate,
+                        int max_block_size,
+                        int requested_in_ch,
+                        int requested_out_ch,
+                        char* err_buf,
+                        size_t err_buf_size);
+
 // Process with sidechain input
 // main_in: main input channels [main_in_ch][nframes]
 // main_out: main output channels [main_out_ch][nframes]
@@ -621,6 +634,17 @@ MH_Plugin* mh_session_open(MH_Session* session,
                             int sidechain_in_ch,
                             char* err_buf,
                             size_t err_buf_size);
+
+// Load a plugin from a serialized PluginDescription (see mh_open_desc) using
+// the session's format manager.
+MH_Plugin* mh_session_open_desc(MH_Session* session,
+                                const char* pd_xml,
+                                double sample_rate,
+                                int max_block_size,
+                                int requested_in_ch,
+                                int requested_out_ch,
+                                char* err_buf,
+                                size_t err_buf_size);
 
 // Probe a plugin file using the session's format manager.
 int mh_session_probe(MH_Session* session,

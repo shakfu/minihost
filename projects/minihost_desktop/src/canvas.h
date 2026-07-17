@@ -19,9 +19,12 @@
 #pragma once
 
 #include "project.h"
+#include "undo_history.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <juce_audio_processors/juce_audio_processors.h>  // juce::PluginDescription
 
+#include <functional>
 #include <unordered_map>
 #include <vector>
 
@@ -41,6 +44,14 @@ public:
     void setOnOpenPluginEditor(OpenPluginEditorCb cb)
     { on_open_plugin_editor_ = std::move(cb); }
 
+    // When set, the "Add Plugin..." context action delegates to this
+    // callback (the application shows its shared library picker, which
+    // ultimately calls addPluginFromFile). When unset, the canvas falls
+    // back to its own raw file chooser so it stays usable standalone.
+    using AddPluginRequestedCb = std::function<void()>;
+    void setOnAddPluginRequested(AddPluginRequestedCb cb)
+    { on_add_plugin_requested_ = std::move(cb); }
+
     // Replace the displayed document. Triggers a re-layout: nodes
     // whose ids appear in `doc->layout` use those saved positions;
     // any remaining nodes are auto-positioned by topological depth.
@@ -54,6 +65,34 @@ public:
     // captured editor state), call this so the canvas refreshes its
     // label cache. Pure repaint trigger; no layout recompute.
     void notifyDocumentChanged() { repaint(); }
+
+    // Undo / redo of canvas edits (add / delete / connect / move /
+    // properties). Snapshot-based: each edit records the pre-edit
+    // document; undo/redo swap the whole ProjectDocument in place (the
+    // doc_ pointer is stable, so other holders stay valid). Return true
+    // if a step was applied.
+    bool undo();
+    bool redo();
+    bool canUndo() const { return undo_history_.canUndo(); }
+    bool canRedo() const { return undo_history_.canRedo(); }
+
+    // Fired after any edit, undo, or redo so the application can mark the
+    // window dirty and refresh the Edit menu's enabled state.
+    using DocumentEditedCb = std::function<void()>;
+    void setOnDocumentEdited(DocumentEditedCb cb)
+    { on_document_edited_ = std::move(cb); }
+
+    // Add a plugin node for the plugin at `file`, probing its channel
+    // counts (same path as the "Add Plugin..." file chooser). Used by
+    // the plugin browser to add a selected plugin to the canvas. No-op
+    // if no document is loaded. Records an undo step.
+    void addPluginFromFile(const juce::File& file);
+
+    // Add a plugin node from a scanned juce::PluginDescription. Real files
+    // (VST3/LV2) delegate to addPluginFromFile; formats without a usable
+    // file path (AudioUnits) store the serialized descriptor and load via
+    // mh_open_desc. Records an undo step.
+    void addPluginFromDescription(const juce::PluginDescription& pd);
 
     // Wire the canvas to the live LoadedProject so meter nodes show
     // real-time per-channel peak. Pass nullptr when live stops.
@@ -120,6 +159,11 @@ private:
     void showContextMenu(juce::Point<int> screen_pos);
     // File-chooser flows (registry can't express async UI cleanly):
     void addPluginNode();           // launches an async file chooser
+    // Shared tail of the add-plugin paths: probe (via descriptor when
+    // probe_desc_xml is set, else by path), cache channel/MIDI info, name,
+    // and push as an undoable edit.
+    void probeAndAddPlugin(project::PluginNodeSpec p,
+                           const juce::String& probe_desc_xml);
     void addInputNode();            // file chooser -> source WAV; channels from file
     void addOutputNode();           // file chooser -> sink path; defaults to 2 channels
     // Convenience helper: stereo split into two pick_channel nodes
@@ -136,12 +180,20 @@ private:
     void addEdgeToDoc(int src_node_index, int dst_node_index, int dst_port);
     juce::String generateUniqueId(const juce::String& prefix) const;
 
+    // Capture the current document as an undo restore point. Call
+    // immediately before any mutation of *doc_. No-op when doc_ is null.
+    // Also notifies the application that an edit is happening.
+    void recordUndo();
+
     project::ProjectDocument* doc_ = nullptr;
     project::LoadedProject*   live_project_ = nullptr;
+    UndoHistory               undo_history_;
+    DocumentEditedCb          on_document_edited_;
 
     // juce::Timer
     void timerCallback() override { repaint(); }
     OpenPluginEditorCb        on_open_plugin_editor_;
+    AddPluginRequestedCb      on_add_plugin_requested_;
     std::vector<NodeLayout>   nodes_;
     std::vector<EdgeLayout>   edges_;
 
@@ -149,6 +201,7 @@ private:
     DragKind                  drag_kind_     = DragKind::None;
     int                       dragging_node_ = -1;
     juce::Point<float>        drag_offset_;
+    juce::Point<float>        move_start_pos_;   // node pos at drag start
     int                       selected_node_ = -1;
     int                       selected_edge_ = -1;
     int                       connect_from_node_ = -1; // ConnectingFromPort source

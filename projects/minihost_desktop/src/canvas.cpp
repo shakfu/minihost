@@ -34,8 +34,48 @@ void CanvasComponent::setDocument(project::ProjectDocument* doc)
     dragging_node_  = -1;
     selected_node_  = -1;
     selected_edge_  = -1;
+    // A different document starts with a clean history; the old undo
+    // stack refers to the previous document's state.
+    undo_history_.clear();
     rebuildLayout();
     repaint();
+}
+
+void CanvasComponent::recordUndo()
+{
+    if (doc_ == nullptr) return;
+    undo_history_.snapshot(*doc_);
+    if (on_document_edited_) on_document_edited_();
+}
+
+bool CanvasComponent::undo()
+{
+    if (doc_ == nullptr) return false;
+    if (!undo_history_.undo(*doc_)) return false;
+    // The restored document may not contain the currently-selected
+    // node/edge; clear selection to avoid a stale index.
+    selected_node_ = -1;
+    selected_edge_ = -1;
+    drag_kind_     = DragKind::None;
+    dragging_node_ = -1;
+    rebuildLayout();
+    repaint();
+    if (on_document_edited_) on_document_edited_();
+    return true;
+}
+
+bool CanvasComponent::redo()
+{
+    if (doc_ == nullptr) return false;
+    if (!undo_history_.redo(*doc_)) return false;
+    selected_node_ = -1;
+    selected_edge_ = -1;
+    drag_kind_     = DragKind::None;
+    dragging_node_ = -1;
+    rebuildLayout();
+    repaint();
+    if (on_document_edited_) on_document_edited_();
+    return true;
 }
 
 void CanvasComponent::rebuildLayout()
@@ -469,6 +509,7 @@ void CanvasComponent::mouseDown(const juce::MouseEvent& e)
         drag_kind_     = DragKind::MovingNode;
         dragging_node_ = hit;
         drag_offset_   = p - nodes_[(size_t) hit].bounds.getPosition();
+        move_start_pos_ = nodes_[(size_t) hit].bounds.getPosition();
         repaint();
         return;
     }
@@ -512,8 +553,15 @@ void CanvasComponent::mouseUp(const juce::MouseEvent& e)
         && doc_ != nullptr)
     {
         const auto& n = nodes_[(size_t) dragging_node_];
-        doc_->layout[n.id.toStdString()]
-            = project::NodePosition{ n.bounds.getX(), n.bounds.getY() };
+        // A press-without-drag also enters MovingNode (it is how a node
+        // is selected); only record an undo step if the node actually
+        // moved, so plain clicks don't pollute the history.
+        if (n.bounds.getPosition() != move_start_pos_)
+        {
+            recordUndo();
+            doc_->layout[n.id.toStdString()]
+                = project::NodePosition{ n.bounds.getX(), n.bounds.getY() };
+        }
     }
     else if (drag_kind_ == DragKind::ConnectingFromPort
              && connect_from_node_ >= 0)
@@ -550,6 +598,15 @@ bool CanvasComponent::keyPressed(const juce::KeyPress& key)
         deleteSelected();
         return true;
     }
+    // Cmd/Ctrl+Z = undo; Cmd/Ctrl+Shift+Z = redo. The command modifier
+    // is Cmd on macOS, Ctrl elsewhere (JUCE maps it per-platform).
+    if (key.getModifiers().isCommandDown()
+        && (key.getKeyCode() == 'Z' || key.getKeyCode() == 'z'))
+    {
+        if (key.getModifiers().isShiftDown()) redo();
+        else                                  undo();
+        return true;
+    }
     return false;
 }
 
@@ -559,6 +616,7 @@ void CanvasComponent::deleteSelected()
     if (selected_edge_ >= 0
         && selected_edge_ < (int) edges_.size())
     {
+        recordUndo();
         removeEdgeFromDoc(edges_[(size_t) selected_edge_].doc_edge_index);
         selected_edge_ = -1;
         rebuildLayout();
@@ -568,6 +626,7 @@ void CanvasComponent::deleteSelected()
     if (selected_node_ >= 0
         && selected_node_ < (int) nodes_.size())
     {
+        recordUndo();
         removeNodeFromDoc(selected_node_);
         selected_node_ = -1;
         rebuildLayout();
@@ -662,10 +721,13 @@ void CanvasComponent::addEdgeToDoc(int src_node_index, int dst_node_index,
                     "connected. Edit the merge to increase num_inputs.");
                 return;
             }
+            // Past every rejection: this edge will be added.
+            recordUndo();
         }
         else
         {
             // Single-port consumer: replace any existing edge at port 0.
+            recordUndo();
             const auto dst_id = dst_n.id;
             doc_->edges.erase(
                 std::remove_if(doc_->edges.begin(), doc_->edges.end(),
@@ -719,6 +781,9 @@ void CanvasComponent::addEdgeToDoc(int src_node_index, int dst_node_index,
 
     const auto src_id = src_n.id;
     const auto dst_id = dst_n.id;
+
+    // Past channel validation: this edge will be added.
+    recordUndo();
 
     // One edge per (dst_node, dst_port): replace any existing.
     doc_->edges.erase(
@@ -779,6 +844,7 @@ void CanvasComponent::showContextMenu(juce::Point<int> screen_pos)
                 const auto& entry = nodeRegistry()[(size_t) reg_idx];
                 if (entry.menu_add && doc_ != nullptr)
                 {
+                    recordUndo();
                     entry.menu_add(*doc_);
                     rebuildLayout();
                     repaint();
@@ -847,6 +913,7 @@ void CanvasComponent::showNodePropertiesDialog(int node_index)
                         }
                     };
 
+                recordUndo();
                 entry.dialog_apply(*doc_, spec_index, *aw, new_id, rename);
                 rebuildLayout();
                 repaint();
@@ -871,6 +938,7 @@ void CanvasComponent::addChannelSplitStereo()
                            }));
         return id;
     };
+    recordUndo();
     for (int c = 0; c < 2; ++c)
     {
         project::PickChannelNodeSpec s;
@@ -908,22 +976,43 @@ void CanvasComponent::addInputNode()
                     juce::String(err));
                 return;
             }
+            // Commit the input node with a chosen resample flag.
+            auto commit = [this, file, ch = (int) info.channels](bool resample) {
+                if (doc_ == nullptr) return;
+                project::InputNodeSpec n;
+                n.id       = generateUniqueId("in");
+                n.channels = ch;
+                n.source   = file;
+                n.resample = resample;
+                recordUndo();
+                doc_->inputs.push_back(std::move(n));
+                rebuildLayout();
+                repaint();
+            };
+
             if ((int) info.sample_rate != doc_->sample_rate)
             {
-                juce::AlertWindow::showMessageBoxAsync(
+                // Offer to resample instead of adding a node that will
+                // fail at render (both loaders reject a rate mismatch
+                // unless the input opts into resampling).
+                juce::AlertWindow::showOkCancelBox(
                     juce::AlertWindow::WarningIcon,
                     "Sample rate mismatch",
-                    "File: " + juce::String((int) info.sample_rate)
-                  + " Hz, project: " + juce::String(doc_->sample_rate)
-                  + " Hz. The render will fail until rates match.");
+                    "File is " + juce::String((int) info.sample_rate)
+                  + " Hz but the project is "
+                  + juce::String(doc_->sample_rate)
+                  + " Hz.\n\nResample the input to the project rate on "
+                    "render? (Otherwise the node is added as-is and the "
+                    "render will fail until rates match.)",
+                    "Resample", "Add as-is",
+                    /*associatedComponent=*/nullptr,
+                    juce::ModalCallbackFunction::create(
+                        [commit](int result) { commit(result == 1); }));
             }
-            project::InputNodeSpec n;
-            n.id       = generateUniqueId("in");
-            n.channels = (int) info.channels;
-            n.source   = file;
-            doc_->inputs.push_back(std::move(n));
-            rebuildLayout();
-            repaint();
+            else
+            {
+                commit(false);
+            }
         });
 }
 
@@ -946,6 +1035,7 @@ void CanvasComponent::addOutputNode()
             n.channels  = 2;     // sensible default; user can edit JSON
             n.bit_depth = 24;
             n.sink      = file;
+            recordUndo();
             doc_->outputs.push_back(std::move(n));
             rebuildLayout();
             repaint();
@@ -973,6 +1063,14 @@ juce::String CanvasComponent::generateUniqueId(const juce::String& prefix) const
 
 void CanvasComponent::addPluginNode()
 {
+    // Prefer the application's shared library picker (scanned list +
+    // browse + scan). Fall back to a raw file chooser when the canvas is
+    // used standalone (no application wired the callback).
+    if (on_add_plugin_requested_)
+    {
+        on_add_plugin_requested_();
+        return;
+    }
     chooser_ = std::make_unique<juce::FileChooser>(
         "Choose a plugin",
         juce::File("/Library/Audio/Plug-Ins"),
@@ -983,55 +1081,98 @@ void CanvasComponent::addPluginNode()
     chooser_->launchAsync(flags,
         [this](const juce::FileChooser& fc) {
             const auto file = fc.getResult();
-            if (file == juce::File() || doc_ == nullptr) return;
-            project::PluginNodeSpec p;
-            p.path = file;
-            // Probe channel counts so canvas edges can validate. Use
-            // the project's sample_rate / block_size so prepareToPlay
-            // matches what loadProject will request later.
-            char err[256] = {0};
-            MH_Plugin* probe = mh_open(file.getFullPathName().toRawUTF8(),
-                                       (double) doc_->sample_rate,
-                                       doc_->block_size,
-                                       /*req_in=*/0, /*req_out=*/0,
-                                       err, sizeof(err));
-            // Default to "fx" prefix; we'll switch to "synth" below
-            // once the probe tells us whether it's an instrument.
-            juce::String id_prefix = "fx";
-            if (probe != nullptr)
-            {
-                MH_Info info{};
-                if (mh_get_info(probe, &info))
-                {
-                    p.probed_in_channels  = info.num_input_ch;
-                    p.probed_out_channels = info.num_output_ch;
-                    p.accepts_midi        = info.accepts_midi != 0;
-                    p.produces_midi       = info.produces_midi != 0;
-                    // Heuristic: an instrument has no audio input
-                    // (or only MIDI-driven output). Naming reflects
-                    // that so the canvas reads as "synth_1" instead
-                    // of "fx_1".
-                    if (info.num_input_ch == 0 || info.is_midi_effect)
-                        id_prefix = "synth";
-                }
-                mh_close(probe);
-            }
-            else
-            {
-                juce::AlertWindow::showMessageBoxAsync(
-                    juce::AlertWindow::WarningIcon,
-                    "Could not probe plugin",
-                    juce::String("mh_open failed: ")
-                        + juce::String(static_cast<const char*>(err))
-                        + "\n\nAdding the node anyway; channel "
-                          "validation at connect time will be disabled "
-                          "until the next load.");
-            }
-            p.id = generateUniqueId(id_prefix);
-            doc_->plugins.push_back(std::move(p));
-            rebuildLayout();
-            repaint();
+            if (file == juce::File()) return;
+            addPluginFromFile(file);
         });
+}
+
+void CanvasComponent::addPluginFromFile(const juce::File& file)
+{
+    if (doc_ == nullptr || file == juce::File()) return;
+    project::PluginNodeSpec p;
+    p.path = file;
+    probeAndAddPlugin(std::move(p), /*probe_desc_xml=*/{});
+}
+
+void CanvasComponent::addPluginFromDescription(const juce::PluginDescription& pd)
+{
+    if (doc_ == nullptr) return;
+
+    // Path-based formats (VST3, LV2, or a browsed file) keep loading by
+    // path -- their fileOrIdentifier is a real file. Only formats without a
+    // usable file path (AudioUnits) take the descriptor route.
+    const juce::File f(pd.fileOrIdentifier);
+    if (f.exists())
+    {
+        addPluginFromFile(f);
+        return;
+    }
+
+    project::PluginNodeSpec p;
+    p.display_name = pd.name;
+    juce::String pd_xml;
+    if (auto xml = pd.createXml())
+    {
+        pd_xml = xml->toString();
+        juce::MemoryOutputStream os;
+        juce::Base64::convertToBase64(os, pd_xml.toRawUTF8(),
+                                      pd_xml.getNumBytesAsUTF8());
+        p.descriptor = os.toString();
+    }
+    probeAndAddPlugin(std::move(p), pd_xml);
+}
+
+// Shared tail for both add paths: probe the plugin (via descriptor when
+// `probe_desc_xml` is set, else by path), cache channel/MIDI info for
+// connect-time validation, name it, and push it as an undoable edit.
+void CanvasComponent::probeAndAddPlugin(project::PluginNodeSpec p,
+                                        const juce::String& probe_desc_xml)
+{
+    // Use the project's sample_rate / block_size so prepareToPlay matches
+    // what loadProject will request later.
+    char err[256] = {0};
+    const bool via_desc = probe_desc_xml.isNotEmpty();
+    MH_Plugin* probe = via_desc
+        ? mh_open_desc(probe_desc_xml.toRawUTF8(),
+                       (double) doc_->sample_rate, doc_->block_size,
+                       /*req_in=*/0, /*req_out=*/0, err, sizeof(err))
+        : mh_open(p.path.getFullPathName().toRawUTF8(),
+                  (double) doc_->sample_rate, doc_->block_size,
+                  /*req_in=*/0, /*req_out=*/0, err, sizeof(err));
+    // Default to "fx" prefix; switch to "synth" below once the probe tells
+    // us whether it's an instrument.
+    juce::String id_prefix = "fx";
+    if (probe != nullptr)
+    {
+        MH_Info info{};
+        if (mh_get_info(probe, &info))
+        {
+            p.probed_in_channels  = info.num_input_ch;
+            p.probed_out_channels = info.num_output_ch;
+            p.accepts_midi        = info.accepts_midi != 0;
+            p.produces_midi       = info.produces_midi != 0;
+            if (info.num_input_ch == 0 || info.is_midi_effect)
+                id_prefix = "synth";
+        }
+        mh_close(probe);
+    }
+    else
+    {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::AlertWindow::WarningIcon,
+            "Could not probe plugin",
+            juce::String(via_desc ? "mh_open_desc failed: "
+                                  : "mh_open failed: ")
+                + juce::String(static_cast<const char*>(err))
+                + "\n\nAdding the node anyway; channel "
+                  "validation at connect time will be disabled "
+                  "until the next load.");
+    }
+    p.id = generateUniqueId(id_prefix);
+    recordUndo();
+    doc_->plugins.push_back(std::move(p));
+    rebuildLayout();
+    repaint();
 }
 
 } // namespace minihost_desktop

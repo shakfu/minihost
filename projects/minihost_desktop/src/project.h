@@ -41,6 +41,12 @@ struct InputNodeSpec {
     juce::String id;
     int          channels = 0;
     juce::File   source;     // resolved against project_dir
+    // When true, a file whose sample rate differs from the project rate
+    // is resampled to the project rate at load (shared mh_audio_resample).
+    // When false (default) a mismatch is an error -- the renderer is
+    // otherwise strict about input rates. Mirrors _InputNode.resample in
+    // src/minihost/project.py so the two loaders stay in parity.
+    bool         resample = false;
 };
 
 // A file-sink: receives audio from the graph and writes it to disk
@@ -65,6 +71,15 @@ struct PluginNodeSpec {
     juce::String id;
     juce::File   path;
     juce::String state_b64;  // empty if none
+
+    // Serialized juce::PluginDescription (createXml() form), base64-encoded.
+    // Set for plugins with no usable file path (AudioUnits, identified by an
+    // AU id rather than a path). When present, the loader opens via
+    // mh_open_desc instead of mh_open(path); path may be empty.
+    juce::String descriptor;
+    // Human-readable plugin name for the canvas label when there is no file
+    // path to derive one from (AU nodes). Optional / cosmetic.
+    juce::String display_name;
     // Cached at canvas-add time (-1 = unknown, e.g. for plugins
     // loaded from disk without a fresh probe). Used for connect-time
     // channel validation; the render-time loader re-derives these
@@ -89,10 +104,12 @@ struct PluginNodeSpec {
 struct MidiInputNodeSpec {
     juce::String id;
     // Optional port name; empty means "let the LiveEngine decide"
-    // (the engine's user-chosen MIDI input). For deterministic
-    // renders, leave empty -- MIDI input nodes only emit during
-    // live playback, never during file-render.
+    // (the engine's user-chosen MIDI input) during live playback.
     juce::String port_name;
+    // Optional .mid file. When set, offline file-render (renderProject)
+    // streams this file's events into the node block by block, mirroring the
+    // Python renderer. Empty = live-only (device MIDI drives the node).
+    juce::File   source;
 };
 
 struct MidiOutputNodeSpec {
@@ -326,6 +343,17 @@ struct LoadedProject {
     // all MIDI_INPUT nodes in the project.
     std::vector<MH_NodeId>             midi_input_node_ids;
 
+    // File-sourced MIDI inputs for offline rendering. One entry per
+    // midi_input node that has a `source` .mid file: its graph node id and
+    // the file's events flattened to absolute sample offsets (sorted).
+    // renderProject streams these into the graph per block; the live path
+    // uses device MIDI instead and ignores this.
+    struct FileMidiInput {
+        MH_NodeId                  node_id;
+        std::vector<MH_MidiEvent>  events;
+    };
+    std::vector<FileMidiInput>         file_midi_inputs;
+
     // For each DeviceOutputNodeSpec, the index into the graph's audio
     // output_buffers[] (i.e. its position in add-order among audio
     // output nodes -- doc.outputs come first, then device_outputs).
@@ -425,6 +453,13 @@ struct LoadedProject {
 };
 
 std::unique_ptr<LoadedProject> loadProject(const juce::File& path);
+
+// Read a .mid file and flatten it to absolute sample-offset MIDI events
+// (sorted), using the file's tempo map at `sample_rate`. Keeps channel-voice
+// messages, drops meta/sysex. Mirrors Python's midi_file_to_events. Returns
+// false if the file cannot be read.
+bool readMidiFileEvents(const juce::File& midi_file, double sample_rate,
+                        std::vector<MH_MidiEvent>& out);
 
 // Per-render options. Set fields to override the schema defaults.
 // bit_depth_override == 0 means "use the per-output bit_depth from

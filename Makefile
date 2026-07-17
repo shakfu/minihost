@@ -3,7 +3,7 @@
 
 .PHONY: all juce cli sync build rebuild test wheel sdist clean distclean help \
 		check publish-test publish lint format typecheck qa \
-		docs docs-serve docs-deploy run-desktop tsan
+		docs docs-serve docs-deploy desktop run-desktop tsan
 
 # Default target - build Python bindings
 all: build
@@ -47,8 +47,17 @@ tsan:
 	@TSAN_OPTIONS="halt_on_error=1 $(TSAN_OPTIONS)" \
 		TSAN_STRESS_N=$(or $(N),200000) ./build/tsan_ringbuffer_stress
 
-run-desktop:
-	@./build/projects/minihost_desktop/minihost_desktop.app/Contents/MacOS/minihost_desktop
+# Build the desktop GUI app (non-headless) into its own build dir so the
+# headless library / CLI / Python wheel build in build/ stays untouched.
+desktop: juce
+	@cmake -B build-desktop -DCMAKE_BUILD_TYPE=Release \
+		-DMINIHOST_BUILD_DESKTOP=ON -DMINIHOST_HEADLESS=OFF
+	@cmake --build build-desktop --config Release --target minihost_desktop
+
+# Build (if needed) and launch the desktop app. macOS path shown; on
+# Linux the binary is build-desktop/projects/minihost_desktop/minihost_desktop.
+run-desktop: desktop
+	@./build-desktop/projects/minihost_desktop/minihost_desktop.app/Contents/MacOS/minihost_desktop
 
 # Run lint
 lint:
@@ -140,6 +149,8 @@ help:
 	@echo "  docs         - Build documentation (mkdocs)"
 	@echo "  docs-serve   - Serve docs locally with live reload"
 	@echo "  docs-deploy  - Deploy docs to GitHub Pages"
+	@echo "  desktop      - Build the desktop GUI app (build-desktop/)"
+	@echo "  run-desktop  - Build and launch the desktop app (macOS)"
 	@echo "  clean        - Remove build artifacts"
 	@echo "  distclean    - Remove all generated files"
 	@echo "  help         - Show this help message"

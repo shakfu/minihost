@@ -47,8 +47,10 @@ if(NOT DEFINED SKBUILD)
     add_subdirectory(projects/minihost_cpp)
 endif()
 
-# Desktop GUI application (stub). Opt-in via -DMINIHOST_BUILD_DESKTOP=ON;
-# requires MINIHOST_HEADLESS=OFF. See docs/dev/desktop_app.md.
+# Desktop GUI application. Opt-in via -DMINIHOST_BUILD_DESKTOP=ON; requires
+# MINIHOST_HEADLESS=OFF (the app hosts plugin editor windows). Default OFF to
+# keep the headless library, CLI, and Python wheel builds unaffected. See
+# docs/dev/desktop_app.md.
 option(MINIHOST_BUILD_DESKTOP "Build the minihost_desktop GUI application" OFF)
 if(MINIHOST_BUILD_DESKTOP)
     add_subdirectory(projects/minihost_desktop)

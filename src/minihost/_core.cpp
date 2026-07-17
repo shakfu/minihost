@@ -301,6 +301,34 @@ public:
         dispatch_buffer_.reserve(CB_QUEUE_CAPACITY);
     }
 
+    // Descriptor-based construction: open a plugin from a serialized
+    // juce::PluginDescription (its createXml() form). This is the only way
+    // to load AudioUnits, which are identified by an AU id rather than a
+    // file path. Built through a private tag constructor; use the
+    // from_descriptor factory (exposed to Python as Plugin.from_descriptor).
+    struct DescriptorTag {};
+    Plugin(DescriptorTag, const std::string& pd_xml, double sample_rate,
+           int max_block_size, int in_channels, int out_channels)
+        : sample_rate_(sample_rate), max_block_size_(max_block_size)
+    {
+        char err[1024] = {0};
+        plugin_ = mh_open_desc(pd_xml.c_str(), sample_rate, max_block_size,
+                               in_channels, out_channels, err, sizeof(err));
+        if (!plugin_) {
+            throw std::runtime_error(
+                std::string("Failed to open plugin from descriptor: ") + err);
+        }
+        cb_queue_.reserve(CB_QUEUE_CAPACITY);
+        dispatch_buffer_.reserve(CB_QUEUE_CAPACITY);
+    }
+
+    static Plugin* from_descriptor(const std::string& pd_xml,
+                                   double sample_rate, int max_block_size,
+                                   int in_channels, int out_channels) {
+        return new Plugin(DescriptorTag{}, pd_xml, sample_rate, max_block_size,
+                          in_channels, out_channels);
+    }
+
     ~Plugin() {
         close();
     }
@@ -3248,6 +3276,17 @@ NB_MODULE(_core, m) {
              nb::arg("out_channels") = 2,
              nb::arg("sidechain_channels") = 0,
              "Open an audio plugin (VST3 or AudioUnit). Use sidechain_channels > 0 for sidechain support.")
+
+        .def_static("from_descriptor", &Plugin::from_descriptor,
+             nb::arg("descriptor_xml"),
+             nb::arg("sample_rate") = 48000.0,
+             nb::arg("max_block_size") = 512,
+             nb::arg("in_channels") = 2,
+             nb::arg("out_channels") = 2,
+             nb::rv_policy::take_ownership,
+             "Open a plugin from a serialized juce::PluginDescription (its "
+             "createXml() form). Required for AudioUnits, which have no file "
+             "path. descriptor_xml is the UTF-8 XML string.")
 
         // Properties
         .def_prop_ro("path", &Plugin::path,

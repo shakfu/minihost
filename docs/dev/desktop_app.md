@@ -1,6 +1,6 @@
 # Desktop Application — Design Document
 
-Status: design proposal, not implemented. Single binary, phased: v1 ships an offline graph renderer with plugin editor windows; v2 adds a realtime audio device callback driver and live MIDI input on top of the same codebase.
+Status: implemented, pre-release. Single binary, phased: Phase 1 (offline graph renderer with plugin editor windows) and Phase 2 (realtime audio device callback driver and live MIDI input) are both built and exercised; see [desktop_app_todo.md](desktop_app_todo.md) for per-feature status. What remains before a public release is packaging (code signing, notarization, installers), broader automated test coverage, and the deferred UX polish (undo/redo, plugin browser). The sections below are the original design and are kept as the reference for intended behaviour; where the prose still reads as future tense ("v1 will..."), that work now exists unless the TODO marks it deferred.
 
 Working name: `minihost-desktop` (binary), `minihost.app` on macOS. Source lives in `projects/minihost_desktop/` alongside the other sub-projects (`projects/libminihost/`, `projects/libminihost_audio/`, `projects/libminihost_graph/`). The top-level `CMakeLists.txt` adds it behind `MINIHOST_BUILD_DESKTOP` (default OFF).
 
@@ -204,7 +204,7 @@ Recompilation of the graph (topology change) requires stopping the device callba
 
 - Sidechain input buses on plugins (blocked on a C ABI gap noted in `graph.md`).
 
-- Plugin process isolation (out-of-process plugin hosting for crash containment). Significant scope; deferred unless crashes become a routine support burden.
+- Plugin process isolation (out-of-process plugin hosting for crash containment). Significant scope; deferred unless crashes become a routine support burden. See [Crash resilience](#crash-resilience-decided) for the shipping decision and the cheaper mitigations adopted instead.
 
 ## Cross-cutting concerns
 
@@ -242,9 +242,24 @@ Recompilation of the graph (topology change) requires stopping the device callba
 
 None in v1. v2 may add opt-in crash reporting if hosted plugins prove to be a routine source of crashes. No usage telemetry either way.
 
-## Open questions
+## Crash resilience (decided)
 
-- **Process isolation for plugins.** Hosting third-party plugins in-process means a plugin crash kills the app. Out-of-process plugin hosting (one helper per plugin or per format) is the standard mitigation; it adds an IPC seam to every audio block and roughly doubles the engine's complexity. Defer to v2.5; revisit if v1 testing shows crashes are routine.
+**Decision (for the first public release): ship in-process, document the limitation, add cheap recovery, and gate out-of-process hosting on evidence.**
+
+Hosting third-party plugins in the app's own process means a plugin crash takes down the app. Out-of-process hosting (one helper per plugin or per format) is the standard mitigation, but it adds an IPC seam to every audio block and roughly doubles the engine's complexity. Paying that cost before we know crashes are a real problem for our users is premature. The stance is therefore:
+
+1. **Ship in-process.** The realtime and offline engines both run plugins in-process, as built today. This is the same trust model every plugin loaded into a DAW already lives under.
+
+2. **Document the limitation.** A user-facing note (README + in-app About/first-run) states plainly that a misbehaving plugin can crash the app, and that unsaved graph edits may be lost. This is honesty, not a disclaimer to hide behind — it sets the expectation that matches the architecture.
+
+3. **Make a crash cheap to recover from.** Cheap mitigations that do not require an IPC redesign:
+   - *Autosave / crash recovery*: periodically snapshot the working `ProjectDocument` to a sidecar file; on the next launch, offer to reopen the last session. This bounds the blast radius of a crash to "a few seconds of unsaved canvas edits," which is the actual user-visible harm.
+   - *Out-of-process plugin scanning*: enumerating an unknown plugin folder is the one place we deliberately run untrusted code before the user asked to host it. JUCE supports scanning in a child process; adopt it when the plugin browser lands (see the deferred TODO) so a plugin that crashes on instantiation-during-scan cannot take down the whole app.
+   - *Opt-in crash reporting*: a minimal, opt-in crash dump (no usage telemetry) so we can see whether in-process crashes are actually routine. This is the evidence that would justify — or not — the out-of-process investment.
+
+4. **Revisit out-of-process hosting only on evidence.** If crash reports (or user reports) show that in-process plugin crashes are a routine support burden, escalate to out-of-process hosting for the audio path. Until then it stays deferred (see Phase 2.5+ in the TODO). The decision is reversible: the engine already sits behind the `mh_graph_*` C ABI, so an out-of-process backend can be introduced without rewriting the UI.
+
+## Open questions
 
 - **Project file versioning.** `minihost_project_version: 1` is the obvious lever, but plugin state blobs embedded in projects are versioned by the plugin author, not by us. A project that loads cleanly on one machine may produce different audio on another if a plugin's state format silently changed. Document this; don't try to solve it.
 

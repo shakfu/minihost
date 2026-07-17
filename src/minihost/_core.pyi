@@ -87,6 +87,17 @@ class Plugin:
         out_channels: int = 2,
         sidechain_channels: int = 0,
     ) -> None: ...
+    @staticmethod
+    def from_descriptor(
+        descriptor_xml: str,
+        sample_rate: float = 48000.0,
+        max_block_size: int = 512,
+        in_channels: int = 2,
+        out_channels: int = 2,
+    ) -> Plugin:
+        """Open a plugin from a serialized juce::PluginDescription (createXml
+        form). Required for AudioUnits, which have no file path."""
+        ...
     @property
     def path(self) -> str: ...
     @property

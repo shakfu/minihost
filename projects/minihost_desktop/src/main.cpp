@@ -28,6 +28,29 @@
 //       menu but with no window; prints progress to stderr and exits
 //       with the render's success/failure status.
 //
+//   minihost_desktop --save-roundtrip=<project.json>
+//       Headless parse + re-save to <input>.resaved.json. Exercises the
+//       C++ project writer against the Python parser without UI input.
+//
+//   minihost_desktop --undo-selftest=<project.json>
+//       Headless undo/redo self-test over the loaded document. Asserts
+//       the UndoHistory contract (snapshot/undo/redo/redo-clear) via the
+//       production serializer. Exit 0 on success, 1 on any broken
+//       invariant. Driven by tests/test_desktop_undo.py.
+//
+//   minihost_desktop --scan-plugins[=<dir1;dir2>] [--scan-out=<file.xml>]
+//                     [--scan-format=<VST3|AudioUnit|LV2>] [--scan-oop]
+//       (--scan-oop routes each probe through a disposable child process for
+//       crash containment -- the same path the interactive GUI scan uses.)
+//       Headless in-process plugin scan. Registers the host formats and
+//       scans the given directories (default: each format's standard
+//       locations), writing the KnownPluginList to <file.xml> (default:
+//       known_plugins.xml next to the desktop settings). --scan-format
+//       restricts to one format (AudioUnit ignores the directory list and
+//       enumerates all system AUs, so a hermetic single-dir scan should
+//       pass --scan-format=VST3). Prints per-format found/failed counts.
+//       Exit 0 on a completed scan. Driven by tests/test_desktop_pluginscan.py.
+//
 // Note on long options: JUCE's ArgumentList only matches "--opt=value"
 // form for long options (the space-separated form parses as two
 // separate args). All long options here use the "=" form.
@@ -43,6 +66,7 @@
 #include "minihost_midi.h"
 #include "canvas.h"
 #include "live.h"
+#include "plugin_scanner.h"
 #include "project.h"
 
 #include <atomic>
@@ -70,6 +94,7 @@ enum class EditorMode { Interactive, AutoRenderAndQuit, ProbeAndQuit };
 
 struct EditorOptions {
     juce::String plugin_path;
+    juce::String descriptor_xml;   // AU: open via mh_open_desc when set
     juce::String output_path;
     EditorMode   mode        = EditorMode::Interactive;
     int          probe_iters = 10;
@@ -482,17 +507,24 @@ struct LoadedPlugin {
     juce::String          error;
 };
 
-static LoadedPlugin loadPlugin(const juce::String& path)
+// Load a plugin for a standalone editor. When descriptor_xml is non-empty it
+// opens via mh_open_desc (AudioUnits, which have no file path); otherwise by
+// path via mh_open.
+static LoadedPlugin loadPlugin(const juce::String& path,
+                               const juce::String& descriptor_xml = {})
 {
     LoadedPlugin out;
     char err[512] = {0};
-    out.plugin = mh_open(path.toRawUTF8(),
-                         kSampleRate, kBlockSize,
-                         kChannels, kChannels,
-                         err, sizeof(err));
+    out.plugin = descriptor_xml.isNotEmpty()
+        ? mh_open_desc(descriptor_xml.toRawUTF8(), kSampleRate, kBlockSize,
+                       kChannels, kChannels, err, sizeof(err))
+        : mh_open(path.toRawUTF8(), kSampleRate, kBlockSize,
+                  kChannels, kChannels, err, sizeof(err));
     if (!out.plugin)
     {
-        out.error = juce::String("mh_open failed: ")
+        out.error = juce::String(descriptor_xml.isNotEmpty()
+                                     ? "mh_open_desc failed: "
+                                     : "mh_open failed: ")
                   + juce::String(static_cast<const char*>(err));
         return out;
     }
@@ -603,6 +635,11 @@ public:
                     if (on_open_canvas_plugin_editor_)
                         on_open_canvas_plugin_editor_(plugin_index);
                 });
+            // Refresh the Edit menu's Undo/Redo enabled state whenever
+            // the document is edited or an undo/redo is applied.
+            canvas_->setOnDocumentEdited([this]() { menuItemsChanged(); });
+            if (on_add_plugin_requested_)
+                canvas_->setOnAddPluginRequested(on_add_plugin_requested_);
         }
         canvas_->setDocument(current_doc_.get());
         // setContentNonOwned releases the previous content (welcomeLabel)
@@ -632,6 +669,28 @@ public:
     { return current_project_; }
     CanvasComponent* canvas() noexcept { return canvas_.get(); }
 
+    // Plugin-library callbacks are set after construction (the ctor
+    // already carries many positional callbacks; setters keep the new
+    // ones from adding to that list). Both may be null.
+    void setOnPluginBrowser(std::function<void()> cb)
+    { on_plugin_browser_ = std::move(cb); }
+    void setOnAddLibraryPlugin(std::function<void()> cb)
+    { on_add_library_plugin_ = std::move(cb); }
+
+    // Canvas "Add Plugin..." delegates here (app shows its shared picker).
+    // Stored so it can be attached to the canvas whenever it is created.
+    void setOnAddPluginRequested(std::function<void()> cb)
+    {
+        on_add_plugin_requested_ = std::move(cb);
+        if (canvas_)
+            canvas_->setOnAddPluginRequested(on_add_plugin_requested_);
+    }
+    // File > Open Plugin... delegates here when set (app shows its shared
+    // picker, then hosts the pick in a standalone EditorWindow). When
+    // unset, showOpenPluginChooser's raw file chooser is used as a fallback.
+    void setOnRequestOpenPlugin(std::function<void()> cb)
+    { on_request_open_plugin_ = std::move(cb); }
+
     ~MainWindow() override
     {
        #if JUCE_MAC
@@ -650,7 +709,7 @@ public:
     // ----- juce::MenuBarModel ----- //
     juce::StringArray getMenuBarNames() override
     {
-        return { "File", "Audio", "Help" };
+        return { "File", "Edit", "Plugins", "Audio", "Help" };
     }
 
     juce::PopupMenu getMenuForIndex(int /*topLevelMenuIndex*/,
@@ -670,6 +729,19 @@ public:
             m.addItem(kMenuRenderProject, "Render Project...");
             m.addSeparator();
             m.addItem(kMenuQuit, "Quit");
+        }
+        else if (menuName == "Edit")
+        {
+            const bool can_undo = canvas_ != nullptr && canvas_->canUndo();
+            const bool can_redo = canvas_ != nullptr && canvas_->canRedo();
+            m.addItem(kMenuUndo, "Undo    Cmd+Z",       /*isActive=*/can_undo);
+            m.addItem(kMenuRedo, "Redo    Cmd+Shift+Z", /*isActive=*/can_redo);
+        }
+        else if (menuName == "Plugins")
+        {
+            m.addItem(kMenuPluginBrowser, "Plugin Browser / Scan...");
+            m.addItem(kMenuAddLibraryPlugin, "Add Plugin from Library...",
+                      /*isActive=*/has_open_project_);
         }
         else if (menuName == "Audio")
         {
@@ -703,7 +775,10 @@ public:
     {
         switch (menuItemID)
         {
-        case kMenuOpenPlugin:    showOpenPluginChooser(); break;
+        case kMenuOpenPlugin:
+            if (on_request_open_plugin_) on_request_open_plugin_();
+            else                         showOpenPluginChooser();
+            break;
         case kMenuOpenProject:   showOpenProjectChooser(); break;
         case kMenuNewProject:
             if (on_new_project_) on_new_project_();
@@ -715,6 +790,12 @@ public:
             if (on_save_project_as_) on_save_project_as_();
             break;
         case kMenuRenderProject: showRenderProjectChooser(); break;
+        case kMenuUndo: if (canvas_ != nullptr) canvas_->undo(); break;
+        case kMenuRedo: if (canvas_ != nullptr) canvas_->redo(); break;
+        case kMenuPluginBrowser:
+            if (on_plugin_browser_) on_plugin_browser_(); break;
+        case kMenuAddLibraryPlugin:
+            if (on_add_library_plugin_) on_add_library_plugin_(); break;
         case kMenuAudioSettings: if (on_audio_settings_) on_audio_settings_(); break;
         case kMenuMidiInput:     if (on_midi_input_)     on_midi_input_();     break;
         case kMenuStartLive:     if (on_start_live_)     on_start_live_();     break;
@@ -740,6 +821,10 @@ private:
         kMenuSaveProject,
         kMenuSaveProjectAs,
         kMenuRenderProject,
+        kMenuUndo,
+        kMenuRedo,
+        kMenuPluginBrowser,
+        kMenuAddLibraryPlugin,
         kMenuAudioSettings,
         kMenuMidiInput,
         kMenuStartLive,
@@ -808,8 +893,10 @@ private:
             juce::AlertWindow::InfoIcon,
             "minihost",
             "minihost desktop (Phase 1 shell)\n\n"
-            "Use File > Open Plugin... to host a VST3, AU, or LV2.\n"
-            "Each loaded plugin opens in its own window.");
+            "File > Open Plugin... hosts a single plugin in its own window.\n"
+            "Right-click the canvas > Add Plugin... adds one to the graph.\n"
+            "Both show your scanned plugin library (with a Browse-to-file "
+            "fallback); populate it via Plugins > Plugin Browser / Scan...");
     }
 
     std::function<void(juce::String)>  on_open_plugin_;
@@ -827,6 +914,10 @@ private:
     std::function<void()>              on_transport_stop_;
     std::function<void()>              on_set_bpm_;
     std::function<void()>              on_set_loop_;
+    std::function<void()>              on_plugin_browser_;
+    std::function<void()>              on_add_library_plugin_;
+    std::function<void()>              on_add_plugin_requested_;
+    std::function<void()>              on_request_open_plugin_;
     juce::Label                        welcomeLabel_;
     std::unique_ptr<juce::FileChooser> chooser_;
     std::unique_ptr<CanvasComponent>   canvas_;
@@ -948,6 +1039,33 @@ public:
 
     void initialise(const juce::String& cmdLine) override
     {
+        // This is a JUCE app: it already owns the process's MessageManager on
+        // the main thread. libminihost otherwise spins up its OWN message
+        // thread on the first mh_open (for headless callers -- Python/CLI --
+        // that have none). In this process that second thread is redundant:
+        // it never becomes the real message thread, so plugin construction is
+        // no more/less on-the-message-thread with it than without, and at
+        // process exit it is left joinable, which std::terminate()s (the
+        // "aborts on exit after a plugin load" symptom). Disable it here,
+        // before any mh_open, so construction runs inline on our own threads
+        // and teardown is clean. Respect an explicit override if the user set
+        // one. Must precede the scan-worker relaunch so children inherit it.
+        setenv("MINIHOST_MESSAGE_THREAD", "0", /*overwrite=*/0);
+
+        // Plugin-scan worker detection MUST come first: when the parent's
+        // out-of-process scanner launches a child, it relaunches this same
+        // binary with the scanner UID token. If that's us, become the worker
+        // (no GUI, no other modes) and return. Any other command line makes
+        // initialiseFromCommandLine return false and falls through unchanged.
+        {
+            auto worker = std::make_unique<PluginScannerSubprocess>();
+            if (worker->initialiseFromCommandLine(cmdLine, kScannerProcessUID))
+            {
+                scanner_subprocess_ = std::move(worker);
+                return;
+            }
+        }
+
         auto args = juce::ArgumentList("minihost_desktop", cmdLine);
 
         // Headless project render: short-circuits all GUI setup.
@@ -981,6 +1099,43 @@ public:
                 return;
             }
             runSaveRoundtrip(juce::File(path));
+            return;
+        }
+
+        // Headless undo/redo self-test: exercises the UndoHistory core +
+        // ProjectDocument snapshot/restore through the production
+        // serializer, with no GUI. Exit 0 on success, 1 on any failed
+        // invariant. Driven by tests/test_desktop_undo.py.
+        if (args.containsOption("--undo-selftest"))
+        {
+            const auto path = args.removeValueForOption("--undo-selftest");
+            if (path.isEmpty())
+            {
+                std::fprintf(stderr, "--undo-selftest requires a path\n");
+                setApplicationReturnValue(2);
+                quit();
+                return;
+            }
+            runUndoSelfTest(juce::File(path));
+            return;
+        }
+
+        // Headless plugin scan: register the host formats, scan the given
+        // (or default) directories in-process, and write the resulting
+        // KnownPluginList to XML. Proves addDefaultFormatsToManager yields
+        // working scanners and seeds the library from the CLI. Exit 0 on a
+        // completed scan (even if it found nothing), 2 on a bad argument.
+        if (args.containsOption("--scan-plugins"))
+        {
+            const auto paths   = args.removeValueForOption("--scan-plugins");
+            const auto out_arg = args.containsOption("--scan-out")
+                               ? args.removeValueForOption("--scan-out")
+                               : juce::String();
+            const auto fmt_arg = args.containsOption("--scan-format")
+                               ? args.removeValueForOption("--scan-format")
+                               : juce::String();
+            const bool oop = args.removeOptionIfFound("--scan-oop");
+            runPluginScan(paths, out_arg, fmt_arg, oop);
             return;
         }
 
@@ -1064,21 +1219,72 @@ public:
                 [this]() { if (live_) live_->setTransportPlaying(false); },
                 [this]() { showBpmDialog(); },
                 [this]() { showLoopDialog(); });
+            mainWindow_->setOnPluginBrowser([this]() { showPluginBrowser(); });
+            mainWindow_->setOnAddLibraryPlugin(
+                [this]() { showAddLibraryPluginMenu(); });
+
+            // Route the canvas "Add Plugin..." and File > Open Plugin...
+            // through the shared library picker (scanned list + browse +
+            // scan). Add Plugin adds a node; Open Plugin hosts the pick in
+            // a standalone editor window.
+            mainWindow_->setOnAddPluginRequested([this]() {
+                if (mainWindow_ == nullptr) return;
+                auto* canvas = mainWindow_->canvas();
+                if (canvas == nullptr) return;
+                showPluginPicker([canvas](const juce::PluginDescription& pd) {
+                    canvas->addPluginFromDescription(pd);
+                });
+            });
+            mainWindow_->setOnRequestOpenPlugin([this]() {
+                showPluginPicker([this](const juce::PluginDescription& pd) {
+                    openPluginEditorFromDescription(pd);
+                });
+            });
+
+            // Plugin library: register the host formats and restore the
+            // previously-scanned plugin list. Scanning is user-driven
+            // via the Plugin Browser; nothing is scanned at startup.
+            // (JUCE 8.0.11 moved AudioPluginFormatManager to the headless
+            // module and deleted its addDefaultFormats(); the non-headless
+            // free function registers the real hosting formats.)
+            juce::addDefaultFormatsToManager(plugin_format_manager_);
+            // Scan plugins out-of-process so a plugin that crashes or calls
+            // exit() during instantiation-during-scan takes down only a
+            // disposable child, not the app. Routes both the interactive
+            // PluginListComponent scan and Add Plugin from Library probes.
+            known_plugins_.setCustomScanner(
+                std::make_unique<OutOfProcessPluginScanner>());
+            loadKnownPlugins();
+            owns_library_ = true;   // this process persists the library
         }
     }
 
     void shutdown() override
     {
         if (live_) saveSettingsToDisk();
+        // Only the GUI app-shell loads and owns known_plugins_; persist it
+        // only there. Headless modes (--scan-plugins writes its own local
+        // list) and spawned scan-worker children have an empty member list
+        // and must NOT write it back, or they clobber a freshly-scanned
+        // library with an empty one.
+        if (owns_library_) saveKnownPlugins();
+        plugin_browser_window_.reset();
         if (live_) live_->stop();
         live_.reset();
         editors_.clear();   // closes EditorWindows; each mh_close in dtor
         mainWindow_.reset();
     }
 
-    // Settings live next to the app data dir.
+    // Settings live next to the app data dir. MINIHOST_DESKTOP_SETTINGS_DIR
+    // overrides the base directory (used by tests for hermetic isolation --
+    // macOS resolves userApplicationDataDirectory via the native API, which
+    // ignores $HOME, so an env override is the only way to redirect it).
     juce::File settingsFile() const
     {
+        if (const auto* env = std::getenv("MINIHOST_DESKTOP_SETTINGS_DIR");
+            env != nullptr && env[0] != '\0')
+            return juce::File(juce::String::fromUTF8(env))
+                   .getChildFile("desktop_settings.xml");
         return juce::File::getSpecialLocation(
                    juce::File::userApplicationDataDirectory)
                .getChildFile("minihost")
@@ -1103,10 +1309,174 @@ public:
         path.replaceWithText(xml);
     }
 
+    // The scanned plugin list persists in its own file next to the
+    // device settings so a scan survives restarts.
+    juce::File knownPluginsFile() const
+    {
+        return settingsFile().getSiblingFile("known_plugins.xml");
+    }
+
+    void loadKnownPlugins()
+    {
+        const auto path = knownPluginsFile();
+        if (!path.existsAsFile()) return;
+        if (auto xml = juce::XmlDocument::parse(path))
+            known_plugins_.recreateFromXml(*xml);
+    }
+
+    void saveKnownPlugins()
+    {
+        if (auto xml = std::unique_ptr<juce::XmlElement>(
+                known_plugins_.createXml()))
+        {
+            const auto path = knownPluginsFile();
+            path.getParentDirectory().createDirectory();
+            xml->writeTo(path);
+        }
+    }
+
+    // The scan/manage UI. juce::PluginListComponent handles scan-path
+    // configuration, scanning (in-process; see the crash-resilience note
+    // in docs/dev/desktop_app.md), and rescans, persisting into
+    // known_plugins_. A dead-man's-pedal file lets a scan that crashed on
+    // a bad plugin skip it on the next attempt.
+    void showPluginBrowser()
+    {
+        if (plugin_browser_window_ != nullptr)
+        {
+            plugin_browser_window_->toFront(true);
+            return;
+        }
+        const auto dead_mans_pedal =
+            settingsFile().getSiblingFile("plugin_scan.deadman");
+        auto* list_comp = new juce::PluginListComponent(
+            plugin_format_manager_, known_plugins_, dead_mans_pedal,
+            /*propertiesToUse=*/nullptr,
+            /*allowAsync=*/true);
+        list_comp->setSize(700, 480);
+
+        juce::DialogWindow::LaunchOptions opts;
+        opts.content.setOwned(list_comp);
+        opts.dialogTitle              = "Plugin Browser";
+        opts.dialogBackgroundColour   = juce::Colours::darkgrey;
+        opts.escapeKeyTriggersCloseButton = true;
+        opts.useNativeTitleBar        = true;
+        opts.resizable                = true;
+
+        plugin_browser_window_.reset(opts.launchAsync());
+    }
+
+    // Shared plugin picker used by every "add / open a plugin" action.
+    // Presents the scanned library list first, then a file-browse fallback
+    // and a shortcut into the scanner. `on_chosen` receives the full
+    // juce::PluginDescription of the pick -- consumers decide path vs
+    // descriptor loading from it (AudioUnits have no file path and load via
+    // their descriptor; VST3/LV2 keep loading by path). The browse fallback
+    // synthesizes a description whose fileOrIdentifier is the chosen path.
+    //
+    // Menu IDs: the library items are based at KnownPluginList's
+    // menuIdBase (0x324503f4), so the small custom IDs below never collide,
+    // and they are checked before getIndexChosenByMenu (which returns -1
+    // for them anyway).
+    void showPluginPicker(std::function<void(const juce::PluginDescription&)> on_chosen)
+    {
+        enum { kPickBrowse = 1, kPickScan = 2 };
+
+        const auto types = known_plugins_.getTypes();
+
+        juce::PopupMenu m;
+        if (types.isEmpty())
+        {
+            m.addItem(-1, "(no plugins scanned)", /*isActive=*/false);
+        }
+        else
+        {
+            // Static helper (the instance version is deprecated): snapshot
+            // the types once and reuse the same array for the index lookup.
+            juce::KnownPluginList::addToMenu(
+                m, types, juce::KnownPluginList::sortAlphabetically);
+        }
+        m.addSeparator();
+        m.addItem(kPickBrowse, "Browse to file...");
+        m.addItem(kPickScan,   "Scan for plugins...");
+
+        m.showMenuAsync(juce::PopupMenu::Options{},
+            [this, types, on_chosen = std::move(on_chosen)](int chosen) {
+                if (chosen == 0) return;   // dismissed
+                if (chosen == kPickBrowse)
+                {
+                    showPluginBrowseChooser(on_chosen);
+                    return;
+                }
+                if (chosen == kPickScan)
+                {
+                    showPluginBrowser();
+                    return;
+                }
+                const int idx =
+                    juce::KnownPluginList::getIndexChosenByMenu(types, chosen);
+                if (idx < 0 || idx >= types.size()) return;
+                on_chosen(types[idx]);
+            });
+    }
+
+    // The "Browse to file..." fallback: a raw file chooser feeding the same
+    // completion as a library pick. Synthesizes a description carrying the
+    // chosen path so consumers take the path route. Owns plugin_chooser_ so
+    // it outlives the async callback.
+    void showPluginBrowseChooser(
+        std::function<void(const juce::PluginDescription&)> on_chosen)
+    {
+        plugin_chooser_ = std::make_unique<juce::FileChooser>(
+            "Choose a plugin",
+            juce::File("/Library/Audio/Plug-Ins"),
+            "*.vst3;*.component;*.lv2");
+        const int flags = juce::FileBrowserComponent::openMode
+                        | juce::FileBrowserComponent::canSelectFiles
+                        | juce::FileBrowserComponent::canSelectDirectories;
+        plugin_chooser_->launchAsync(flags,
+            [on_chosen = std::move(on_chosen)](const juce::FileChooser& fc) {
+                const auto file = fc.getResult();
+                if (file == juce::File()) return;
+                juce::PluginDescription pd;
+                pd.fileOrIdentifier = file.getFullPathName();
+                on_chosen(pd);
+            });
+    }
+
+    // Back-compat entry point for Plugins > Add Plugin from Library...:
+    // routes through the shared picker, adding the pick to the canvas.
+    void showAddLibraryPluginMenu()
+    {
+        if (mainWindow_ == nullptr) return;
+        auto* canvas = mainWindow_->canvas();
+        if (canvas == nullptr) return;
+        showPluginPicker([canvas](const juce::PluginDescription& pd) {
+            canvas->addPluginFromDescription(pd);
+        });
+    }
+
 private:
+    // Open a standalone editor for a library/browse pick. Real files
+    // (VST3/LV2) open by path; AudioUnits (no file path) open via their
+    // serialized descriptor.
+    void openPluginEditorFromDescription(const juce::PluginDescription& pd)
+    {
+        EditorOptions opts{};
+        opts.output_path = juce::String(kDefaultOut);
+        opts.mode        = EditorMode::Interactive;
+        if (juce::File(pd.fileOrIdentifier).exists())
+            opts.plugin_path = pd.fileOrIdentifier;
+        else if (auto xml = pd.createXml())
+            opts.descriptor_xml = xml->toString();
+        else
+            opts.plugin_path = pd.fileOrIdentifier;
+        openPluginEditor(opts);
+    }
+
     void openPluginEditor(EditorOptions opts)
     {
-        auto loaded = loadPlugin(opts.plugin_path);
+        auto loaded = loadPlugin(opts.plugin_path, opts.descriptor_xml);
         if (loaded.plugin == nullptr)
         {
             std::fprintf(stderr, "%s\n", loaded.error.toRawUTF8());
@@ -1248,6 +1618,142 @@ private:
         }
     }
 
+    void runUndoSelfTest(juce::File project_file)
+    {
+        auto fail = [this](const juce::String& m) {
+            std::fprintf(stderr, "undo-selftest FAIL: %s\n", m.toRawUTF8());
+            setApplicationReturnValue(1);
+            quit();
+        };
+        try {
+            // Serialize a document through the production writer so the
+            // comparison is byte-exact and independent of struct layout.
+            auto serialize = [](const project::ProjectDocument& d)
+                             -> juce::String {
+                auto tmp = juce::File::createTempFile(".json");
+                project::saveProjectFile(tmp, d);
+                const auto s = tmp.loadFileAsString();
+                tmp.deleteFile();
+                return s;
+            };
+
+            project::ProjectDocument doc =
+                project::parseProjectFile(project_file);
+            const juce::String s0 = serialize(doc);
+
+            UndoHistory hist;
+
+            // Edit 1: a content-independent mutation the serializer sees.
+            hist.snapshot(doc);
+            doc.block_size += 1;
+            const juce::String s1 = serialize(doc);
+            if (s1 == s0)      return fail("mutation did not change output");
+            if (!hist.canUndo()) return fail("canUndo false after snapshot");
+
+            // Undo restores the pre-edit document exactly.
+            if (!hist.undo(doc))        return fail("undo returned false");
+            if (serialize(doc) != s0)   return fail("undo did not restore");
+            if (!hist.canRedo())        return fail("canRedo false after undo");
+
+            // Redo re-applies the edit exactly.
+            if (!hist.redo(doc))        return fail("redo returned false");
+            if (serialize(doc) != s1)   return fail("redo did not reapply");
+
+            // A fresh edit clears the redo stack.
+            hist.snapshot(doc);
+            doc.block_size += 1;
+            if (hist.canRedo())
+                return fail("redo stack not cleared by new edit");
+
+            std::fprintf(stderr, "undo-selftest OK\n");
+            setApplicationReturnValue(0);
+            quit();
+        } catch (const std::exception& e) {
+            fail(juce::String("exception: ") + e.what());
+        }
+    }
+
+    // Headless in-process scan. `paths_override` is a ';'-separated list of
+    // directories (empty = each format's default locations). `out_override`
+    // is the XML destination (empty = the real known_plugins.xml).
+    // `format_filter` restricts scanning to the one format whose name
+    // matches (case-insensitive, e.g. "VST3"); empty scans every format.
+    // Drives a juce::PluginDirectoryScanner per format to completion.
+    //
+    // Note: AudioUnit scanning enumerates the whole system component
+    // registry and ignores `paths_override`, so a hermetic scan of a single
+    // directory must also pass --scan-format=VST3 (or LV2) to avoid pulling
+    // in every installed AU. `out_of_process` routes each probe through a
+    // disposable child process (crash containment) via the same custom
+    // scanner the interactive GUI uses.
+    void runPluginScan(const juce::String& paths_override,
+                       const juce::String& out_override,
+                       const juce::String& format_filter,
+                       bool out_of_process)
+    {
+        juce::AudioPluginFormatManager fm;
+        juce::addDefaultFormatsToManager(fm);
+
+        juce::KnownPluginList list;
+        if (out_of_process)
+            list.setCustomScanner(
+                std::make_unique<OutOfProcessPluginScanner>());
+        const auto dead_mans_pedal =
+            settingsFile().getSiblingFile("plugin_scan.deadman");
+        dead_mans_pedal.getParentDirectory().createDirectory();
+
+        int total_found = 0, total_failed = 0;
+        for (auto* format : fm.getFormats())
+        {
+            if (format == nullptr) continue;
+            if (format_filter.isNotEmpty()
+                && !format->getName().equalsIgnoreCase(format_filter))
+                continue;
+
+            juce::FileSearchPath search;
+            if (paths_override.isNotEmpty())
+                search = juce::FileSearchPath(paths_override);
+            else
+                search = format->getDefaultLocationsToSearch();
+
+            juce::PluginDirectoryScanner scanner(
+                list, *format, search, /*searchRecursively=*/true,
+                dead_mans_pedal, /*allowAsync=*/false);
+
+            const int before = list.getNumTypes();
+            juce::String being_scanned;
+            while (scanner.scanNextFile(/*dontRescanIfAlreadyInList=*/true,
+                                        being_scanned))
+            {
+                // scanNextFile advances one plugin per call.
+            }
+            const int found = list.getNumTypes() - before;
+            const int failed = scanner.getFailedFiles().size();
+            total_found  += found;
+            total_failed += failed;
+            std::fprintf(stderr, "scan[%s]: found %d, failed %d\n",
+                         format->getName().toRawUTF8(), found, failed);
+        }
+
+        const auto out = out_override.isNotEmpty()
+                       ? juce::File(out_override)
+                       : knownPluginsFile();
+        if (auto xml = std::unique_ptr<juce::XmlElement>(list.createXml()))
+        {
+            out.getParentDirectory().createDirectory();
+            if (xml->writeTo(out))
+                std::fprintf(stderr, "scan: wrote %d plugins to %s\n",
+                             total_found, out.getFullPathName().toRawUTF8());
+            else
+                std::fprintf(stderr, "scan: FAILED to write %s\n",
+                             out.getFullPathName().toRawUTF8());
+        }
+        std::fprintf(stderr, "scan: total found %d, failed %d\n",
+                     total_found, total_failed);
+        setApplicationReturnValue(0);
+        quit();
+    }
+
     void saveCurrentProject()
     {
         if (!mainWindow_) return;
@@ -1339,7 +1845,18 @@ private:
             || plugin_index >= (int) doc->plugins.size()) return;
 
         const auto& spec = doc->plugins[(size_t) plugin_index];
-        auto loaded = loadPlugin(spec.path.getFullPathName());
+        // AU nodes carry a base64 descriptor and no usable path; decode it
+        // so the editor loads via mh_open_desc.
+        juce::String desc_xml;
+        if (spec.descriptor.isNotEmpty())
+        {
+            juce::MemoryBlock mb;
+            juce::MemoryOutputStream os(mb, false);
+            if (juce::Base64::convertFromBase64(os, spec.descriptor))
+                desc_xml = juce::String::fromUTF8(
+                    static_cast<const char*>(mb.getData()), (int) mb.getSize());
+        }
+        auto loaded = loadPlugin(spec.path.getFullPathName(), desc_xml);
         if (loaded.plugin == nullptr)
         {
             juce::AlertWindow::showMessageBoxAsync(
@@ -1359,10 +1876,11 @@ private:
         }
 
         EditorOptions opts{};
-        opts.plugin_path  = spec.path.getFullPathName();
-        opts.output_path  = juce::String(kDefaultOut);
-        opts.mode         = EditorMode::Interactive;
-        opts.toolbar_label = "Capture State";
+        opts.plugin_path    = spec.path.getFullPathName();
+        opts.descriptor_xml = desc_xml;
+        opts.output_path    = juce::String(kDefaultOut);
+        opts.mode           = EditorMode::Interactive;
+        opts.toolbar_label  = "Capture State";
 
         // Captured by value: plugin_index is stable for this dialog;
         // even if the user reorders the document later, the lambda
@@ -1647,6 +2165,23 @@ private:
     std::unique_ptr<MainWindow>        mainWindow_;
     std::unique_ptr<LiveEngine>        live_;
     std::unique_ptr<juce::FileChooser> save_chooser_;
+
+    // Plugin library (scanned via the Plugin Browser, persisted to
+    // known_plugins.xml). The format manager owns the host format
+    // objects used for scanning; instantiation for the audio graph still
+    // goes through mh_open.
+    juce::AudioPluginFormatManager      plugin_format_manager_;
+    juce::KnownPluginList               known_plugins_;
+    std::unique_ptr<juce::DialogWindow> plugin_browser_window_;
+    std::unique_ptr<juce::FileChooser>  plugin_chooser_;
+
+    // Set only when this process was relaunched as a scan worker (see the
+    // top of initialise()); keeps the child's IPC connection alive.
+    std::unique_ptr<PluginScannerSubprocess> scanner_subprocess_;
+
+    // True only in the GUI app-shell, which loads/owns known_plugins_ and is
+    // the only process that should persist it on shutdown.
+    bool owns_library_ = false;
 };
 
 } // namespace minihost_desktop
