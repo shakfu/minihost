@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.2]
+
 ### Added
 
 - **Autosave / crash recovery in the desktop app.** Plugins run in-process, so a misbehaving plugin can crash the app and lose unsaved canvas edits. The working `ProjectDocument` is now snapshotted to a sidecar (`autosave.json` + an `autosave.meta` recording its origin path, next to the desktop settings) on a heartbeat timer whenever it has unsaved edits, so a crash costs at most a few seconds of editing. A clean exit and every explicit Save delete the sidecar; a *surviving* sidecar on the next launch means the previous session ended without a clean shutdown, and the app offers to recover it (re-associating the original path so Save writes back to the right file). The About dialog and README now document the in-process limitation. The sidecar write/parse/clear mechanics are covered headlessly by `minihost_desktop --autosave-selftest=<project.json>` (`tests/test_desktop_autosave.py`); the timer and recovery dialog are GUI-thread orchestration and stay manual, as with undo/redo. All file paths in the schema are absolute, so the sidecar's own location does not affect reload.

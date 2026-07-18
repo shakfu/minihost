@@ -9,9 +9,34 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Resolve one version string shared by every artifact name and archive so
+  # the whole run is self-identifying. Tag builds (refs/tags/v*) use the tag;
+  # every other build uses the pyproject version disambiguated by short SHA
+  # (e.g. 0.4.2-1a2b3c4) so main / PR artifacts never collide or masquerade
+  # as a release.
+  version:
+    name: Determine version
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.compute.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: compute
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            V="${GITHUB_REF#refs/tags/v}"
+          else
+            BASE=$(sed -nE 's/^version = "([^"]+)"/\1/p' pyproject.toml | head -1)
+            V="${BASE}-$(git rev-parse --short HEAD)"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Resolved artifact version: $V"
+
   build-cli:
     name: Build CLI (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    needs: [version]
     strategy:
       fail-fast: false
       matrix:
@@ -77,12 +102,13 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact-name }}
+          name: ${{ matrix.artifact-name }}-${{ needs.version.outputs.version }}
           path: dist/
 
   build-desktop:
     name: Build desktop (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    needs: [version]
     # Guard job: compiles the minihost_desktop GUI app (MINIHOST_BUILD_DESKTOP=ON,
     # MINIHOST_HEADLESS=OFF) so the ~7k lines of desktop code cannot silently
     # break under refactors of the C ABI or graph executor. Also runs a headless
@@ -185,14 +211,31 @@ jobs:
           test "$code" -eq 2 || { echo "expected exit 2 for empty value, got $code"; exit 1; }
           echo "error-path exit codes OK"
 
+      # Stage into a clean dir first so the upload has a predictable layout.
+      # `cp -R` on the macOS matrix preserves the minihost_desktop.app bundle
+      # wrapper -- uploading the .app path directly would flatten it to its
+      # Contents/, losing the bundle. On Linux/Windows this just copies the
+      # single binary. (Note: upload-artifact does not preserve the Unix +x
+      # bit, so a binary downloaded directly from this run's artifact list may
+      # need `chmod +x`. The release job restores +x before archiving, so the
+      # published release tarballs extract as runnable. Desktop builds are
+      # unsigned; macOS Gatekeeper / Windows SmartScreen will warn until
+      # packaging/signing lands.)
+      - name: Stage desktop artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp -R "${{ matrix.artifact-path }}" dist/
+
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact-name }}
-          path: ${{ matrix.artifact-path }}
+          name: ${{ matrix.artifact-name }}-${{ needs.version.outputs.version }}
+          path: dist/
 
   build-wheels:
     name: Build wheels (${{ matrix.os }}, ${{ matrix.cibw_archs }})
     runs-on: ${{ matrix.os }}
+    needs: [version]
     # Backstop: build+test of all CPython versions completes in ~25 min; cap
     # well below the 6h default so a hang (e.g. a headless-init deadlock) fails
     # fast instead of burning runners.
@@ -239,12 +282,13 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact-name }}
+          name: ${{ matrix.artifact-name }}-${{ needs.version.outputs.version }}
           path: wheelhouse/*.whl
 
   build-sdist:
     name: Build source distribution
     runs-on: ubuntu-22.04
+    needs: [version]
     steps:
       - uses: actions/checkout@v4
 
@@ -260,13 +304,13 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: sdist
+          name: sdist-${{ needs.version.outputs.version }}
           path: dist/*.tar.gz
 
   aggregate:
     name: Aggregate artifacts
     runs-on: ubuntu-22.04
-    needs: [build-cli, build-wheels, build-sdist]
+    needs: [version, build-cli, build-desktop, build-wheels, build-sdist]
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -274,37 +318,47 @@ jobs:
           path: artifacts
 
       - name: Organize artifacts
+        env:
+          VER: ${{ needs.version.outputs.version }}
         run: |
           mkdir -p release/cli/macos-universal
           mkdir -p release/cli/linux-x64
           mkdir -p release/cli/windows-x64
+          mkdir -p release/desktop/macos-universal
+          mkdir -p release/desktop/linux-x64
+          mkdir -p release/desktop/windows-x64
           mkdir -p release/wheels
           mkdir -p release/sdist
 
           # CLI binaries
-          cp -r artifacts/cli-macos-universal/* release/cli/macos-universal/ || true
-          cp -r artifacts/cli-linux-x64/* release/cli/linux-x64/ || true
-          cp -r artifacts/cli-windows-x64/* release/cli/windows-x64/ || true
+          cp -r "artifacts/cli-macos-universal-${VER}/." release/cli/macos-universal/ || true
+          cp -r "artifacts/cli-linux-x64-${VER}/."       release/cli/linux-x64/ || true
+          cp -r "artifacts/cli-windows-x64-${VER}/."      release/cli/windows-x64/ || true
 
-          # Wheels
-          cp artifacts/wheels-*/*.whl release/wheels/ || true
+          # Desktop app (unsigned; see build-desktop notes)
+          cp -r "artifacts/desktop-macos-universal-${VER}/." release/desktop/macos-universal/ || true
+          cp -r "artifacts/desktop-linux-x64-${VER}/."       release/desktop/linux-x64/ || true
+          cp -r "artifacts/desktop-windows-x64-${VER}/."      release/desktop/windows-x64/ || true
+
+          # Wheels (filenames already carry the package version)
+          cp artifacts/wheels-*-${VER}/*.whl release/wheels/ || true
 
           # Source distribution
-          cp artifacts/sdist/*.tar.gz release/sdist/ || true
+          cp artifacts/sdist-${VER}/*.tar.gz release/sdist/ || true
 
           # Summary
-          echo "=== Release Contents ==="
+          echo "=== Release Contents (version ${VER}) ==="
           find release -type f | sort
 
       - uses: actions/upload-artifact@v4
         with:
-          name: minihost-all
+          name: minihost-all-${{ needs.version.outputs.version }}
           path: release/
 
   release:
     name: Create release
     runs-on: ubuntu-22.04
-    needs: [aggregate]
+    needs: [version, aggregate]
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
@@ -312,27 +366,46 @@ jobs:
       - name: Download aggregated artifacts
         uses: actions/download-artifact@v4
         with:
-          name: minihost-all
+          name: minihost-all-${{ needs.version.outputs.version }}
           path: release
 
       - name: Create archives
+        env:
+          VER: ${{ needs.version.outputs.version }}
         run: |
           cd release
-          # Create platform-specific CLI archives
-          tar -czvf ../minihost-cli-macos-universal.tar.gz -C cli/macos-universal .
-          tar -czvf ../minihost-cli-linux-x64.tar.gz -C cli/linux-x64 .
-          cd cli/windows-x64 && zip -r ../../../minihost-cli-windows-x64.zip . && cd ../..
-          # Create wheels archive
-          cd wheels && zip -r ../../minihost-wheels.zip . && cd ..
+          # upload-artifact strips the Unix +x bit, so the binaries arrive
+          # here non-executable. Restore it before archiving -- tar/zip record
+          # the mode, so the extracted Linux binaries are runnable straight
+          # from the release archive (no chmod needed by the user). macOS
+          # binaries get the same treatment: the CLI tools plus the Mach-O
+          # inside the .app bundle.
+          chmod +x cli/linux-x64/minihost_c cli/linux-x64/minihost_cpp 2>/dev/null || true
+          chmod +x desktop/linux-x64/minihost_desktop 2>/dev/null || true
+          chmod +x cli/macos-universal/minihost_c cli/macos-universal/minihost_cpp 2>/dev/null || true
+          find desktop/macos-universal -name minihost_desktop -path '*/MacOS/*' -exec chmod +x {} + 2>/dev/null || true
+          # CLI archives (tar.gz for Unix, zip for Windows)
+          tar -czvf "../minihost-cli-macos-universal-${VER}.tar.gz" -C cli/macos-universal .
+          tar -czvf "../minihost-cli-linux-x64-${VER}.tar.gz"       -C cli/linux-x64 .
+          (cd cli/windows-x64 && zip -r "../../../minihost-cli-windows-x64-${VER}.zip" .)
+          # Desktop archives (unsigned app / binaries)
+          tar -czvf "../minihost-desktop-macos-universal-${VER}.tar.gz" -C desktop/macos-universal .
+          tar -czvf "../minihost-desktop-linux-x64-${VER}.tar.gz"       -C desktop/linux-x64 .
+          (cd desktop/windows-x64 && zip -r "../../../minihost-desktop-windows-x64-${VER}.zip" .)
+          # Wheels archive
+          (cd wheels && zip -r "../../minihost-wheels-${VER}.zip" .)
           cd ..
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            minihost-cli-macos-universal.tar.gz
-            minihost-cli-linux-x64.tar.gz
-            minihost-cli-windows-x64.zip
-            minihost-wheels.zip
+            minihost-cli-macos-universal-${{ needs.version.outputs.version }}.tar.gz
+            minihost-cli-linux-x64-${{ needs.version.outputs.version }}.tar.gz
+            minihost-cli-windows-x64-${{ needs.version.outputs.version }}.zip
+            minihost-desktop-macos-universal-${{ needs.version.outputs.version }}.tar.gz
+            minihost-desktop-linux-x64-${{ needs.version.outputs.version }}.tar.gz
+            minihost-desktop-windows-x64-${{ needs.version.outputs.version }}.zip
+            minihost-wheels-${{ needs.version.outputs.version }}.zip
             release/sdist/*.tar.gz
           generate_release_notes: true
