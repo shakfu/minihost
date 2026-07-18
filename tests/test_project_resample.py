@@ -24,27 +24,35 @@ def _write_project(path, in_wav, out_wav, *, project_sr, resample):
     node = {"id": "in", "kind": "input", "channels": 2, "source": str(in_wav)}
     if resample is not None:
         node["resample"] = resample
-    path.write_text(json.dumps({
-        "minihost_project_version": 1,
-        "sample_rate": project_sr,
-        "block_size": 256,
-        "nodes": [
-            node,
-            {"id": "out", "kind": "output", "channels": 2,
-             "sink": str(out_wav), "bit_depth": 24},
-        ],
-        "edges": [{"src": "in", "dst": "out"}],
-    }))
+    path.write_text(
+        json.dumps(
+            {
+                "minihost_project_version": 1,
+                "sample_rate": project_sr,
+                "block_size": 256,
+                "nodes": [
+                    node,
+                    {
+                        "id": "out",
+                        "kind": "output",
+                        "channels": 2,
+                        "sink": str(out_wav),
+                        "bit_depth": 24,
+                    },
+                ],
+                "edges": [{"src": "in", "dst": "out"}],
+            }
+        )
+    )
 
 
 def test_mismatch_without_resample_raises(tmp_path):
     in_wav = tmp_path / "in.wav"
-    audio_io.write_audio(str(in_wav),
-                         np.zeros((2, 4410), dtype=np.float32),
-                         44100, bit_depth=24)
+    audio_io.write_audio(
+        str(in_wav), np.zeros((2, 4410), dtype=np.float32), 44100, bit_depth=24
+    )
     proj = tmp_path / "p.json"
-    _write_project(proj, in_wav, tmp_path / "out.wav",
-                   project_sr=48000, resample=None)
+    _write_project(proj, in_wav, tmp_path / "out.wav", project_sr=48000, resample=None)
     with pytest.raises(minihost.ProjectError, match="sample rate"):
         minihost.render_project(proj)
 
@@ -76,18 +84,18 @@ def test_resample_true_converts_and_renders(tmp_path):
 def test_resample_flag_round_trips(tmp_path):
     """The resample flag survives a load; default inputs stay False."""
     in_wav = tmp_path / "in.wav"
-    audio_io.write_audio(str(in_wav),
-                         np.zeros((2, 512), dtype=np.float32),
-                         44100, bit_depth=24)
+    audio_io.write_audio(
+        str(in_wav), np.zeros((2, 512), dtype=np.float32), 44100, bit_depth=24
+    )
     proj = tmp_path / "p.json"
-    _write_project(proj, in_wav, tmp_path / "out.wav",
-                   project_sr=48000, resample=True)
+    _write_project(proj, in_wav, tmp_path / "out.wav", project_sr=48000, resample=True)
     loaded = minihost.load_project(proj)
     assert loaded.inputs[0].resample is True
 
     # And an input without the field defaults to False.
     proj2 = tmp_path / "p2.json"
-    _write_project(proj2, in_wav, tmp_path / "out2.wav",
-                   project_sr=44100, resample=None)
+    _write_project(
+        proj2, in_wav, tmp_path / "out2.wav", project_sr=44100, resample=None
+    )
     loaded2 = minihost.load_project(proj2)
     assert loaded2.inputs[0].resample is False

@@ -21,6 +21,7 @@ from minihost import AudioBuffer, AudioBufferD
 # Basics + dtype identity
 # ---------------------------------------------------------------------------
 
+
 def test_dtype_and_repr():
     b = AudioBufferD(2, 8)
     assert b.dtype == "float64"
@@ -46,6 +47,7 @@ def test_zero_initialized():
 # ---------------------------------------------------------------------------
 # Indexing preserves double precision
 # ---------------------------------------------------------------------------
+
 
 def test_scalar_get_set_keeps_double_precision():
     b = AudioBufferD(1, 1)
@@ -85,6 +87,7 @@ def test_setitem_buffer_source_converts_dtype():
 # DSP ops (shared surface)
 # ---------------------------------------------------------------------------
 
+
 def test_dsp_ops():
     b = AudioBufferD.from_numpy(np.ones((2, 100), dtype=np.float64))
     b.apply_gain(0.5)
@@ -107,6 +110,7 @@ def test_dsp_ops():
 # numpy interop
 # ---------------------------------------------------------------------------
 
+
 def test_as_ndarray_is_float64_zero_copy_view():
     b = AudioBufferD(2, 4)
     v = b.as_ndarray()
@@ -120,9 +124,9 @@ def test_as_ndarray_is_float64_zero_copy_view():
 def test_np_asarray_and_from_dlpack_are_float64():
     b = AudioBufferD(1, 3)
     b[0, 0] = 0.5
-    a = np.asarray(b)            # consults __array__
+    a = np.asarray(b)  # consults __array__
     assert str(a.dtype) == "float64" and a[0, 0] == 0.5
-    d = np.from_dlpack(b)        # consults __dlpack__ -- the process_double path
+    d = np.from_dlpack(b)  # consults __dlpack__ -- the process_double path
     assert str(d.dtype) == "float64"
 
 

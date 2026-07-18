@@ -26,7 +26,9 @@ from minihost import (
     Trim,
 )
 
-PLUGIN = os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+PLUGIN = (
+    os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+)
 
 skip_if_no_plugin = pytest.mark.skipif(
     not os.path.exists(PLUGIN),
@@ -41,7 +43,7 @@ def _identity(audio, sample_rate):
 
 
 def _const(channels=2, frames=100, value=0.5):
-    return (np.ones((channels, frames), dtype=np.float32) * value)
+    return np.ones((channels, frames), dtype=np.float32) * value
 
 
 # =====================================================================
@@ -160,9 +162,7 @@ def test_gain_returns_new_buffer():
 
 
 def test_normalize_brings_peak_to_target():
-    out = Normalize(-6.0)(
-        minihost.AudioBuffer.from_numpy(_const(1, 10, 0.1)), SR
-    )
+    out = Normalize(-6.0)(minihost.AudioBuffer.from_numpy(_const(1, 10, 0.1)), SR)
     assert float(out.magnitude()) == pytest.approx(10.0 ** (-6.0 / 20.0), rel=1e-4)
 
 
@@ -197,9 +197,7 @@ def test_transforms_compose_in_order():
     # Gain(+6) then Normalize(-6) -> Normalize wins regardless of gain.
     fx = Compose([Gain(6.0), Normalize(-6.0)])
     out = fx(_const(1, 10, 0.01), sample_rate=SR)
-    assert float(np.max(np.abs(out))) == pytest.approx(
-        10.0 ** (-6.0 / 20.0), rel=1e-4
-    )
+    assert float(np.max(np.abs(out))) == pytest.approx(10.0 ** (-6.0 / 20.0), rel=1e-4)
 
 
 # =====================================================================
@@ -226,18 +224,16 @@ def test_maybe_rejects_bad_probability():
 
 def test_oneof_is_deterministic_with_seed():
     def build():
-        return Compose(
-            [OneOf([Gain(-120.0), Gain(0.0)])], seed=0
-        )(_const(1, 10, 1.0), sample_rate=SR)
+        return Compose([OneOf([Gain(-120.0), Gain(0.0)])], seed=0)(
+            _const(1, 10, 1.0), sample_rate=SR
+        )
 
     assert np.array_equal(build(), build())
 
 
 def test_oneof_weight_forces_choice():
     # All weight on the loud-cut branch.
-    fx = Compose(
-        [OneOf([Gain(-120.0), Gain(0.0)], weights=[1.0, 0.0])], seed=1
-    )
+    fx = Compose([OneOf([Gain(-120.0), Gain(0.0)], weights=[1.0, 0.0])], seed=1)
     out = fx(_const(1, 10, 1.0), sample_rate=SR)
     assert float(np.max(np.abs(out))) < 1e-4
 
@@ -251,14 +247,10 @@ def test_someof_fixed_count_applies_k_in_order():
     # Two of three gains; result is deterministic by seed. Verify count by
     # comparing to applying a known subset would be brittle, so instead
     # assert the output is a pure power-of-attenuation combination.
-    fx = Compose(
-        [SomeOf(2, [Gain(-6.0), Gain(-6.0), Gain(-6.0)])], seed=0
-    )
+    fx = Compose([SomeOf(2, [Gain(-6.0), Gain(-6.0), Gain(-6.0)])], seed=0)
     out = fx(_const(1, 10, 1.0), sample_rate=SR)
     # Exactly two -6 dB cuts -> -12 dB total.
-    assert float(np.max(np.abs(out))) == pytest.approx(
-        10.0 ** (-12.0 / 20.0), rel=1e-4
-    )
+    assert float(np.max(np.abs(out))) == pytest.approx(10.0 ** (-12.0 / 20.0), rel=1e-4)
 
 
 def test_someof_range_count():
@@ -277,9 +269,9 @@ def test_someof_out_of_range_raises():
 
 def test_shuffle_is_deterministic_with_seed():
     def build():
-        return Compose(
-            [Gain(-6.0), Trim(0.0, 0.005)], shuffle=True, seed=7
-        )(np.ones((1, 100), dtype=np.float32), sample_rate=1000)
+        return Compose([Gain(-6.0), Trim(0.0, 0.005)], shuffle=True, seed=7)(
+            np.ones((1, 100), dtype=np.float32), sample_rate=1000
+        )
 
     a, b = build(), build()
     assert a.shape == b.shape and np.array_equal(a, b)
@@ -363,9 +355,7 @@ def test_compose_keeps_shared_child_open():
 def test_random_param_processes_and_is_reproducible():
     def render(seed):
         with minihost.Plugin(PLUGIN, sample_rate=SR, max_block_size=512) as p:
-            fx = Compose(
-                [RandomParam(p, 0, 0.0, 1.0)], close_children=False, seed=seed
-            )
+            fx = Compose([RandomParam(p, 0, 0.0, 1.0)], close_children=False, seed=seed)
             buf = minihost.AudioBuffer(max(p.num_input_channels, 2), 480)
             return fx(buf).as_ndarray()
 
@@ -377,7 +367,10 @@ def test_to_file_roundtrip(tmp_path):
     in_wav = tmp_path / "in.wav"
     out_wav = tmp_path / "out.wav"
     minihost.write_audio(
-        str(in_wav), _const(2, SR // 10), SR, bit_depth=24  # 0.1 s
+        str(in_wav),
+        _const(2, SR // 10),
+        SR,
+        bit_depth=24,  # 0.1 s
     )
     with minihost.Plugin(PLUGIN, sample_rate=SR, max_block_size=512) as p:
         with Compose([p, Normalize(-1.0)], close_children=False) as fx:

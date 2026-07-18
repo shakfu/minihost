@@ -386,8 +386,12 @@ class TestCmdScanErrors:
     def test_scan_runtime_error(self, capsys):
         """scan should return 1 and print error on RuntimeError."""
         args = argparse.Namespace(
-            directory="/nonexistent", json=False, sample_rate=48000,
-            block_size=512, no_cache=True, refresh=False,
+            directory="/nonexistent",
+            json=False,
+            sample_rate=48000,
+            block_size=512,
+            no_cache=True,
+            refresh=False,
         )
         with patch("minihost.scan_directory", side_effect=RuntimeError("not found")):
             ret = cmd_scan(args)
@@ -397,8 +401,12 @@ class TestCmdScanErrors:
     def test_scan_success_text(self, capsys):
         """scan should print results in text mode."""
         args = argparse.Namespace(
-            directory="/plugins", json=False, sample_rate=48000,
-            block_size=512, no_cache=True, refresh=False,
+            directory="/plugins",
+            json=False,
+            sample_rate=48000,
+            block_size=512,
+            no_cache=True,
+            refresh=False,
         )
         results = [{"name": "TestSynth", "format": "VST3", "path": "/p/test.vst3"}]
         with patch("minihost.scan_directory", return_value=results):
@@ -413,8 +421,12 @@ class TestCmdScanErrors:
         import json
 
         args = argparse.Namespace(
-            directory="/plugins", json=True, sample_rate=48000,
-            block_size=512, no_cache=True, refresh=False,
+            directory="/plugins",
+            json=True,
+            sample_rate=48000,
+            block_size=512,
+            no_cache=True,
+            refresh=False,
         )
         results = [{"name": "TestSynth", "format": "VST3", "path": "/p/test.vst3"}]
         with patch("minihost.scan_directory", return_value=results):
@@ -427,8 +439,12 @@ class TestCmdScanErrors:
 
     def test_scan_empty_results(self, capsys):
         args = argparse.Namespace(
-            directory="/empty", json=False, sample_rate=48000,
-            block_size=512, no_cache=True, refresh=False,
+            directory="/empty",
+            json=False,
+            sample_rate=48000,
+            block_size=512,
+            no_cache=True,
+            refresh=False,
         )
         with patch("minihost.scan_directory", return_value=[]):
             ret = cmd_scan(args)
@@ -569,6 +585,7 @@ class TestParseMapSpec:
 
     def setup_method(self):
         from minihost.cli import _parse_map_spec
+
         self._parse = _parse_map_spec
 
     def test_three_field_form_uses_defaults(self):
@@ -686,6 +703,7 @@ class TestLoadMapFile:
 
     def setup_method(self):
         from minihost.cli import _load_map_file
+
         self._load = _load_map_file
 
     def _mock_mapper(self, params):
@@ -702,27 +720,35 @@ class TestLoadMapFile:
 
     def _write(self, tmp_path, payload):
         import json
+
         p = tmp_path / "map.json"
         p.write_text(json.dumps(payload))
         return str(p)
 
     def test_minimal_three_field_mapping(self, tmp_path):
-        path = self._write(tmp_path, {
-            "mappings": [{"channel": 0, "cc": 7, "param": "Volume"}]
-        })
+        path = self._write(
+            tmp_path, {"mappings": [{"channel": 0, "cc": 7, "param": "Volume"}]}
+        )
         mapper = self._mock_mapper(["volume"])
         n = self._load(path, mapper)
         assert n == 1
         assert mapper._called_with == [(0, 7, "Volume", (0.0, 1.0), "linear")]
 
     def test_value_range_and_curve_applied(self, tmp_path):
-        path = self._write(tmp_path, {
-            "mappings": [
-                {"channel": 0, "cc": 10, "param": "Pan",
-                 "value_range": [-1.0, 1.0]},
-                {"channel": 0, "cc": 74, "param": "Cutoff", "curve": "exp"},
-            ]
-        })
+        path = self._write(
+            tmp_path,
+            {
+                "mappings": [
+                    {
+                        "channel": 0,
+                        "cc": 10,
+                        "param": "Pan",
+                        "value_range": [-1.0, 1.0],
+                    },
+                    {"channel": 0, "cc": 74, "param": "Cutoff", "curve": "exp"},
+                ]
+            },
+        )
         mapper = self._mock_mapper(["pan", "cutoff"])
         self._load(path, mapper)
         assert mapper._called_with[0] == (0, 10, "Pan", (-1.0, 1.0), "linear")
@@ -748,26 +774,33 @@ class TestLoadMapFile:
             self._load(path, mapper)
 
     def test_missing_required_field_raises(self, tmp_path):
-        path = self._write(tmp_path, {
-            "mappings": [{"channel": 0, "cc": 7}]   # no 'param'
-        })
+        path = self._write(
+            tmp_path,
+            {
+                "mappings": [{"channel": 0, "cc": 7}]  # no 'param'
+            },
+        )
         mapper = self._mock_mapper(["volume"])
         with pytest.raises(ValueError, match="missing required field"):
             self._load(path, mapper)
 
     def test_unknown_param_propagates(self, tmp_path):
-        path = self._write(tmp_path, {
-            "mappings": [{"channel": 0, "cc": 7, "param": "NotARealParam"}]
-        })
+        path = self._write(
+            tmp_path, {"mappings": [{"channel": 0, "cc": 7, "param": "NotARealParam"}]}
+        )
         mapper = self._mock_mapper(["volume"])
         with pytest.raises(RuntimeError, match="Parameter not found"):
             self._load(path, mapper)
 
     def test_bad_value_range_shape_raises(self, tmp_path):
-        path = self._write(tmp_path, {
-            "mappings": [{"channel": 0, "cc": 7, "param": "Volume",
-                          "value_range": [0.0]}]
-        })
+        path = self._write(
+            tmp_path,
+            {
+                "mappings": [
+                    {"channel": 0, "cc": 7, "param": "Volume", "value_range": [0.0]}
+                ]
+            },
+        )
         mapper = self._mock_mapper(["volume"])
         with pytest.raises(ValueError, match="value_range must be"):
             self._load(path, mapper)
@@ -865,7 +898,12 @@ class TestCmdProcessErrors:
             non_realtime=False,
             bpm=None,
         )
-        mock_info = {"sample_rate": 48000, "channels": 2, "frames": 1000, "duration": 1000 / 48000}
+        mock_info = {
+            "sample_rate": 48000,
+            "channels": 2,
+            "frames": 1000,
+            "duration": 1000 / 48000,
+        }
         with (
             patch("os.path.exists", return_value=False),
             patch("minihost.audio_io.get_audio_info", return_value=mock_info),

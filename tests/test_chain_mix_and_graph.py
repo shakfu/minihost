@@ -112,7 +112,10 @@ def test_chain_get_mix_reflects_clamped_value():
 def test_chain_set_mix_rejects_mismatched_channels():
     # Use a synth-style plugin (Dexed: 0 in, 2 out) to exercise the
     # eligibility check. Skip if not available.
-    SYNTH = os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+    SYNTH = (
+        os.environ.get("MINIHOST_TEST_PLUGIN")
+        or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+    )
     if not os.path.exists(SYNTH):
         pytest.skip(f"synth plugin not found at {SYNTH}")
     p = minihost.Plugin(SYNTH, sample_rate=48000)
@@ -324,8 +327,7 @@ def test_graph_context_manager_closes():
 # ---------------------------------------------------------------------------
 
 SYNTH_PLUGIN = (
-    os.environ.get("MINIHOST_TEST_PLUGIN")
-    or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+    os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
 )
 
 skip_if_no_synth = pytest.mark.skipif(
@@ -484,8 +486,9 @@ def test_bus_process_midi_reports_overflow():
     # (each emits >= 1 event), and confirm the overflow flag is set.
     note = [(0, 0x90, 60, 100)]
     probe, _ = _make_midi_fx_chain()
-    ref = probe.process_midi(np.zeros((2, 512), dtype=np.float32),
-                             np.zeros((2, 512), dtype=np.float32), note)
+    ref = probe.process_midi(
+        np.zeros((2, 512), dtype=np.float32), np.zeros((2, 512), dtype=np.float32), note
+    )
     probe.close()
     if len(ref) < 1:
         pytest.skip("configured MINIHOST_TEST_MIDI_FX emitted no MIDI")
@@ -495,9 +498,12 @@ def test_bus_process_midi_reports_overflow():
     g = minihost.PluginBus(2, 2, max_block_size=512, sample_rate=48000.0)
     g.add_branch(bc1)
     g.add_branch(bc2)
-    events, overflow = g.process_midi(np.zeros((2, 512), dtype=np.float32),
-                                      np.zeros((2, 512), dtype=np.float32), note,
-                                      midi_out_capacity=1)
+    events, overflow = g.process_midi(
+        np.zeros((2, 512), dtype=np.float32),
+        np.zeros((2, 512), dtype=np.float32),
+        note,
+        midi_out_capacity=1,
+    )
     g.close()
     bc1.close()
     bc2.close()
@@ -514,8 +520,9 @@ def test_bus_merges_branch_midi_sorted_by_offset():
 
     # Reference: one branch's MIDI output in isolation.
     c1, _ = _make_midi_fx_chain()
-    ref = c1.process_midi(np.zeros((2, 512), dtype=np.float32),
-                          np.zeros((2, 512), dtype=np.float32), note)
+    ref = c1.process_midi(
+        np.zeros((2, 512), dtype=np.float32), np.zeros((2, 512), dtype=np.float32), note
+    )
     c1.close()
     if not ref:
         pytest.skip("configured MINIHOST_TEST_MIDI_FX emitted no MIDI")
@@ -525,8 +532,9 @@ def test_bus_merges_branch_midi_sorted_by_offset():
     g = minihost.PluginBus(2, 2, max_block_size=512, sample_rate=48000.0)
     g.add_branch(bc1)
     g.add_branch(bc2)
-    merged, overflow = g.process_midi(np.zeros((2, 512), dtype=np.float32),
-                                      np.zeros((2, 512), dtype=np.float32), note)
+    merged, overflow = g.process_midi(
+        np.zeros((2, 512), dtype=np.float32), np.zeros((2, 512), dtype=np.float32), note
+    )
     g.close()
     bc1.close()
     bc2.close()
@@ -539,4 +547,5 @@ def test_bus_merges_branch_midi_sorted_by_offset():
     assert offsets == sorted(offsets)
     # Every reference event appears with the correct multiplicity (2x).
     from collections import Counter
+
     assert Counter(merged) == Counter(ref + ref)

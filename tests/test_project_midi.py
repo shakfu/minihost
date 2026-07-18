@@ -47,8 +47,13 @@ def _audio_in(path: Path, frames: int = SR) -> None:
     audio_io.write_audio(str(path), sig, SR, bit_depth=24)
 
 
-def _render(tmp_path: Path, midi_nodes: list[dict], midi_edges: list[dict],
-            *, duration_seconds: float = 1.0) -> None:
+def _render(
+    tmp_path: Path,
+    midi_nodes: list[dict],
+    midi_edges: list[dict],
+    *,
+    duration_seconds: float = 1.0,
+) -> None:
     in_wav = tmp_path / "in.wav"
     out_wav = tmp_path / "out.wav"
     _audio_in(in_wav, int(duration_seconds * SR))
@@ -59,8 +64,13 @@ def _render(tmp_path: Path, midi_nodes: list[dict], midi_edges: list[dict],
         "duration_seconds": duration_seconds,
         "nodes": [
             {"id": "in", "kind": "input", "channels": 2, "source": str(in_wav)},
-            {"id": "out", "kind": "output", "channels": 2,
-             "sink": str(out_wav), "bit_depth": 24},
+            {
+                "id": "out",
+                "kind": "output",
+                "channels": 2,
+                "sink": str(out_wav),
+                "bit_depth": 24,
+            },
             *midi_nodes,
         ],
         "edges": [
@@ -120,10 +130,15 @@ def test_project_midi_transpose(tmp_path):
 def test_project_midi_filter_drops_out_of_range(tmp_path):
     src = tmp_path / "src.mid"
     # Two notes: C3 (48, in range) and C5 (72, out of range for 36..60).
-    _write_source_mid(src, [
-        (0, 0x90, 48, 100), (0, 0x90, 72, 100),
-        (TPQ, 0x80, 48, 0), (TPQ, 0x80, 72, 0),
-    ])
+    _write_source_mid(
+        src,
+        [
+            (0, 0x90, 48, 100),
+            (0, 0x90, 72, 100),
+            (TPQ, 0x80, 48, 0),
+            (TPQ, 0x80, 72, 0),
+        ],
+    )
     out_mid = tmp_path / "out.mid"
 
     _render(
@@ -194,8 +209,11 @@ def test_project_midi_input_missing_source_raises(tmp_path):
         _render(
             tmp_path,
             midi_nodes=[
-                {"id": "mi", "kind": "midi_input",
-                 "source": str(tmp_path / "nope.mid")},
+                {
+                    "id": "mi",
+                    "kind": "midi_input",
+                    "source": str(tmp_path / "nope.mid"),
+                },
                 {"id": "mo", "kind": "midi_output"},
             ],
             midi_edges=[{"src": "mi", "dst": "mo", "kind": "midi"}],
@@ -221,8 +239,7 @@ def test_project_unknown_edge_kind_raises(tmp_path):
 # Instrument round-trip: drive a synth from a project MIDI source and
 # confirm it produces audio. Requires a real instrument plugin.
 SYNTH_PLUGIN = (
-    os.environ.get("MINIHOST_TEST_PLUGIN")
-    or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+    os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
 )
 skip_if_no_synth = pytest.mark.skipif(
     not os.path.exists(SYNTH_PLUGIN),
@@ -250,8 +267,13 @@ def test_project_midi_drives_instrument(tmp_path):
         "nodes": [
             {"id": "mi", "kind": "midi_input", "source": str(src)},
             {"id": "synth", "kind": "plugin", "path": SYNTH_PLUGIN},
-            {"id": "out", "kind": "output", "channels": out_ch,
-             "sink": str(out_wav), "bit_depth": 24},
+            {
+                "id": "out",
+                "kind": "output",
+                "channels": out_ch,
+                "sink": str(out_wav),
+                "bit_depth": 24,
+            },
         ],
         "edges": [
             {"src": "mi", "dst": "synth", "kind": "midi"},

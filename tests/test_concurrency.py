@@ -30,7 +30,9 @@ import pytest
 
 import minihost
 
-PLUGIN = os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+PLUGIN = (
+    os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+)
 
 skip_if_no_plugin = pytest.mark.skipif(
     not os.path.exists(PLUGIN),
@@ -81,7 +83,9 @@ def test_concurrent_set_param_from_multiple_threads():
             plugin.set_param(0, ((i * 7) % 100) / 100.0)
             i += 1
 
-    workers = [threading.Thread(target=hammer, args=(s,), daemon=True) for s in range(4)]
+    workers = [
+        threading.Thread(target=hammer, args=(s,), daemon=True) for s in range(4)
+    ]
     for w in workers:
         w.start()
     time.sleep(0.2)

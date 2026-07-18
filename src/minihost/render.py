@@ -359,8 +359,9 @@ def render_midi_to_file(
     total = renderer.total_samples
 
     if total == 0:
-        write_audio(output_path, AudioBuffer(out_channels, 0),
-                    sample_rate, bit_depth=bit_depth)
+        write_audio(
+            output_path, AudioBuffer(out_channels, 0), sample_rate, bit_depth=bit_depth
+        )
         return 0
 
     audio = AudioBuffer(out_channels, total)
@@ -376,7 +377,7 @@ def render_midi_to_file(
             if n <= 0:
                 break
             block = cast(AudioBuffer, block[:, :n])
-        audio[:, written:written + n] = block
+        audio[:, written : written + n] = block
         written += n
         if progress_callback is not None:
             progress_callback(min(written, total), total)
@@ -389,6 +390,7 @@ def render_midi_to_file(
 
     if normalize is not None:
         from minihost.process import _normalize_peak
+
         _normalize_peak(audio, float(normalize))
 
     write_audio(output_path, audio, sample_rate, bit_depth=bit_depth)
@@ -660,14 +662,17 @@ class MidiRenderer:
                 self._skip_remaining -= n
                 return None
             # AudioBuffer slice (copy) -- always contiguous, always c_contig.
-            result = cast(AudioBuffer, result[:, self._skip_remaining:])
+            result = cast(AudioBuffer, result[:, self._skip_remaining :])
             self._skip_remaining = 0
 
         # Auto-tail detection runs against the post-skip (user-visible)
         # output. The MIDI-end check is in input-sample space, but we
         # subtract the latency offset so "after MIDI" matches the
         # user-visible timeline. magnitude() is JUCE-backed (no numpy).
-        if self._auto_tail and self._current_sample > self._midi_end_samples + self._latency:
+        if (
+            self._auto_tail
+            and self._current_sample > self._midi_end_samples + self._latency
+        ):
             peak = result.magnitude()
             if peak < self._tail_threshold:
                 self._consecutive_silent += 1
@@ -714,7 +719,7 @@ class MidiRenderer:
                 if n <= 0:
                     break
                 block = cast(AudioBuffer, block[:, :n])
-            out[:, written:written + n] = block
+            out[:, written : written + n] = block
             written += n
 
         if written < remaining:

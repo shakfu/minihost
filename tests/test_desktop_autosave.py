@@ -34,17 +34,26 @@ from desktop_helpers import DESKTOP_BIN, skip_if_no_desktop
 
 
 def _write_project(path):
-    path.write_text(json.dumps({
-        "minihost_project_version": 1,
-        "sample_rate": 48000,
-        "block_size": 512,
-        "nodes": [
-            {"id": "in", "kind": "input", "channels": 2, "source": "in.wav"},
-            {"id": "out", "kind": "output", "channels": 2,
-             "sink": "out.wav", "bit_depth": 24},
-        ],
-        "edges": [{"src": "in", "dst": "out"}],
-    }))
+    path.write_text(
+        json.dumps(
+            {
+                "minihost_project_version": 1,
+                "sample_rate": 48000,
+                "block_size": 512,
+                "nodes": [
+                    {"id": "in", "kind": "input", "channels": 2, "source": "in.wav"},
+                    {
+                        "id": "out",
+                        "kind": "output",
+                        "channels": 2,
+                        "sink": "out.wav",
+                        "bit_depth": 24,
+                    },
+                ],
+                "edges": [{"src": "in", "dst": "out"}],
+            }
+        )
+    )
 
 
 @skip_if_no_desktop
@@ -57,10 +66,14 @@ def test_autosave_selftest_passes(tmp_path):
     env = dict(os.environ, MINIHOST_DESKTOP_SETTINGS_DIR=str(settings_dir))
     res = subprocess.run(
         [str(DESKTOP_BIN), f"--autosave-selftest={proj}"],
-        capture_output=True, text=True, timeout=30, env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
     )
-    assert res.returncode == 0, \
+    assert res.returncode == 0, (
         f"autosave self-test failed:\nstdout:{res.stdout}\nstderr:{res.stderr}"
+    )
     assert "autosave-selftest OK" in res.stderr
     # The self-test clears the sidecar as its final assertion; nothing must
     # be left behind for a subsequent launch to spuriously "recover".
@@ -73,6 +86,8 @@ def test_autosave_selftest_empty_value_exits_2(tmp_path):
     """Malformed invocation is a usage error (exit 2)."""
     res = subprocess.run(
         [str(DESKTOP_BIN), "--autosave-selftest="],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     assert res.returncode == 2, (res.returncode, res.stderr)

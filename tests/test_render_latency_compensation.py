@@ -19,9 +19,14 @@ class _FakePlugin:
     emitted versus skipped.
     """
 
-    def __init__(self, latency_samples: int, num_input_channels: int = 2,
-                 num_output_channels: int = 2, sample_rate: float = 48000.0,
-                 tail_seconds: float = 0.0):
+    def __init__(
+        self,
+        latency_samples: int,
+        num_input_channels: int = 2,
+        num_output_channels: int = 2,
+        sample_rate: float = 48000.0,
+        tail_seconds: float = 0.0,
+    ):
         self.latency_samples = latency_samples
         self.num_input_channels = num_input_channels
         self.num_output_channels = num_output_channels
@@ -41,8 +46,7 @@ class _FakePlugin:
         # this via its __array__ hook (zero-copy view).
         view = np.asarray(output_buffer)
         n = view.shape[1]
-        idx = np.arange(self._frame_counter, self._frame_counter + n,
-                         dtype=np.float32)
+        idx = np.arange(self._frame_counter, self._frame_counter + n, dtype=np.float32)
         # Broadcast across all channels.
         view[:, :] = idx
         self._frame_counter += n
@@ -50,6 +54,7 @@ class _FakePlugin:
 
 def _make_midi():
     from minihost._core import MidiFile
+
     mf = MidiFile()
     t = mf.add_track()
     mf.add_note_on(t, 0, 0, 60, 100)
@@ -97,10 +102,12 @@ def test_latency_skips_first_n_samples_of_output():
 
 def test_latency_does_not_change_user_visible_total_samples():
     # User-visible total_samples is identical with or without latency.
-    base = MidiRenderer(_FakePlugin(latency_samples=0), _make_midi(),
-                        block_size=128, tail_seconds=0.5)
-    with_lat = MidiRenderer(_FakePlugin(latency_samples=512), _make_midi(),
-                             block_size=128, tail_seconds=0.5)
+    base = MidiRenderer(
+        _FakePlugin(latency_samples=0), _make_midi(), block_size=128, tail_seconds=0.5
+    )
+    with_lat = MidiRenderer(
+        _FakePlugin(latency_samples=512), _make_midi(), block_size=128, tail_seconds=0.5
+    )
     assert base.total_samples == with_lat.total_samples
 
 

@@ -36,8 +36,9 @@ import pytest
 from desktop_helpers import DESKTOP_BIN, skip_if_no_desktop
 
 
-def _run_scan(scan_dir: Path, out_xml: Path, fmt: str = "VST3",
-              out_of_process: bool = False):
+def _run_scan(
+    scan_dir: Path, out_xml: Path, fmt: str = "VST3", out_of_process: bool = False
+):
     argv = [
         str(DESKTOP_BIN),
         f"--scan-plugins={scan_dir}",
@@ -49,8 +50,7 @@ def _run_scan(scan_dir: Path, out_xml: Path, fmt: str = "VST3",
     return subprocess.run(argv, capture_output=True, text=True, timeout=120)
 
 
-def _run_scan_default_path(scan_dir: Path, settings_dir: Path,
-                           fmt: str = "VST3"):
+def _run_scan_default_path(scan_dir: Path, settings_dir: Path, fmt: str = "VST3"):
     """Scan to the library's DEFAULT location, isolated under settings_dir.
 
     No --scan-out: the scan writes to known_plugins.xml next to the settings
@@ -61,7 +61,10 @@ def _run_scan_default_path(scan_dir: Path, settings_dir: Path,
     env = dict(os.environ, MINIHOST_DESKTOP_SETTINGS_DIR=str(settings_dir))
     return subprocess.run(
         [str(DESKTOP_BIN), f"--scan-plugins={scan_dir}", f"--scan-format={fmt}"],
-        capture_output=True, text=True, timeout=120, env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
     )
 
 
@@ -73,8 +76,9 @@ def test_scan_empty_dir_writes_valid_xml(tmp_path):
     out_xml = tmp_path / "known.xml"
 
     res = _run_scan(scan_dir, out_xml)
-    assert res.returncode == 0, \
+    assert res.returncode == 0, (
         f"scan failed:\nstdout:{res.stdout}\nstderr:{res.stderr}"
+    )
     assert out_xml.exists(), "scan did not write the output XML"
     # Well-formed and rooted at the KnownPluginList element JUCE emits.
     root = ET.parse(out_xml).getroot()
@@ -99,14 +103,16 @@ def test_scan_finds_real_plugin(tmp_path):
     out_xml = tmp_path / "known.xml"
 
     res = _run_scan(scan_dir, out_xml)
-    assert res.returncode == 0, \
+    assert res.returncode == 0, (
         f"scan failed:\nstdout:{res.stdout}\nstderr:{res.stderr}"
+    )
     root = ET.parse(out_xml).getroot()
     plugins = root.findall("PLUGIN")
     assert plugins, f"scan recorded no plugins for {src.name}:\n{res.stderr}"
     # The recorded plugin should point back at the copy we scanned.
-    assert any(src.name in (p.get("file") or "") for p in plugins), \
-        [p.get("file") for p in plugins]
+    assert any(src.name in (p.get("file") or "") for p in plugins), [
+        p.get("file") for p in plugins
+    ]
 
 
 @skip_if_no_desktop
@@ -134,14 +140,15 @@ def test_scan_oop_finds_real_plugin(tmp_path):
     out_xml = tmp_path / "known.xml"
 
     res = _run_scan(scan_dir, out_xml, out_of_process=True)
-    assert res.returncode == 0, \
+    assert res.returncode == 0, (
         f"oop scan failed:\nstdout:{res.stdout}\nstderr:{res.stderr}"
+    )
     root = ET.parse(out_xml).getroot()
     plugins = root.findall("PLUGIN")
-    assert plugins, \
-        f"oop scan recorded no plugins for {src.name}:\n{res.stderr}"
-    assert any(src.name in (p.get("file") or "") for p in plugins), \
-        [p.get("file") for p in plugins]
+    assert plugins, f"oop scan recorded no plugins for {src.name}:\n{res.stderr}"
+    assert any(src.name in (p.get("file") or "") for p in plugins), [
+        p.get("file") for p in plugins
+    ]
 
 
 @skip_if_no_desktop
@@ -169,13 +176,14 @@ def test_scan_default_path_survives_shutdown(tmp_path):
     settings_dir.mkdir()
 
     res = _run_scan_default_path(scan_dir, settings_dir)
-    assert res.returncode == 0, \
+    assert res.returncode == 0, (
         f"scan failed:\nstdout:{res.stdout}\nstderr:{res.stderr}"
+    )
 
     library = settings_dir / "known_plugins.xml"
-    assert library.exists(), \
-        f"library not written at default path:\n{res.stderr}"
+    assert library.exists(), f"library not written at default path:\n{res.stderr}"
     plugins = ET.parse(library).getroot().findall("PLUGIN")
     assert plugins, (
         "library was empty after shutdown -- save-on-shutdown clobbered the "
-        f"scanned list:\n{res.stderr}")
+        f"scanned list:\n{res.stderr}"
+    )

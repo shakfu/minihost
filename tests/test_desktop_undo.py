@@ -25,17 +25,26 @@ from desktop_helpers import DESKTOP_BIN, skip_if_no_desktop
 
 
 def _write_project(path):
-    path.write_text(json.dumps({
-        "minihost_project_version": 1,
-        "sample_rate": 48000,
-        "block_size": 512,
-        "nodes": [
-            {"id": "in", "kind": "input", "channels": 2, "source": "in.wav"},
-            {"id": "out", "kind": "output", "channels": 2,
-             "sink": "out.wav", "bit_depth": 24},
-        ],
-        "edges": [{"src": "in", "dst": "out"}],
-    }))
+    path.write_text(
+        json.dumps(
+            {
+                "minihost_project_version": 1,
+                "sample_rate": 48000,
+                "block_size": 512,
+                "nodes": [
+                    {"id": "in", "kind": "input", "channels": 2, "source": "in.wav"},
+                    {
+                        "id": "out",
+                        "kind": "output",
+                        "channels": 2,
+                        "sink": "out.wav",
+                        "bit_depth": 24,
+                    },
+                ],
+                "edges": [{"src": "in", "dst": "out"}],
+            }
+        )
+    )
 
 
 @skip_if_no_desktop
@@ -44,10 +53,13 @@ def test_undo_selftest_passes(tmp_path):
     _write_project(proj)
     res = subprocess.run(
         [str(DESKTOP_BIN), f"--undo-selftest={proj}"],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
-    assert res.returncode == 0, \
+    assert res.returncode == 0, (
         f"undo self-test failed:\nstdout:{res.stdout}\nstderr:{res.stderr}"
+    )
     assert "undo-selftest OK" in res.stderr
 
 
@@ -56,6 +68,8 @@ def test_undo_selftest_empty_value_exits_2(tmp_path):
     """Malformed invocation is a usage error (exit 2)."""
     res = subprocess.run(
         [str(DESKTOP_BIN), "--undo-selftest="],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     assert res.returncode == 2, (res.returncode, res.stderr)

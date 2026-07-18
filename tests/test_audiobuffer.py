@@ -37,7 +37,7 @@ def test_scalar_indexing_round_trip():
     buf = AudioBuffer(2, 256)
     buf[0, 100] = 0.5
     buf[1, 200] = -0.25
-    buf[0, -1] = 0.75   # negative index
+    buf[0, -1] = 0.75  # negative index
     assert buf[0, 100] == 0.5
     assert buf[1, 200] == -0.25
     assert buf[0, 255] == 0.75
@@ -185,6 +185,7 @@ def test_audiobuffer_passes_directly_to_plugin_process():
     without an explicit .as_ndarray() / .array conversion."""
     plugin_path = "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
     import os
+
     if not os.path.exists(plugin_path):
         pytest.skip("test plugin not available")
     plugin = minihost.Plugin(plugin_path, sample_rate=48000, max_block_size=512)
@@ -198,6 +199,7 @@ def test_audiobuffer_passes_directly_to_plugin_process():
 def test_audiobuffer_mixed_with_numpy_in_process():
     plugin_path = "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
     import os
+
     if not os.path.exists(plugin_path):
         pytest.skip("test plugin not available")
     plugin = minihost.Plugin(plugin_path, sample_rate=48000, max_block_size=512)

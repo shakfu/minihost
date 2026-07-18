@@ -15,16 +15,13 @@ implementing the buffer protocol.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from minihost._core import AudioBuffer
 from minihost._core import audio_get_file_info as _get_info
 from minihost._core import audio_read as _read
 from minihost._core import audio_resample as _resample
 from minihost._core import audio_write as _write
-
-if TYPE_CHECKING:
-    import numpy as np
 
 # Extensions supported for reading
 _READ_EXTENSIONS = {".wav", ".flac", ".mp3", ".ogg"}
@@ -88,9 +85,7 @@ def read_audio(
     np = _require_numpy("read_audio(..., as_=numpy.ndarray)")
     if as_ is np.ndarray:
         return data.as_ndarray(), int(sample_rate)
-    raise TypeError(
-        f"as_ must be AudioBuffer or numpy.ndarray, got {as_!r}"
-    )
+    raise TypeError(f"as_ must be AudioBuffer or numpy.ndarray, got {as_!r}")
 
 
 def write_audio(

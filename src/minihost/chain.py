@@ -60,7 +60,10 @@ def _load_spec(path: Path) -> dict[str, Any]:
     text = path.read_text()
     if suffix in (".yaml", ".yml"):
         try:
-            import yaml  # type: ignore[import-not-found]
+            # PyYAML is an optional dependency and ships no type stubs, so
+            # mypy emits import-not-found when it is absent and import-untyped
+            # when it is installed; silence both.
+            import yaml  # type: ignore[import-not-found, import-untyped]
         except ImportError as e:
             raise ImportError(
                 "Loading YAML chain specs requires PyYAML. Install it "
@@ -71,8 +74,7 @@ def _load_spec(path: Path) -> dict[str, Any]:
         data = json.loads(text)
     else:
         raise ValueError(
-            f"Unsupported chain spec extension '{suffix}'. Use .json, "
-            f".yaml, or .yml."
+            f"Unsupported chain spec extension '{suffix}'. Use .json, .yaml, or .yml."
         )
     if not isinstance(data, dict):
         raise ValueError("Chain spec must be a mapping at the top level.")
@@ -94,14 +96,14 @@ def _apply_plugin_entry(plugin: Plugin, entry: dict[str, Any]) -> None:
         n = plugin.num_programs
         if not isinstance(preset, int) or preset < 0 or preset >= n:
             raise ValueError(
-                f"preset {preset!r} out of range (plugin has "
-                f"{n} program(s))."
+                f"preset {preset!r} out of range (plugin has {n} program(s))."
             )
         plugin.program = preset
 
     vstpreset_path = entry.get("vstpreset")
     if vstpreset_path is not None:
         from minihost.vstpreset import load_vstpreset
+
         load_vstpreset(vstpreset_path, plugin)
 
     state_path = entry.get("state")
@@ -112,8 +114,7 @@ def _apply_plugin_entry(plugin: Plugin, entry: dict[str, Any]) -> None:
     params = entry.get("params") or {}
     if not isinstance(params, dict):
         raise ValueError(
-            f"params for '{entry.get('path')}' must be a mapping of "
-            f"name -> value."
+            f"params for '{entry.get('path')}' must be a mapping of name -> value."
         )
     for name, value in params.items():
         plugin.set_param_by_name(str(name), float(value))
@@ -148,14 +149,10 @@ def load_chain(
 
     plugins_spec = spec.get("plugins")
     if not plugins_spec or not isinstance(plugins_spec, list):
-        raise ValueError(
-            "Chain spec must contain a non-empty 'plugins' list."
-        )
+        raise ValueError("Chain spec must contain a non-empty 'plugins' list.")
 
-    sr = int(sample_rate if sample_rate is not None
-             else spec.get("sample_rate", 48000))
-    bs = int(block_size if block_size is not None
-             else spec.get("block_size", 512))
+    sr = int(sample_rate if sample_rate is not None else spec.get("sample_rate", 48000))
+    bs = int(block_size if block_size is not None else spec.get("block_size", 512))
     spec_in = spec.get("in_channels")
     spec_out = spec.get("out_channels")
 
@@ -166,8 +163,9 @@ def load_chain(
             raise ValueError("Each entry in 'plugins' must be a mapping.")
         if not entry.get("path"):
             raise ValueError("Each plugin entry must specify a 'path'.")
-        sources = [k for k in ("preset", "vstpreset", "state")
-                   if entry.get(k) is not None]
+        sources = [
+            k for k in ("preset", "vstpreset", "state") if entry.get(k) is not None
+        ]
         if len(sources) > 1:
             raise ValueError(
                 f"Plugin entry for '{entry.get('path')}' specifies "

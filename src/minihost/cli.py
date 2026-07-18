@@ -732,9 +732,7 @@ def cmd_morph(args: argparse.Namespace) -> int:
             print(f"{'idx':<4} {'name':<28} {'A':>9} {'B':>9} {'blend':>9}")
             for i in range(n):
                 name = plugin.get_param_info(i)["name"]
-                print(
-                    f"{i:<4} {name:<28} {a[i]:>9.4f} {b[i]:>9.4f} {blend[i]:>9.4f}"
-                )
+                print(f"{i:<4} {name:<28} {a[i]:>9.4f} {b[i]:>9.4f} {blend[i]:>9.4f}")
 
         # Apply and optionally persist the morphed snapshot.
         if args.apply or args.save:
@@ -853,6 +851,7 @@ def _load_map_file(path: str, mapper) -> int:
     malformed file or unknown parameter name.
     """
     import json
+
     with open(path) as f:
         try:
             data = json.load(f)
@@ -860,17 +859,14 @@ def _load_map_file(path: str, mapper) -> int:
             raise ValueError(f"--map-file {path!r}: invalid JSON: {e}") from e
 
     if not isinstance(data, dict) or "mappings" not in data:
-        raise ValueError(
-            f"--map-file {path!r}: must contain a 'mappings' array")
+        raise ValueError(f"--map-file {path!r}: must contain a 'mappings' array")
     mappings = data["mappings"]
     if not isinstance(mappings, list):
-        raise ValueError(
-            f"--map-file {path!r}: 'mappings' must be a list")
+        raise ValueError(f"--map-file {path!r}: 'mappings' must be a list")
 
     for i, entry in enumerate(mappings):
         if not isinstance(entry, dict):
-            raise ValueError(
-                f"--map-file {path!r}: mappings[{i}] must be an object")
+            raise ValueError(f"--map-file {path!r}: mappings[{i}] must be an object")
         try:
             channel = entry["channel"]
             cc = entry["cc"]
@@ -890,8 +886,13 @@ def _load_map_file(path: str, mapper) -> int:
         curve = entry.get("curve", "linear")
 
         # Delegates the channel/cc/curve/param-existence validation to map_cc.
-        mapper.map_cc(channel=int(channel), cc=int(cc), param=str(param),
-                      value_range=value_range, curve=str(curve))
+        mapper.map_cc(
+            channel=int(channel),
+            cc=int(cc),
+            param=str(param),
+            value_range=value_range,
+            curve=str(curve),
+        )
 
     return len(mappings)
 
@@ -913,9 +914,7 @@ def _parse_map_spec(spec: str) -> tuple[int, int, str, tuple[float, float], str]
         channel = int(parts[0])
         cc = int(parts[1])
     except ValueError as e:
-        raise ValueError(
-            f"--map: channel and cc must be integers, got {spec!r}"
-        ) from e
+        raise ValueError(f"--map: channel and cc must be integers, got {spec!r}") from e
 
     param = parts[2]
     if not param:
@@ -926,9 +925,7 @@ def _parse_map_spec(spec: str) -> tuple[int, int, str, tuple[float, float], str]
             lo = float(parts[3])
             hi = float(parts[4])
         except ValueError as e:
-            raise ValueError(
-                f"--map: lo and hi must be numbers, got {spec!r}"
-            ) from e
+            raise ValueError(f"--map: lo and hi must be numbers, got {spec!r}") from e
         value_range = (lo, hi)
     else:
         value_range = (0.0, 1.0)
@@ -945,9 +942,13 @@ def _collect_play_midi_events(midi_file_path: str, sample_rate: float):
     the offline renderer.
     """
     from minihost.render import (
-        _build_tempo_map, _collect_midi_events, _event_to_midi_tuple,
-        _seconds_to_samples, _tick_to_seconds,
+        _build_tempo_map,
+        _collect_midi_events,
+        _event_to_midi_tuple,
+        _seconds_to_samples,
+        _tick_to_seconds,
     )
+
     mf = minihost.MidiFile()
     if not mf.load(midi_file_path):
         raise RuntimeError(f"Failed to load MIDI file: {midi_file_path}")
@@ -1067,7 +1068,8 @@ def cmd_play(args: argparse.Namespace) -> int:
     if loop_audio_path and capture:
         print(
             "Error: --loop-audio and --input both write to the input "
-            "ring buffer. Use one or the other.", file=sys.stderr,
+            "ring buffer. Use one or the other.",
+            file=sys.stderr,
         )
         return 1
 
@@ -1131,8 +1133,11 @@ def cmd_play(args: argparse.Namespace) -> int:
             for spec in map_specs:
                 channel, cc, param, value_range, curve = _parse_map_spec(spec)
                 midi_mapper.map_cc(
-                    channel=channel, cc=cc, param=param,
-                    value_range=value_range, curve=curve,
+                    channel=channel,
+                    cc=cc,
+                    param=param,
+                    value_range=value_range,
+                    curve=curve,
                 )
         except (ValueError, RuntimeError) as e:
             # ValueError from _parse_map_spec; RuntimeError from
@@ -1158,7 +1163,8 @@ def cmd_play(args: argparse.Namespace) -> int:
     elif midi_mapper is not None and not args.virtual_midi:
         print(
             "Error: --map requires --midi N or --virtual-midi NAME so the "
-            "mapper has an input source.", file=sys.stderr,
+            "mapper has an input source.",
+            file=sys.stderr,
         )
         return 1
 
@@ -1228,6 +1234,7 @@ def cmd_play(args: argparse.Namespace) -> int:
     # SysEx and longer messages aren't forwarded (send_midi takes 3 bytes).
     midi_in_handle = None
     if midi_mapper is not None:
+
         def _forward_unmapped(data: bytes) -> None:
             n = len(data)
             if n >= 3:
@@ -1251,8 +1258,7 @@ def cmd_play(args: argparse.Namespace) -> int:
                     args.virtual_midi, midi_mapper
                 )
             except RuntimeError as e:
-                print(f"Error creating virtual MIDI input: {e}",
-                      file=sys.stderr)
+                print(f"Error creating virtual MIDI input: {e}", file=sys.stderr)
                 return 1
 
     # Setup signal handler
@@ -1290,7 +1296,8 @@ def cmd_play(args: argparse.Namespace) -> int:
         t = threading.Thread(
             target=_midi_loop_thread,
             args=(audio, loop_midi_path, audio.sample_rate, loop_stop),
-            name="minihost-loop-midi", daemon=True,
+            name="minihost-loop-midi",
+            daemon=True,
         )
         t.start()
         loop_threads.append(t)
@@ -1298,7 +1305,8 @@ def cmd_play(args: argparse.Namespace) -> int:
         t = threading.Thread(
             target=_audio_loop_thread,
             args=(audio, loop_audio_path, audio.sample_rate, loop_stop),
-            name="minihost-loop-audio", daemon=True,
+            name="minihost-loop-audio",
+            daemon=True,
         )
         t.start()
         loop_threads.append(t)
@@ -1419,9 +1427,11 @@ def _process_single_file(
             print(f"Error reading '{input_path}': {e}", file=sys.stderr)
             return 1
 
-        if (expected_sample_rate is not None
-                and info["sample_rate"] != expected_sample_rate
-                and not allow_resample):
+        if (
+            expected_sample_rate is not None
+            and info["sample_rate"] != expected_sample_rate
+            and not allow_resample
+        ):
             print(
                 f"Error: Sample rate mismatch in '{input_path}': "
                 f"{info['sample_rate']} Hz (expected {expected_sample_rate} Hz)",
@@ -1429,8 +1439,7 @@ def _process_single_file(
             )
             return 1
 
-        if (expected_channels is not None
-                and info["channels"] != expected_channels):
+        if expected_channels is not None and info["channels"] != expected_channels:
             print(
                 f"Error: Channel count mismatch in '{input_path}': "
                 f"{info['channels']} ch (expected {expected_channels} ch)",
@@ -1448,7 +1457,7 @@ def _process_single_file(
             plugin,
             input_path,
             output_path,
-            tail_seconds=0.0,           # batch worker doesn't render tail
+            tail_seconds=0.0,  # batch worker doesn't render tail
             block_size=args.block_size,
             bit_depth=bit_depth,
             resample_to_plugin_rate=allow_resample,
@@ -1462,8 +1471,9 @@ def _process_single_file(
         # process_audio_to_file raises on read errors, write errors, and
         # rate-mismatch when resample_to_plugin_rate=False. Map all to
         # the int return contract.
-        print(f"Error processing '{input_path}' -> '{output_path}': {e}",
-              file=sys.stderr)
+        print(
+            f"Error processing '{input_path}' -> '{output_path}': {e}", file=sys.stderr
+        )
         return 1
 
     return 0
@@ -1663,8 +1673,7 @@ def cmd_process(args: argparse.Namespace) -> int:
             ("--bpm", args.bpm),
             ("--non-realtime", args.non_realtime),
         ]
-        rejected = [name for name, val in conflicting
-                    if val not in (None, [], False)]
+        rejected = [name for name, val in conflicting if val not in (None, [], False)]
         if rejected:
             print(
                 f"Error: {', '.join(rejected)} cannot be combined with "
@@ -1744,13 +1753,19 @@ def cmd_process(args: argparse.Namespace) -> int:
             try:
                 sc_info = get_audio_info(sidechain_path)
             except Exception as e:
-                print(f"Error reading sidechain '{sidechain_path}': {e}",
-                      file=sys.stderr)
+                print(
+                    f"Error reading sidechain '{sidechain_path}': {e}", file=sys.stderr
+                )
                 return 1
             sidechain_ch = int(sc_info["channels"])
 
     # --- Load plugin (or chain) ---
+    # `plugin` is a PluginChain when --chain is given, else a Plugin. The
+    # Plugin-only config below (state / preset / non_realtime / automation)
+    # narrows back to Plugin via isinstance, which is exactly `not using_chain`.
+    plugin: minihost.Plugin | minihost.PluginChain
     if using_chain:
+        assert chain_spec is not None  # using_chain == (chain_spec is not None)
         if sidechain_path is not None:
             print(
                 "Error: sidechain input is not supported with --chain "
@@ -1786,7 +1801,7 @@ def cmd_process(args: argparse.Namespace) -> int:
     )
 
     # --- Load state / preset ---
-    if not using_chain and args.state:
+    if isinstance(plugin, minihost.Plugin) and args.state:
         try:
             with open(args.state, "rb") as f:
                 plugin.set_state(f.read())
@@ -1802,7 +1817,7 @@ def cmd_process(args: argparse.Namespace) -> int:
             print(f"Error loading .vstpreset: {e}", file=sys.stderr)
             return 1
 
-    if not using_chain and args.preset is not None:
+    if isinstance(plugin, minihost.Plugin) and args.preset is not None:
         if args.preset < 0 or args.preset >= plugin.num_programs:
             print(
                 f"Error: Preset {args.preset} out of range (0-{plugin.num_programs - 1})",
@@ -1812,7 +1827,7 @@ def cmd_process(args: argparse.Namespace) -> int:
         plugin.program = args.preset
         print(f"Loaded preset [{args.preset}]: {plugin.get_program_name(args.preset)}")
 
-    if not using_chain and args.non_realtime:
+    if isinstance(plugin, minihost.Plugin) and args.non_realtime:
         plugin.non_realtime = True
 
     # --- Resolve param_changes (CLI + automation file -> 3-tuples) ---
@@ -1834,7 +1849,7 @@ def cmd_process(args: argparse.Namespace) -> int:
         return 1
 
     param_changes: list[tuple[int, int, float]] = []
-    if not using_chain and args.param_file:
+    if isinstance(plugin, minihost.Plugin) and args.param_file:
         try:
             param_changes = parse_automation_file(
                 args.param_file,
@@ -1848,7 +1863,7 @@ def cmd_process(args: argparse.Namespace) -> int:
             return 1
 
     param_overrides: dict[int, float] = {}
-    if not using_chain and args.param:
+    if isinstance(plugin, minihost.Plugin) and args.param:
         for param_str in args.param:
             try:
                 param_idx, value = parse_param_arg(param_str, plugin)
@@ -1871,8 +1886,9 @@ def cmd_process(args: argparse.Namespace) -> int:
                 f"{len(file_overridden)} parameter(s)",
                 file=sys.stderr,
             )
-            param_changes = [(s, i, v) for (s, i, v) in param_changes
-                             if i not in overridden]
+            param_changes = [
+                (s, i, v) for (s, i, v) in param_changes if i not in overridden
+            ]
         for param_idx, value in param_overrides.items():
             param_changes.append((0, param_idx, value))
         param_changes.sort(key=lambda x: x[0])
@@ -1937,14 +1953,20 @@ def cmd_render(args: argparse.Namespace) -> int:
 
     progress = None
     if args.progress:
+
         def progress(done: int, total: int) -> None:
             pct = 100.0 * done / max(1, total)
-            print(f"\r  {done}/{total} frames ({pct:5.1f}%)",
-                  end="", file=sys.stderr, flush=True)
+            print(
+                f"\r  {done}/{total} frames ({pct:5.1f}%)",
+                end="",
+                file=sys.stderr,
+                flush=True,
+            )
 
     try:
         result = minihost.render_project(
-            project_path, progress_callback=progress,
+            project_path,
+            progress_callback=progress,
         )
     except minihost.ProjectError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -2375,9 +2397,9 @@ Examples:
         metavar="SPEC",
         default=None,
         help="Load a declarative plugin chain from a JSON or YAML spec "
-             "file (see minihost.load_chain). When set, --state / "
-             "--vstpreset / --preset / --param / --param-file are not "
-             "permitted -- the spec is the source of truth.",
+        "file (see minihost.load_chain). When set, --state / "
+        "--vstpreset / --preset / --param / --param-file are not "
+        "permitted -- the spec is the source of truth.",
     )
     process_p.add_argument(
         "-o",
@@ -2470,8 +2492,8 @@ Examples:
         const=0.0,
         metavar="dBFS",
         help="Peak-normalize the output to the given dBFS target "
-             "(0 dBFS = full scale; -1.0 = 1 dB headroom). With no "
-             "argument, defaults to 0 dBFS.",
+        "(0 dBFS = full scale; -1.0 = 1 dB headroom). With no "
+        "argument, defaults to 0 dBFS.",
     )
     process_p.set_defaults(func=cmd_process)
 
@@ -2511,7 +2533,8 @@ Examples:
     )
     render_p.add_argument("project", help="Path to project.json")
     render_p.add_argument(
-        "--progress", action="store_true",
+        "--progress",
+        action="store_true",
         help="Print render progress to stderr.",
     )
     render_p.set_defaults(func=cmd_render)

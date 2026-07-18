@@ -68,9 +68,9 @@ def test_map_cc_value_range_translation():
     # Pan ranges over [-1, 1].
     mapper.map_cc(channel=0, cc=10, param="Pan", value_range=(-1.0, 1.0))
 
-    mapper(_cc(0, 10, 0))      # min
-    mapper(_cc(0, 10, 127))    # max
-    mapper(_cc(0, 10, 64))     # ~middle
+    mapper(_cc(0, 10, 0))  # min
+    mapper(_cc(0, 10, 127))  # max
+    mapper(_cc(0, 10, 64))  # ~middle
 
     args = [c.args for c in plugin.set_param.call_args_list]
     assert args[0] == (1, -1.0)
@@ -85,8 +85,8 @@ def test_map_cc_curves():
     mapper.map_cc(channel=0, cc=1, param="Cutoff", curve="exp")
     mapper.map_cc(channel=0, cc=2, param="Resonance", curve="log")
 
-    mapper(_cc(0, 1, 64))   # exp curve, mid input
-    mapper(_cc(0, 2, 64))   # log curve, mid input
+    mapper(_cc(0, 1, 64))  # exp curve, mid input
+    mapper(_cc(0, 2, 64))  # log curve, mid input
 
     # exp: n^2; midpoint ~0.504 -> ~0.254
     # log: 1 - (1-n)^2; midpoint ~0.504 -> ~0.754
@@ -177,7 +177,7 @@ def test_map_note_channel_filter():
     mapper.map_note(channel=0, note=36, callback=lambda v: received.append(v))
 
     mapper(_note_on(channel=2, note=36, velocity=80))
-    assert received == []   # wrong channel
+    assert received == []  # wrong channel
 
     mapper(_note_on(channel=0, note=36, velocity=80))
     assert received == [80]
@@ -208,8 +208,8 @@ def test_mapped_events_do_not_reach_fallback():
     mapper = MidiMapper(plugin, on_unmapped=lambda data: seen.append(bytes(data)))
     mapper.map_cc(channel=0, cc=7, param="Volume")
 
-    mapper(_cc(0, 7, 50))      # mapped, no fallback
-    mapper(_cc(0, 99, 50))     # unmapped, fallback
+    mapper(_cc(0, 7, 50))  # mapped, no fallback
+    mapper(_cc(0, 99, 50))  # unmapped, fallback
     assert len(seen) == 1
     assert seen[0] == _cc(0, 99, 50)
 
@@ -219,8 +219,8 @@ def test_no_fallback_means_silent_drop():
     mapper = MidiMapper(plugin)  # no on_unmapped
     # Should not raise.
     mapper(_cc(0, 99, 50))
-    mapper(b"")              # empty
-    mapper(b"\xf0\x7e")      # short / sysex header
+    mapper(b"")  # empty
+    mapper(b"\xf0\x7e")  # short / sysex header
 
 
 # -- introspection ----------------------------------------------------

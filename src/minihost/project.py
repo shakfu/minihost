@@ -84,18 +84,22 @@ def _np():
     code path that needs it; importing at module load breaks the
     numpy-optional invariant exercised by tests/test_numpy_optional.py."""
     import numpy as np
+
     return np
+
 
 SCHEMA_VERSION = 1
 
 
 # -- exceptions -------------------------------------------------------- #
 
+
 class ProjectError(ValueError):
     """Schema or referenced-file errors while loading a project."""
 
 
 # -- data classes used internally ------------------------------------- #
+
 
 @dataclass
 class _InputNode:
@@ -146,9 +150,7 @@ class _MidiInputNode:
     source: Path | None = None
     # Absolute (sample_offset, status, data1, data2) events, loaded from
     # `source` at the project sample rate.
-    events: list[tuple[int, int, int, int]] = field(
-        default_factory=list, repr=False
-    )
+    events: list[tuple[int, int, int, int]] = field(default_factory=list, repr=False)
     node_id: int = -1
 
 
@@ -160,9 +162,7 @@ class _MidiOutputNode:
     # loads and renders without error.
     sink: Path | None = None
     # Absolute events captured across the render, written to `sink`.
-    captured: list[tuple[int, int, int, int]] = field(
-        default_factory=list, repr=False
-    )
+    captured: list[tuple[int, int, int, int]] = field(default_factory=list, repr=False)
     node_id: int = -1
 
 
@@ -185,6 +185,7 @@ class LoadedProject:
     """Result of `load_project`. Holds the built (compiled) PluginGraph,
     references to the Plugin objects (so the caller can keep them
     alive), and the per-output sink metadata needed for render."""
+
     graph: minihost.PluginGraph
     sample_rate: int
     block_size: int
@@ -204,6 +205,7 @@ class LoadedProject:
 
 # -- loader ----------------------------------------------------------- #
 
+
 def load_project(project_path: str | Path) -> LoadedProject:
     """Load a project file and build a compiled `PluginGraph` from it.
 
@@ -219,8 +221,8 @@ def load_project(project_path: str | Path) -> LoadedProject:
         raise FileNotFoundError(project_path)
     try:
         doc = json.loads(project_path.read_text())
-    except json.JSONDecodeError as e:
-        raise ProjectError(f"invalid JSON: {e}") from e
+    except json.JSONDecodeError as exc:
+        raise ProjectError(f"invalid JSON: {exc}") from exc
 
     _require_field(doc, "minihost_project_version", int)
     if doc["minihost_project_version"] != SCHEMA_VERSION:
@@ -230,71 +232,69 @@ def load_project(project_path: str | Path) -> LoadedProject:
             f"version {SCHEMA_VERSION}"
         )
 
-    sr     = _require_field(doc, "sample_rate", (int, float))
-    block  = _require_field(doc, "block_size",  int)
+    sr = _require_field(doc, "sample_rate", (int, float))
+    block = _require_field(doc, "block_size", int)
     nodes_raw = _require_field(doc, "nodes", list)
     edges_raw = _require_field(doc, "edges", list)
     duration_seconds = doc.get("duration_seconds")
-    if duration_seconds is not None and not isinstance(
-        duration_seconds, (int, float)
-    ):
+    if duration_seconds is not None and not isinstance(duration_seconds, (int, float)):
         raise ProjectError("duration_seconds must be a number")
 
     project_dir = project_path.parent
 
     # First pass: parse nodes by kind.
-    inputs: list[_InputNode]  = []
+    inputs: list[_InputNode] = []
     outputs: list[_OutputNode] = []
     plugins: list[_PluginNode] = []
-    mixes: list[_MixNode]      = []
+    mixes: list[_MixNode] = []
     midi_inputs: list[_MidiInputNode] = []
     midi_outputs: list[_MidiOutputNode] = []
     midi_procs: list[_MidiProcessorNode] = []
     midi_merges: list[_MidiMergeNode] = []
-    node_by_id: dict[str, tuple[str, Any]] = {}    # id -> (kind, dataclass)
+    node_by_id: dict[str, tuple[str, Any]] = {}  # id -> (kind, dataclass)
 
     for raw in nodes_raw:
-        nid  = _require_field(raw, "id", str)
+        nid = _require_field(raw, "id", str)
         kind = _require_field(raw, "kind", str)
         if nid in node_by_id:
             raise ProjectError(f"duplicate node id {nid!r}")
         if kind == "input":
-            n = _InputNode(
+            in_node = _InputNode(
                 id=nid,
                 channels=_require_field(raw, "channels", int),
                 source=(project_dir / _require_field(raw, "source", str)).resolve(),
                 resample=bool(raw.get("resample", False)),
             )
-            inputs.append(n)
-            node_by_id[nid] = ("input", n)
+            inputs.append(in_node)
+            node_by_id[nid] = ("input", in_node)
         elif kind == "output":
-            n = _OutputNode(
+            out_node = _OutputNode(
                 id=nid,
                 channels=_require_field(raw, "channels", int),
                 sink=(project_dir / _require_field(raw, "sink", str)).resolve(),
                 bit_depth=int(raw.get("bit_depth", 24)),
             )
-            outputs.append(n)
-            node_by_id[nid] = ("output", n)
+            outputs.append(out_node)
+            node_by_id[nid] = ("output", out_node)
         elif kind == "plugin":
             descriptor = raw.get("descriptor")
             if descriptor:
                 # Descriptor-based (AudioUnit): path is optional.
                 path_val = raw.get("path")
-                n = _PluginNode(
+                pl_node = _PluginNode(
                     id=nid,
                     path=Path(path_val) if path_val else None,
                     state_b64=raw.get("state_b64"),
                     descriptor=descriptor,
                 )
             else:
-                n = _PluginNode(
+                pl_node = _PluginNode(
                     id=nid,
                     path=Path(_require_field(raw, "path", str)),
                     state_b64=raw.get("state_b64"),
                 )
-            plugins.append(n)
-            node_by_id[nid] = ("plugin", n)
+            plugins.append(pl_node)
+            node_by_id[nid] = ("plugin", pl_node)
         elif kind == "mix":
             num_inputs = _require_field(raw, "num_inputs", int)
             mn = _MixNode(
@@ -413,54 +413,52 @@ def load_project(project_path: str | Path) -> LoadedProject:
             raise ProjectError(f"midi_input source not found: {mi.source}")
         try:
             mi.events = midi_file_to_events(str(mi.source), float(sr))
-        except Exception as e:
+        except Exception as exc:
             raise ProjectError(
-                f"midi_input {mi.id!r}: failed to read {mi.source}: {e}"
-            ) from e
+                f"midi_input {mi.id!r}: failed to read {mi.source}: {exc}"
+            ) from exc
 
     # Open plugin instances. Descriptor-based nodes (AudioUnits, which have
     # no file path) open via Plugin.from_descriptor; path-based nodes open by
     # path.
-    for n in plugins:
+    for pl in plugins:
         try:
-            if n.descriptor:
-                pd_xml = base64.b64decode(n.descriptor).decode("utf-8")
-                n.plugin = minihost.Plugin.from_descriptor(
+            if pl.descriptor:
+                pd_xml = base64.b64decode(pl.descriptor).decode("utf-8")
+                pl.plugin = minihost.Plugin.from_descriptor(
                     pd_xml,
                     sample_rate=int(sr),
                     max_block_size=block,
                 )
             else:
-                if n.path is None or not n.path.exists():
-                    raise ProjectError(f"plugin path not found: {n.path}")
-                n.plugin = minihost.Plugin(
-                    str(n.path),
+                if pl.path is None or not pl.path.exists():
+                    raise ProjectError(f"plugin path not found: {pl.path}")
+                pl.plugin = minihost.Plugin(
+                    str(pl.path),
                     sample_rate=int(sr),
                     max_block_size=block,
                 )
         except ProjectError:
             raise
-        except Exception as e:
-            raise ProjectError(
-                f"plugin {n.id!r} failed to open: {e}"
-            ) from e
-        if n.state_b64:
-            n.plugin.set_state(base64.b64decode(n.state_b64))
+        except Exception as exc:
+            raise ProjectError(f"plugin {pl.id!r} failed to open: {exc}") from exc
+        if pl.state_b64:
+            pl.plugin.set_state(base64.b64decode(pl.state_b64))
 
     # Build the graph.
     g = minihost.PluginGraph(block, float(sr))
     id_to_nodeid: dict[str, int] = {}
-    for n in inputs:
-        id_to_nodeid[n.id] = g.add_input(n.channels)
-    for n in plugins:
-        id_to_nodeid[n.id] = g.add_plugin(n.plugin)  # type: ignore[arg-type]
-    for n in mixes:
-        nid = g.add_mix(n.num_inputs, n.channels)
-        for i, gv in enumerate(n.gains):
+    for inp in inputs:
+        id_to_nodeid[inp.id] = g.add_input(inp.channels)
+    for pl in plugins:
+        id_to_nodeid[pl.id] = g.add_plugin(pl.plugin)  # type: ignore[arg-type]
+    for mx in mixes:
+        nid = g.add_mix(mx.num_inputs, mx.channels)
+        for i, gv in enumerate(mx.gains):
             g.set_mix_gain(nid, i, float(gv))
-        id_to_nodeid[n.id] = nid
-    for n in outputs:
-        id_to_nodeid[n.id] = g.add_output(n.channels)
+        id_to_nodeid[mx.id] = nid
+    for out in outputs:
+        id_to_nodeid[out.id] = g.add_output(out.channels)
     for mi in midi_inputs:
         mi.node_id = g.add_midi_input()
         id_to_nodeid[mi.id] = mi.node_id
@@ -489,15 +487,11 @@ def load_project(project_path: str | Path) -> LoadedProject:
             g.connect(id_to_nodeid[src], id_to_nodeid[dst], dst_port=dst_port)
         elif ekind == "midi":
             if dst in midi_merge_ids:
-                g.connect_midi_port(
-                    id_to_nodeid[src], id_to_nodeid[dst], dst_port
-                )
+                g.connect_midi_port(id_to_nodeid[src], id_to_nodeid[dst], dst_port)
             else:
                 g.connect_midi(id_to_nodeid[src], id_to_nodeid[dst])
         else:
-            raise ProjectError(
-                f"edge kind must be \"audio\" or \"midi\", got {ekind!r}"
-            )
+            raise ProjectError(f'edge kind must be "audio" or "midi", got {ekind!r}')
 
     g.compile()
 
@@ -532,6 +526,7 @@ def load_project(project_path: str | Path) -> LoadedProject:
 
 
 # -- save (for symmetry; useful for round-trip tests + the desktop) ---- #
+
 
 def save_project(
     project_path: str | Path,
@@ -575,9 +570,9 @@ def save_project(
         doc["nodes"].append({"kind": "input", **n})
     for n in plugin_nodes:
         doc["nodes"].append({"kind": "plugin", **n})
-    for n in (mix_nodes or []):
+    for n in mix_nodes or []:
         doc["nodes"].append({"kind": "mix", **n})
-    for n in (midi_nodes or []):
+    for n in midi_nodes or []:
         if "kind" not in n:
             raise ProjectError("each midi_nodes entry must include a 'kind'")
         doc["nodes"].append(dict(n))
@@ -586,8 +581,7 @@ def save_project(
 
     if layout is not None:
         doc["layout"] = {
-            nid: {"x": float(x), "y": float(y)}
-            for nid, (x, y) in layout.items()
+            nid: {"x": float(x), "y": float(y)} for nid, (x, y) in layout.items()
         }
 
     project_path = Path(project_path)
@@ -597,6 +591,7 @@ def save_project(
 
 
 # -- renderer -------------------------------------------------------- #
+
 
 def render_project(
     project_path: str | Path,
@@ -616,7 +611,7 @@ def _render_loaded(p: LoadedProject, *, progress_callback=None) -> None:
     frames_total = p.duration_frames
 
     # Pre-allocate scratch buffers (one per input/output node).
-    in_bufs:  list = []
+    in_bufs: list = []
     for n in p.inputs:
         in_bufs.append(np.zeros((n.channels, block), dtype=np.float32))
     out_scratch: list = [
@@ -627,8 +622,7 @@ def _render_loaded(p: LoadedProject, *, progress_callback=None) -> None:
     # an optimisation for later (mh_audio_write doesn't currently
     # expose a streaming API at the Python layer).
     out_accum: list = [
-        np.zeros((n.channels, frames_total), dtype=np.float32)
-        for n in p.outputs
+        np.zeros((n.channels, frames_total), dtype=np.float32) for n in p.outputs
     ]
 
     # Per-input cursors into each MIDI source's (sorted) event list, so
@@ -642,7 +636,7 @@ def _render_loaded(p: LoadedProject, *, progress_callback=None) -> None:
         for buf, node in zip(in_bufs, p.inputs):
             avail = max(0, min(n_frames, node.audio.shape[1] - frame))
             if avail > 0:
-                buf[:, :avail] = node.audio[:, frame:frame + avail]
+                buf[:, :avail] = node.audio[:, frame : frame + avail]
             if avail < n_frames:
                 buf[:, avail:n_frames] = 0.0
         # Stage MIDI inputs: events in [frame, frame + n_frames), rebased
@@ -662,7 +656,7 @@ def _render_loaded(p: LoadedProject, *, progress_callback=None) -> None:
         p.graph.render_block(in_bufs, out_scratch, n_frames)
         # Capture audio outputs.
         for accum, scratch in zip(out_accum, out_scratch):
-            accum[:, frame:frame + n_frames] = scratch[:, :n_frames]
+            accum[:, frame : frame + n_frames] = scratch[:, :n_frames]
         # Drain MIDI outputs, restoring absolute sample offsets.
         for mo in p.midi_outputs:
             for off, status, d1, d2 in p.graph.get_midi_output_events(mo.node_id):
@@ -672,10 +666,10 @@ def _render_loaded(p: LoadedProject, *, progress_callback=None) -> None:
             progress_callback(frame, frames_total)
 
     # Write audio sinks.
-    for node, accum in zip(p.outputs, out_accum):
-        node.sink.parent.mkdir(parents=True, exist_ok=True)
+    for out_node, accum in zip(p.outputs, out_accum):
+        out_node.sink.parent.mkdir(parents=True, exist_ok=True)
         audio_io.write_audio(
-            str(node.sink), accum, p.sample_rate, bit_depth=node.bit_depth
+            str(out_node.sink), accum, p.sample_rate, bit_depth=out_node.bit_depth
         )
 
     # Write MIDI sinks (nodes without a sink drain and discard).

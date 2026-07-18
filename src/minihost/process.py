@@ -35,13 +35,14 @@ from minihost.audio_io import read_audio, resample, write_audio
 
 if TYPE_CHECKING:
     import numpy as np
+
     PluginOrChain = Union[Plugin, PluginChain]
 
 ProgressCallback = Callable[[int, int], None]
 
 MidiEvent = tuple[int, int, int, int]
-ParamChangePlugin = tuple[int, int, float]            # (sample, param_idx, value)
-ParamChangeChain = tuple[int, int, int, float]        # (sample, plugin_idx, param_idx, value)
+ParamChangePlugin = tuple[int, int, float]  # (sample, param_idx, value)
+ParamChangeChain = tuple[int, int, int, float]  # (sample, plugin_idx, param_idx, value)
 MidiInput = Union[str, Path, MidiFile, Sequence[MidiEvent]]
 
 
@@ -85,7 +86,8 @@ def _to_audiobuffer(audio: Any, in_ch_required: int) -> AudioBuffer:
 
 
 def _load_midi_events(
-    midi: MidiInput, sample_rate: float,
+    midi: MidiInput,
+    sample_rate: float,
 ) -> tuple[list[MidiEvent], int]:
     """Resolve ``midi`` (file path, MidiFile, or list of events) into a
     sorted ``(events_by_sample, max_sample)`` pair.
@@ -93,7 +95,9 @@ def _load_midi_events(
     Event tuples are ``(sample_offset, status, data1, data2)``.
     """
     # Already-resolved event list -- pass through after sort.
-    if isinstance(midi, (list, tuple)) and (not midi or not isinstance(midi[0], (MidiFile, str, Path))):
+    if isinstance(midi, (list, tuple)) and (
+        not midi or not isinstance(midi[0], (MidiFile, str, Path))
+    ):
         events = list(midi)
         for ev in events:
             if not (isinstance(ev, tuple) and len(ev) == 4):
@@ -145,8 +149,12 @@ def _load_midi_events(
 
 
 def _slice_block_events(
-    events: Sequence[tuple], idx: int, start: int, end: int,
-    *, drop_leading: int = 0,
+    events: Sequence[tuple],
+    idx: int,
+    start: int,
+    end: int,
+    *,
+    drop_leading: int = 0,
 ) -> tuple[list[tuple], int]:
     """Collect ``events`` whose absolute sample position lies in ``[start, end)``.
 
@@ -173,6 +181,7 @@ class _RenderContext:
     """Internal state shared between ``process_audio`` and
     ``process_audio_stream``. Produced by :func:`_prepare_render`.
     """
+
     plugin_or_chain: "PluginOrChain"
     block: int
     in_ch_required: int
@@ -230,17 +239,16 @@ def _prepare_render(
     if midi is not None:
         midi_events, midi_max_sample = _load_midi_events(midi, sample_rate)
 
+    src: AudioBuffer | None = None
+    src_frames = 0
     if audio is not None:
-        src: AudioBuffer | None = _to_audiobuffer(audio, in_ch_required)
+        src = _to_audiobuffer(audio, in_ch_required)
         src_frames = src.frames
-    else:
-        if midi is None and tail_seconds <= 0.0:
-            raise ValueError(
-                "process_audio requires either audio input, MIDI events, "
-                "or a positive tail_seconds for synth-mode rendering."
-            )
-        src = None
-        src_frames = 0
+    elif midi is None and tail_seconds <= 0.0:
+        raise ValueError(
+            "process_audio requires either audio input, MIDI events, "
+            "or a positive tail_seconds for synth-mode rendering."
+        )
 
     sc_buf: AudioBuffer | None = None
     if sidechain is not None:
@@ -257,7 +265,8 @@ def _prepare_render(
 
     if bpm is not None:
         cast(Plugin, plugin_or_chain).set_transport(
-            bpm=float(bpm), is_playing=True,
+            bpm=float(bpm),
+            is_playing=True,
         )
 
     return _RenderContext(
@@ -338,22 +347,24 @@ def _iter_blocks(
 
         in_block.clear()
         if src is not None and start < src_frames:
-            copy = min(n, src_frames - start)
-            in_block[:work_in, :copy] = src[:work_in, start:start + copy]
+            ncopy = min(n, src_frames - start)
+            in_block[:work_in, :ncopy] = src[:work_in, start : start + ncopy]
 
         if sc_block is not None and sc_buf is not None:
             sc_block.clear()
             if start < sc_buf.frames:
-                copy = min(n, sc_buf.frames - start)
-                sc_block[:work_in, :copy] = sc_buf[:work_in, start:start + copy]
+                ncopy = min(n, sc_buf.frames - start)
+                sc_block[:work_in, :ncopy] = sc_buf[:work_in, start : start + ncopy]
 
         block_midi, midi_idx = (
             _slice_block_events(midi_events, midi_idx, start, start + n)
-            if has_midi else ([], midi_idx)
+            if has_midi
+            else ([], midi_idx)
         )
         block_auto, auto_idx = (
             _slice_block_events(auto_list, auto_idx, start, start + n)
-            if has_auto else ([], auto_idx)
+            if has_auto
+            else ([], auto_idx)
         )
 
         if n == block:
@@ -379,6 +390,9 @@ def _iter_blocks(
                         "Sidechain processing requires per-plugin "
                         "param_changes; got chain-shaped 4-tuples."
                     )
+            # has_sidechain implies a sidechain buffer was provided, so the
+            # per-block psc is always a real buffer here (never None).
+            assert psc is not None
             cast(Plugin, plugin_or_chain).process_sidechain(pin, pout, psc)
         elif has_auto:
             plugin_or_chain.process_auto(pin, pout, block_midi, block_auto)
@@ -488,11 +502,15 @@ def process_audio(
         ``audio``.
     """
     ctx = _prepare_render(
-        plugin_or_chain, audio,
-        tail_seconds=tail_seconds, block_size=block_size,
+        plugin_or_chain,
+        audio,
+        tail_seconds=tail_seconds,
+        block_size=block_size,
         compensate_latency=compensate_latency,
-        midi=midi, sidechain=sidechain,
-        param_changes=param_changes, bpm=bpm,
+        midi=midi,
+        sidechain=sidechain,
+        param_changes=param_changes,
+        bpm=bpm,
     )
 
     if in_place:
@@ -521,7 +539,7 @@ def process_audio(
     # pre-allocated output, so the reused internal buffer is safe.
     for block in _iter_blocks(ctx, progress_callback=progress_callback, copy=False):
         n = block.frames
-        output[:, written:written + n] = block
+        output[:, written : written + n] = block
         written += n
 
     if normalize is not None:
@@ -583,11 +601,15 @@ def process_audio_stream(
     from minihost.render import _coerce_block
 
     ctx = _prepare_render(
-        plugin_or_chain, audio,
-        tail_seconds=tail_seconds, block_size=block_size,
+        plugin_or_chain,
+        audio,
+        tail_seconds=tail_seconds,
+        block_size=block_size,
         compensate_latency=compensate_latency,
-        midi=midi, sidechain=sidechain,
-        param_changes=param_changes, bpm=bpm,
+        midi=midi,
+        sidechain=sidechain,
+        param_changes=param_changes,
+        bpm=bpm,
     )
 
     for block in _iter_blocks(ctx, progress_callback=progress_callback):
@@ -595,7 +617,9 @@ def process_audio_stream(
 
 
 def _read_optional_audio(
-    source: Any, plugin_sr: int, allow_resample: bool,
+    source: Any,
+    plugin_sr: int,
+    allow_resample: bool,
     label: str,
 ) -> AudioBuffer | None:
     """Resolve ``source`` (file path or in-memory buffer) to an AudioBuffer
@@ -612,14 +636,19 @@ def _read_optional_audio(
                     f"Pass resample_to_plugin_rate=True to convert automatically."
                 )
             audio = resample(audio, in_sr, plugin_sr)
-        return audio if isinstance(audio, AudioBuffer) else AudioBuffer.from_numpy(audio)
+        return (
+            audio if isinstance(audio, AudioBuffer) else AudioBuffer.from_numpy(audio)
+        )
     if isinstance(source, AudioBuffer):
         return source
     return AudioBuffer.from_numpy(source)
 
 
 def _maybe_duplicate_to_match(
-    src: AudioBuffer, required: int, duplicate: bool, label: str,
+    src: AudioBuffer,
+    required: int,
+    duplicate: bool,
+    label: str,
 ) -> AudioBuffer:
     if src.channels >= required:
         return src
@@ -630,10 +659,10 @@ def _maybe_duplicate_to_match(
             f"channel-duplicate automatically."
         )
     expanded = AudioBuffer(required, src.frames)
-    expanded[:src.channels, :] = src
-    last = cast(AudioBuffer, src[src.channels - 1: src.channels, :])
+    expanded[: src.channels, :] = src
+    last = cast(AudioBuffer, src[src.channels - 1 : src.channels, :])
     for ch in range(src.channels, required):
-        expanded[ch:ch + 1, :] = last
+        expanded[ch : ch + 1, :] = last
     return expanded
 
 
@@ -699,21 +728,33 @@ def process_audio_to_file(
     main_src: AudioBuffer | None = None
     if input_path is not None:
         main_src = _read_optional_audio(
-            input_path, plugin_sr, resample_to_plugin_rate, "Input",
+            input_path,
+            plugin_sr,
+            resample_to_plugin_rate,
+            "Input",
         )
         if main_src is not None:
             main_src = _maybe_duplicate_to_match(
-                main_src, in_ch_required, duplicate_to_stereo, "Input",
+                main_src,
+                in_ch_required,
+                duplicate_to_stereo,
+                "Input",
             )
 
     sc_src: AudioBuffer | None = None
     if sidechain is not None:
         sc_src = _read_optional_audio(
-            sidechain, plugin_sr, resample_to_plugin_rate, "Sidechain",
+            sidechain,
+            plugin_sr,
+            resample_to_plugin_rate,
+            "Sidechain",
         )
         if sc_src is not None:
             sc_src = _maybe_duplicate_to_match(
-                sc_src, in_ch_required, duplicate_to_stereo, "Sidechain",
+                sc_src,
+                in_ch_required,
+                duplicate_to_stereo,
+                "Sidechain",
             )
 
     output = process_audio(

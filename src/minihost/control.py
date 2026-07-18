@@ -209,9 +209,7 @@ class MidiMapper:
             self._cc.clear()
             self._note.clear()
 
-    def set_on_unmapped(
-        self, callback: Optional[Callable[[bytes], None]]
-    ) -> None:
+    def set_on_unmapped(self, callback: Optional[Callable[[bytes], None]]) -> None:
         """Replace the unmapped-event fallback callback.
 
         Useful when the forwarding target (e.g. an ``AudioDevice``) isn't

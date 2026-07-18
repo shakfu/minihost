@@ -18,7 +18,9 @@ import pytest
 
 import minihost
 
-PLUGIN = os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+PLUGIN = (
+    os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+)
 
 skip_if_no_plugin = pytest.mark.skipif(
     not os.path.exists(PLUGIN),
@@ -29,6 +31,7 @@ skip_if_no_plugin = pytest.mark.skipif(
 # -------------------------------------------------------------------- #
 # 1. MIDI topology validation                                          #
 # -------------------------------------------------------------------- #
+
 
 def test_midi_input_node_addable_without_audio_io():
     g = minihost.PluginGraph(64, 48000.0)
@@ -96,8 +99,9 @@ def test_midi_edge_overwrites_previous_on_same_dst():
 
     events = [(0, 0x90, 60, 100), (10, 0x80, 60, 0)]
     g.set_midi_input_events(mi2, events)
-    g.render_block([np.zeros((1, 8), dtype=np.float32)],
-                   [np.zeros((1, 8), dtype=np.float32)], 8)
+    g.render_block(
+        [np.zeros((1, 8), dtype=np.float32)], [np.zeros((1, 8), dtype=np.float32)], 8
+    )
     drained = g.get_midi_output_events(mo)
     assert drained == events  # came from mi2 (the later edge), not mi1
 
@@ -119,6 +123,7 @@ def test_post_compile_midi_connect_rejected():
 # 2. MIDI passthrough (no plugin)                                      #
 # -------------------------------------------------------------------- #
 
+
 def test_midi_input_passthrough_to_midi_output():
     F = 16
     g = minihost.PluginGraph(F, 48000.0)
@@ -132,12 +137,12 @@ def test_midi_input_passthrough_to_midi_output():
     g.compile()
 
     events = [
-        (0,  0x90, 60, 100),  # note on
-        (4,  0xB0,  7,  80),  # CC volume
-        (12, 0x80, 60,   0),  # note off
+        (0, 0x90, 60, 100),  # note on
+        (4, 0xB0, 7, 80),  # CC volume
+        (12, 0x80, 60, 0),  # note off
     ]
     g.set_midi_input_events(mi, events)
-    audio_in  = np.zeros((1, F), dtype=np.float32)
+    audio_in = np.zeros((1, F), dtype=np.float32)
     audio_out = np.zeros((1, F), dtype=np.float32)
     g.render_block([audio_in], [audio_out], F)
 
@@ -158,7 +163,7 @@ def test_midi_staging_cleared_after_render():
     g.compile()
 
     g.set_midi_input_events(mi, [(0, 0x90, 64, 100)])
-    audio_in  = np.zeros((1, F), dtype=np.float32)
+    audio_in = np.zeros((1, F), dtype=np.float32)
     audio_out = np.zeros((1, F), dtype=np.float32)
     g.render_block([audio_in], [audio_out], F)
     assert len(g.get_midi_output_events(mo)) == 1
@@ -183,7 +188,7 @@ def test_midi_fanout_to_multiple_outputs():
 
     events = [(0, 0x90, 64, 100)]
     g.set_midi_input_events(mi, events)
-    audio_in  = np.zeros((1, F), dtype=np.float32)
+    audio_in = np.zeros((1, F), dtype=np.float32)
     audio_out = np.zeros((1, F), dtype=np.float32)
     g.render_block([audio_in], [audio_out], F)
     assert g.get_midi_output_events(mo_a) == events
@@ -194,17 +199,18 @@ def test_midi_fanout_to_multiple_outputs():
 # 3. Plugin MIDI routing                                                #
 # -------------------------------------------------------------------- #
 
+
 @skip_if_no_plugin
 def test_plugin_midi_input_from_graph_edge():
     """Wiring a MIDI_INPUT into a plugin should drive its synthesis the
     same as direct set_node_midi staging."""
     sr = 48000.0
-    F  = 256
+    F = 256
 
     p1 = minihost.Plugin(PLUGIN, sample_rate=sr, max_block_size=F)
     if not p1.accepts_midi:
         pytest.skip("test plugin does not accept MIDI")
-    in_ch  = p1.num_input_channels
+    in_ch = p1.num_input_channels
     out_ch = p1.num_output_channels
     if in_ch == 0:
         # Instrument with no audio input: graph_v2 requires plugin
@@ -214,9 +220,9 @@ def test_plugin_midi_input_from_graph_edge():
         pytest.skip("plugin has no audio input port; edge form n/a")
 
     g1 = minihost.PluginGraph(F, sr)
-    pn1   = g1.add_plugin(p1)
-    mi    = g1.add_midi_input()
-    a_in  = g1.add_input(in_ch)
+    pn1 = g1.add_plugin(p1)
+    mi = g1.add_midi_input()
+    a_in = g1.add_input(in_ch)
     a_out = g1.add_output(out_ch)
     g1.connect(a_in, pn1)
     g1.connect(pn1, a_out)
@@ -225,7 +231,7 @@ def test_plugin_midi_input_from_graph_edge():
 
     events = [(0, 0x90, 60, 100), (F // 2, 0x80, 60, 0)]
     g1.set_midi_input_events(mi, events)
-    src      = np.zeros((in_ch,  F), dtype=np.float32)
+    src = np.zeros((in_ch, F), dtype=np.float32)
     out_edge = np.zeros((out_ch, F), dtype=np.float32)
     g1.render_block([src], [out_edge], F)
 

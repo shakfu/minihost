@@ -28,7 +28,9 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
-PLUGIN = os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+PLUGIN = (
+    os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+)
 
 
 def _find_binary(name: str, env_var: str) -> str | None:
@@ -101,7 +103,9 @@ def test_c_and_cpp_stdout_identical(args):
     cpp = _run(CPP_BIN, args)
 
     assert c.returncode == 0, f"minihost_c failed ({c.returncode}) for {_cmd_id(args)}"
-    assert cpp.returncode == 0, f"minihost_cpp failed ({cpp.returncode}) for {_cmd_id(args)}"
+    assert cpp.returncode == 0, (
+        f"minihost_cpp failed ({cpp.returncode}) for {_cmd_id(args)}"
+    )
 
     if c.stdout != cpp.stdout:
         # Produce a readable diff on failure rather than dumping raw bytes.

@@ -24,9 +24,9 @@ def _read_chunks(path):
     chunks = {}
     pos = 12
     while pos + 8 <= len(raw):
-        cid = raw[pos:pos + 4]
+        cid = raw[pos : pos + 4]
         csize = struct.unpack_from("<I", raw, pos + 4)[0]
-        body = raw[pos + 8:pos + 8 + csize]
+        body = raw[pos + 8 : pos + 8 + csize]
         chunks[cid] = body
         pos += 8 + csize + (csize & 1)  # chunks are word-aligned
     return chunks
@@ -34,8 +34,10 @@ def _read_chunks(path):
 
 def _parse_bext(body):
     assert len(body) >= 602
+
     def field(off, size):
-        return body[off:off + size].split(b"\x00", 1)[0].decode("ascii")
+        return body[off : off + size].split(b"\x00", 1)[0].decode("ascii")
+
     tref_lo = struct.unpack_from("<I", body, 338)[0]
     tref_hi = struct.unpack_from("<I", body, 342)[0]
     return {

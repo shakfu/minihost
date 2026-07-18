@@ -26,7 +26,7 @@ def test_apply_gain_ramp_matches_numpy_reference():
     ref = np.ones((2, 100), dtype=np.float32)
     # JUCE's applyGainRamp produces gains[i] = startGain + i*(endGain-startGain)/numSamples
     ramp = np.linspace(0.0, 2.0, 100, endpoint=False, dtype=np.float32)
-    ref *= ramp[None, :]   # broadcast across both channels
+    ref *= ramp[None, :]  # broadcast across both channels
 
     arr = np.asarray(buf)
     assert np.allclose(arr, ref, atol=1e-6)
@@ -85,10 +85,13 @@ def test_add_from_matches_numpy_reference():
     src[:, :] = 0.5
 
     dst.add_from(
-        dest_channel=0, dest_start=10,
+        dest_channel=0,
+        dest_start=10,
         source=src,
-        source_channel=1, source_start=20,
-        count=30, gain=2.0,
+        source_channel=1,
+        source_start=20,
+        count=30,
+        gain=2.0,
     )
 
     ref = np.full((2, 100), 0.1, dtype=np.float32)
@@ -133,9 +136,14 @@ def test_add_from_with_ramp_matches_numpy_reference():
     src[:, :] = 1.0  # source is constant 1.0
 
     dst.add_from_with_ramp(
-        dest_channel=1, dest_start=20,
-        source=src, source_channel=0, source_start=0,
-        count=50, gain_start=0.0, gain_end=1.0,
+        dest_channel=1,
+        dest_start=20,
+        source=src,
+        source_channel=0,
+        source_start=0,
+        count=50,
+        gain_start=0.0,
+        gain_end=1.0,
     )
 
     ref = np.zeros((2, 100), dtype=np.float32)

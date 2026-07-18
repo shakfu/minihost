@@ -52,9 +52,7 @@ def find_desktop_bin() -> Path | None:
         return p if p.exists() else None
 
     candidates = [
-        REPO_ROOT / bd / rel
-        for bd in _BUILD_DIRS
-        for rel in _relative_binary_paths()
+        REPO_ROOT / bd / rel for bd in _BUILD_DIRS for rel in _relative_binary_paths()
     ]
     existing = [c for c in candidates if c.exists()]
     if not existing:

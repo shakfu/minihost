@@ -38,9 +38,9 @@ def test_desktop_renderer_matches_python(tmp_path):
     src = (rng.standard_normal((2, frames)) * 0.1).astype(np.float32)
     audio_io.write_audio(str(in_wav), src, sr, bit_depth=24)
 
-    proj_py  = tmp_path / "p_py.json"
+    proj_py = tmp_path / "p_py.json"
     proj_cpp = tmp_path / "p_cpp.json"
-    out_py  = tmp_path / "out_py.wav"
+    out_py = tmp_path / "out_py.wav"
     out_cpp = tmp_path / "out_cpp.wav"
 
     def make(json_path, sink):
@@ -49,16 +49,20 @@ def test_desktop_renderer_matches_python(tmp_path):
             "sample_rate": sr,
             "block_size": 256,
             "nodes": [
-                {"id": "in",  "kind": "input",  "channels": 2,
-                 "source": str(in_wav)},
-                {"id": "out", "kind": "output", "channels": 2,
-                 "sink": str(sink), "bit_depth": 24},
+                {"id": "in", "kind": "input", "channels": 2, "source": str(in_wav)},
+                {
+                    "id": "out",
+                    "kind": "output",
+                    "channels": 2,
+                    "sink": str(sink),
+                    "bit_depth": 24,
+                },
             ],
             "edges": [{"src": "in", "dst": "out"}],
         }
         json_path.write_text(json.dumps(doc))
 
-    make(proj_py,  out_py)
+    make(proj_py, out_py)
     make(proj_cpp, out_cpp)
 
     # Python render
@@ -67,15 +71,17 @@ def test_desktop_renderer_matches_python(tmp_path):
 
     # C++ headless render
     res = subprocess.run(
-        [str(DESKTOP_BIN),
-         f"--render-project={proj_cpp}"],
-        capture_output=True, text=True, timeout=60,
+        [str(DESKTOP_BIN), f"--render-project={proj_cpp}"],
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
-    assert res.returncode == 0, \
+    assert res.returncode == 0, (
         f"desktop render failed:\nstdout:{res.stdout}\nstderr:{res.stderr}"
+    )
     assert out_cpp.exists()
 
-    py, _  = audio_io.read_audio(str(out_py),  as_=np.ndarray)
+    py, _ = audio_io.read_audio(str(out_py), as_=np.ndarray)
     cpp, _ = audio_io.read_audio(str(out_cpp), as_=np.ndarray)
     assert py.shape == cpp.shape
     n = min(py.shape[1], cpp.shape[1])
@@ -89,8 +95,8 @@ def test_desktop_renderer_matches_python(tmp_path):
 # NOT accept MIDI, which is exactly what the migration regression needs.
 _STOCK_AU_EFFECTS = [
     ("AUBandpass", "AudioUnit:Effects/aufx,bpas,appl"),
-    ("AULowpass",  "AudioUnit:Effects/aufx,lpas,appl"),
-    ("AUDelay",    "AudioUnit:Effects/aufx,dely,appl"),
+    ("AULowpass", "AudioUnit:Effects/aufx,lpas,appl"),
+    ("AUDelay", "AudioUnit:Effects/aufx,dely,appl"),
 ]
 
 
@@ -123,29 +129,47 @@ def test_desktop_effect_only_no_midi_migration_crash(tmp_path):
     desc_b64 = base64.b64encode(pd_xml.encode("utf-8")).decode("ascii")
 
     proj = tmp_path / "p.json"
-    proj.write_text(json.dumps({
-        "minihost_project_version": 1,
-        "sample_rate": 48000,
-        "block_size": 512,
-        "nodes": [
-            {"id": "in", "kind": "input", "channels": 2, "source": str(in_wav)},
-            # No receives_midi -> defaults true; effect does not accept MIDI.
-            {"id": "fx", "kind": "plugin", "descriptor": desc_b64, "name": name},
-            {"id": "out", "kind": "output", "channels": 2,
-             "sink": str(out_wav), "bit_depth": 24},
-        ],
-        "edges": [{"src": "in", "dst": "fx"}, {"src": "fx", "dst": "out"}],
-    }))
+    proj.write_text(
+        json.dumps(
+            {
+                "minihost_project_version": 1,
+                "sample_rate": 48000,
+                "block_size": 512,
+                "nodes": [
+                    {"id": "in", "kind": "input", "channels": 2, "source": str(in_wav)},
+                    # No receives_midi -> defaults true; effect does not accept MIDI.
+                    {
+                        "id": "fx",
+                        "kind": "plugin",
+                        "descriptor": desc_b64,
+                        "name": name,
+                    },
+                    {
+                        "id": "out",
+                        "kind": "output",
+                        "channels": 2,
+                        "sink": str(out_wav),
+                        "bit_depth": 24,
+                    },
+                ],
+                "edges": [{"src": "in", "dst": "fx"}, {"src": "fx", "dst": "out"}],
+            }
+        )
+    )
 
     res = subprocess.run(
         [str(DESKTOP_BIN), f"--render-project={proj}"],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
-    assert "connect_midi" not in res.stderr, \
+    assert "connect_midi" not in res.stderr, (
         f"MIDI migration wired MIDI to a non-MIDI plugin:\n{res.stderr}"
+    )
     # Clean exit: a plugin-loading render must not abort on teardown.
-    assert res.returncode == 0, \
+    assert res.returncode == 0, (
         f"plugin render did not exit cleanly:\nstderr:{res.stderr}"
+    )
     assert out_wav.exists(), f"render produced no output:\n{res.stderr}"
     y, _ = audio_io.read_audio(str(out_wav), as_=np.ndarray)
     assert y.shape[1] == 4800
@@ -162,8 +186,10 @@ def test_desktop_midi_chain_matches_python(tmp_path):
     silence (its midi_input was live-only). Needs an instrument that accepts
     MIDI (MINIHOST_TEST_PLUGIN, default Dexed); skipped otherwise.
     """
-    plugin = (os.environ.get("MINIHOST_TEST_PLUGIN")
-              or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3")
+    plugin = (
+        os.environ.get("MINIHOST_TEST_PLUGIN")
+        or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+    )
     if not os.path.exists(plugin):
         pytest.skip(f"test plugin not found: {plugin}")
     probe = minihost.Plugin(plugin)
@@ -195,8 +221,13 @@ def test_desktop_midi_chain_matches_python(tmp_path):
             "nodes": [
                 {"id": "midi", "kind": "midi_input", "source": str(mid)},
                 {"id": "synth", "kind": "plugin", "path": plugin},
-                {"id": "out", "kind": "output", "channels": 2,
-                 "sink": str(sink), "bit_depth": 24},
+                {
+                    "id": "out",
+                    "kind": "output",
+                    "channels": 2,
+                    "sink": str(sink),
+                    "bit_depth": 24,
+                },
             ],
             "edges": [
                 {"kind": "midi", "src": "midi", "dst": "synth"},
@@ -211,7 +242,9 @@ def test_desktop_midi_chain_matches_python(tmp_path):
 
     res = subprocess.run(
         [str(DESKTOP_BIN), f"--render-project={pj_cpp}"],
-        capture_output=True, text=True, timeout=120,
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
     assert res.returncode == 0, f"desktop render failed:\n{res.stderr}"
     minihost.render_project(pj_py)
@@ -220,8 +253,9 @@ def test_desktop_midi_chain_matches_python(tmp_path):
     a, _ = audio_io.read_audio(str(out_cpp), as_=np.ndarray)
     b, _ = audio_io.read_audio(str(out_py), as_=np.ndarray)
     # MIDI actually drove the synth (not silence).
-    assert float(np.max(np.abs(a))) > 1e-3, \
+    assert float(np.max(np.abs(a))) > 1e-3, (
         f"desktop MIDI render is silent:\n{res.stderr}"
+    )
     # And the two renderers agree bit-for-bit.
     n = min(a.shape[1], b.shape[1])
     maxerr = float(np.max(np.abs(a[:, :n] - b[:, :n])))
@@ -233,39 +267,45 @@ def test_desktop_save_roundtrip_matches_python(tmp_path):
     """The C++ saveProjectFile path must round-trip through the
     Python loader. Layout, edges, channels, etc. preserved."""
     in_wav = tmp_path / "in.wav"
-    audio_io.write_audio(str(in_wav),
-                         np.zeros((2, 512), dtype=np.float32),
-                         48000, bit_depth=24)
+    audio_io.write_audio(
+        str(in_wav), np.zeros((2, 512), dtype=np.float32), 48000, bit_depth=24
+    )
     proj = tmp_path / "p.json"
     doc = {
         "minihost_project_version": 1,
         "sample_rate": 48000,
         "block_size": 256,
         "nodes": [
-            {"id": "in",  "kind": "input",  "channels": 2, "source": str(in_wav)},
-            {"id": "out", "kind": "output", "channels": 2,
-             "sink": str(tmp_path / "out.wav"), "bit_depth": 24},
+            {"id": "in", "kind": "input", "channels": 2, "source": str(in_wav)},
+            {
+                "id": "out",
+                "kind": "output",
+                "channels": 2,
+                "sink": str(tmp_path / "out.wav"),
+                "bit_depth": 24,
+            },
         ],
         "edges": [{"src": "in", "dst": "out"}],
         "layout": {
-            "in":  {"x": 12.5, "y": 34.0},
+            "in": {"x": 12.5, "y": 34.0},
             "out": {"x": 260.0, "y": 34.0},
         },
     }
     proj.write_text(json.dumps(doc, indent=2))
 
     res = subprocess.run(
-        [str(DESKTOP_BIN),
-         f"--save-roundtrip={proj}"],
-        capture_output=True, text=True, timeout=30,
+        [str(DESKTOP_BIN), f"--save-roundtrip={proj}"],
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     assert res.returncode == 0, res.stderr
 
     resaved = tmp_path / "p.resaved.json"
     assert resaved.exists()
 
-    orig    = minihost.load_project(proj)
+    orig = minihost.load_project(proj)
     resaved_loaded = minihost.load_project(resaved)
     assert orig.layout == resaved_loaded.layout
-    assert len(orig.inputs)  == len(resaved_loaded.inputs)
+    assert len(orig.inputs) == len(resaved_loaded.inputs)
     assert len(orig.outputs) == len(resaved_loaded.outputs)

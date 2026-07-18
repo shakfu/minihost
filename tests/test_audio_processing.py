@@ -596,8 +596,9 @@ class TestProcessIntegration:
 
         # Default container is AudioBuffer; use as_=np.ndarray for the
         # numpy-typed assertions below.
-        audio = render_midi(plugin, mf, block_size=512, tail_seconds=0.5,
-                            as_=np.ndarray)
+        audio = render_midi(
+            plugin, mf, block_size=512, tail_seconds=0.5, as_=np.ndarray
+        )
 
         assert isinstance(audio, np.ndarray)
         assert audio.ndim == 2
@@ -619,7 +620,10 @@ class TestProcessIntegration:
         block_count = 0
 
         for block in render_midi_stream(
-            plugin, mf, block_size=block_size, tail_seconds=0.1,
+            plugin,
+            mf,
+            block_size=block_size,
+            tail_seconds=0.1,
             as_=np.ndarray,
         ):
             assert isinstance(block, np.ndarray)

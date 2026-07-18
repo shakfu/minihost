@@ -15,6 +15,7 @@ file defines a minimal in-file reference scheduler so the harness can
 land before the real module. When the real module is written, swap the
 import and delete `_RefGraph`.
 """
+
 from __future__ import annotations
 
 import os
@@ -27,20 +28,21 @@ import minihost
 
 SR = 48000
 BLOCK = 512
-TOTAL_FRAMES = BLOCK * 8           # 8 blocks; covers cross-block automation
+TOTAL_FRAMES = BLOCK * 8  # 8 blocks; covers cross-block automation
 CHANNELS = 2
 RTOL = 0.0
-ATOL = 0.0                          # demand bit-identity; relax only with reason
+ATOL = 0.0  # demand bit-identity; relax only with reason
 
 
 # --------------------------------------------------------------------------- #
 # Reference scheduler (placeholder for minihost.graph)
 # --------------------------------------------------------------------------- #
 
+
 @dataclass
 class _Node:
     id: str
-    kind: str                       # "plugin" | "mix" | "gain"
+    kind: str  # "plugin" | "mix" | "gain"
     plugin: object | None = None
     gain: float = 1.0
     in_ports: int = 1
@@ -120,7 +122,9 @@ class _RefGraph:
                 for p in range(node.out_ports):
                     key = (nid, p)
                     if key not in bufs:
-                        bufs[key] = np.zeros((self.channels, TOTAL_FRAMES), dtype=np.float32)
+                        bufs[key] = np.zeros(
+                            (self.channels, TOTAL_FRAMES), dtype=np.float32
+                        )
                     bufs[key][:, t0:t1] = out_buf
 
         # 'out' node: copy whatever feeds its port 0
@@ -145,6 +149,7 @@ class _RefGraph:
 # Helpers
 # --------------------------------------------------------------------------- #
 
+
 def _signal() -> np.ndarray:
     rng = np.random.default_rng(0)
     return rng.standard_normal((CHANNELS, TOTAL_FRAMES)).astype(np.float32) * 0.25
@@ -167,6 +172,7 @@ def _assert_equal(name: str, a: np.ndarray, b: np.ndarray) -> None:
 # Checks
 # --------------------------------------------------------------------------- #
 
+
 def check_linear_chain(plugin_path: str) -> None:
     """Graph[in -> p1 -> p2 -> out] == PluginChain([p1, p2])."""
     src = _signal()
@@ -177,14 +183,13 @@ def check_linear_chain(plugin_path: str) -> None:
     chain = minihost.PluginChain([ref_p1, ref_p2])
     ref_out = np.zeros_like(src)
     for t0 in range(0, TOTAL_FRAMES, BLOCK):
-        chain.process_auto(src[:, t0:t0+BLOCK],
-                           ref_out[:, t0:t0+BLOCK], [], [])
+        chain.process_auto(src[:, t0 : t0 + BLOCK], ref_out[:, t0 : t0 + BLOCK], [], [])
 
     # Candidate: graph executor
     g = _RefGraph()
-    g.add(_Node("in",  "plugin"))   # placeholder source; not actually invoked
-    g.add(_Node("p1",  "plugin", plugin=_new_plugin(plugin_path)))
-    g.add(_Node("p2",  "plugin", plugin=_new_plugin(plugin_path)))
+    g.add(_Node("in", "plugin"))  # placeholder source; not actually invoked
+    g.add(_Node("p1", "plugin", plugin=_new_plugin(plugin_path)))
+    g.add(_Node("p2", "plugin", plugin=_new_plugin(plugin_path)))
     g.add(_Node("out", "plugin"))
     g.connect("in", 0, "p1", 0)
     g.connect("p1", 0, "p2", 0)
@@ -196,28 +201,28 @@ def check_linear_chain(plugin_path: str) -> None:
 
 def check_fanout_mix(plugin_path: str) -> None:
     """Graph[in -> p; p -> mix.0; p -> gain(1.0) -> mix.1; mix -> out]
-       == 2 * (single-plugin render)."""
+    == 2 * (single-plugin render)."""
     src = _signal()
 
     # Reference: render once through plugin, double it
     ref_p = _new_plugin(plugin_path)
     wet = np.zeros_like(src)
     for t0 in range(0, TOTAL_FRAMES, BLOCK):
-        ref_p.process_auto(src[:, t0:t0+BLOCK], wet[:, t0:t0+BLOCK], [], [])
+        ref_p.process_auto(src[:, t0 : t0 + BLOCK], wet[:, t0 : t0 + BLOCK], [], [])
     ref_out = wet + wet
 
     # Candidate: fan-out into mix
     g = _RefGraph()
-    g.add(_Node("in",   "plugin"))
-    g.add(_Node("p",    "plugin", plugin=_new_plugin(plugin_path)))
+    g.add(_Node("in", "plugin"))
+    g.add(_Node("p", "plugin", plugin=_new_plugin(plugin_path)))
     g.add(_Node("unity", "gain", gain=1.0))
-    g.add(_Node("mix",  "mix", in_ports=2))
-    g.add(_Node("out",  "plugin"))
-    g.connect("in",    0, "p",     0)
-    g.connect("p",     0, "mix",   0)   # dry-side of fan-out
-    g.connect("p",     0, "unity", 0)
-    g.connect("unity", 0, "mix",   1)
-    g.connect("mix",   0, "out",   0)
+    g.add(_Node("mix", "mix", in_ports=2))
+    g.add(_Node("out", "plugin"))
+    g.connect("in", 0, "p", 0)
+    g.connect("p", 0, "mix", 0)  # dry-side of fan-out
+    g.connect("p", 0, "unity", 0)
+    g.connect("unity", 0, "mix", 1)
+    g.connect("mix", 0, "out", 0)
     cand_out = g.render(src)
 
     _assert_equal("fanout_mix", ref_out, cand_out)
@@ -251,11 +256,11 @@ def check_automation_slicing(plugin_path: str) -> None:
 
     # Candidate: graph w/ same automation expressed in absolute time
     g = _RefGraph()
-    g.add(_Node("in",  "plugin"))
-    g.add(_Node("p",   "plugin", plugin=_new_plugin(plugin_path)))
+    g.add(_Node("in", "plugin"))
+    g.add(_Node("p", "plugin", plugin=_new_plugin(plugin_path)))
     g.add(_Node("out", "plugin"))
-    g.connect("in", 0, "p",   0)
-    g.connect("p",  0, "out", 0)
+    g.connect("in", 0, "p", 0)
+    g.connect("p", 0, "out", 0)
     g.automation["p"] = schedule
     cand_out = g.render(src)
 
@@ -265,6 +270,7 @@ def check_automation_slicing(plugin_path: str) -> None:
 # --------------------------------------------------------------------------- #
 # Entry
 # --------------------------------------------------------------------------- #
+
 
 def main() -> int:
     path = os.environ.get("MINIHOST_TEST_PLUGIN")

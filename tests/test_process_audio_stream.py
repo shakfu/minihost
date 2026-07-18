@@ -16,8 +16,7 @@ import pytest
 import minihost
 
 PLUGIN = (
-    os.environ.get("MINIHOST_TEST_PLUGIN")
-    or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+    os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
 )
 FX_PLUGIN = (
     os.environ.get("MINIHOST_TEST_FX")
@@ -61,9 +60,9 @@ def test_stream_concat_matches_process_audio_effect():
     for ch in range(src.channels):
         src[ch, 0] = 0.25
         src[ch, 1024] = -0.25
-    streamed = _concat(list(
-        minihost.process_audio_stream(p_stream, src, compensate_latency=False)
-    ))
+    streamed = _concat(
+        list(minihost.process_audio_stream(p_stream, src, compensate_latency=False))
+    )
     p_stream.close()
 
     p_ref = minihost.Plugin(FX_PLUGIN, sample_rate=48000, max_block_size=512)
@@ -83,19 +82,27 @@ def test_stream_concat_matches_process_audio_synth_mode():
     """Synth mode (audio=None, MIDI-driven): concat equals process_audio."""
     plugin = minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=512)
     events = [(0, 0x90, 60, 100), (4799, 0x80, 60, 0)]
-    streamed = _concat(list(
-        minihost.process_audio_stream(
-            plugin, audio=None, midi=events,
-            tail_seconds=0.1, compensate_latency=False,
-            block_size=512,
+    streamed = _concat(
+        list(
+            minihost.process_audio_stream(
+                plugin,
+                audio=None,
+                midi=events,
+                tail_seconds=0.1,
+                compensate_latency=False,
+                block_size=512,
+            )
         )
-    ))
+    )
     plugin.close()
 
     plugin2 = minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=512)
     full = minihost.process_audio(
-        plugin2, audio=None, midi=events,
-        tail_seconds=0.1, compensate_latency=False,
+        plugin2,
+        audio=None,
+        midi=events,
+        tail_seconds=0.1,
+        compensate_latency=False,
         block_size=512,
     )
     plugin2.close()
@@ -115,9 +122,14 @@ def test_stream_respects_block_size_cap():
     final block may be shorter."""
     plugin = minihost.Plugin(FX_PLUGIN, sample_rate=48000, max_block_size=256)
     src = minihost.AudioBuffer(plugin.num_input_channels, 2000)
-    blocks = list(minihost.process_audio_stream(
-        plugin, src, block_size=256, compensate_latency=False,
-    ))
+    blocks = list(
+        minihost.process_audio_stream(
+            plugin,
+            src,
+            block_size=256,
+            compensate_latency=False,
+        )
+    )
     plugin.close()
 
     assert len(blocks) > 1
@@ -136,9 +148,13 @@ def test_stream_respects_block_size_cap():
 def test_stream_yields_audiobuffer_by_default():
     plugin = minihost.Plugin(FX_PLUGIN, sample_rate=48000, max_block_size=512)
     src = minihost.AudioBuffer(plugin.num_input_channels, 1024)
-    blocks = list(minihost.process_audio_stream(
-        plugin, src, compensate_latency=False,
-    ))
+    blocks = list(
+        minihost.process_audio_stream(
+            plugin,
+            src,
+            compensate_latency=False,
+        )
+    )
     plugin.close()
     assert blocks
     assert all(isinstance(b, minihost.AudioBuffer) for b in blocks)
@@ -148,9 +164,14 @@ def test_stream_yields_audiobuffer_by_default():
 def test_stream_yields_numpy_when_requested():
     plugin = minihost.Plugin(FX_PLUGIN, sample_rate=48000, max_block_size=512)
     src = minihost.AudioBuffer(plugin.num_input_channels, 1024)
-    blocks = list(minihost.process_audio_stream(
-        plugin, src, compensate_latency=False, as_=np.ndarray,
-    ))
+    blocks = list(
+        minihost.process_audio_stream(
+            plugin,
+            src,
+            compensate_latency=False,
+            as_=np.ndarray,
+        )
+    )
     plugin.close()
     assert blocks
     assert all(isinstance(b, np.ndarray) for b in blocks)
@@ -167,10 +188,15 @@ def test_stream_progress_callback_fires_monotonically():
     plugin = minihost.Plugin(FX_PLUGIN, sample_rate=48000, max_block_size=512)
     src = minihost.AudioBuffer(plugin.num_input_channels, 2000)
     calls: list[tuple[int, int]] = []
-    list(minihost.process_audio_stream(
-        plugin, src, block_size=512, compensate_latency=False,
-        progress_callback=lambda c, t: calls.append((c, t)),
-    ))
+    list(
+        minihost.process_audio_stream(
+            plugin,
+            src,
+            block_size=512,
+            compensate_latency=False,
+            progress_callback=lambda c, t: calls.append((c, t)),
+        )
+    )
     plugin.close()
 
     assert calls

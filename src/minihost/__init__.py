@@ -75,6 +75,7 @@ from minihost.audio_io import (
     resample,
 )
 
+
 # Wrap as_ndarray() to convert nanobind's "ModuleNotFoundError: No module
 # named 'numpy'" TypeError into a clear ImportError pointing at the
 # install-extra. Users who hit this haven't installed numpy and need the

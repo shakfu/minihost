@@ -59,6 +59,7 @@ def _touch_plugin(directory, name: str) -> str:
 
 # -- discovery -------------------------------------------------------- #
 
+
 def test_discovery_finds_extensions_and_treats_bundles_as_leaves(cache_env):
     plugins, _ = cache_env
     _touch_plugin(plugins, "synthA.vst3")
@@ -80,6 +81,7 @@ def test_discovery_finds_extensions_and_treats_bundles_as_leaves(cache_env):
 
 
 # -- caching behaviour ------------------------------------------------ #
+
 
 def test_scan_probes_once_then_serves_from_cache(cache_env):
     plugins, calls = cache_env
@@ -134,6 +136,7 @@ def test_new_plugin_added_is_probed_on_next_scan(cache_env):
 
 # -- error caching ---------------------------------------------------- #
 
+
 def test_probe_failure_is_cached_and_not_retried(cache_env):
     plugins, calls = cache_env
     _touch_plugin(plugins, "synthA.vst3")
@@ -152,6 +155,7 @@ def test_probe_failure_is_cached_and_not_retried(cache_env):
 
 
 # -- single info() ---------------------------------------------------- #
+
 
 def test_info_caches_single_plugin(cache_env):
     plugins, calls = cache_env
@@ -175,11 +179,12 @@ def test_info_raises_and_caches_error(cache_env):
 
 # -- query ------------------------------------------------------------ #
 
+
 def test_query_filters(cache_env):
     plugins, _ = cache_env
-    _touch_plugin(plugins, "synthA.vst3")     # accepts_midi, vendor Acme, VST3
-    _touch_plugin(plugins, "fxB.component")   # AU, vendor Other
-    _touch_plugin(plugins, "arpC.vst3")       # produces_midi
+    _touch_plugin(plugins, "synthA.vst3")  # accepts_midi, vendor Acme, VST3
+    _touch_plugin(plugins, "fxB.component")  # AU, vendor Other
+    _touch_plugin(plugins, "arpC.vst3")  # produces_midi
     plugincache.scan(plugins)
 
     assert {d["name"] for d in plugincache.query(format="VST3")} == {"synthA", "arpC"}
@@ -190,11 +195,14 @@ def test_query_filters(cache_env):
     assert {d["name"] for d in plugincache.query(name_contains="arp")} == {"arpC"}
     # Instruments (no audio inputs).
     assert {d["name"] for d in plugincache.query(min_outputs=2)} == {
-        "synthA", "fxB", "arpC"
+        "synthA",
+        "fxB",
+        "arpC",
     }
 
 
 # -- management ------------------------------------------------------- #
+
 
 def test_prune_removes_missing(cache_env):
     plugins, _ = cache_env

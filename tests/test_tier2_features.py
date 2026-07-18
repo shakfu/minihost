@@ -23,6 +23,7 @@ from minihost._core import AudioBuffer
 # MIDI_OUT_CAPACITY constant
 # ---------------------------------------------------------------------------
 
+
 def test_midi_out_capacity_constant_exported():
     assert isinstance(minihost.MIDI_OUT_CAPACITY, int)
     assert minihost.MIDI_OUT_CAPACITY == 256
@@ -33,6 +34,7 @@ def test_midi_out_capacity_constant_exported():
 # ---------------------------------------------------------------------------
 # channel_view zero-copy channel-range slicing
 # ---------------------------------------------------------------------------
+
 
 def _fill(buf):
     a = buf.as_ndarray()
@@ -81,11 +83,11 @@ def test_channel_view_full_range():
 def test_channel_view_of_view():
     buf = AudioBuffer(5, 4)
     _fill(buf)
-    mid = buf.channel_view(1, 3)      # parent channels 1,2,3
-    inner = mid.channel_view(1, 1)    # parent channel 2
+    mid = buf.channel_view(1, 3)  # parent channels 1,2,3
+    inner = mid.channel_view(1, 1)  # parent channel 2
     assert inner.channels == 1
     inner[0, 0] = 55.0
-    assert buf[2, 0] == 55.0          # transitive aliasing back to the root
+    assert buf[2, 0] == 55.0  # transitive aliasing back to the root
 
 
 @pytest.mark.parametrize("start,count", [(-1, 1), (0, 0), (3, 2), (4, 1), (0, 5)])
@@ -100,6 +102,7 @@ def test_channel_view_keeps_parent_alive():
     # backing memory alive (nanobind keep_alive), not read freed memory.
     view = AudioBuffer(4, 8).channel_view(0, 2)
     import gc
+
     gc.collect()
     view[0, 0] = 3.0
     assert view[0, 0] == 3.0
@@ -108,6 +111,7 @@ def test_channel_view_keeps_parent_alive():
 # ---------------------------------------------------------------------------
 # preset morphing
 # ---------------------------------------------------------------------------
+
 
 class _StubPlugin:
     """Minimal Plugin-like object exposing the param API morph needs."""
@@ -200,8 +204,11 @@ def test_synth_reports_zero_inputs_and_still_renders():
         assert p.num_output_channels > 0
         # Synth-mode render still works despite 0 reported inputs.
         out = minihost.process_audio(
-            p, None, midi=[(0, 0x90, 60, 100), (24000, 0x80, 60, 0)],
-            tail_seconds=0.0, compensate_latency=False,
+            p,
+            None,
+            midi=[(0, 0x90, 60, 100), (24000, 0x80, 60, 0)],
+            tail_seconds=0.0,
+            compensate_latency=False,
         )
         assert out.channels == p.num_output_channels
     finally:

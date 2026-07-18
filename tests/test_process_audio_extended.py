@@ -15,7 +15,9 @@ import pytest
 import minihost
 from minihost.process import _load_midi_events, _slice_block_events
 
-PLUGIN = os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+PLUGIN = (
+    os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+)
 INPUT_WAV = "tests/_wav/piano.wav"
 
 skip_if_no_plugin = pytest.mark.skipif(
@@ -160,7 +162,10 @@ def test_process_audio_midi_with_audio_input():
     src = minihost.AudioBuffer(plugin.num_input_channels, 4800)
     events = [(0, 0x90, 60, 100), (2400, 0x80, 60, 0)]
     out = minihost.process_audio(
-        plugin, src, midi=events, compensate_latency=False,
+        plugin,
+        src,
+        midi=events,
+        compensate_latency=False,
     )
     # Audio drives length when both present.
     assert out.frames == 4800
@@ -182,7 +187,9 @@ def test_process_audio_param_automation_changes_output():
         src[ch, 0] = 0.1
 
     out_no_auto = minihost.process_audio(
-        plugin, src, compensate_latency=False,
+        plugin,
+        src,
+        compensate_latency=False,
     )
     # Re-create plugin to reset state between runs.
     plugin2 = minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=512)
@@ -191,7 +198,10 @@ def test_process_audio_param_automation_changes_output():
         src2[ch, 0] = 0.1
     changes = [(0, 0, 0.0), (2400, 0, 1.0)]
     out_auto = minihost.process_audio(
-        plugin2, src2, param_changes=changes, compensate_latency=False,
+        plugin2,
+        src2,
+        param_changes=changes,
+        compensate_latency=False,
     )
     # Both runs produce the same frame count; we just want the
     # automation path to execute without error and yield audio.
@@ -206,12 +216,18 @@ def test_process_audio_param_automation_changes_output():
 @skip_if_no_plugin
 def test_process_audio_sidechain_path_runs():
     plugin = minihost.Plugin(
-        PLUGIN, sample_rate=48000, max_block_size=512, sidechain_channels=2,
+        PLUGIN,
+        sample_rate=48000,
+        max_block_size=512,
+        sidechain_channels=2,
     )
     src = minihost.AudioBuffer(plugin.num_input_channels, 4800)
     sc = minihost.AudioBuffer(plugin.num_input_channels, 4800)
     out = minihost.process_audio(
-        plugin, src, sidechain=sc, compensate_latency=False,
+        plugin,
+        src,
+        sidechain=sc,
+        compensate_latency=False,
     )
     assert out.frames == 4800
 
@@ -239,13 +255,16 @@ def test_process_audio_bpm_does_not_error():
 def test_process_audio_to_file_with_sidechain(tmp_path):
     out_path = tmp_path / "sc_out.wav"
     plugin = minihost.Plugin(
-        PLUGIN, sample_rate=48000, max_block_size=512, sidechain_channels=2,
+        PLUGIN,
+        sample_rate=48000,
+        max_block_size=512,
+        sidechain_channels=2,
     )
     frames = minihost.process_audio_to_file(
         plugin,
         input_path=INPUT_WAV,
         output_path=str(out_path),
-        sidechain=INPUT_WAV,        # use the same file as sidechain for the smoke test
+        sidechain=INPUT_WAV,  # use the same file as sidechain for the smoke test
         compensate_latency=False,
     )
     assert frames > 0

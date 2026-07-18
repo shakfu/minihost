@@ -21,7 +21,9 @@ import pytest
 
 import minihost
 
-PLUGIN = os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+PLUGIN = (
+    os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+)
 
 skip_if_no_plugin = pytest.mark.skipif(
     not os.path.exists(PLUGIN),

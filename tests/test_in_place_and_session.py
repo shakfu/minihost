@@ -10,17 +10,13 @@ import pytest
 import minihost
 
 PLUGIN = (
-    os.environ.get("MINIHOST_TEST_PLUGIN")
-    or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+    os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
 )
 FX_PLUGIN = (
     os.environ.get("MINIHOST_TEST_FX")
     or "/Library/Audio/Plug-Ins/VST3/TAL-Filter-2.vst3"
 )
-SCAN_DIR = (
-    os.environ.get("MINIHOST_TEST_PLUGIN_DIR")
-    or os.path.dirname(FX_PLUGIN)
-)
+SCAN_DIR = os.environ.get("MINIHOST_TEST_PLUGIN_DIR") or os.path.dirname(FX_PLUGIN)
 
 skip_if_no_plugin = pytest.mark.skipif(
     not os.path.exists(PLUGIN),
@@ -44,7 +40,10 @@ def test_in_place_returns_same_object_as_input():
     for ch in range(src.channels):
         src[ch, 0] = 0.25
     out = minihost.process_audio(
-        plugin, src, compensate_latency=False, in_place=True,
+        plugin,
+        src,
+        compensate_latency=False,
+        in_place=True,
     )
     plugin.close()
     assert out is src
@@ -69,7 +68,10 @@ def test_in_place_matches_out_of_place_result():
     p2 = minihost.Plugin(FX_PLUGIN, sample_rate=48000, max_block_size=512)
     src2 = minihost.AudioBuffer.from_numpy(src_data)
     out2 = minihost.process_audio(
-        p2, src2, compensate_latency=False, in_place=True,
+        p2,
+        src2,
+        compensate_latency=False,
+        in_place=True,
     )
     p2.close()
 
@@ -107,8 +109,11 @@ def test_in_place_rejects_tail_seconds():
     src = minihost.AudioBuffer(plugin.num_input_channels, 1024)
     with pytest.raises(ValueError, match="incompatible with tail_seconds"):
         minihost.process_audio(
-            plugin, src, tail_seconds=0.5,
-            compensate_latency=False, in_place=True,
+            plugin,
+            src,
+            tail_seconds=0.5,
+            compensate_latency=False,
+            in_place=True,
         )
     plugin.close()
 
@@ -123,8 +128,7 @@ def test_in_place_rejects_channel_mismatch():
         pytest.skip("plugin has matching I/O; cannot exercise mismatch path")
     src = minihost.AudioBuffer(plugin.num_input_channels, 256)
     with pytest.raises(ValueError, match="matching channel counts"):
-        minihost.process_audio(plugin, src, compensate_latency=False,
-                                in_place=True)
+        minihost.process_audio(plugin, src, compensate_latency=False, in_place=True)
     plugin.close()
 
 
@@ -176,8 +180,14 @@ def test_session_probe_matches_module_probe():
         session_info = s.probe(FX_PLUGIN)
         module_info = minihost.probe(FX_PLUGIN)
         # Same plugin file -> same metadata.
-        for key in ("name", "vendor", "format", "unique_id",
-                    "num_inputs", "num_outputs"):
+        for key in (
+            "name",
+            "vendor",
+            "format",
+            "unique_id",
+            "num_inputs",
+            "num_outputs",
+        ):
             assert session_info[key] == module_info[key], f"{key} differs"
     finally:
         s.close()

@@ -16,7 +16,9 @@ import pytest
 
 import minihost
 
-PLUGIN = os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+PLUGIN = (
+    os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+)
 
 skip_if_no_plugin = pytest.mark.skipif(
     not os.path.exists(PLUGIN),
@@ -56,9 +58,7 @@ def test_apply_roundtrips(plugin):
     plugin.morph_apply(snap)
     restored = plugin.morph_capture()
     # Values that were unclamped come back within float tolerance.
-    assert all(
-        math.isclose(a, b, abs_tol=1e-4) for a, b in zip(snap, restored)
-    )
+    assert all(math.isclose(a, b, abs_tol=1e-4) for a, b in zip(snap, restored))
 
 
 @skip_if_no_plugin
@@ -120,6 +120,6 @@ def test_native_matches_pure_python_module(plugin):
     # Build a distinct B by clamping everything toward its opposite.
     b = [1.0 - x for x in a]
     t = 0.3
-    native = plugin.morph(a, b, t)          # lerp + apply, returns snapshot
-    pure = pymorph.lerp(a, b, t)            # pure-Python lerp
+    native = plugin.morph(a, b, t)  # lerp + apply, returns snapshot
+    pure = pymorph.lerp(a, b, t)  # pure-Python lerp
     assert native == pytest.approx(pure)

@@ -45,6 +45,7 @@ def _run(*args: str, timeout: int = 60) -> subprocess.CompletedProcess:
 # Error-path exit codes                                                 #
 # --------------------------------------------------------------------- #
 
+
 @skip_if_no_desktop
 def test_render_project_missing_file_exits_1(tmp_path):
     """A render against a nonexistent project reports failure (exit 1),
@@ -67,18 +68,31 @@ def test_render_project_missing_input_source_exits_1(tmp_path):
     """A structurally valid project whose input file does not exist must
     fail at load (exit 1) rather than render silence."""
     proj = tmp_path / "p.json"
-    proj.write_text(json.dumps({
-        "minihost_project_version": 1,
-        "sample_rate": 48000,
-        "block_size": 512,
-        "nodes": [
-            {"id": "in", "kind": "input", "channels": 2,
-             "source": str(tmp_path / "does_not_exist.wav")},
-            {"id": "out", "kind": "output", "channels": 2,
-             "sink": str(tmp_path / "out.wav"), "bit_depth": 24},
-        ],
-        "edges": [{"src": "in", "dst": "out"}],
-    }))
+    proj.write_text(
+        json.dumps(
+            {
+                "minihost_project_version": 1,
+                "sample_rate": 48000,
+                "block_size": 512,
+                "nodes": [
+                    {
+                        "id": "in",
+                        "kind": "input",
+                        "channels": 2,
+                        "source": str(tmp_path / "does_not_exist.wav"),
+                    },
+                    {
+                        "id": "out",
+                        "kind": "output",
+                        "channels": 2,
+                        "sink": str(tmp_path / "out.wav"),
+                        "bit_depth": 24,
+                    },
+                ],
+                "edges": [{"src": "in", "dst": "out"}],
+            }
+        )
+    )
     res = _run(f"--render-project={proj}", timeout=30)
     assert res.returncode == 1, (res.returncode, res.stderr)
 
@@ -101,15 +115,16 @@ def test_save_roundtrip_missing_file_exits_1(tmp_path):
 # Node-kind serialization: mix node + gains survive a C++ round-trip    #
 # --------------------------------------------------------------------- #
 
+
 @skip_if_no_desktop
 def test_save_roundtrip_preserves_mix_node(tmp_path):
     """A mix node (num_inputs, channels, gains) must survive the C++
     parse -> saveProjectFile path and reload identically via the Python
     loader. Guards node_registry mix (de)serialization."""
     in_wav = tmp_path / "in.wav"
-    audio_io.write_audio(str(in_wav),
-                         np.zeros((2, 512), dtype=np.float32),
-                         48000, bit_depth=24)
+    audio_io.write_audio(
+        str(in_wav), np.zeros((2, 512), dtype=np.float32), 48000, bit_depth=24
+    )
     proj = tmp_path / "p.json"
     doc = {
         "minihost_project_version": 1,
@@ -118,10 +133,20 @@ def test_save_roundtrip_preserves_mix_node(tmp_path):
         "nodes": [
             {"id": "a", "kind": "input", "channels": 2, "source": str(in_wav)},
             {"id": "b", "kind": "input", "channels": 2, "source": str(in_wav)},
-            {"id": "mix", "kind": "mix", "num_inputs": 2, "channels": 2,
-             "gains": [0.5, 0.25]},
-            {"id": "out", "kind": "output", "channels": 2,
-             "sink": str(tmp_path / "out.wav"), "bit_depth": 24},
+            {
+                "id": "mix",
+                "kind": "mix",
+                "num_inputs": 2,
+                "channels": 2,
+                "gains": [0.5, 0.25],
+            },
+            {
+                "id": "out",
+                "kind": "output",
+                "channels": 2,
+                "sink": str(tmp_path / "out.wav"),
+                "bit_depth": 24,
+            },
         ],
         "edges": [
             {"src": "a", "dst": "mix", "dst_port": 0},
@@ -154,6 +179,7 @@ def test_save_roundtrip_preserves_mix_node(tmp_path):
 # Multi-node render parity: two inputs -> weighted mix -> output        #
 # --------------------------------------------------------------------- #
 
+
 @skip_if_no_desktop
 def test_multinode_mix_render_parity(tmp_path):
     """A two-input weighted-mix graph must render bit-identically through
@@ -171,24 +197,48 @@ def test_multinode_mix_render_parity(tmp_path):
     audio_io.write_audio(str(wav_b), b, sr, bit_depth=24)
 
     def make(json_path, sink):
-        json_path.write_text(json.dumps({
-            "minihost_project_version": 1,
-            "sample_rate": sr,
-            "block_size": 256,
-            "nodes": [
-                {"id": "a", "kind": "input", "channels": 2, "source": str(wav_a)},
-                {"id": "b", "kind": "input", "channels": 2, "source": str(wav_b)},
-                {"id": "mix", "kind": "mix", "num_inputs": 2, "channels": 2,
-                 "gains": [0.5, 0.25]},
-                {"id": "out", "kind": "output", "channels": 2,
-                 "sink": str(sink), "bit_depth": 24},
-            ],
-            "edges": [
-                {"src": "a", "dst": "mix", "dst_port": 0},
-                {"src": "b", "dst": "mix", "dst_port": 1},
-                {"src": "mix", "dst": "out"},
-            ],
-        }))
+        json_path.write_text(
+            json.dumps(
+                {
+                    "minihost_project_version": 1,
+                    "sample_rate": sr,
+                    "block_size": 256,
+                    "nodes": [
+                        {
+                            "id": "a",
+                            "kind": "input",
+                            "channels": 2,
+                            "source": str(wav_a),
+                        },
+                        {
+                            "id": "b",
+                            "kind": "input",
+                            "channels": 2,
+                            "source": str(wav_b),
+                        },
+                        {
+                            "id": "mix",
+                            "kind": "mix",
+                            "num_inputs": 2,
+                            "channels": 2,
+                            "gains": [0.5, 0.25],
+                        },
+                        {
+                            "id": "out",
+                            "kind": "output",
+                            "channels": 2,
+                            "sink": str(sink),
+                            "bit_depth": 24,
+                        },
+                    ],
+                    "edges": [
+                        {"src": "a", "dst": "mix", "dst_port": 0},
+                        {"src": "b", "dst": "mix", "dst_port": 1},
+                        {"src": "mix", "dst": "out"},
+                    ],
+                }
+            )
+        )
 
     proj_py = tmp_path / "py.json"
     proj_cpp = tmp_path / "cpp.json"
@@ -201,8 +251,9 @@ def test_multinode_mix_render_parity(tmp_path):
     assert out_py.exists()
 
     res = _run(f"--render-project={proj_cpp}", timeout=60)
-    assert res.returncode == 0, \
+    assert res.returncode == 0, (
         f"desktop render failed:\nstdout:{res.stdout}\nstderr:{res.stderr}"
+    )
     assert out_cpp.exists()
 
     py, _ = audio_io.read_audio(str(out_py), as_=np.ndarray)
@@ -218,22 +269,36 @@ def test_save_roundtrip_preserves_resample_flag(tmp_path):
     """The input `resample` flag must survive the C++ parse -> save path
     and reload via the Python loader."""
     in_wav = tmp_path / "in.wav"
-    audio_io.write_audio(str(in_wav),
-                         np.zeros((2, 512), dtype=np.float32),
-                         44100, bit_depth=24)
+    audio_io.write_audio(
+        str(in_wav), np.zeros((2, 512), dtype=np.float32), 44100, bit_depth=24
+    )
     proj = tmp_path / "p.json"
-    proj.write_text(json.dumps({
-        "minihost_project_version": 1,
-        "sample_rate": 48000,
-        "block_size": 256,
-        "nodes": [
-            {"id": "in", "kind": "input", "channels": 2,
-             "source": str(in_wav), "resample": True},
-            {"id": "out", "kind": "output", "channels": 2,
-             "sink": str(tmp_path / "out.wav"), "bit_depth": 24},
-        ],
-        "edges": [{"src": "in", "dst": "out"}],
-    }))
+    proj.write_text(
+        json.dumps(
+            {
+                "minihost_project_version": 1,
+                "sample_rate": 48000,
+                "block_size": 256,
+                "nodes": [
+                    {
+                        "id": "in",
+                        "kind": "input",
+                        "channels": 2,
+                        "source": str(in_wav),
+                        "resample": True,
+                    },
+                    {
+                        "id": "out",
+                        "kind": "output",
+                        "channels": 2,
+                        "sink": str(tmp_path / "out.wav"),
+                        "bit_depth": 24,
+                    },
+                ],
+                "edges": [{"src": "in", "dst": "out"}],
+            }
+        )
+    )
 
     res = _run(f"--save-roundtrip={proj}", timeout=30)
     assert res.returncode == 0, res.stderr
@@ -260,18 +325,32 @@ def test_resample_render_parity(tmp_path):
     audio_io.write_audio(str(in_wav), src, 44100, bit_depth=24)
 
     def make(json_path, sink):
-        json_path.write_text(json.dumps({
-            "minihost_project_version": 1,
-            "sample_rate": 48000,
-            "block_size": 256,
-            "nodes": [
-                {"id": "in", "kind": "input", "channels": 2,
-                 "source": str(in_wav), "resample": True},
-                {"id": "out", "kind": "output", "channels": 2,
-                 "sink": str(sink), "bit_depth": 24},
-            ],
-            "edges": [{"src": "in", "dst": "out"}],
-        }))
+        json_path.write_text(
+            json.dumps(
+                {
+                    "minihost_project_version": 1,
+                    "sample_rate": 48000,
+                    "block_size": 256,
+                    "nodes": [
+                        {
+                            "id": "in",
+                            "kind": "input",
+                            "channels": 2,
+                            "source": str(in_wav),
+                            "resample": True,
+                        },
+                        {
+                            "id": "out",
+                            "kind": "output",
+                            "channels": 2,
+                            "sink": str(sink),
+                            "bit_depth": 24,
+                        },
+                    ],
+                    "edges": [{"src": "in", "dst": "out"}],
+                }
+            )
+        )
 
     proj_py = tmp_path / "py.json"
     proj_cpp = tmp_path / "cpp.json"
@@ -284,8 +363,9 @@ def test_resample_render_parity(tmp_path):
     assert out_py.exists()
 
     res = _run(f"--render-project={proj_cpp}", timeout=60)
-    assert res.returncode == 0, \
+    assert res.returncode == 0, (
         f"desktop resample render failed:\nstdout:{res.stdout}\nstderr:{res.stderr}"
+    )
     assert out_cpp.exists()
 
     py, _ = audio_io.read_audio(str(out_py), as_=np.ndarray)

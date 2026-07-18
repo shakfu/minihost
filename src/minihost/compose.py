@@ -65,7 +65,11 @@ from minihost.process import process_audio
 _PROCESSORS = (Plugin, PluginChain, PluginBus)
 
 Transform = Union[
-    Plugin, PluginChain, PluginBus, "Compose", "_Wrapper",
+    Plugin,
+    PluginChain,
+    PluginBus,
+    "Compose",
+    "_Wrapper",
     Callable[[Any, float], Any],
 ]
 
@@ -74,6 +78,7 @@ def _np():
     """Import numpy lazily with a friendly error."""
     try:
         import numpy  # noqa: F401
+
         return numpy
     except ImportError as e:  # pragma: no cover - exercised only without numpy
         raise ImportError(
@@ -87,13 +92,13 @@ def _coerce(x: Any) -> AudioBuffer:
     if isinstance(x, AudioBuffer):
         return x
     np = _np()
-    return AudioBuffer.from_numpy(
-        np.ascontiguousarray(np.asarray(x, dtype=np.float32))
-    )
+    return AudioBuffer.from_numpy(np.ascontiguousarray(np.asarray(x, dtype=np.float32)))
 
 
 def _run_processor(
-    proc: Any, audio: AudioBuffer, block_size: int | None,
+    proc: Any,
+    audio: AudioBuffer,
+    block_size: int | None,
 ) -> AudioBuffer:
     """Run a native processor length-preservingly over ``audio``.
 
@@ -102,13 +107,19 @@ def _run_processor(
     compensation keep the output aligned and same-length.
     """
     return process_audio(
-        proc, audio, tail_seconds=0.0, compensate_latency=True,
+        proc,
+        audio,
+        tail_seconds=0.0,
+        compensate_latency=True,
         block_size=block_size,
     )
 
 
 def _apply(
-    t: Transform, audio: AudioBuffer, sr: float, rng: random.Random,
+    t: Transform,
+    audio: AudioBuffer,
+    sr: float,
+    rng: random.Random,
     block_size: int | None,
 ) -> AudioBuffer:
     """Apply a single transform to ``audio`` and return the result buffer."""
@@ -254,9 +265,7 @@ class Compose:
         ts = self.tail_seconds
         if isinstance(ts, str):
             if ts != "auto":
-                raise ValueError(
-                    f"tail_seconds string must be 'auto', got {ts!r}."
-                )
+                raise ValueError(f"tail_seconds string must be 'auto', got {ts!r}.")
             return int(self.max_tail_seconds * sr), True
         ts = float(ts)
         if ts < 0:
@@ -275,7 +284,9 @@ class Compose:
         return out
 
     def _trim_tail(
-        self, buf: AudioBuffer, min_frames: int,
+        self,
+        buf: AudioBuffer,
+        min_frames: int,
     ) -> AudioBuffer:
         """Trim trailing frames below ``tail_threshold``, keeping at least
         ``min_frames``."""
@@ -292,7 +303,10 @@ class Compose:
     # -- execution -----------------------------------------------------
 
     def _run(
-        self, buf: AudioBuffer, sr: float, rng: random.Random,
+        self,
+        buf: AudioBuffer,
+        sr: float,
+        rng: random.Random,
     ) -> AudioBuffer:
         """Core pipeline: pad, apply transforms in order, optionally trim.
 
@@ -319,7 +333,9 @@ class Compose:
         return work
 
     def __call__(
-        self, samples: Any = None, sample_rate: float | None = None,
+        self,
+        samples: Any = None,
+        sample_rate: float | None = None,
     ) -> Any:
         """Process ``samples`` through the pipeline.
 
@@ -390,13 +406,16 @@ class Compose:
                     f"Input is {in_sr} Hz but pipeline is {sr} Hz. Pass "
                     f"resample_to_pipeline_rate=True to convert."
                 )
-            audio = resample(audio, in_sr, sr)
+            audio = resample(audio, in_sr, int(sr))
         buf = audio if isinstance(audio, AudioBuffer) else AudioBuffer.from_numpy(audio)
 
         required = self._first_input_channels()
         if required is not None:
             buf = _maybe_duplicate_to_match(
-                buf, required, duplicate_to_stereo, "Input",
+                buf,
+                required,
+                duplicate_to_stereo,
+                "Input",
             )
 
         out = self(buf, sample_rate=sr)
@@ -516,7 +535,7 @@ class Fade:
         if fi > 0:
             data[:, :fi] *= np.linspace(0.0, 1.0, fi, dtype=np.float32)
         if fo > 0:
-            data[:, n - fo:] *= np.linspace(1.0, 0.0, fo, dtype=np.float32)
+            data[:, n - fo :] *= np.linspace(1.0, 0.0, fo, dtype=np.float32)
         return AudioBuffer.from_numpy(data)
 
     def __repr__(self) -> str:
@@ -534,7 +553,10 @@ class _Wrapper:
     """
 
     def apply(
-        self, audio: AudioBuffer, sr: float, rng: random.Random,
+        self,
+        audio: AudioBuffer,
+        sr: float,
+        rng: random.Random,
         block_size: int | None,
     ) -> AudioBuffer:
         raise NotImplementedError
@@ -573,7 +595,8 @@ class OneOf(_Wrapper):
     """
 
     def __init__(
-        self, transforms: Sequence[Transform],
+        self,
+        transforms: Sequence[Transform],
         weights: Sequence[float] | None = None,
     ) -> None:
         self.transforms = list(transforms)
@@ -602,7 +625,9 @@ class SomeOf(_Wrapper):
     """
 
     def __init__(
-        self, n: int | tuple[int, int], transforms: Sequence[Transform],
+        self,
+        n: int | tuple[int, int],
+        transforms: Sequence[Transform],
     ) -> None:
         self.transforms = list(transforms)
         if not self.transforms:
@@ -673,17 +698,16 @@ class RandomParam(_Wrapper):
         else:
             self.plugin.set_param(int(self.param), float(value))
         return _run_processor(
-            self.plugin, audio, self.block_size if block_size is None else block_size,
+            self.plugin,
+            audio,
+            self.block_size if block_size is None else block_size,
         )
 
     def children(self):
         return (self.plugin,)
 
     def __repr__(self) -> str:
-        return (
-            f"RandomParam({self.param!r}, "
-            f"[{self.min_value}, {self.max_value}])"
-        )
+        return f"RandomParam({self.param!r}, [{self.min_value}, {self.max_value}])"
 
 
 class AddGaussianNoise(_Wrapper):
@@ -694,7 +718,9 @@ class AddGaussianNoise(_Wrapper):
     """
 
     def __init__(
-        self, min_amplitude: float = 0.001, max_amplitude: float = 0.015,
+        self,
+        min_amplitude: float = 0.001,
+        max_amplitude: float = 0.015,
     ) -> None:
         self.min_amplitude = float(min_amplitude)
         self.max_amplitude = float(max_amplitude)
@@ -711,6 +737,4 @@ class AddGaussianNoise(_Wrapper):
         return AudioBuffer.from_numpy(np.ascontiguousarray(data + noise))
 
     def __repr__(self) -> str:
-        return (
-            f"AddGaussianNoise([{self.min_amplitude}, {self.max_amplitude}])"
-        )
+        return f"AddGaussianNoise([{self.min_amplitude}, {self.max_amplitude}])"

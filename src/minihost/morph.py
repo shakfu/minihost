@@ -70,9 +70,7 @@ def lerp(a: Sequence[float], b: Sequence[float], t: Blend) -> Snapshot:
     values. Raises ``ValueError`` on length mismatch.
     """
     if len(a) != len(b):
-        raise ValueError(
-            f"snapshots differ in length ({len(a)} vs {len(b)})"
-        )
+        raise ValueError(f"snapshots differ in length ({len(a)} vs {len(b)})")
     if isinstance(t, (int, float)):
         tf = float(t)
         return [_clamp01(x + (y - x) * tf) for x, y in zip(a, b)]

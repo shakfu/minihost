@@ -9,7 +9,9 @@ import pytest
 
 import minihost
 
-PLUGIN = os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+PLUGIN = (
+    os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+)
 INPUT_WAV = "tests/_wav/piano.wav"
 
 skip_if_no_plugin = pytest.mark.skipif(
@@ -26,8 +28,9 @@ skip_if_no_input = pytest.mark.skipif(
 def test_process_audio_returns_audiobuffer_of_expected_shape():
     plugin = minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=512)
     src = minihost.AudioBuffer(plugin.num_input_channels, 4800)  # 0.1s
-    out = minihost.process_audio(plugin, src, tail_seconds=0.0,
-                                  compensate_latency=False)
+    out = minihost.process_audio(
+        plugin, src, tail_seconds=0.0, compensate_latency=False
+    )
     assert isinstance(out, minihost.AudioBuffer)
     assert out.channels == plugin.num_output_channels
     assert out.frames == src.frames
@@ -37,10 +40,12 @@ def test_process_audio_returns_audiobuffer_of_expected_shape():
 def test_process_audio_with_tail_extends_output():
     plugin = minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=512)
     src = minihost.AudioBuffer(plugin.num_input_channels, 4800)
-    out_no_tail = minihost.process_audio(plugin, src, tail_seconds=0.0,
-                                          compensate_latency=False)
-    out_tail = minihost.process_audio(plugin, src, tail_seconds=0.5,
-                                       compensate_latency=False)
+    out_no_tail = minihost.process_audio(
+        plugin, src, tail_seconds=0.0, compensate_latency=False
+    )
+    out_tail = minihost.process_audio(
+        plugin, src, tail_seconds=0.5, compensate_latency=False
+    )
     assert out_tail.frames - out_no_tail.frames == int(0.5 * 48000)
 
 
@@ -69,7 +74,9 @@ def test_process_audio_to_file_roundtrip(tmp_path):
     plugin = minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=512)
     out_path = tmp_path / "out.wav"
     n = minihost.process_audio_to_file(
-        plugin, INPUT_WAV, str(out_path),
+        plugin,
+        INPUT_WAV,
+        str(out_path),
         tail_seconds=0.5,
         compensate_latency=False,
     )
@@ -90,7 +97,9 @@ def test_process_audio_to_file_resamples_when_rates_differ(tmp_path):
     plugin = minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=512)
     out_path = tmp_path / "out.wav"
     minihost.process_audio_to_file(
-        plugin, INPUT_WAV, str(out_path),
+        plugin,
+        INPUT_WAV,
+        str(out_path),
         tail_seconds=0.0,
         compensate_latency=False,
     )
@@ -105,7 +114,9 @@ def test_process_audio_to_file_duplicates_mono_to_required_channels(tmp_path):
     out_path = tmp_path / "out.wav"
     # piano.wav is mono; plugin may need >1 input channel.
     minihost.process_audio_to_file(
-        plugin, INPUT_WAV, str(out_path),
+        plugin,
+        INPUT_WAV,
+        str(out_path),
         tail_seconds=0.0,
         compensate_latency=False,
     )

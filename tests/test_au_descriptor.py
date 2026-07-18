@@ -27,8 +27,8 @@ import minihost
 # Stock Apple AU effects present on any macOS install. First that opens wins.
 _STOCK_AU = [
     ("AUBandpass", "AudioUnit:Effects/aufx,bpas,appl"),
-    ("AUDelay",    "AudioUnit:Effects/aufx,dely,appl"),
-    ("AULowpass",  "AudioUnit:Effects/aufx,lpas,appl"),
+    ("AUDelay", "AudioUnit:Effects/aufx,dely,appl"),
+    ("AULowpass", "AudioUnit:Effects/aufx,lpas,appl"),
 ]
 
 skip_if_not_macos = pytest.mark.skipif(
@@ -58,9 +58,7 @@ def au() -> tuple[str, str]:
 @skip_if_not_macos
 def test_from_descriptor_opens_and_processes(au):
     name, xml = au
-    p = minihost.Plugin.from_descriptor(
-        xml, sample_rate=48000, max_block_size=512
-    )
+    p = minihost.Plugin.from_descriptor(xml, sample_rate=48000, max_block_size=512)
     assert p.num_input_channels >= 1
     assert p.num_output_channels >= 1
     # An impulse should pass through an effect and stay finite.
@@ -91,8 +89,7 @@ def test_render_project_with_au_node(au, tmp_path):
     desc_b64 = base64.b64encode(xml.encode("utf-8")).decode("ascii")
 
     # write_audio expects (channels, frames).
-    sig = (np.random.default_rng(0).standard_normal((2, 4800))
-           .astype(np.float32) * 0.2)
+    sig = np.random.default_rng(0).standard_normal((2, 4800)).astype(np.float32) * 0.2
     in_wav = tmp_path / "in.wav"
     out_wav = tmp_path / "out.wav"
     minihost.write_audio(str(in_wav), sig, 48000)
@@ -105,10 +102,20 @@ def test_render_project_with_au_node(au, tmp_path):
             {"id": "in", "kind": "input", "channels": 2, "source": str(in_wav)},
             # receives_midi=False: effect AUs don't accept MIDI, and the
             # legacy fan-out migration would otherwise try to wire it.
-            {"id": "fx", "kind": "plugin", "descriptor": desc_b64,
-             "name": name, "receives_midi": False},
-            {"id": "out", "kind": "output", "channels": 2,
-             "sink": str(out_wav), "bit_depth": 24},
+            {
+                "id": "fx",
+                "kind": "plugin",
+                "descriptor": desc_b64,
+                "name": name,
+                "receives_midi": False,
+            },
+            {
+                "id": "out",
+                "kind": "output",
+                "channels": 2,
+                "sink": str(out_wav),
+                "bit_depth": 24,
+            },
         ],
         "edges": [{"src": "in", "dst": "fx"}, {"src": "fx", "dst": "out"}],
     }
@@ -137,8 +144,7 @@ def test_descriptor_persists_through_project_json(au, tmp_path):
         sample_rate=48000,
         block_size=512,
         input_nodes=[{"id": "in", "channels": 2, "source": "in.wav"}],
-        output_nodes=[{"id": "out", "channels": 2, "sink": "out.wav",
-                       "bit_depth": 24}],
+        output_nodes=[{"id": "out", "channels": 2, "sink": "out.wav", "bit_depth": 24}],
         plugin_nodes=[{"id": "fx", "descriptor": desc_b64, "name": name}],
         edges=[{"src": "in", "dst": "fx"}, {"src": "fx", "dst": "out"}],
     )

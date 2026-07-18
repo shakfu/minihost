@@ -1159,7 +1159,9 @@ class TestMidiRendering:
         mf.add_note_off(0, 480, 0, 60, 0)
         return mf
 
-    def test_render_midi_returns_audiobuffer_by_default(self, synth_plugin, test_midi_file):
+    def test_render_midi_returns_audiobuffer_by_default(
+        self, synth_plugin, test_midi_file
+    ):
         """render_midi returns AudioBuffer by default; pass as_=np.ndarray for numpy."""
         import numpy as np
 
@@ -1172,7 +1174,10 @@ class TestMidiRendering:
 
         # Numpy path via as_=
         audio_np = minihost.render_midi(
-            synth_plugin, test_midi_file, block_size=512, tail_seconds=0.5,
+            synth_plugin,
+            test_midi_file,
+            block_size=512,
+            tail_seconds=0.5,
             as_=np.ndarray,
         )
         assert isinstance(audio_np, np.ndarray)
@@ -1196,7 +1201,10 @@ class TestMidiRendering:
         # Numpy path via as_=
         np_blocks = list(
             minihost.render_midi_stream(
-                synth_plugin, test_midi_file, block_size=256, tail_seconds=0.1,
+                synth_plugin,
+                test_midi_file,
+                block_size=256,
+                tail_seconds=0.1,
                 as_=np.ndarray,
             )
         )
@@ -1410,8 +1418,7 @@ class TestPluginChain:
         mf.add_note_on(0, 0, 0, 60, 100)
         mf.add_note_off(0, 480, 0, 60, 0)
 
-        audio = minihost.render_midi(chain, mf, tail_seconds=0.5,
-                                     as_=np.ndarray)
+        audio = minihost.render_midi(chain, mf, tail_seconds=0.5, as_=np.ndarray)
 
         assert isinstance(audio, np.ndarray)
         assert audio.ndim == 2

@@ -62,7 +62,9 @@ def test_normalize_peak_silent_buffer_is_noop():
 # ---------------------------------------------------------------------------
 
 
-PLUGIN = os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+PLUGIN = (
+    os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+)
 skip_if_no_plugin = pytest.mark.skipif(
     not os.path.exists(PLUGIN),
     reason=f"test plugin not found at {PLUGIN}",
@@ -75,7 +77,8 @@ def test_process_audio_progress_callback_called_monotonically():
     src = minihost.AudioBuffer(plugin.num_input_channels, 4800)
     calls: list[tuple[int, int]] = []
     minihost.process_audio(
-        plugin, src,
+        plugin,
+        src,
         compensate_latency=False,
         progress_callback=lambda c, t: calls.append((c, t)),
     )
@@ -83,7 +86,7 @@ def test_process_audio_progress_callback_called_monotonically():
     # monotonic non-decreasing current
     for prev, nxt in zip(calls, calls[1:]):
         assert prev[0] <= nxt[0]
-        assert prev[1] == nxt[1]      # total is stable
+        assert prev[1] == nxt[1]  # total is stable
     # final call hits the total
     assert calls[-1][0] == calls[-1][1] == 4800
 
@@ -97,7 +100,8 @@ def test_process_audio_normalize_brings_peak_to_target():
     for ch in range(plugin.num_input_channels):
         src[ch, 0] = 0.1
     out = minihost.process_audio(
-        plugin, src,
+        plugin,
+        src,
         compensate_latency=False,
         normalize=-3.0,
     )

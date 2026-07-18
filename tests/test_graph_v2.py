@@ -26,7 +26,9 @@ import pytest
 
 import minihost
 
-PLUGIN = os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+PLUGIN = (
+    os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+)
 
 skip_if_no_plugin = pytest.mark.skipif(
     not os.path.exists(PLUGIN),
@@ -37,6 +39,7 @@ skip_if_no_plugin = pytest.mark.skipif(
 # -------------------------------------------------------------------- #
 # 1. Topology / validation                                              #
 # -------------------------------------------------------------------- #
+
 
 def test_compile_empty_graph_fails():
     g = minihost.PluginGraph(64, 48000.0)
@@ -90,7 +93,7 @@ def test_cycle_detected_at_compile():
     m2 = g.add_mix(1, 2)
     out = g.add_output(2)
     g.connect(m1, m2)
-    g.connect(m2, m1)        # back-edge
+    g.connect(m2, m1)  # back-edge
     g.connect(m2, out)
     with pytest.raises(RuntimeError, match="cycle"):
         g.compile()
@@ -123,6 +126,7 @@ def test_render_before_compile_fails():
 # -------------------------------------------------------------------- #
 # 2. Non-plugin numerical parity                                        #
 # -------------------------------------------------------------------- #
+
 
 def test_identity_input_to_output_copies_samples():
     """input -> output is a memcpy. Whatever goes in comes out."""
@@ -210,6 +214,7 @@ def test_fan_out_with_mix_reconvergence():
 # 3. Plugin parity                                                      #
 # -------------------------------------------------------------------- #
 
+
 @skip_if_no_plugin
 def test_linear_plugin_graph_matches_process_audio():
     """input -> plugin -> output (block-by-block) must match
@@ -219,10 +224,12 @@ def test_linear_plugin_graph_matches_process_audio():
     total = block * 4
 
     p = minihost.Plugin(PLUGIN, sample_rate=sr, max_block_size=block)
-    in_ch  = p.num_input_channels
+    in_ch = p.num_input_channels
     out_ch = p.num_output_channels
     if in_ch == 0:
-        pytest.skip("synth-only plugin (0 input channels) -- use a different parity test")
+        pytest.skip(
+            "synth-only plugin (0 input channels) -- use a different parity test"
+        )
 
     rng = np.random.default_rng(123)
     audio_in = rng.standard_normal((in_ch, total)).astype(np.float32) * 0.1
@@ -238,20 +245,20 @@ def test_linear_plugin_graph_matches_process_audio():
     ref = ref[:, :total]
 
     g = minihost.PluginGraph(block, float(sr))
-    in_node  = g.add_input(in_ch)
-    pl_node  = g.add_plugin(p)
+    in_node = g.add_input(in_ch)
+    pl_node = g.add_plugin(p)
     out_node = g.add_output(out_ch)
     g.connect(in_node, pl_node)
     g.connect(pl_node, out_node)
     g.compile()
 
     actual = np.zeros((out_ch, total), dtype=np.float32)
-    in_buf  = np.zeros((in_ch,  block), dtype=np.float32)
+    in_buf = np.zeros((in_ch, block), dtype=np.float32)
     out_buf = np.zeros((out_ch, block), dtype=np.float32)
     for start in range(0, total, block):
-        in_buf[:] = audio_in[:, start:start + block]
+        in_buf[:] = audio_in[:, start : start + block]
         g.render_block([in_buf], [out_buf], block)
-        actual[:, start:start + block] = out_buf
+        actual[:, start : start + block] = out_buf
 
     np.testing.assert_allclose(actual, ref, atol=1e-5, rtol=1e-5)
 
@@ -266,7 +273,7 @@ def test_graph_automation_matches_plugin_process_auto():
     block = 256
 
     p_ref = minihost.Plugin(PLUGIN, sample_rate=sr, max_block_size=block)
-    in_ch  = p_ref.num_input_channels
+    in_ch = p_ref.num_input_channels
     out_ch = p_ref.num_output_channels
     if in_ch == 0:
         pytest.skip("synth-only plugin")
@@ -274,7 +281,7 @@ def test_graph_automation_matches_plugin_process_auto():
         pytest.skip("plugin has no params")
 
     rng = np.random.default_rng(99)
-    in_buf  = (rng.standard_normal((in_ch, block)) * 0.05).astype(np.float32)
+    in_buf = (rng.standard_normal((in_ch, block)) * 0.05).astype(np.float32)
     # One automation point in this block: param 0 set to 0.7 at frame 50.
     autos = [(50, 0, 0.7)]
 
@@ -286,8 +293,8 @@ def test_graph_automation_matches_plugin_process_auto():
     # (each instance is fresh so initial parameter state is identical).
     p_graph = minihost.Plugin(PLUGIN, sample_rate=sr, max_block_size=block)
     g = minihost.PluginGraph(block, float(sr))
-    in_node  = g.add_input(in_ch)
-    pl_node  = g.add_plugin(p_graph)
+    in_node = g.add_input(in_ch)
+    pl_node = g.add_plugin(p_graph)
     out_node = g.add_output(out_ch)
     g.connect(in_node, pl_node)
     g.connect(pl_node, out_node)
@@ -304,6 +311,7 @@ def test_plugin_node_keeps_plugin_alive():
     """The graph holds a Python reference to the Plugin so dropping
     the local name does not free the underlying instance."""
     import gc
+
     g = minihost.PluginGraph(256, 48000.0)
     p = minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=256)
     in_ch = p.num_input_channels
@@ -320,6 +328,6 @@ def test_plugin_node_keeps_plugin_alive():
     gc.collect()
 
     # If the plugin had been freed, render_block would crash.
-    in_buf  = np.zeros((in_ch,  256), dtype=np.float32)
+    in_buf = np.zeros((in_ch, 256), dtype=np.float32)
     out_buf = np.zeros((out_ch, 256), dtype=np.float32)
     g.render_block([in_buf], [out_buf], 256)

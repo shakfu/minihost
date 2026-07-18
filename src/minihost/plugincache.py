@@ -42,6 +42,7 @@ PLUGIN_EXTS = {".vst3", ".component", ".lv2", ".vst", ".clap", ".dll", ".so"}
 
 # -- cache location --------------------------------------------------- #
 
+
 def _default_cache_dir() -> Path:
     env = os.environ.get("MINIHOST_CACHE_DIR")
     if env:
@@ -49,9 +50,7 @@ def _default_cache_dir() -> Path:
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Caches" / "minihost"
     if os.name == "nt":
-        base = os.environ.get("LOCALAPPDATA") or str(
-            Path.home() / "AppData" / "Local"
-        )
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
         return Path(base) / "minihost" / "Cache"
     base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
     return Path(base) / "minihost"
@@ -63,6 +62,7 @@ def cache_file() -> Path:
 
 
 # -- probe + fingerprint (indirected for testing) --------------------- #
+
 
 def _probe(path: str) -> dict:
     """Probe a single plugin. Indirected so tests can monkeypatch it."""
@@ -79,6 +79,7 @@ def _fingerprint(path: str) -> dict:
 
 
 # -- raw cache I/O ---------------------------------------------------- #
+
 
 def _empty() -> dict:
     return {"schema": SCHEMA_VERSION, "entries": {}}
@@ -109,6 +110,7 @@ def _save_raw(doc: dict) -> None:
 
 # -- discovery -------------------------------------------------------- #
 
+
 def _discover_plugins(directory: str) -> list[str]:
     """Return absolute paths of plugin bundles/files under `directory`,
     recursing into plain directories but treating any plugin-extension
@@ -138,6 +140,7 @@ def _discover_plugins(directory: str) -> list[str]:
 
 # -- entry helpers ---------------------------------------------------- #
 
+
 def _entry_fresh(entry: dict, path: str) -> bool:
     try:
         return entry.get("fp") == _fingerprint(path)
@@ -163,6 +166,7 @@ def _probe_to_entry(path: str) -> dict:
 
 
 # -- public API ------------------------------------------------------- #
+
 
 def scan(
     directory: str | Path,
@@ -196,11 +200,13 @@ def scan(
         if entry["status"] == "ok":
             results.append(entry["desc"])
         elif include_errors:
-            results.append({
-                "path": path,
-                "status": "error",
-                "error": entry.get("error"),
-            })
+            results.append(
+                {
+                    "path": path,
+                    "status": "error",
+                    "error": entry.get("error"),
+                }
+            )
 
     if changed:
         _save_raw(doc)
@@ -245,16 +251,19 @@ def query(
         d = entry.get("desc", {})
         if format is not None and d.get("format", "").lower() != format.lower():
             continue
-        if name_contains is not None and \
-                name_contains.lower() not in d.get("name", "").lower():
+        if (
+            name_contains is not None
+            and name_contains.lower() not in d.get("name", "").lower()
+        ):
             continue
-        if vendor_contains is not None and \
-                vendor_contains.lower() not in d.get("vendor", "").lower():
+        if (
+            vendor_contains is not None
+            and vendor_contains.lower() not in d.get("vendor", "").lower()
+        ):
             continue
         if accepts_midi is not None and bool(d.get("accepts_midi")) != accepts_midi:
             continue
-        if produces_midi is not None and \
-                bool(d.get("produces_midi")) != produces_midi:
+        if produces_midi is not None and bool(d.get("produces_midi")) != produces_midi:
             continue
         if min_inputs is not None and int(d.get("num_inputs", 0)) < min_inputs:
             continue
@@ -271,12 +280,14 @@ def all_entries(*, include_errors: bool = True) -> list[dict]:
     for path, entry in _load_raw()["entries"].items():
         if not include_errors and entry.get("status") != "ok":
             continue
-        out.append({
-            "path": path,
-            "status": entry.get("status"),
-            "desc": entry.get("desc", {}),
-            "error": entry.get("error"),
-        })
+        out.append(
+            {
+                "path": path,
+                "status": entry.get("status"),
+                "desc": entry.get("desc", {}),
+                "error": entry.get("error"),
+            }
+        )
     out.sort(key=lambda x: x["path"])
     return out
 

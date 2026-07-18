@@ -20,12 +20,12 @@ import minihost
 
 def _build_mix_graph(max_block: int = 512, sr: float = 48000.0):
     g = minihost.PluginGraph(max_block, sr)
-    a   = g.add_input(2)
-    b   = g.add_input(2)
+    a = g.add_input(2)
+    b = g.add_input(2)
     mix = g.add_mix(2, 2)
     out = g.add_output(2)
-    g.connect(a,   mix, dst_port=0)
-    g.connect(b,   mix, dst_port=1)
+    g.connect(a, mix, dst_port=0)
+    g.connect(b, mix, dst_port=1)
     g.connect(mix, out)
     g.set_mix_gain(mix, 0, 0.5)
     g.set_mix_gain(mix, 1, 0.5)
@@ -89,13 +89,15 @@ def test_render_block_buffer_reuse_safe():
     b = np.zeros((2, F), dtype=np.float32)
     out = np.zeros((2, F), dtype=np.float32)
 
-    a.fill(2.0); b.fill(4.0)
+    a.fill(2.0)
+    b.fill(4.0)
     g.render_block([a, b], [out], F)
-    assert np.allclose(out, 3.0)        # 0.5*2 + 0.5*4
+    assert np.allclose(out, 3.0)  # 0.5*2 + 0.5*4
 
-    a.fill(-1.0); b.fill(-3.0)
+    a.fill(-1.0)
+    b.fill(-3.0)
     g.render_block([a, b], [out], F)
-    assert np.allclose(out, -2.0)       # confirms out was overwritten
+    assert np.allclose(out, -2.0)  # confirms out was overwritten
 
 
 def test_set_mix_gain_takes_effect_per_block_without_realloc():
@@ -108,8 +110,9 @@ def test_set_mix_gain_takes_effect_per_block_without_realloc():
     out = np.zeros((2, F), dtype=np.float32)
 
     for k, expected in enumerate([0.5, 1.0, 2.0, 0.0, 4.0]):
-        g.set_mix_gain(0 + 2, 0, expected)    # mix is node id 2 (a, b, mix, out)
+        g.set_mix_gain(0 + 2, 0, expected)  # mix is node id 2 (a, b, mix, out)
         g.set_mix_gain(0 + 2, 1, 0.0)
         g.render_block([a, b], [out], F)
-        assert np.allclose(out, expected), \
+        assert np.allclose(out, expected), (
             f"iter {k}: expected {expected}, got {out[0, 0]}"
+        )
