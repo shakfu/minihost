@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.5.0]
+
 From a code-review pass over the native layer, the Python bindings, the CLI and the desktop
 app. All three crash-class findings are fixed, along with two subsystems that reported
 success while doing nothing: MIDI ports and `.vstpreset` interchange. Block-size and
