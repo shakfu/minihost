@@ -1,4 +1,4 @@
-"""Offline renders must advance the host playhead (H5 / H6 in REVIEW.md).
+"""Offline renders must advance the host playhead.
 
 Two separate omissions:
 

@@ -1,6 +1,6 @@
 """Block-size and sample-rate contracts across device, chain and graph.
 
-Three findings (H3 / H4 / M10 in REVIEW.md) shared one root cause: the layers
+Three findings from the 2026-08 code-review pass shared one root cause: the layers
 that own the block size had no way to ask a plugin what it could handle, so
 none of them validated, and every mismatch surfaced as a per-block failure with
 an unhelpful message -- or no message at all.

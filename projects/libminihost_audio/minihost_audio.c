@@ -86,7 +86,13 @@ struct MH_AudioDevice {
     // MIDI I/O
     MH_MidiIn* midi_in;
     MH_MidiOut* midi_out;
+    // MH_MidiRingBuffer is single-producer/single-consumer (see its header).
+    // midi_in_buffer therefore belongs exclusively to the libremidi input
+    // thread; mh_audio_send_midi gets its own ring rather than becoming a
+    // second producer on the same one, which would corrupt the indices and
+    // lose or duplicate events. The audio thread drains both.
     MH_MidiRingBuffer* midi_in_buffer;   // MIDI thread -> audio thread
+    MH_MidiRingBuffer* midi_send_buffer; // app thread  -> audio thread
     MH_MidiRingBuffer* midi_out_buffer;  // audio thread -> MIDI output
     int midi_in_port;   // -1 if not connected or virtual
     int midi_out_port;  // -1 if not connected or virtual
@@ -279,6 +285,12 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
     int num_midi_events = 0;
     if (dev->midi_in_buffer) {
         num_midi_events = mh_midi_ringbuffer_pop_all(dev->midi_in_buffer, midi_events, 256);
+    }
+    // Programmatic sends live in their own ring (see the struct comment).
+    if (dev->midi_send_buffer && num_midi_events < 256) {
+        num_midi_events += mh_midi_ringbuffer_pop_all(
+            dev->midi_send_buffer, midi_events + num_midi_events,
+            256 - num_midi_events);
     }
 
     // Process through the plugin or chain with MIDI
@@ -518,6 +530,7 @@ MH_AudioDevice* mh_audio_open(MH_Plugin* plugin, const MH_AudioConfig* config,
 
     // Create MIDI ring buffers
     dev->midi_in_buffer = mh_midi_ringbuffer_create(256);
+    dev->midi_send_buffer = mh_midi_ringbuffer_create(256);
     dev->midi_out_buffer = mh_midi_ringbuffer_create(256);
 
     // Connect MIDI ports if specified in config
@@ -711,6 +724,7 @@ MH_AudioDevice* mh_audio_open_chain(MH_PluginChain* chain, const MH_AudioConfig*
 
     // Create MIDI ring buffers
     dev->midi_in_buffer = mh_midi_ringbuffer_create(256);
+    dev->midi_send_buffer = mh_midi_ringbuffer_create(256);
     dev->midi_out_buffer = mh_midi_ringbuffer_create(256);
 
     // Connect MIDI ports if specified in config
@@ -754,6 +768,9 @@ void mh_audio_close(MH_AudioDevice* dev) {
     }
     if (dev->midi_in_buffer) {
         mh_midi_ringbuffer_free(dev->midi_in_buffer);
+    }
+    if (dev->midi_send_buffer) {
+        mh_midi_ringbuffer_free(dev->midi_send_buffer);
     }
     if (dev->midi_out_buffer) {
         mh_midi_ringbuffer_free(dev->midi_out_buffer);
@@ -952,7 +969,9 @@ int mh_audio_is_midi_output_virtual(MH_AudioDevice* dev) {
 }
 
 int mh_audio_send_midi(MH_AudioDevice* dev, unsigned char status, unsigned char data1, unsigned char data2) {
-    if (!dev || !dev->midi_in_buffer) return 0;
+    // Note: NOT midi_in_buffer -- that ring has the libremidi input thread as
+    // its single producer. See the struct comment.
+    if (!dev || !dev->midi_send_buffer) return 0;
 
     MH_MidiEvent event;
     event.sample_offset = 0;  // Will be processed at start of next audio buffer
@@ -960,7 +979,7 @@ int mh_audio_send_midi(MH_AudioDevice* dev, unsigned char status, unsigned char 
     event.data1 = data1;
     event.data2 = data2;
 
-    return mh_midi_ringbuffer_push(dev->midi_in_buffer, &event);
+    return mh_midi_ringbuffer_push(dev->midi_send_buffer, &event);
 }
 
 // Internal callback that reads from the audio ring buffer

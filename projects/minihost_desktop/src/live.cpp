@@ -3,6 +3,7 @@
 #include "live.h"
 
 #include <climits>
+#include <cmath>
 #include <cstring>
 
 namespace minihost_desktop {
@@ -275,6 +276,8 @@ void LiveEngine::detachCallback()
 void LiveEngine::stop()
 {
     detachCallback();
+    rate_mismatch_.store(false, std::memory_order_relaxed);
+    mismatched_device_rate_.store(0.0, std::memory_order_relaxed);
     transport_playing_.store(false);
     transport_pos_samples_ = 0;
     transport_pos_beats_   = 0.0;
@@ -283,13 +286,38 @@ void LiveEngine::stop()
 
 void LiveEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
 {
-    if (device != nullptr)
+    if (device == nullptr) return;
+
+    const double device_rate = device->getCurrentSampleRate();
+    std::fprintf(stderr,
+        "live: device starting (sr=%d, block=%d, in_ch=%d, out_ch=%d)\n",
+        (int) device_rate,
+        device->getCurrentBufferSizeSamples(),
+        device->getActiveInputChannels().countNumberOfSetBits(),
+        device->getActiveOutputChannels().countNumberOfSetBits());
+
+    // The project's plugins were instantiated at the project rate, and the
+    // transport, metronome and MIDI-clock maths all use it. If the device is
+    // running at a different rate, everything plays at the wrong speed and
+    // pitch and the tempo drifts against the metronome. This was previously
+    // just part of the informational line above, so the only symptom a user
+    // got was "it sounds wrong".
+    const double project_rate =
+        compiled_ != nullptr ? (double) compiled_->doc.sample_rate : 0.0;
+    const bool mismatch =
+        project_rate > 0.0 && std::abs(device_rate - project_rate) > 0.5;
+
+    rate_mismatch_.store(mismatch, std::memory_order_relaxed);
+    mismatched_device_rate_.store(mismatch ? device_rate : 0.0,
+                                  std::memory_order_relaxed);
+
+    if (mismatch)
         std::fprintf(stderr,
-            "live: device starting (sr=%d, block=%d, in_ch=%d, out_ch=%d)\n",
-            (int) device->getCurrentSampleRate(),
-            device->getCurrentBufferSizeSamples(),
-            device->getActiveInputChannels().countNumberOfSetBits(),
-            device->getActiveOutputChannels().countNumberOfSetBits());
+            "live: ERROR project sample rate is %.0f Hz but the audio device is "
+            "running at %.0f Hz -- playback will be at the wrong speed and "
+            "pitch. Set the device to %.0f Hz, or rebuild the project at "
+            "%.0f Hz.\n",
+            project_rate, device_rate, project_rate, device_rate);
 }
 
 void LiveEngine::audioDeviceStopped() {}
@@ -468,10 +496,20 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
         //     silence; extra device channels are ignored. Multiple
         //     device_input nodes share the same device channels (each
         //     consumer sees the same live signal).
+        // Clear per channel. These buffers are planar with a stride of
+        // cb_block_size_, so a single contiguous memset of n * channels floats
+        // only zeroes the first channel's worth (plus part of the next) and
+        // leaves the tail of every later channel holding the previous block's
+        // samples. That is the normal case, not an edge one: device callbacks
+        // are typically smaller than the project block size, so any input node
+        // with two or more channels leaked stale audio on every callback.
         for (auto& buf : in_planar_)
-            std::memset(buf.data(), 0,
-                        (size_t) n * (size_t) (buf.size() / (size_t) cb_block_size_)
-                                   * sizeof(float));
+        {
+            const size_t channels = buf.size() / (size_t) cb_block_size_;
+            for (size_t c = 0; c < channels; ++c)
+                std::memset(buf.data() + c * (size_t) cb_block_size_, 0,
+                            (size_t) n * sizeof(float));
+        }
         for (size_t k = 0;
              k < compiled_->device_input_buffer_indices.size(); ++k)
         {

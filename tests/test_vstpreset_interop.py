@@ -1,6 +1,6 @@
 """Integration tests for .vstpreset interchange against a real VST3 plugin.
 
-Two defects motivated these (H2 in REVIEW.md):
+Two defects motivated these:
 
   * `save_vstpreset` wrote JUCE's own `<VST3PluginState>` container into the
     file's `Comp` chunk. The format specifies the *raw* VST3 component state

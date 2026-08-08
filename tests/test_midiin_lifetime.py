@@ -181,7 +181,7 @@ def _open_virtual_or_skip(name, callback):
     test session. That is a precondition of this test, not the thing under
     test, so retry a little and skip (loudly) rather than report a failure of
     the lifetime fix. A persistent failure here is worth investigating on its
-    own -- see H12 in REVIEW.md.
+    own -- see the MIDI back-end notes in TODO.md.
     """
     last = None
     for _ in range(3):

@@ -553,6 +553,35 @@ extern "C" int mh_get_info(MH_Plugin* p, MH_Info* out_info)
     return 1;
 }
 
+// Build a short MIDI message of the correct length.
+//
+// MH_MidiEvent always carries three bytes, but not every status byte takes two
+// data bytes: Program Change (0xC0) and Channel Pressure (0xD0) are two-byte
+// messages, and System Real-Time (0xF8-0xFF) are one-byte. Feeding all three
+// bytes to juce::MidiMessage's 3-byte constructor hard-codes size = 3 and trips
+// its own jassert ("check that the length matches the data") in debug builds,
+// while release builds put a malformed message into the MidiBuffer with a
+// spurious trailing byte.
+//
+// getMessageLengthFromFirstByte asserts for anything that is not a valid short
+// message (data bytes, SysEx start/end), so those are screened out first and
+// left on the previous 3-byte path -- MH_MidiEvent cannot express SysEx anyway.
+static MidiMessage makeShortMidiMessage(unsigned char status,
+                                        unsigned char data1,
+                                        unsigned char data2) noexcept
+{
+    if (status >= 0x80 && status != 0xF0 && status != 0xF7)
+    {
+        switch (MidiMessage::getMessageLengthFromFirstByte(status))
+        {
+            case 1:  return MidiMessage(status);
+            case 2:  return MidiMessage(status, data1);
+            default: break;
+        }
+    }
+    return MidiMessage(status, data1, data2);
+}
+
 extern "C" int mh_process_midi_io(MH_Plugin* p,
                                   const float* const* inputs,
                                   float* const* outputs,
@@ -602,7 +631,7 @@ extern "C" int mh_process_midi_io(MH_Plugin* p,
         {
             const auto& ev = midi_in[i];
             int samplePos = jlimit(0, nframes - 1, ev.sample_offset);
-            p->midi.addEvent(MidiMessage(ev.status, ev.data1, ev.data2), samplePos);
+            p->midi.addEvent(makeShortMidiMessage(ev.status, ev.data1, ev.data2), samplePos);
         }
     }
 
@@ -1067,7 +1096,7 @@ extern "C" int mh_process_auto(MH_Plugin* p,
             if (ev.sample_offset >= current_sample)
             {
                 int local_offset = ev.sample_offset - current_sample;
-                p->midi.addEvent(MidiMessage(ev.status, ev.data1, ev.data2), local_offset);
+                p->midi.addEvent(makeShortMidiMessage(ev.status, ev.data1, ev.data2), local_offset);
             }
             ++midi_idx;
         }
@@ -1896,8 +1925,10 @@ extern "C" int mh_scan_directory(const char* directory_path,
     // Find all .vst3 and .component files recursively
     Array<File> pluginFiles;
 
-    // VST3 plugins (.vst3 bundles)
-    dir.findChildFiles(pluginFiles, File::findDirectories, true, "*.vst3");
+    // VST3 plugins. A .vst3 is a bundle *directory* on macOS, but on Windows
+    // and Linux it is very often a single shared library file -- searching only
+    // for directories made every such plugin invisible to scanning.
+    dir.findChildFiles(pluginFiles, File::findFilesAndDirectories, true, "*.vst3");
 
     // AudioUnit plugins (.component bundles) - macOS only
    #if JUCE_MAC
@@ -2158,7 +2189,9 @@ static int scanDirectoryWithFm(AudioPluginFormatManager& fm,
     int count = 0;
     Array<File> pluginFiles;
 
-    dir.findChildFiles(pluginFiles, File::findDirectories, true, "*.vst3");
+    // See the note in mh_scan_directory: single-file .vst3 plugins are the norm
+    // off macOS, so files must be searched as well as directories.
+    dir.findChildFiles(pluginFiles, File::findFilesAndDirectories, true, "*.vst3");
    #if JUCE_MAC
     dir.findChildFiles(pluginFiles, File::findDirectories, true, "*.component");
    #endif

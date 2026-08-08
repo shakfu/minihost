@@ -1,4 +1,4 @@
-"""Sidechain channel accounting (H1 in REVIEW.md).
+"""Sidechain channel accounting.
 
 `p->inCh` was set from JUCE's `getTotalNumInputChannels()`, which already sums
 every enabled input bus -- including the sidechain. `p->sidechainCh` then

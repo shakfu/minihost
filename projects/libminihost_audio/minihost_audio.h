@@ -153,6 +153,13 @@ int mh_audio_is_midi_output_virtual(MH_AudioDevice* dev);
 // data1: first data byte (e.g., note number)
 // data2: second data byte (e.g., velocity)
 // Returns 1 on success, 0 on failure (e.g., queue full)
+// Queue a MIDI event for the plugin from application code.
+//
+// Call from a single thread. The event goes onto a lock-free
+// single-producer/single-consumer ring that is separate from the one the MIDI
+// input port feeds -- sharing that ring made the input thread and this function
+// two producers on an SPSC structure, corrupting its indices and losing or
+// duplicating events. Returns 1 if queued, 0 if the ring is full.
 int mh_audio_send_midi(MH_AudioDevice* dev, unsigned char status, unsigned char data1, unsigned char data2);
 
 // Enable ring-buffer-based audio input for effect processing.

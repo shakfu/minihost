@@ -50,6 +50,27 @@ public:
     void stop();
     bool isRunning() const noexcept { return running_.load(); }
 
+    /** True when the audio device is running at a different sample rate than
+        the loaded project was built for.
+
+        The project's plugins were instantiated at the project rate and every
+        transport / metronome / MIDI-clock calculation uses it, so a mismatch
+        renders everything at the wrong speed and pitch. This used to be logged
+        as an ordinary informational line and otherwise ignored; the engine now
+        flags it so the app can tell the user instead of leaving them to work
+        out why playback sounds wrong. Set on audioDeviceAboutToStart, cleared
+        by stop(). */
+    bool hasSampleRateMismatch() const noexcept
+    {
+        return rate_mismatch_.load(std::memory_order_relaxed);
+    }
+
+    /** The device rate that conflicted with the project rate, or 0. */
+    double mismatchedDeviceSampleRate() const noexcept
+    {
+        return mismatched_device_rate_.load(std::memory_order_relaxed);
+    }
+
     juce::AudioDeviceManager& deviceManager() noexcept { return dm_; }
 
     // Currently-loaded live project, or nullptr if not running.
@@ -152,6 +173,8 @@ private:
     std::vector<float* const*>                     out_top_ptrs_;
 
     std::atomic<bool>                              running_{ false };
+    std::atomic<bool>                              rate_mismatch_{ false };
+    std::atomic<double>                            mismatched_device_rate_{ 0.0 };
     int                                            cb_block_size_ = 0;
 
     // Transport state. Atomics so the GUI thread can update without

@@ -4042,7 +4042,10 @@ NB_MODULE(_core, m) {
         // Programmatic MIDI
         .def("send_midi", &AudioDevice::send_midi,
              nb::arg("status"), nb::arg("data1"), nb::arg("data2"),
-             "Send a MIDI event to the plugin (e.g., send_midi(0x90, 60, 100) for note on)")
+             "Send a MIDI event to the plugin (e.g., send_midi(0x90, 60, 100) for note on). "
+             "Call from a single thread: the events go through a lock-free "
+             "single-producer queue (separate from the one the MIDI input port "
+             "feeds, so the two do not interfere). Raises if that queue is full.")
 
         // Audio input for effect processing (lock-free ring buffer)
         .def("enable_input", &AudioDevice::enable_input,
