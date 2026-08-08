@@ -74,6 +74,7 @@ class _CoreMidi:
             ctypes.POINTER(ctypes.c_void_p),
         ]
         self.cm.MIDISend.argtypes = [ref, ref, ctypes.c_void_p]
+        self.cm.MIDIClientDispose.argtypes = [ref]
 
     def cfstr(self, s: str):
         return self.cf.CFStringCreateWithCString(None, s.encode(), _KCF_UTF8)
@@ -100,7 +101,19 @@ class Sender:
         return self
 
     def __exit__(self, *exc) -> None:
-        return None
+        self.close()
+
+    def close(self) -> None:
+        """Dispose the CoreMIDI client. Idempotent."""
+        if getattr(self, "client", None):
+            self._api.cm.MIDIClientDispose(self.client)
+            self.client = self._api.ref()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def destinations(self) -> list[tuple[int, str]]:
         """[(endpoint_ref, name)] for every CoreMIDI destination."""
@@ -147,13 +160,16 @@ def wait_for_destination(name: str, timeout: float = 2.0) -> int | None:
         sender = Sender()
     except Exception:
         return None
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        for endpoint, dest_name in sender.destinations():
-            if dest_name == name:
-                return endpoint
-        time.sleep(0.05)
-    return None
+    try:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            for endpoint, dest_name in sender.destinations():
+                if dest_name == name:
+                    return endpoint
+            time.sleep(0.05)
+        return None
+    finally:
+        sender.close()
 
 
 def assert_contains_in_order(received: list[bytes], expected: list[bytes]) -> None:

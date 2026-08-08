@@ -61,11 +61,37 @@ def read_vstpreset(path: str | Path) -> VstPreset:
     return VstPreset(class_id=class_id, component_state=comp, controller_state=cont)
 
 
+def _is_juce_host_state(blob: bytes) -> bool:
+    """True if ``blob`` is a JUCE VST3 *host* state blob rather than a raw
+    VST3 component chunk.
+
+    Both can begin with JUCE's ``VC2!`` marker -- a JUCE-built plugin returns
+    its own ``copyXmlToBinary`` blob from ``IComponent::getState`` -- so the
+    marker alone is not enough. ``vst3_state_split`` additionally requires the
+    ``<VST3PluginState>`` root that only JUCE's host writes, which is what
+    separates the two.
+    """
+    from . import _core
+
+    try:
+        _core.vst3_state_split(blob)
+    except RuntimeError:
+        return False
+    return True
+
+
 def load_vstpreset(path: str | Path, plugin) -> None:
     """Load a .vstpreset file into a plugin.
 
-    Extracts the component state from the preset and applies it
-    via plugin.set_state().
+    The file's ``Comp`` (and ``Cont``, if present) chunks hold raw VST3
+    component / controller state. JUCE's hosted ``set_state`` does not accept
+    those directly -- it wants its own ``<VST3PluginState>`` container -- so
+    they are rewrapped on the way in. Without that step JUCE silently ignores
+    the data and the plugin keeps its previous patch.
+
+    Files written by older minihost versions stored a whole JUCE blob in the
+    ``Comp`` chunk; those are detected and passed through unchanged so existing
+    presets keep loading.
 
     Args:
         path: Path to the .vstpreset file.
@@ -74,14 +100,22 @@ def load_vstpreset(path: str | Path, plugin) -> None:
     Raises:
         FileNotFoundError: If the file does not exist.
         ValueError: If the file is not a valid .vstpreset or has no state.
-        RuntimeError: If set_state() fails.
+        RuntimeError: If set_state() fails (including the plugin rejecting it).
     """
+    from . import _core
+
     preset = read_vstpreset(path)
 
     if preset.component_state is None:
         raise ValueError(f"Preset file has no component state ('Comp' chunk): {path}")
 
-    plugin.set_state(preset.component_state)
+    if _is_juce_host_state(preset.component_state):
+        # Legacy minihost-written preset: the chunk is already a JUCE blob.
+        plugin.set_state(preset.component_state)
+    else:
+        plugin.set_state(
+            _core.vst3_state_join(preset.component_state, preset.controller_state)
+        )
 
 
 def write_vstpreset(
@@ -157,6 +191,12 @@ def save_vstpreset(
 ) -> None:
     """Save a plugin's current state as a .vstpreset file.
 
+    The plugin's state is unwrapped from JUCE's ``<VST3PluginState>`` container
+    into the raw component / controller chunks the format actually specifies,
+    so the resulting file is readable by other VST3 hosts and by the plugin's
+    own preset browser. (Writing JUCE's container into the ``Comp`` chunk, as
+    earlier versions did, produced a file only minihost could read.)
+
     Args:
         path: Destination file path.
         plugin: A minihost.Plugin instance.
@@ -168,11 +208,27 @@ def save_vstpreset(
             ``load_vstpreset`` to inherit one from an existing preset.
 
     Raises:
-        ValueError: If class_id is None and cannot be auto-detected.
+        ValueError: If class_id is None and cannot be auto-detected, or if the
+            plugin's state is not in JUCE's VST3 container format (i.e. it is
+            not a JUCE-hosted VST3 plugin, so there is nothing to unwrap).
         RuntimeError: If plugin.get_state() fails.
         OSError: If the file cannot be written.
     """
+    from . import _core
+
     state = plugin.get_state()
+    try:
+        component_state, controller_state = _core.vst3_state_split(state)
+    except RuntimeError as e:
+        raise ValueError(
+            f"Cannot write a .vstpreset for this plugin: {e}. '.vstpreset' is a "
+            f"VST3-only format and the state must come from a JUCE-hosted VST3 "
+            f"plugin."
+        ) from e
+    if component_state is None:
+        raise ValueError(
+            "Plugin state carries no component chunk; nothing to write to 'Comp'."
+        )
     if class_id is None:
         plugin_path = getattr(plugin, "path", "") or ""
         if not plugin_path.lower().endswith(".vst3"):
@@ -188,4 +244,4 @@ def save_vstpreset(
                 f"Pass class_id explicitly, or use load_vstpreset() to inherit "
                 f"one from an existing .vstpreset file."
             ) from e
-    write_vstpreset(path, class_id, state)
+    write_vstpreset(path, class_id, component_state, controller_state)

@@ -347,6 +347,17 @@ int mh_get_state_size(MH_Plugin* p);
 int mh_get_state(MH_Plugin* p, void* buffer, int buffer_size);
 
 // Restore state from buffer. Returns 1 on success, 0 on failure.
+//
+// JUCE's setStateInformation is void, so a plugin that rejects a blob does so
+// silently -- juce::VST3PluginInstance, for example, ignores anything that is
+// not in its own container format. This function therefore verifies that the
+// call had an observable effect (parameter values, else the serialized state)
+// and returns 0 when the plugin demonstrably ignored `data`. It never reports
+// failure for a state that was applied, but a plugin whose serialized state is
+// non-deterministic may still yield a false success.
+//
+// Cost: one extra getStateInformation() before the call, and a second one only
+// when parameter values alone cannot distinguish "applied" from "ignored".
 int mh_set_state(MH_Plugin* p, const void* data, int data_size);
 
 // Set transport info (call before mh_process to update tempo/position for plugins)
@@ -521,6 +532,7 @@ int mh_get_program_state_size(MH_Plugin* p);
 int mh_get_program_state(MH_Plugin* p, void* buffer, int buffer_size);
 
 // Restore current program state from buffer. Returns 1 on success, 0 on failure.
+// Rejection is detected the same way as mh_set_state -- see the note there.
 int mh_set_program_state(MH_Plugin* p, const void* data, int data_size);
 
 // Change sample rate without reloading the plugin

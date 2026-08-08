@@ -2707,6 +2707,110 @@ NB_MODULE(_core, m) {
           "Get list of available audio capture (input) devices. "
           "Returns list of dicts with 'name', 'index', and 'is_default'.");
 
+    // ----------------------------------------------------------------------
+    // JUCE state blob <-> raw VST3 chunks.
+    //
+    // juce::VST3PluginInstance::getStateInformation does NOT hand back the
+    // plugin's raw VST3 component state. It builds a <VST3PluginState> XML
+    // document whose <IComponent> / <IEditController> elements hold the raw
+    // IComponent::getState() / IEditController::getState() bytes, then wraps
+    // that in AudioProcessor::copyXmlToBinary's container:
+    //
+    //     'VC2!' | uint32 LE xml-length | single-line XML | '\0'
+    //
+    // The .vstpreset format wants those raw chunks directly (as 'Comp' and
+    // 'Cont'), so writing a JUCE blob into a preset file produces something no
+    // other VST3 host can read, and feeding a real preset's chunk to
+    // set_state() silently does nothing (getXmlFromBinary fails and JUCE just
+    // returns). These two helpers convert between the representations.
+    //
+    // The base64 here is JUCE's own variant -- a "<size>." prefix followed by
+    // LSB-first 6-bit groups over a custom alphabet -- so the conversion is
+    // done with juce::MemoryBlock's codec rather than reimplemented, keeping it
+    // exactly in step with whatever JUCE does.
+    // ----------------------------------------------------------------------
+    m.def("vst3_state_split",
+          [](nb::bytes state) -> nb::tuple {
+              const auto* data = reinterpret_cast<const uint8_t*>(state.c_str());
+              const size_t size = state.size();
+              if (size <= 9 || juce::ByteOrder::littleEndianInt(data) != 0x21324356u) {
+                  throw std::runtime_error(
+                      "not a JUCE plugin-state blob (missing 'VC2!' header); "
+                      "this is only meaningful for VST3 plugins hosted by JUCE");
+              }
+              const auto xml_len =
+                  (int) juce::ByteOrder::littleEndianInt(data + 4);
+              if (xml_len <= 0) {
+                  throw std::runtime_error("JUCE state blob has an empty XML payload");
+              }
+              auto xml = juce::parseXML(juce::String::fromUTF8(
+                  reinterpret_cast<const char*>(data) + 8,
+                  juce::jmin((int) size - 8, xml_len)));
+              if (xml == nullptr) {
+                  throw std::runtime_error("JUCE state blob contains malformed XML");
+              }
+              // Require the exact root JUCE's VST3 host writes. A JUCE-built
+              // *plugin* returns its own copyXmlToBinary blob from
+              // IComponent::getState, so a leading 'VC2!' alone does not tell
+              // the two layers apart -- the root tag does, which is what lets
+              // callers use this to detect a nested/legacy blob.
+              if (!xml->hasTagName("VST3PluginState")) {
+                  throw std::runtime_error(
+                      std::string("not a JUCE VST3 host state blob (root element is '")
+                      + xml->getTagName().toRawUTF8() + "', expected 'VST3PluginState')");
+              }
+              auto chunk = [&](const char* tag) -> nb::object {
+                  if (auto* child = xml->getChildByName(tag)) {
+                      juce::MemoryBlock mb;
+                      if (mb.fromBase64Encoding(child->getAllSubText())) {
+                          return nb::cast<nb::object>(nb::bytes(
+                              static_cast<const char*>(mb.getData()), mb.getSize()));
+                      }
+                  }
+                  return nb::none();
+              };
+              return nb::make_tuple(chunk("IComponent"), chunk("IEditController"));
+          },
+          nb::arg("state"),
+          "Split a JUCE VST3 plugin-state blob (as returned by "
+          "Plugin.get_state()) into its raw (component_state, controller_state) "
+          "chunks -- the bytes a .vstpreset file's 'Comp' and 'Cont' chunks "
+          "actually hold. Either element may be None if absent. Raises "
+          "RuntimeError if the blob is not in JUCE's container format.");
+
+    m.def("vst3_state_join",
+          [](nb::bytes component, std::optional<nb::bytes> controller) {
+              juce::XmlElement xml("VST3PluginState");
+              xml.createNewChildElement("IComponent")
+                 ->addTextElement(juce::MemoryBlock(component.c_str(),
+                                                    component.size())
+                                      .toBase64Encoding());
+              if (controller.has_value() && controller->size() > 0) {
+                  xml.createNewChildElement("IEditController")
+                     ->addTextElement(juce::MemoryBlock(controller->c_str(),
+                                                        controller->size())
+                                          .toBase64Encoding());
+              }
+              const auto text = xml.toString(
+                  juce::XmlElement::TextFormat().singleLine());
+              const auto utf8 = text.toRawUTF8();
+              const auto len = (uint32_t) std::strlen(utf8);
+
+              std::vector<char> out;
+              out.reserve(len + 9);
+              const char magic[4] = { 'V', 'C', '2', '!' };
+              out.insert(out.end(), magic, magic + 4);
+              for (int i = 0; i < 4; ++i)
+                  out.push_back((char) ((len >> (8 * i)) & 0xFF));
+              out.insert(out.end(), utf8, utf8 + len);
+              out.push_back('\0');
+              return nb::bytes(out.data(), out.size());
+          },
+          nb::arg("component_state"), nb::arg("controller_state") = nb::none(),
+          "Build a JUCE VST3 plugin-state blob from raw component (and "
+          "optionally controller) chunks, i.e. the inverse of "
+          "vst3_state_split. The result is what Plugin.set_state() expects.");
+
     // VST3 .vstpreset helpers
     m.def("vstpreset_read_class_id_from_bundle",
           [](const std::string& vst3_path) {

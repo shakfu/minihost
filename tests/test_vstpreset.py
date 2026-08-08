@@ -4,6 +4,7 @@ import struct
 
 import pytest
 
+from minihost import _core
 from minihost.vstpreset import (
     VstPreset,
     load_vstpreset,
@@ -164,9 +165,28 @@ class TestReadVstPreset:
             read_vstpreset(path)
 
 
+def _juce_state(component: bytes, controller: bytes | None = None) -> bytes:
+    """A realistic JUCE VST3 host state blob wrapping `component`.
+
+    save_vstpreset() unwraps the plugin's state, so mocked plugins have to
+    return something in JUCE's container format rather than arbitrary bytes.
+    """
+    from minihost import _core
+
+    return _core.vst3_state_join(component, controller)
+
+
 class TestLoadVstPreset:
-    def test_applies_state_to_plugin(self, tmp_path):
+    def test_rewraps_raw_component_chunk_for_juce(self, tmp_path):
+        """A spec-shaped preset holds the *raw* VST3 component chunk. JUCE's
+        hosted set_state only accepts its own <VST3PluginState> container and
+        silently ignores anything else, so the chunk must be rewrapped on the
+        way in -- passing it through verbatim is what made loading real
+        third-party presets a silent no-op.
+        """
         from unittest.mock import MagicMock
+
+        from minihost import _core
 
         state = b"test_state_data"
         data = _build_vstpreset(component_state=state)
@@ -177,7 +197,28 @@ class TestLoadVstPreset:
 
         load_vstpreset(path, plugin)
 
-        plugin.set_state.assert_called_once_with(state)
+        (applied,), _ = plugin.set_state.call_args
+        assert applied != state, "raw chunk was passed through unwrapped"
+        component, controller = _core.vst3_state_split(applied)
+        assert component == state
+        assert controller is None
+
+    def test_legacy_juce_blob_is_passed_through(self, tmp_path):
+        """Presets written by older minihost versions stored a whole JUCE blob
+        in the Comp chunk. Those must still load unchanged.
+        """
+        from unittest.mock import MagicMock
+
+        from minihost import _core
+
+        legacy = _core.vst3_state_join(b"inner_component_state")
+        data = _build_vstpreset(component_state=legacy)
+        path = tmp_path / "legacy.vstpreset"
+        path.write_bytes(data)
+
+        plugin = MagicMock()
+        load_vstpreset(path, plugin)
+        plugin.set_state.assert_called_once_with(legacy)
 
     def test_raises_if_no_component_state(self, tmp_path):
         from unittest.mock import MagicMock
@@ -279,13 +320,15 @@ class TestSaveVstPreset:
         from unittest.mock import MagicMock
 
         plugin = MagicMock()
-        plugin.get_state.return_value = b"state_from_plugin"
+        plugin.get_state.return_value = _juce_state(b"state_from_plugin")
 
         path = tmp_path / "out.vstpreset"
         save_vstpreset(path, plugin, class_id="A" * 32)
 
         plugin.get_state.assert_called_once()
         preset = read_vstpreset(path)
+        # The file must hold the *raw* component chunk, not JUCE's wrapper --
+        # that is what makes it readable by other VST3 hosts.
         assert preset.component_state == b"state_from_plugin"
         assert preset.class_id == "A" * 32
 
@@ -300,7 +343,7 @@ class TestSaveVstPreset:
 
         plugin = MagicMock()
         plugin.path = "/some/effect.au"  # not a .vst3
-        plugin.get_state.return_value = b"data"
+        plugin.get_state.return_value = _juce_state(b"data")
 
         path = tmp_path / "out.vstpreset"
         with pytest.raises(ValueError, match="VST3-only"):
@@ -315,7 +358,7 @@ class TestSaveVstPreset:
         # doesn't actually exist -- so moduleinfo.json lookup will fail.
         plugin = MagicMock()
         plugin.path = str(tmp_path / "fake.vst3")
-        plugin.get_state.return_value = b"data"
+        plugin.get_state.return_value = _juce_state(b"data")
 
         out = tmp_path / "out.vstpreset"
         with pytest.raises(ValueError, match="Could not auto-detect"):
@@ -343,14 +386,14 @@ class TestSaveVstPreset:
 
         plugin = MagicMock()
         plugin.path = str(bundle)
-        plugin.get_state.return_value = b"data"
+        plugin.get_state.return_value = _juce_state(b"data")
 
         out = tmp_path / "out.vstpreset"
         save_vstpreset(out, plugin)
 
         preset = read_vstpreset(out)
         assert preset.class_id == "ABCDEF0123456789ABCDEF0123456789"
-        assert preset.component_state == b"data"
+        assert preset.component_state == b"data"  # raw chunk, unwrapped
 
     def test_round_trip_load_after_save(self, tmp_path):
         """Save then load a preset through minihost's own loader."""
@@ -358,14 +401,19 @@ class TestSaveVstPreset:
 
         # Save side
         src_plugin = MagicMock()
-        src_plugin.get_state.return_value = b"plugin_state_xyz"
+        src_plugin.get_state.return_value = _juce_state(b"plugin_state_xyz")
         path = tmp_path / "round.vstpreset"
         save_vstpreset(path, src_plugin, class_id="ROUNDTRIP" + "_" * 23)
 
         # Load side
         dst_plugin = MagicMock()
         load_vstpreset(path, dst_plugin)
-        dst_plugin.set_state.assert_called_once_with(b"plugin_state_xyz")
+
+        # The file stores the raw chunk; the loader rewraps it for JUCE, so the
+        # bytes handed to the plugin round-trip back to what was saved.
+        (applied,), _ = dst_plugin.set_state.call_args
+        component, _controller = _core.vst3_state_split(applied)
+        assert component == b"plugin_state_xyz"
 
 
 class TestReadClassIdFromBundle:

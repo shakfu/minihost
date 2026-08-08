@@ -1463,6 +1463,18 @@ class TestArgParsingPresets:
             _parse(["presets"])
 
 
+def _juce_state(component: bytes) -> bytes:
+    """Wrap `component` the way JUCE's VST3 host wraps plugin state.
+
+    `save_vstpreset` unwraps the plugin's state into the raw component chunk
+    that the .vstpreset format specifies, so a mocked plugin has to return
+    something in JUCE's container format rather than arbitrary bytes.
+    """
+    from minihost import _core
+
+    return _core.vst3_state_join(component)
+
+
 class TestCmdPresets:
     def _make_args(self, **overrides):
         defaults = dict(
@@ -1537,7 +1549,7 @@ class TestCmdPresets:
         args = self._make_args(save=str(out_path))
         mock_plugin = MagicMock()
         mock_plugin.num_programs = 0
-        mock_plugin.get_state.return_value = b"saved_state_blob"
+        mock_plugin.get_state.return_value = _juce_state(b"saved_state_blob")
         with (
             patch("minihost.Plugin", return_value=mock_plugin),
             patch(
@@ -1561,7 +1573,7 @@ class TestCmdPresets:
         args = self._make_args(save=str(out_path), program=3)
         mock_plugin = MagicMock()
         mock_plugin.num_programs = 10
-        mock_plugin.get_state.return_value = b"program3_state"
+        mock_plugin.get_state.return_value = _juce_state(b"program3_state")
         with (
             patch("minihost.Plugin", return_value=mock_plugin),
             patch(
@@ -1613,7 +1625,7 @@ class TestCmdPresets:
         args = self._make_args(save=str(existing), overwrite=True)
         mock_plugin = MagicMock()
         mock_plugin.num_programs = 0
-        mock_plugin.get_state.return_value = b"new_state"
+        mock_plugin.get_state.return_value = _juce_state(b"new_state")
         with (
             patch("minihost.Plugin", return_value=mock_plugin),
             patch(
@@ -1635,7 +1647,7 @@ class TestCmdPresets:
 
         mock_plugin = MagicMock()
         mock_plugin.num_programs = 0
-        mock_plugin.get_state.return_value = b"after_setstate"
+        mock_plugin.get_state.return_value = _juce_state(b"after_setstate")
 
         args = self._make_args(state=str(state_file), save=str(out_path))
         with (
@@ -1659,7 +1671,7 @@ class TestCmdPresets:
         out_path = tmp_path / "out.vstpreset"
         mock_plugin = MagicMock()
         mock_plugin.num_programs = 0
-        mock_plugin.get_state.return_value = b"loaded_state"
+        mock_plugin.get_state.return_value = _juce_state(b"loaded_state")
 
         args = self._make_args(load_vstpreset=str(in_path), save=str(out_path))
         with patch("minihost.Plugin", return_value=mock_plugin):
@@ -1700,7 +1712,7 @@ class TestCmdPresets:
         args = self._make_args(save=str(out_path))
         mock_plugin = MagicMock()
         mock_plugin.num_programs = 0
-        mock_plugin.get_state.return_value = b"data"
+        mock_plugin.get_state.return_value = _juce_state(b"data")
         with (
             patch("minihost.Plugin", return_value=mock_plugin),
             patch(

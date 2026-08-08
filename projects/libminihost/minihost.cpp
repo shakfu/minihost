@@ -816,14 +816,68 @@ extern "C" int mh_get_state(MH_Plugin* p, void* buffer, int buffer_size)
     });
 }
 
+// Did applying `data` visibly change anything about the plugin?
+//
+// JUCE's setStateInformation is void, so a plugin (or the format wrapper) that
+// rejects a blob does so silently. juce::VST3PluginInstance, for instance,
+// begins with `if (auto head = getXmlFromBinary(...))` and simply falls through
+// when the data is not in its own container format -- so feeding it a raw VST3
+// component chunk, or any unrelated bytes, is a no-op that used to be reported
+// as success. Callers then believe a preset loaded when it did not.
+//
+// There is no format-agnostic way to ask "did you accept that?", so this
+// observes instead: if nothing about the plugin moved, and the caller asked for
+// something different from what was already loaded, the blob was ignored.
+//
+// Ordering is chosen so the cheap signal runs first: parameter values are a
+// couple of atomic reads each, whereas serializing state can be megabytes on a
+// sample library. The state comparison only runs when parameters alone cannot
+// tell the two cases apart (a state that carries no parameter changes).
+//
+// False negatives (reporting success for a blob that was ignored) remain
+// possible if a plugin's serialized state is non-deterministic. That is the
+// safe direction: this never reports failure for a state that was applied.
+static bool stateApplyWasObserved(MH_Plugin* p,
+                                  const std::vector<float>& paramsBefore,
+                                  const MemoryBlock& stateBefore,
+                                  const void* data, int data_size)
+{
+    auto& params = p->inst->getParameters();
+    const int n = params.size();
+    if (n != (int) paramsBefore.size())
+        return true;   // parameter list itself changed -- something happened
+    for (int i = 0; i < n; ++i)
+        if (params.getUnchecked(i)->getValue() != paramsBefore[(size_t) i])
+            return true;
+
+    MemoryBlock stateAfter;
+    p->inst->getStateInformation(stateAfter);
+    if (stateAfter != stateBefore)
+        return true;
+
+    // Nothing moved. That is only legitimate if the caller asked us to restore
+    // the state the plugin was already in.
+    return stateBefore.matches(data, (size_t) data_size);
+}
+
 extern "C" int mh_set_state(MH_Plugin* p, const void* data, int data_size)
 {
     if (!p || !p->inst || !data || data_size <= 0) return 0;
     return runOnMsg([&]() -> int
     {
         std::lock_guard<std::mutex> lock(p->stateMutex);
+
+        auto& params = p->inst->getParameters();
+        std::vector<float> paramsBefore((size_t) params.size());
+        for (int i = 0; i < params.size(); ++i)
+            paramsBefore[(size_t) i] = params.getUnchecked(i)->getValue();
+        MemoryBlock stateBefore;
+        p->inst->getStateInformation(stateBefore);
+
         p->inst->setStateInformation(data, data_size);
-        return 1;
+
+        return stateApplyWasObserved(p, paramsBefore, stateBefore,
+                                     data, data_size) ? 1 : 0;
     });
 }
 
@@ -1697,8 +1751,29 @@ extern "C" int mh_set_program_state(MH_Plugin* p, const void* data, int data_siz
     return runOnMsg([&]() -> int
     {
         std::lock_guard<std::mutex> lock(p->stateMutex);
+
+        // Same silent-rejection problem as mh_set_state; same observation.
+        auto& params = p->inst->getParameters();
+        std::vector<float> paramsBefore((size_t) params.size());
+        for (int i = 0; i < params.size(); ++i)
+            paramsBefore[(size_t) i] = params.getUnchecked(i)->getValue();
+        MemoryBlock stateBefore;
+        p->inst->getCurrentProgramStateInformation(stateBefore);
+
         p->inst->setCurrentProgramStateInformation(data, data_size);
-        return 1;
+
+        auto& paramsNow = p->inst->getParameters();
+        if (paramsNow.size() != (int) paramsBefore.size())
+            return 1;
+        for (int i = 0; i < paramsNow.size(); ++i)
+            if (paramsNow.getUnchecked(i)->getValue() != paramsBefore[(size_t) i])
+                return 1;
+
+        MemoryBlock stateAfter;
+        p->inst->getCurrentProgramStateInformation(stateAfter);
+        if (stateAfter != stateBefore)
+            return 1;
+        return stateBefore.matches(data, (size_t) data_size) ? 1 : 0;
     });
 }
 
