@@ -5,14 +5,13 @@ in-library way to feed a port and assert that the callback fires. This helper
 sends via CoreMIDI through ctypes -- no extra dependency -- which is enough to
 exercise mh_midi_in_open's callback path end to end.
 
-It needs a loopback: a MIDI destination whose name matches one of minihost's
-input ports, so that what we send comes back to us. On macOS that is the IAC
-Driver (enable a bus in Audio MIDI Setup > Window > MIDI Studio > IAC Driver).
-`find_loopback()` returns None when no such pair exists, and callers skip.
+The loopback is self-contained: a test opens a minihost *virtual* input port,
+waits for it to show up as a CoreMIDI destination (`wait_for_destination`), and
+sends to it. No IAC bus and no second application are required -- only a working
+CoreMIDI back-end.
 
-Note that a loopback bus is *shared*: other applications on the machine can
-send to it too, so assertions must tolerate foreign traffic interleaved with
-the messages under test (see `assert_contains_in_order`).
+`assert_contains_in_order` matches expected messages as a subsequence, so a test
+still passes if something else on the machine happens to write to the port.
 """
 
 from __future__ import annotations
@@ -21,6 +20,7 @@ import ctypes
 import ctypes.util
 import struct
 import sys
+import time
 
 _KCF_UTF8 = 0x08000100
 
@@ -134,23 +134,25 @@ class Sender:
             raise RuntimeError(f"MIDISend failed: {rc}")
 
 
-def find_loopback(input_ports: list[dict]) -> tuple[int, int] | None:
-    """Pair a minihost input port with the CoreMIDI destination of the same
-    name, i.e. a loopback we can send into and receive from.
+def wait_for_destination(name: str, timeout: float = 2.0) -> int | None:
+    """Poll for a CoreMIDI destination called `name`; return its endpoint ref.
 
-    Returns (minihost_input_port_index, coremidi_endpoint_ref), or None.
+    A virtual port published by `MidiIn.open_virtual` does not appear in the
+    system's destination list instantaneously, so tests that create one and
+    then send to it need to wait for it rather than assume.
     """
-    if not available() or not input_ports:
+    if not available():
         return None
     try:
         sender = Sender()
     except Exception:
         return None
-    by_name = {name: ref for ref, name in sender.destinations()}
-    for port in input_ports:
-        endpoint = by_name.get(port["name"])
-        if endpoint is not None:
-            return port["index"], endpoint
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for endpoint, dest_name in sender.destinations():
+            if dest_name == name:
+                return endpoint
+        time.sleep(0.05)
     return None
 
 

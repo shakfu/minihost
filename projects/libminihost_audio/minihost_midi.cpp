@@ -10,6 +10,11 @@
 #include <mutex>
 #include <memory>
 #include <thread>
+#include <exception>
+#include <typeinfo>
+#if defined(__GNUC__) || defined(__clang__)
+#include <cxxabi.h>
+#endif
 
 // Global observer for port enumeration (lazy initialized)
 static std::unique_ptr<libremidi::observer> g_observer;
@@ -48,26 +53,37 @@ static libremidi::observer& get_observer() {
 }
 
 // ---------------------------------------------------------------------------
-// Port enumeration, isolated from the caller's run loop.
+// libremidi calls, isolated from the caller's run loop.
 //
-// libremidi's CoreMIDI observer pumps the *calling thread's* CoreFoundation
-// run loop before reading the port list:
+// Several libremidi CoreMIDI entry points pump the *calling thread's*
+// CoreFoundation run loop before doing their work:
 //
-//     CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0, false);   // observer.hpp
+//     CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0, false);
 //
-// Called from an application's main thread that is also hosting JUCE, CoreAudio
-// and plugin code, that one pass dispatches whatever those subsystems have
-// queued -- including work whose owner has already been torn down. The result
-// is a crash inside enumeration that has nothing to do with MIDI. It is not
-// catchable either: get_input_ports()/get_output_ports() are declared noexcept,
-// so anything thrown inside them hits std::terminate before the try/catch in
-// the mh_midi_* entry points below ever unwinds.
+// It appears in observer::get_input_ports / get_output_ports, and in
+// midi_in::open_port and midi_out::open_port (plus their UMP variants).
 //
-// Running the query on a fresh thread sidesteps it: that thread's run loop has
-// nothing queued, so the pump is a no-op and only the CoreMIDI query itself
-// runs. Enumeration is a control-plane operation (never called from the audio
-// thread), so a short-lived thread per call is cheap enough and -- unlike a
-// persistent worker -- adds no process-exit teardown ordering to get wrong.
+// On an application's main thread -- which in a plugin host is also driving
+// JUCE, CoreAudio and plugin code -- that single pass dispatches whatever those
+// subsystems have queued, including work whose owner has already been torn
+// down. Two failure modes were observed, both only after a process had been
+// running long enough to accumulate queued work:
+//
+//   * enumeration crashed the process (SIGABRT / SIGBUS). Uncatchable, because
+//     get_input_ports() is noexcept, so a throw inside it reaches
+//     std::terminate before any handler here can unwind.
+//   * open_port threw std::bad_function_call -- some unrelated queued callback
+//     holding an empty std::function -- surfacing as a spurious
+//     "failed to open MIDI port" long after the port itself was fine.
+//
+// Running these calls on a fresh thread sidesteps both: that thread's run loop
+// has nothing queued, so the pump is a no-op and only the CoreMIDI work runs.
+// Message delivery is unaffected -- CoreMIDI invokes MIDIReadProc on its own
+// thread, not on the run loop of whichever thread created the port.
+//
+// These are all control-plane operations (never the audio thread), so a
+// short-lived thread per call is cheap enough, and -- unlike a persistent
+// worker -- adds no process-exit teardown ordering to get wrong.
 //
 // On ALSA/WinMM the pump does not exist and this is simply a thread hop.
 // ---------------------------------------------------------------------------
@@ -75,15 +91,19 @@ template <typename Fn>
 static auto run_isolated(Fn&& fn) -> decltype(fn()) {
     using R = decltype(fn());
     R result{};
+    std::exception_ptr thrown;
     std::thread worker([&] {
         try {
             result = fn();
         } catch (...) {
-            // Swallow: callers treat an empty result as "no ports". Letting
-            // this escape the thread would call std::terminate.
+            // Carry it back to the caller rather than letting it escape the
+            // thread (which would call std::terminate).
+            thrown = std::current_exception();
         }
     });
     worker.join();
+    if (thrown)
+        std::rethrow_exception(thrown);
     return result;
 }
 
@@ -93,6 +113,43 @@ static std::vector<libremidi::input_port> enumerate_input_ports() {
 
 static std::vector<libremidi::output_port> enumerate_output_ports() {
     return run_isolated([] { return get_observer().get_output_ports(); });
+}
+
+// Copy a message into a caller-supplied error buffer, always NUL-terminated.
+static void set_err(char* buf, size_t n, const char* msg) {
+    if (!buf || n == 0) return;
+    std::snprintf(buf, n, "%s", msg ? msg : "");
+}
+
+// Describe the in-flight exception into `buf`.
+//
+// libremidi reports failures with stdx::error (its bundled system_error2),
+// which deliberately does NOT derive from std::exception -- so a plain
+// catch(const std::exception&) misses it entirely and the catch(...) fallback
+// used to discard the reason as "Unknown error". That made every MIDI open
+// failure undiagnosable. Handle stdx::error explicitly, and for anything else
+// at least name the dynamic type so an unexpected throw is traceable.
+//
+// Call only from inside a catch block.
+static void describe_current_exception(char* buf, size_t n) {
+    try {
+        throw;
+    } catch (const stdx::error& e) {
+        const auto msg = e.message();
+        if (buf && n > 0)
+            std::snprintf(buf, n, "%.*s", static_cast<int>(msg.size()), msg.data());
+    } catch (const std::exception& e) {
+        set_err(buf, n, e.what());
+    } catch (...) {
+#if defined(__GNUC__) || defined(__clang__)
+        if (const std::type_info* t = abi::__cxa_current_exception_type()) {
+            if (buf && n > 0)
+                std::snprintf(buf, n, "unrecognized exception of type '%s'", t->name());
+            return;
+        }
+#endif
+        set_err(buf, n, "Unknown error");
+    }
 }
 
 // MIDI input wrapper
@@ -229,27 +286,21 @@ MH_MidiIn* mh_midi_in_open(int port_index, MH_MidiCallback callback, void* user_
             }
         };
 
-        midi_in->midi_in = std::make_unique<libremidi::midi_in>(config);
-
-        auto err = midi_in->midi_in->open_port(ports[port_index]);
-        if (err != stdx::error{}) {
-            if (err_buf && err_buf_size > 0) {
-                std::snprintf(err_buf, err_buf_size, "Failed to open MIDI input port");
-            }
+        // Construct + open on an isolated thread -- open_port() pumps the
+        // caller's run loop (see run_isolated).
+        const bool opened = run_isolated([&]() -> bool {
+            midi_in->midi_in = std::make_unique<libremidi::midi_in>(config);
+            return midi_in->midi_in->open_port(ports[port_index]) == stdx::error{};
+        });
+        if (!opened) {
+            set_err(err_buf, err_buf_size, "Failed to open MIDI input port");
             delete midi_in;
             return nullptr;
         }
 
         return midi_in;
-    } catch (const std::exception& e) {
-        if (err_buf && err_buf_size > 0) {
-            std::strncpy(err_buf, e.what(), err_buf_size - 1);
-        }
-        return nullptr;
     } catch (...) {
-        if (err_buf && err_buf_size > 0) {
-            std::strncpy(err_buf, "Unknown error", err_buf_size - 1);
-        }
+        describe_current_exception(err_buf, err_buf_size);
         return nullptr;
     }
 }
@@ -282,27 +333,21 @@ MH_MidiIn* mh_midi_in_open_virtual(const char* port_name, MH_MidiCallback callba
             }
         };
 
-        midi_in->midi_in = std::make_unique<libremidi::midi_in>(config);
-
-        auto err = midi_in->midi_in->open_virtual_port(port_name);
-        if (err != stdx::error{}) {
-            if (err_buf && err_buf_size > 0) {
-                std::snprintf(err_buf, err_buf_size, "Failed to open virtual MIDI input port (may not be supported on this platform)");
-            }
+        const bool opened = run_isolated([&]() -> bool {
+            midi_in->midi_in = std::make_unique<libremidi::midi_in>(config);
+            return midi_in->midi_in->open_virtual_port(port_name) == stdx::error{};
+        });
+        if (!opened) {
+            set_err(err_buf, err_buf_size,
+                    "Failed to open virtual MIDI input port "
+                    "(may not be supported on this platform)");
             delete midi_in;
             return nullptr;
         }
 
         return midi_in;
-    } catch (const std::exception& e) {
-        if (err_buf && err_buf_size > 0) {
-            std::strncpy(err_buf, e.what(), err_buf_size - 1);
-        }
-        return nullptr;
     } catch (...) {
-        if (err_buf && err_buf_size > 0) {
-            std::strncpy(err_buf, "Unknown error", err_buf_size - 1);
-        }
+        describe_current_exception(err_buf, err_buf_size);
         return nullptr;
     }
 }
@@ -328,27 +373,19 @@ MH_MidiOut* mh_midi_out_open(int port_index, char* err_buf, size_t err_buf_size)
         }
 
         auto* midi_out = new MH_MidiOut();
-        midi_out->midi_out = std::make_unique<libremidi::midi_out>();
-
-        auto err = midi_out->midi_out->open_port(ports[port_index]);
-        if (err != stdx::error{}) {
-            if (err_buf && err_buf_size > 0) {
-                std::snprintf(err_buf, err_buf_size, "Failed to open MIDI output port");
-            }
+        const bool opened = run_isolated([&]() -> bool {
+            midi_out->midi_out = std::make_unique<libremidi::midi_out>();
+            return midi_out->midi_out->open_port(ports[port_index]) == stdx::error{};
+        });
+        if (!opened) {
+            set_err(err_buf, err_buf_size, "Failed to open MIDI output port");
             delete midi_out;
             return nullptr;
         }
 
         return midi_out;
-    } catch (const std::exception& e) {
-        if (err_buf && err_buf_size > 0) {
-            std::strncpy(err_buf, e.what(), err_buf_size - 1);
-        }
-        return nullptr;
     } catch (...) {
-        if (err_buf && err_buf_size > 0) {
-            std::strncpy(err_buf, "Unknown error", err_buf_size - 1);
-        }
+        describe_current_exception(err_buf, err_buf_size);
         return nullptr;
     }
 }
@@ -363,27 +400,21 @@ MH_MidiOut* mh_midi_out_open_virtual(const char* port_name, char* err_buf, size_
 
     try {
         auto* midi_out = new MH_MidiOut();
-        midi_out->midi_out = std::make_unique<libremidi::midi_out>();
-
-        auto err = midi_out->midi_out->open_virtual_port(port_name);
-        if (err != stdx::error{}) {
-            if (err_buf && err_buf_size > 0) {
-                std::snprintf(err_buf, err_buf_size, "Failed to open virtual MIDI output port (may not be supported on this platform)");
-            }
+        const bool opened = run_isolated([&]() -> bool {
+            midi_out->midi_out = std::make_unique<libremidi::midi_out>();
+            return midi_out->midi_out->open_virtual_port(port_name) == stdx::error{};
+        });
+        if (!opened) {
+            set_err(err_buf, err_buf_size,
+                    "Failed to open virtual MIDI output port "
+                    "(may not be supported on this platform)");
             delete midi_out;
             return nullptr;
         }
 
         return midi_out;
-    } catch (const std::exception& e) {
-        if (err_buf && err_buf_size > 0) {
-            std::strncpy(err_buf, e.what(), err_buf_size - 1);
-        }
-        return nullptr;
     } catch (...) {
-        if (err_buf && err_buf_size > 0) {
-            std::strncpy(err_buf, "Unknown error", err_buf_size - 1);
-        }
+        describe_current_exception(err_buf, err_buf_size);
         return nullptr;
     }
 }

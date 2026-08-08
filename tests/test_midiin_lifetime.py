@@ -75,12 +75,12 @@ skip_if_no_midi_port = pytest.mark.skipif(
     reason="no openable MIDI input port available on this machine",
 )
 
-skip_if_no_loopback = pytest.mark.skipif(
-    coremidi_loopback.find_loopback(_input_ports()) is None,
-    reason=(
-        "no MIDI loopback available "
-        "(macOS only; enable a bus in Audio MIDI Setup > IAC Driver)"
-    ),
+# The reproduction below builds its own loopback out of a minihost virtual
+# input port plus a CoreMIDI sender, so it needs no IAC bus and no other
+# application -- only a working CoreMIDI back-end.
+skip_if_no_coremidi = pytest.mark.skipif(
+    not coremidi_loopback.available(),
+    reason="CoreMIDI not available (macOS only)",
 )
 
 
@@ -170,7 +170,7 @@ def test_two_simultaneous_handles_are_independent():
         m1.close()
 
 
-# --- the actual reproduction (needs a loopback bus) ------------------- #
+# --- the actual reproduction (self-contained loopback) ---------------- #
 
 
 def _churn_stack(depth: int = 0) -> int:
@@ -185,22 +185,25 @@ def _churn_stack(depth: int = 0) -> int:
     return len(junk)
 
 
-@skip_if_no_loopback
+@skip_if_no_coremidi
 def test_callback_receives_real_midi_after_stack_churn():
     """End-to-end reproduction of the use-after-free.
 
-    Pre-fix this crashed the interpreter with SIGSEGV. Post-fix every sent
-    message is delivered with an intact payload.
+    Opens a minihost *virtual* input port and sends real MIDI to it via
+    CoreMIDI, so the loopback is entirely self-contained. Pre-fix this crashed
+    the interpreter with SIGSEGV before delivering anything; post-fix every
+    sent message arrives with an intact payload.
     """
-    pair = coremidi_loopback.find_loopback(_input_ports())
-    assert pair is not None
-    port_index, endpoint = pair
-
+    name = "minihost-uaf-regression-in"
     received: list[bytes] = []
-    midi_in = minihost.MidiIn.open(
-        port_index, lambda data: received.append(bytes(data))
+    midi_in = minihost.MidiIn.open_virtual(
+        name, lambda data: received.append(bytes(data))
     )
     try:
+        endpoint = coremidi_loopback.wait_for_destination(name)
+        if endpoint is None:
+            pytest.skip("virtual MIDI port did not appear as a CoreMIDI destination")
+
         _churn_stack()
         gc.collect()
 
@@ -218,30 +221,36 @@ def test_callback_receives_real_midi_after_stack_churn():
     finally:
         midi_in.close()
 
-    # The loopback bus is shared with the rest of the system, so match as a
-    # subsequence rather than asserting an exact count.
+    # Match as a subsequence: nothing else should be writing to a port we
+    # just created, but this keeps the test robust if something is.
     coremidi_loopback.assert_contains_in_order(received, sent)
 
 
-@skip_if_no_loopback
+@skip_if_no_coremidi
 def test_callback_stops_after_close():
     """close() must unregister before the object dies -- otherwise the
     libremidi thread could still reach a freed callback holder.
     """
-    pair = coremidi_loopback.find_loopback(_input_ports())
-    assert pair is not None
-    port_index, endpoint = pair
-
+    name = "minihost-close-regression-in"
     received: list[bytes] = []
-    midi_in = minihost.MidiIn.open(
-        port_index, lambda data: received.append(bytes(data))
+    midi_in = minihost.MidiIn.open_virtual(
+        name, lambda data: received.append(bytes(data))
     )
+    endpoint = coremidi_loopback.wait_for_destination(name)
+    if endpoint is None:
+        midi_in.close()
+        pytest.skip("virtual MIDI port did not appear as a CoreMIDI destination")
+
     midi_in.close()
     del midi_in
     gc.collect()
 
     with coremidi_loopback.Sender() as sender:
-        sender.send(endpoint, bytes([0x90, 72, 100]))
+        try:
+            sender.send(endpoint, bytes([0x90, 72, 100]))
+        except RuntimeError:
+            # The endpoint is gone with the port -- that is a pass too.
+            return
         time.sleep(0.3)
 
     assert received == [], f"callback fired after close(): {received!r}"
