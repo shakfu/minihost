@@ -95,6 +95,28 @@ def test_slice_block_events_clamps_offset_to_block_size():
 # ---------------------------------------------------------------------------
 
 
+def _sidechain_plugin(**kwargs):
+    """Open PLUGIN with a sidechain, or skip if it has no sidechain bus.
+
+    `Plugin(..., sidechain_channels=N)` succeeds even for a plugin with no
+    sidechain bus -- it just reports `sidechain_channels == 0` afterwards. The
+    default test plugin (Dexed, a synth with no audio input at all) is such a
+    plugin, so these tests used to "pass" while exercising a path that quietly
+    threw the sidechain audio away. Set MINIHOST_TEST_PLUGIN to something with
+    a sidechain bus to actually run them.
+    """
+    plugin = minihost.Plugin(
+        PLUGIN, sample_rate=48000, max_block_size=512, sidechain_channels=2, **kwargs
+    )
+    if plugin.sidechain_channels <= 0:
+        plugin.close()
+        pytest.skip(
+            f"{PLUGIN} has no sidechain bus; set MINIHOST_TEST_PLUGIN to a "
+            f"plugin that does to exercise the sidechain path"
+        )
+    return plugin
+
+
 @skip_if_no_plugin
 def test_process_audio_rejects_sidechain_for_chain(tmp_path):
     chain = minihost.PluginChain([minihost.Plugin(PLUGIN, sample_rate=48000)])
@@ -215,21 +237,38 @@ def test_process_audio_param_automation_changes_output():
 
 @skip_if_no_plugin
 def test_process_audio_sidechain_path_runs():
-    plugin = minihost.Plugin(
-        PLUGIN,
-        sample_rate=48000,
-        max_block_size=512,
-        sidechain_channels=2,
-    )
-    src = minihost.AudioBuffer(plugin.num_input_channels, 4800)
-    sc = minihost.AudioBuffer(plugin.num_input_channels, 4800)
-    out = minihost.process_audio(
-        plugin,
-        src,
-        sidechain=sc,
-        compensate_latency=False,
-    )
-    assert out.frames == 4800
+    plugin = _sidechain_plugin()
+    try:
+        # Note the two widths are independent: main input is the main bus,
+        # the sidechain buffer is the sidechain bus.
+        src = minihost.AudioBuffer(plugin.num_input_channels, 4800)
+        sc = minihost.AudioBuffer(plugin.sidechain_channels, 4800)
+        out = minihost.process_audio(
+            plugin,
+            src,
+            sidechain=sc,
+            compensate_latency=False,
+        )
+        assert out.frames == 4800
+    finally:
+        plugin.close()
+
+
+@skip_if_no_plugin
+def test_process_audio_rejects_sidechain_when_plugin_has_no_sidechain_bus():
+    """Supplying sidechain audio to a plugin without a sidechain bus used to
+    be silently discarded. It is now an error.
+    """
+    plugin = minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=512)
+    try:
+        if plugin.sidechain_channels > 0:
+            pytest.skip("plugin has a sidechain bus; nothing to reject")
+        src = minihost.AudioBuffer(max(plugin.num_input_channels, 1), 480)
+        sc = minihost.AudioBuffer(2, 480)
+        with pytest.raises(ValueError, match="no sidechain bus"):
+            minihost.process_audio(plugin, src, sidechain=sc)
+    finally:
+        plugin.close()
 
 
 # ---------------------------------------------------------------------------
@@ -254,21 +293,19 @@ def test_process_audio_bpm_does_not_error():
 @skip_if_no_input
 def test_process_audio_to_file_with_sidechain(tmp_path):
     out_path = tmp_path / "sc_out.wav"
-    plugin = minihost.Plugin(
-        PLUGIN,
-        sample_rate=48000,
-        max_block_size=512,
-        sidechain_channels=2,
-    )
-    frames = minihost.process_audio_to_file(
-        plugin,
-        input_path=INPUT_WAV,
-        output_path=str(out_path),
-        sidechain=INPUT_WAV,  # use the same file as sidechain for the smoke test
-        compensate_latency=False,
-    )
-    assert frames > 0
-    assert out_path.exists()
+    plugin = _sidechain_plugin()
+    try:
+        frames = minihost.process_audio_to_file(
+            plugin,
+            input_path=INPUT_WAV,
+            output_path=str(out_path),
+            sidechain=INPUT_WAV,  # same file as sidechain for the smoke test
+            compensate_latency=False,
+        )
+        assert frames > 0
+        assert out_path.exists()
+    finally:
+        plugin.close()
 
 
 @skip_if_no_plugin

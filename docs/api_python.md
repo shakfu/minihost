@@ -80,6 +80,14 @@ Plugin(
 | `latency_samples` | `int` | No | Processing latency in samples |
 | `tail_seconds` | `float` | No | Reverb/delay tail length in seconds |
 | `sidechain_channels` | `int` | No | Configured sidechain channel count |
+
+!!! note "Channel counts are per-bus"
+    `num_input_channels` is the **main** input bus only -- it is the width of
+    the `input` / `main_in` array the process methods expect. A sidechain bus
+    is reported separately by `sidechain_channels` and is fed through
+    `process_sidechain(main_in, main_out, sidechain_in)`. Before 0.6.0
+    `num_input_channels` returned the sum of every input bus, so callers had to
+    over-provision the main buffer.
 | `num_input_buses` | `int` | No | Number of input buses |
 | `num_output_buses` | `int` | No | Number of output buses |
 | `num_programs` | `int` | No | Number of factory presets |

@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+Continues the code-review pass: correct sidechain channel accounting, a host playhead that
+actually moves during offline renders, and two more silent-discard paths turned into errors.
+The C ABI moves to **2.4.0**: no symbols added or removed, but `MH_Info.num_input_ch`
+changes meaning -- see below.
+
+### Fixed
+
+- **Sidechain audio was written to channels the plugin never reads.** `MH_Plugin::inCh` was set from JUCE's `getTotalNumInputChannels()`, which already sums every enabled input bus *including* the sidechain; `sidechainCh` then counted the sidechain a second time. For a compressor opened as `mh_open_ex(main_in=2, sidechain=2)` this meant `MH_Info.num_input_ch` reported 4 rather than 2, so callers had to hand `process_sidechain` an over-provisioned 4-channel "main" buffer *plus* a redundant 2-channel sidechain buffer -- and `mh_process_sidechain` then wrote the sidechain at channels [4, 6) while the plugin's sidechain bus lives at [2, 4). The sidechain signal landed in scratch channels the plugin never reads, and the real sidechain bus received whatever happened to be sitting in `main_in[2..3]`. The single overloaded count is now split in two: `mainInCh` (input bus 0 -- what the caller supplies, and what `num_input_ch` reports) and `totalInCh` (every enabled input channel, used only to size the internal process buffer). The plain `mh_process*` paths copy `mainInCh` channels and zero everything above, so a sidechain-configured plugin processed through the normal path is fed sidechain silence rather than reading past the caller's buffer.
+
+  Verified end to end: a loud external sidechain now ducks a compressor by -7.3 dB where the pre-fix build measured 0.00 dB, with an internal-sidechain control confirming the change is attributable to sidechain routing.
+
+  On the Python side, `process_audio` now sizes the sidechain buffer from `plugin.sidechain_channels` instead of the main input width, and `process_audio_to_file` matches a sidechain *file* to the sidechain bus rather than the main bus.
+
+- **Offline renders never advanced the host playhead.** `MidiRenderer` did not call `set_transport` at all -- despite already parsing the MIDI file's tempo map to place events -- so anything tempo-synced (a synced delay, an arpeggiator, an LFO, a step sequencer) ran at its own default tempo with the playhead pinned at sample 0, and a rendered file did not follow its own tempo. `process_audio(..., bpm=...)` was only marginally better: it called `set_transport` exactly once, before the block loop, with `position_samples=0`, so the tempo was right but time stood still. Both now push an advancing transport before every block. `MidiRenderer` derives the tempo *and* the beat position from the file's tempo map through a new inverse of the tick-to-seconds conversion it already used, so musical position follows the map rather than wall-clock time scaled by a single tempo -- a file that changes tempo stays in sync. `PluginChain` still cannot be driven this way (there is no chain-level `set_transport`) and is skipped.
+
+- **`process_audio` silently discarded MIDI when a sidechain was supplied.** `mh_process_sidechain` is the only process entry point with no MIDI parameter, so the sidechain block loop collected each block's events and then dropped them. The combination is now rejected with an explanation instead. The underlying gap remains: a MIDI-driven plugin with a sidechain cannot be rendered offline until `mh_process_sidechain` grows MIDI input.
+
+### Changed
+
+- **`MH_Info.num_input_ch` / `Plugin.num_input_channels` now report the main input bus only** (C ABI 2.4.0; struct layout unchanged, meaning changed). Sidechain channels are reported separately by `mh_get_sidechain_channels` / `Plugin.sidechain_channels`. Code that sized its main input buffer from this value against a sidechain-configured plugin was over-provisioning; it will now allocate the correct width. Plugins without a sidechain or aux input bus are unaffected -- for them the main bus *is* the total.
+
+- **Supplying sidechain audio to a plugin with no sidechain bus is now an error.** `process_audio(..., sidechain=...)` raises `ValueError` instead of silently discarding the audio. Note that `Plugin(..., sidechain_channels=N)` still succeeds for such a plugin (it simply reports `sidechain_channels == 0` afterwards), so "it opened" was never evidence that a sidechain existed.
+
+### Testing
+
+- **`tests/test_sidechain_channels.py`** -- six tests pinning the per-bus invariants: `num_input_channels` equals the main bus, `sidechain_channels` equals the sidechain bus, the two are disjoint, and buffers sized by the reported counts are accepted. Three fail against the pre-fix build. They need a plugin that genuinely has a sidechain bus and skip otherwise -- no VST3 on the development machine has one, but several MeldaProduction AudioUnits do, and the suite passes against those.
+
+- **`tests/test_sidechain_signal.py`** -- the behavioural counterpart to the accounting tests: with a 440 Hz main tone and an 80 Hz sidechain tone, an external sidechain must duck the output (measured -7.3 dB on FabFilter Pro-C 3), while the same audio with the sidechain source set to internal must change nothing (control). Against the pre-fix build the external case measures +0.00 dB -- the sidechain never reached the detector. Needs a compressor that acts on an external sidechain; override with `MINIHOST_TEST_SIDECHAIN_PLUGIN` or it skips.
+
+- **`tests/test_transport_advance.py`** -- nine tests covering the tempo-map inverse (including across a tempo change), a monotonically advancing playhead, beats tracking the configured tempo, no transport being fabricated when no BPM is given, and the MIDI+sidechain rejection. Five fail against the pre-fix code. They assert on what minihost *sends*: `MH_PlayHead` is write-only from the host side and nothing reads it back, so a plugin visibly reacting to host position is not covered.
+
+- Two pre-existing sidechain tests in `tests/test_process_audio_extended.py` were passing against Dexed, which has no sidechain bus at all, so they were asserting that a path which quietly discarded the sidechain "runs". They now skip unless the configured plugin really has a sidechain, and a new test covers the rejection case.
+
 ## [0.5.0]
 
 From a code-review pass over the native layer, the Python bindings, the CLI and the desktop

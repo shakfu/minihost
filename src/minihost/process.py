@@ -200,6 +200,7 @@ class _RenderContext:
     src: AudioBuffer | None
     src_frames: int
     sc_buf: AudioBuffer | None
+    sc_channels: int
     midi_events: list  # list[MidiEvent]
     has_midi: bool
     auto_list: list  # list[ParamChangePlugin | ParamChangeChain]
@@ -208,6 +209,8 @@ class _RenderContext:
     out_frames: int
     render_frames: int
     latency: int
+    sample_rate: float
+    bpm: float | None
 
 
 def _prepare_render(
@@ -239,6 +242,15 @@ def _prepare_render(
             "sidechain is not supported for PluginChain (no chain-level "
             "process_sidechain). Use a single Plugin instead."
         )
+    if sidechain is not None and midi is not None:
+        # mh_process_sidechain is the only process* entry point with no MIDI
+        # parameter, so the sidechain block loop has nowhere to put the events.
+        # They used to be collected and then silently dropped.
+        raise ValueError(
+            "midi and sidechain cannot be combined: the sidechain process path "
+            "has no MIDI input. Render the MIDI part separately, or drive the "
+            "plugin without a sidechain."
+        )
     if bpm is not None and is_chain:
         raise ValueError(
             "bpm transport is only supported for Plugin, not PluginChain "
@@ -261,9 +273,17 @@ def _prepare_render(
             "or a positive tail_seconds for synth-mode rendering."
         )
 
+    # The sidechain bus has its own width; sizing it against the main input
+    # count is only coincidentally right when the two happen to match.
+    sc_channels = int(getattr(plugin_or_chain, "sidechain_channels", 0) or 0)
     sc_buf: AudioBuffer | None = None
     if sidechain is not None:
-        sc_buf = _to_audiobuffer(sidechain, in_ch_required)
+        if sc_channels <= 0:
+            raise ValueError(
+                "sidechain audio was supplied but the plugin has no sidechain "
+                "bus configured; open it with sidechain_channels > 0."
+            )
+        sc_buf = _to_audiobuffer(sidechain, sc_channels)
 
     tail_frames = max(0, int(tail_seconds * sample_rate))
     base_frames = max(src_frames, midi_max_sample + 1 if midi_events else 0)
@@ -274,11 +294,8 @@ def _prepare_render(
         latency = 0
     render_frames = out_frames + latency
 
-    if bpm is not None:
-        cast(Plugin, plugin_or_chain).set_transport(
-            bpm=float(bpm),
-            is_playing=True,
-        )
+    # Transport is pushed per block by _iter_blocks (the playhead has to
+    # advance); setting it once here would leave it frozen at sample 0.
 
     return _RenderContext(
         plugin_or_chain=plugin_or_chain,
@@ -288,6 +305,7 @@ def _prepare_render(
         src=src,
         src_frames=src_frames,
         sc_buf=sc_buf,
+        sc_channels=sc_channels,
         midi_events=midi_events,
         has_midi=bool(midi_events),
         auto_list=list(param_changes) if param_changes else [],
@@ -296,6 +314,8 @@ def _prepare_render(
         out_frames=out_frames,
         render_frames=render_frames,
         latency=latency,
+        sample_rate=sample_rate,
+        bpm=float(bpm) if bpm is not None else None,
     )
 
 
@@ -335,6 +355,7 @@ def _iter_blocks(
     src = ctx.src
     src_frames = ctx.src_frames
     sc_buf = ctx.sc_buf
+    sc_ch = ctx.sc_channels
     midi_events = ctx.midi_events
     auto_list = ctx.auto_list
     has_midi = ctx.has_midi
@@ -343,10 +364,12 @@ def _iter_blocks(
     out_frames = ctx.out_frames
     render_frames = ctx.render_frames
     plugin_or_chain = ctx.plugin_or_chain
+    bpm = ctx.bpm
+    sample_rate = ctx.sample_rate
 
     in_block = AudioBuffer(work_in, block)
     out_block = AudioBuffer(out_ch, block)
-    sc_block = AudioBuffer(work_in, block) if sc_buf is not None else None
+    sc_block = AudioBuffer(sc_ch, block) if sc_buf is not None else None
 
     midi_idx = 0
     auto_idx = 0
@@ -355,6 +378,19 @@ def _iter_blocks(
 
     for start in range(0, render_frames, block):
         n = min(block, render_frames - start)
+
+        # Advance the playhead before each block. Setting transport once up
+        # front left every tempo-synced plugin (synced delays, arpeggiators,
+        # LFOs, step sequencers) looking at sample 0 for the whole render, so
+        # nothing that reads host position behaved correctly. PluginChain has
+        # no chain-level set_transport, so this applies to a single Plugin.
+        if bpm is not None:
+            cast(Plugin, plugin_or_chain).set_transport(
+                bpm=bpm,
+                position_samples=start,
+                position_beats=(start / sample_rate) * (bpm / 60.0),
+                is_playing=True,
+            )
 
         in_block.clear()
         if src is not None and start < src_frames:
@@ -365,7 +401,7 @@ def _iter_blocks(
             sc_block.clear()
             if start < sc_buf.frames:
                 ncopy = min(n, sc_buf.frames - start)
-                sc_block[:work_in, :ncopy] = sc_buf[:work_in, start : start + ncopy]
+                sc_block[:sc_ch, :ncopy] = sc_buf[:sc_ch, start : start + ncopy]
 
         block_midi, midi_idx = (
             _slice_block_events(midi_events, midi_idx, start, start + n)
@@ -386,8 +422,8 @@ def _iter_blocks(
             pin[:work_in, :n] = in_block[:work_in, :n]
             pout = AudioBuffer(out_ch, n)
             if sc_block is not None:
-                psc = AudioBuffer(work_in, n)
-                psc[:work_in, :n] = sc_block[:work_in, :n]
+                psc = AudioBuffer(sc_ch, n)
+                psc[:sc_ch, :n] = sc_block[:sc_ch, :n]
             else:
                 psc = None
 
@@ -761,9 +797,11 @@ def process_audio_to_file(
             "Sidechain",
         )
         if sc_src is not None:
+            # Match the *sidechain* bus width, not the main input's.
+            sc_required = int(getattr(plugin_or_chain, "sidechain_channels", 0) or 0)
             sc_src = _maybe_duplicate_to_match(
                 sc_src,
-                in_ch_required,
+                sc_required or in_ch_required,
                 duplicate_to_stereo,
                 "Sidechain",
             )

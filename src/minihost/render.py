@@ -91,6 +91,41 @@ def _tick_to_seconds(tick: int, tempo_map: list[tuple[int, float]], tpq: int) ->
     return seconds
 
 
+def _seconds_to_beats_and_bpm(
+    seconds: float, tempo_map: list[tuple[int, float]], tpq: int
+) -> tuple[float, float]:
+    """Position in quarter notes, and the tempo in effect, at ``seconds``.
+
+    The inverse of :func:`_tick_to_seconds`, walking the same tempo map. Needed
+    to give a plugin a host playhead: ``position_beats`` must be musical time,
+    not wall-clock time scaled by a single tempo, or anything tempo-synced
+    drifts as soon as the piece changes tempo.
+    """
+    if not tempo_map or tpq <= 0:
+        return 0.0, 120.0
+
+    elapsed = 0.0
+    beats = 0.0
+    us_per_quarter = tempo_map[0][1]
+
+    for i in range(len(tempo_map)):
+        tick, us_per_quarter = tempo_map[i]
+        if i + 1 < len(tempo_map):
+            span_ticks = tempo_map[i + 1][0] - tick
+            span_seconds = (span_ticks / tpq) * (us_per_quarter / 1_000_000.0)
+            if elapsed + span_seconds > seconds:
+                break
+            elapsed += span_seconds
+            beats += span_ticks / tpq
+        else:
+            break
+
+    # Remainder inside the segment that is still running at `seconds`.
+    remainder = max(0.0, seconds - elapsed)
+    beats += remainder / (us_per_quarter / 1_000_000.0)
+    return beats, 60_000_000.0 / us_per_quarter
+
+
 def _seconds_to_samples(seconds: float, sample_rate: float) -> int:
     """Convert seconds to sample position."""
     return int(seconds * sample_rate)
@@ -527,6 +562,10 @@ class MidiRenderer:
         self._input_buffer = AudioBuffer(self._in_channels, block_size)
         self._output_buffer = AudioBuffer(self._out_channels, block_size)
 
+        # PluginChain has no chain-level set_transport, so tempo-synced
+        # plugins inside a chain still cannot be driven from here.
+        self._can_set_transport = hasattr(plugin, "set_transport")
+
         # State
         self._current_sample = 0
         self._event_idx = 0
@@ -632,6 +671,21 @@ class MidiRenderer:
                 block_events.append(midi_tuple)
 
             self._event_idx += 1
+
+        # Push the playhead before processing. The renderer already parses the
+        # file's tempo map to place events, but never told the plugin about it:
+        # anything tempo-synced (a synced delay, an arpeggiator, an LFO) ran at
+        # its own default tempo with the playhead stuck at sample 0, so a
+        # rendered MIDI file did not match the file's own tempo.
+        if self._can_set_transport:
+            seconds = self._current_sample / self.sample_rate
+            beats, bpm = _seconds_to_beats_and_bpm(seconds, self._tempo_map, self._tpq)
+            self.plugin.set_transport(
+                bpm=bpm,
+                position_samples=self._current_sample,
+                position_beats=beats,
+                is_playing=True,
+            )
 
         # Clear the persistent input buffer (zero silent input for this block).
         self._input_buffer.clear()

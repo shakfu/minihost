@@ -80,6 +80,11 @@ extern "C" {
 #endif
 
 // API version components. Bump per the policy described above.
+// 2.4.0: MH_Info.num_input_ch now reports the MAIN input bus only, not the sum
+//   of every input bus. A plugin opened with a sidechain previously reported
+//   main+sidechain, so callers had to over-provision the main input buffer and
+//   mh_process_sidechain wrote the sidechain past the channels the plugin
+//   reads. Struct layout is unchanged; the value's meaning is not.
 // 2.3.0: added mh_get_max_block_size -- lets callers (audio devices, chains,
 //   graphs) validate their block size against a plugin's instead of failing
 //   at process time (additive).
@@ -91,7 +96,7 @@ extern "C" {
 //   mh_graph_* (parallel bus) -> mh_bus_* / MH_PluginGraph -> MH_PluginBus,
 //   and mh_graph_v2_* (DAG) -> mh_graph_* / MH_GraphV2 -> MH_PluginGraph.
 #define MH_API_VERSION_MAJOR 2
-#define MH_API_VERSION_MINOR 3
+#define MH_API_VERSION_MINOR 4
 #define MH_API_VERSION_PATCH 0
 
 // Single packed integer for compile-time comparison.
@@ -151,6 +156,11 @@ typedef struct MH_PluginDesc {
 
 typedef struct MH_Info {
     int num_params;
+    // Channels of the MAIN input bus only -- the width of the `inputs` array
+    // the process* functions expect. A sidechain (or other aux) input bus is
+    // NOT counted here; query it with mh_get_sidechain_channels, and feed it
+    // through mh_process_sidechain. Before ABI 2.4.0 this reported the sum of
+    // every input bus, which made callers over-provision the main buffer.
     int num_input_ch;
     int num_output_ch;
     int latency_samples;
@@ -477,9 +487,11 @@ MH_Plugin* mh_open_desc(const char* pd_xml,
                         size_t err_buf_size);
 
 // Process with sidechain input
-// main_in: main input channels [main_in_ch][nframes]
-// main_out: main output channels [main_out_ch][nframes]
-// sidechain_in: sidechain input channels [sidechain_ch][nframes] (can be NULL if no sidechain)
+// main_in: main input channels [num_input_ch][nframes] (MH_Info.num_input_ch,
+//          i.e. the main bus only -- do NOT include sidechain channels here)
+// main_out: main output channels [num_output_ch][nframes]
+// sidechain_in: sidechain channels [mh_get_sidechain_channels()][nframes]
+//               (can be NULL, in which case the sidechain is fed silence)
 // Returns 1 on success, 0 on failure
 int mh_process_sidechain(MH_Plugin* p,
                          const float* const* main_in,

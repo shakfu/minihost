@@ -109,6 +109,13 @@ mh_morph(p, a, b, n, 0.5f);         // apply the 50% blend
 | `mh_check_buses_layout` | Check if a bus layout is supported |
 | `mh_get_sidechain_channels` | Get configured sidechain channel count |
 
+`MH_Info.num_input_ch` is the **main** input bus only -- the width of the
+`inputs` array the `mh_process*` functions expect. Sidechain channels are
+reported by `mh_get_sidechain_channels` and supplied separately to
+`mh_process_sidechain`. Before C ABI 2.4.0 `num_input_ch` summed every input
+bus, which made callers over-provision the main buffer and pushed the
+sidechain past the channels the plugin reads.
+
 ### Change Notifications
 
 | Function | Description |
