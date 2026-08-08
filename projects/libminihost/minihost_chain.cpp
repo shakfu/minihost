@@ -489,12 +489,23 @@ int mh_chain_process_auto(MH_PluginChain* chain,
 
         // Prepare offset input/output pointers for this chunk using the
         // chain's persistent scratch vectors (no per-chunk allocation).
+        // A null caller table means "silence in / discard out" per the
+        // mh_process* contract; it must be propagated as a null table, not
+        // as a table of null channel pointers (mh_process_midi_io branches
+        // on the table, then dereferences each channel unconditionally).
         auto& chunk_inputs = chain->autoChunkIn;
         auto& chunk_outputs = chain->autoChunkOut;
-        for (int ch = 0; ch < in_ch; ++ch)
-            chunk_inputs[ch] = inputs ? inputs[ch] + current_sample : nullptr;
-        for (int ch = 0; ch < out_ch; ++ch)
-            chunk_outputs[ch] = outputs ? outputs[ch] + current_sample : nullptr;
+        if (inputs)
+            for (int ch = 0; ch < in_ch; ++ch)
+                chunk_inputs[ch] = inputs[ch] + current_sample;
+        if (outputs)
+            for (int ch = 0; ch < out_ch; ++ch)
+                chunk_outputs[ch] = outputs[ch] + current_sample;
+
+        const float* const* chunk_in_table =
+            (inputs && !chunk_inputs.empty()) ? chunk_inputs.data() : nullptr;
+        float* const* chunk_out_table =
+            (outputs && !chunk_outputs.empty()) ? chunk_outputs.data() : nullptr;
 
         // Collect MIDI events for this chunk (adjust offsets to chunk-local).
         // clear() preserves capacity, so push_back stays allocation-free
@@ -521,8 +532,8 @@ int mh_chain_process_auto(MH_PluginChain* chain,
 
         int result = mh_chain_process_midi_io(
             chain,
-            chunk_inputs.empty() ? inputs : chunk_inputs.data(),
-            chunk_outputs.empty() ? outputs : chunk_outputs.data(),
+            chunk_in_table,
+            chunk_out_table,
             chunk_size,
             chunk_midi.empty() ? nullptr : chunk_midi.data(),
             static_cast<int>(chunk_midi.size()),

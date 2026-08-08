@@ -2503,51 +2503,41 @@ public:
         close();
     }
 
-    // Disable copy
+    // Neither copyable nor movable: the C layer stores this object's address
+    // as the callback user_data, so the instance must never change address
+    // after mh_midi_in_open. The factories below heap-allocate and hand
+    // ownership to Python (nb::rv_policy::take_ownership) precisely so the
+    // registered address stays valid for the object's whole lifetime.
     MidiIn(const MidiIn&) = delete;
     MidiIn& operator=(const MidiIn&) = delete;
+    MidiIn(MidiIn&&) = delete;
+    MidiIn& operator=(MidiIn&&) = delete;
 
-    // Enable move
-    MidiIn(MidiIn&& other) noexcept
-        : handle_(other.handle_), callback_(std::move(other.callback_))
-    {
-        other.handle_ = nullptr;
-    }
-
-    MidiIn& operator=(MidiIn&& other) noexcept {
-        if (this != &other) {
-            close();
-            handle_ = other.handle_;
-            callback_ = std::move(other.callback_);
-            other.handle_ = nullptr;
-        }
-        return *this;
-    }
-
-    static MidiIn open(int port_index, nb::callable callback) {
-        MidiIn m;
-        m.callback_ = std::move(callback);
+    static MidiIn* open(int port_index, nb::callable callback) {
+        auto m = std::make_unique<MidiIn>();
+        m->callback_ = std::move(callback);
 
         char err[1024] = {0};
-        m.handle_ = mh_midi_in_open(port_index, &MidiIn::midi_callback, &m,
+        // Register with the final heap address -- see the note above.
+        m->handle_ = mh_midi_in_open(port_index, &MidiIn::midi_callback, m.get(),
                                      err, sizeof(err));
-        if (!m.handle_) {
+        if (!m->handle_) {
             throw std::runtime_error(std::string("Failed to open MIDI input: ") + err);
         }
-        return m;
+        return m.release();
     }
 
-    static MidiIn open_virtual(const std::string& name, nb::callable callback) {
-        MidiIn m;
-        m.callback_ = std::move(callback);
+    static MidiIn* open_virtual(const std::string& name, nb::callable callback) {
+        auto m = std::make_unique<MidiIn>();
+        m->callback_ = std::move(callback);
 
         char err[1024] = {0};
-        m.handle_ = mh_midi_in_open_virtual(name.c_str(), &MidiIn::midi_callback, &m,
+        m->handle_ = mh_midi_in_open_virtual(name.c_str(), &MidiIn::midi_callback, m.get(),
                                              err, sizeof(err));
-        if (!m.handle_) {
+        if (!m->handle_) {
             throw std::runtime_error(std::string("Failed to open virtual MIDI input: ") + err);
         }
-        return m;
+        return m.release();
     }
 
     void close() {
@@ -3889,9 +3879,11 @@ NB_MODULE(_core, m) {
     nb::class_<MidiIn>(m, "MidiIn")
         .def_static("open", &MidiIn::open,
              nb::arg("port_index"), nb::arg("callback"),
+             nb::rv_policy::take_ownership,
              "Open a MIDI input port. callback receives bytes for each message.")
         .def_static("open_virtual", &MidiIn::open_virtual,
              nb::arg("name"), nb::arg("callback"),
+             nb::rv_policy::take_ownership,
              "Open a virtual MIDI input port. callback receives bytes for each message.")
         .def("close", &MidiIn::close,
              "Close the MIDI input")

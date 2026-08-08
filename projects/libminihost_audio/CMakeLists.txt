@@ -43,11 +43,21 @@ function(_minihost_audio_configure_common target)
     )
 
     # libremidi header-only mode.
+    #
+    # Header-only mode bypasses libremidi's own CMakeLists, so the platform
+    # back-end macro that its cmake/libremidi.<platform>.cmake would have set
+    # has to be defined here too. Without one, backends.hpp falls through to
+    # `#define LIBREMIDI_DUMMY` and the whole MIDI-port subsystem compiles to
+    # a stub: enumeration returns nothing and every open fails. Linking the
+    # platform framework/library is necessary but NOT sufficient -- the macro
+    # is what pulls the back-end in. Keep these in sync with
+    # projects/libremidi/cmake/libremidi.{macos,winmm,alsa}.cmake.
     target_compile_definitions(${target} PRIVATE
         LIBREMIDI_HEADER_ONLY=1
     )
 
     if(APPLE)
+        target_compile_definitions(${target} PRIVATE LIBREMIDI_COREMIDI)
         target_link_libraries(${target} PRIVATE
             "-framework CoreAudio"
             "-framework AudioToolbox"
@@ -55,12 +65,22 @@ function(_minihost_audio_configure_common target)
             "-framework CoreMIDI"
         )
     elseif(WIN32)
+        target_compile_definitions(${target} PRIVATE
+            LIBREMIDI_WINMM
+            UNICODE=1
+            _UNICODE=1
+        )
         target_link_libraries(${target} PRIVATE winmm)
     elseif(UNIX AND NOT APPLE)
         find_package(ALSA QUIET)
         if(ALSA_FOUND)
-            target_link_libraries(${target} PRIVATE ${ALSA_LIBRARIES})
+            target_compile_definitions(${target} PRIVATE LIBREMIDI_ALSA)
+            target_link_libraries(${target} PRIVATE ${ALSA_LIBRARIES} ${CMAKE_DL_LIBS})
             target_include_directories(${target} PRIVATE ${ALSA_INCLUDE_DIRS})
+        else()
+            message(WARNING
+                "ALSA not found: libremidi will build with its dummy back-end, "
+                "so MIDI port enumeration and MidiIn will be non-functional.")
         endif()
         target_link_libraries(${target} PRIVATE pthread m)
     endif()

@@ -63,9 +63,19 @@ struct MH_AudioDevice {
     void* input_callback;  // holds an MH_AudioInputCallback
     void* input_callback_user_data;
 
-    // Pre-allocated conversion buffers (non-interleaved)
-    float** input_buffers;   // [channel][frame]
-    float** output_buffers;  // [channel][frame]
+    // Pre-allocated conversion buffers (non-interleaved).
+    //
+    // These are handed straight to mh_process / mh_chain_process, which read
+    // the plugin's input-channel count and write its output-channel count --
+    // neither of which is bounded by the device's channel count. Sizing them
+    // to `channels` alone lets a plugin with more channels than the device
+    // (or a device that negotiates fewer channels than requested) index past
+    // the end of the pointer array. They are therefore allocated with
+    // `buffer_channels` = max(device channels, plugin inputs, plugin outputs)
+    // channels; `channels` still governs what is exchanged with the device.
+    float** input_buffers;   // [channel][frame], buffer_channels entries
+    float** output_buffers;  // [channel][frame], buffer_channels entries
+    int buffer_channels;     // channels allocated (>= channels)
     int buffer_capacity;     // frames allocated
 
     // MIDI I/O
@@ -194,6 +204,7 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
 
     float* interleaved_output = (float*)output;
     int channels = dev->channels;
+    int buf_ch = dev->buffer_channels;
     int frames = (int)frame_count;
 
     // Clamp to our buffer capacity
@@ -201,7 +212,9 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
         frames = dev->buffer_capacity;
     }
 
-    // Get input audio: capture (duplex) > input callback > silence
+    // Get input audio: capture (duplex) > input callback > silence.
+    // Every path below fills only the device's own `channels`; the sources
+    // (capture stream, ring buffer, user callback) are all device-shaped.
     void* cbp;
     if (dev->capture && input) {
         // De-interleave capture input into per-channel buffers
@@ -219,6 +232,12 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
         for (int ch = 0; ch < channels; ch++) {
             memset(dev->input_buffers[ch], 0, frames * sizeof(float));
         }
+    }
+
+    // Channels beyond the device's own count exist only because the plugin
+    // requires more inputs than the device supplies; feed them silence.
+    for (int ch = channels; ch < buf_ch; ch++) {
+        memset(dev->input_buffers[ch], 0, frames * sizeof(float));
     }
 
     // Drain MIDI input buffer
@@ -401,10 +420,17 @@ MH_AudioDevice* mh_audio_open(MH_Plugin* plugin, const MH_AudioConfig* config,
         }
     }
 
-    // Allocate conversion buffers with extra headroom
+    // Allocate conversion buffers with extra headroom. The channel count must
+    // cover both what the device exchanges and what the plugin reads/writes --
+    // see the buffer_channels note on MH_AudioDevice.
     dev->buffer_capacity = dev->buffer_frames * 2; // 2x headroom for safety
+    dev->buffer_channels = dev->channels;
+    if (info.num_input_ch > dev->buffer_channels)
+        dev->buffer_channels = info.num_input_ch;
+    if (info.num_output_ch > dev->buffer_channels)
+        dev->buffer_channels = info.num_output_ch;
 
-    dev->input_buffers = alloc_channel_buffers(dev->channels, dev->buffer_capacity);
+    dev->input_buffers = alloc_channel_buffers(dev->buffer_channels, dev->buffer_capacity);
     if (!dev->input_buffers) {
         if (err_buf && err_buf_size > 0) {
             snprintf(err_buf, err_buf_size, "Failed to allocate input buffers");
@@ -415,12 +441,12 @@ MH_AudioDevice* mh_audio_open(MH_Plugin* plugin, const MH_AudioConfig* config,
         return NULL;
     }
 
-    dev->output_buffers = alloc_channel_buffers(dev->channels, dev->buffer_capacity);
+    dev->output_buffers = alloc_channel_buffers(dev->buffer_channels, dev->buffer_capacity);
     if (!dev->output_buffers) {
         if (err_buf && err_buf_size > 0) {
             snprintf(err_buf, err_buf_size, "Failed to allocate output buffers");
         }
-        free_channel_buffers(dev->input_buffers, dev->channels);
+        free_channel_buffers(dev->input_buffers, dev->buffer_channels);
         ma_device_uninit(&dev->device);
         ma_context_uninit(&dev->context);
         free(dev);
@@ -575,10 +601,17 @@ MH_AudioDevice* mh_audio_open_chain(MH_PluginChain* chain, const MH_AudioConfig*
         return NULL;
     }
 
-    // Allocate conversion buffers with extra headroom
+    // Allocate conversion buffers with extra headroom. The channel count must
+    // cover both what the device exchanges and what the chain reads/writes --
+    // see the buffer_channels note on MH_AudioDevice.
     dev->buffer_capacity = dev->buffer_frames * 2; // 2x headroom for safety
+    dev->buffer_channels = dev->channels;
+    if (num_in_ch > dev->buffer_channels)
+        dev->buffer_channels = num_in_ch;
+    if (num_out_ch > dev->buffer_channels)
+        dev->buffer_channels = num_out_ch;
 
-    dev->input_buffers = alloc_channel_buffers(dev->channels, dev->buffer_capacity);
+    dev->input_buffers = alloc_channel_buffers(dev->buffer_channels, dev->buffer_capacity);
     if (!dev->input_buffers) {
         if (err_buf && err_buf_size > 0) {
             snprintf(err_buf, err_buf_size, "Failed to allocate input buffers");
@@ -589,12 +622,12 @@ MH_AudioDevice* mh_audio_open_chain(MH_PluginChain* chain, const MH_AudioConfig*
         return NULL;
     }
 
-    dev->output_buffers = alloc_channel_buffers(dev->channels, dev->buffer_capacity);
+    dev->output_buffers = alloc_channel_buffers(dev->buffer_channels, dev->buffer_capacity);
     if (!dev->output_buffers) {
         if (err_buf && err_buf_size > 0) {
             snprintf(err_buf, err_buf_size, "Failed to allocate output buffers");
         }
-        free_channel_buffers(dev->input_buffers, dev->channels);
+        free_channel_buffers(dev->input_buffers, dev->buffer_channels);
         ma_device_uninit(&dev->device);
         ma_context_uninit(&dev->context);
         free(dev);
@@ -663,8 +696,8 @@ void mh_audio_close(MH_AudioDevice* dev) {
     // Cleanup audio
     ma_device_uninit(&dev->device);
     ma_context_uninit(&dev->context);
-    free_channel_buffers(dev->input_buffers, dev->channels);
-    free_channel_buffers(dev->output_buffers, dev->channels);
+    free_channel_buffers(dev->input_buffers, dev->buffer_channels);
+    free_channel_buffers(dev->output_buffers, dev->buffer_channels);
     free(dev);
 }
 
