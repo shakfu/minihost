@@ -158,10 +158,28 @@ MH_PluginChain* mh_chain_create(MH_Plugin** plugins, int num_plugins,
     chain->num_input_channels = infos[0].num_input_ch;
     chain->num_output_channels = infos[num_plugins - 1].num_output_ch;
 
-    // Determine max block size (minimum across all plugins to be safe)
-    // For now, we don't have a way to query this from plugins, so we use a reasonable default
-    // In practice, the caller should ensure all plugins were opened with compatible block sizes
-    chain->max_block_size = 8192;  // Large enough for most use cases
+    // The chain can only accept blocks every member can process, so its limit
+    // is the minimum across the plugins. Previously this was hard-coded to
+    // 8192: mh_chain_get_max_block_size then advertised a ceiling no member
+    // could honour, so a caller sizing blocks against it passed validation and
+    // failed inside mh_process with an error naming neither the real limit nor
+    // the plugin that imposed it. It also over-allocated every intermediate and
+    // dry-mix buffer to 8192 frames regardless of need.
+    chain->max_block_size = mh_get_max_block_size(plugins[0]);
+    for (int i = 1; i < num_plugins; ++i)
+    {
+        const int mbs = mh_get_max_block_size(plugins[i]);
+        if (mbs < chain->max_block_size)
+            chain->max_block_size = mbs;
+    }
+    if (chain->max_block_size <= 0)
+    {
+        setErr(err_buf, err_buf_size,
+               "Could not determine a usable max block size for the chain "
+               "(a plugin reports <= 0)");
+        delete chain;   // allocated above; every earlier bail-out precedes it
+        return nullptr;
+    }
 
     // Store stage channel counts (outputs of each plugin)
     for (int i = 0; i < num_plugins; ++i)

@@ -80,6 +80,9 @@ extern "C" {
 #endif
 
 // API version components. Bump per the policy described above.
+// 2.3.0: added mh_get_max_block_size -- lets callers (audio devices, chains,
+//   graphs) validate their block size against a plugin's instead of failing
+//   at process time (additive).
 // 2.2.0: added parameter morphing -- mh_morph_capture / mh_morph_apply /
 //   mh_morph_lerp / mh_morph_lerp_per_param / mh_morph (additive).
 // 2.1.0: added mh_bus_process_midi_io -- collects and merges the MIDI
@@ -88,7 +91,7 @@ extern "C" {
 //   mh_graph_* (parallel bus) -> mh_bus_* / MH_PluginGraph -> MH_PluginBus,
 //   and mh_graph_v2_* (DAG) -> mh_graph_* / MH_GraphV2 -> MH_PluginGraph.
 #define MH_API_VERSION_MAJOR 2
-#define MH_API_VERSION_MINOR 2
+#define MH_API_VERSION_MINOR 3
 #define MH_API_VERSION_PATCH 0
 
 // Single packed integer for compile-time comparison.
@@ -542,6 +545,14 @@ int mh_set_sample_rate(MH_Plugin* p, double new_sample_rate);
 
 // Get current sample rate
 double mh_get_sample_rate(MH_Plugin* p);
+
+// Largest block (in frames) this plugin was prepared for, i.e. the
+// max_block_size passed to mh_open / mh_open_ex / mh_open_desc. Every
+// mh_process* call rejects nframes above it. Callers that own the block size
+// (audio devices, chains, graphs) should validate against this at setup time
+// rather than discovering the mismatch as a per-block process failure.
+// Returns 0 for NULL.
+int mh_get_max_block_size(MH_Plugin* p);
 
 // Plugin directory scanning callback
 // Called for each valid plugin found in the directory

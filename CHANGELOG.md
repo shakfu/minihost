@@ -4,8 +4,11 @@
 
 From a code-review pass over the native layer, the Python bindings, the CLI and the desktop
 app. All three crash-class findings are fixed, along with two subsystems that reported
-success while doing nothing: MIDI ports and `.vstpreset` interchange. No new C symbols; the
-ABI stays at **2.2.0**. Two behaviour changes are called out under *Changed*.
+success while doing nothing: MIDI ports and `.vstpreset` interchange. Block-size and
+sample-rate contracts are now validated where they are configured rather than failing
+per-block, and the Python bindings finally release the GIL around native work. The C ABI
+bumps to **2.3.0** (additive: `mh_get_max_block_size`). Behaviour changes are called out
+under *Changed*.
 
 ### Fixed
 
@@ -29,7 +32,13 @@ ABI stays at **2.2.0**. Two behaviour changes are called out under *Changed*.
 
 - **`mh_chain_process_auto` dereferenced null channel pointers on the documented "silence" contract.** `minihost.h` documents a `NULL` input/output pointer table as "supply silence / discard output", and `mh_process_midi_io` honors it, but the chain's automation path built a non-null table *of null pointers* and passed it down, so `mh_process_midi_io` saw a truthy table and `memcpy`'d from `NULL`. Not reachable from Python (which always materializes arrays), but it is a documented C API contract with shipped C/C++ consumers. Null-ness is now propagated.
 
+- **Block-size and sample-rate mismatches failed per-block, or not at all.** Nothing could ask a plugin what block size it had been prepared for, so no layer validated and every mismatch surfaced late and unhelpfully. `PluginChain` hard-coded `max_block_size = 8192`, advertising a ceiling no member could honour: a caller sizing blocks against it passed the Python shape check and then failed inside `mh_process` with "Chain process failed", naming neither the real limit nor the plugin imposing it (and every intermediate and dry-mix buffer was allocated for 8192 frames regardless of need). `AudioDevice` never compared the device period to the plugin's limit, so every process call was refused, the return value was ignored, and -- because the output buffers are allocated once and never cleared -- the device replayed the previous block indefinitely as a buzz, with no error anywhere. `PluginGraph` documented that plugin nodes must match its sample rate and block size but checked neither, so a rate mismatch rendered silently at the wrong rate. All three now validate at configuration time with messages naming both numbers and what to change; the chain derives its limit as the minimum across its members, and the audio callback additionally zero-fills on a refused block so an unexpected failure degrades to silence rather than a buzz. Validation is against the device *period*, not the 2x internal headroom on the conversion buffers -- the common case of a plugin and device sized alike keeps working.
+
+- **The Python bindings never released the GIL around native work.** Every process call held it for the full duration of `processBlock`, so a multi-threaded host got no parallelism whatsoever (measured 1.00x on 4 threads), and plugin construction, state save/restore and audio-file I/O all blocked the interpreter. It also meant a `MidiIn` callback -- which must acquire the GIL -- could not run until the in-flight process call returned, delaying or dropping MIDI in exactly the live-control scenario the API is for. The pure-native bindings now carry `nb::call_guard<nb::gil_scoped_release>`; the ones that also handle Python lists or bytes (`process_midi`, `process_auto`, `render_block`, `get_state` / `set_state`, the audio-file functions) release it around just the native call, with errors raised only after it is reacquired. Same workload now measures 3.47x on 4 threads.
+
 ### Added
+
+- **`mh_get_max_block_size` (C API, additive -- ABI 2.3.0).** Reports the largest block a plugin was prepared for. Exposed in Python as `Plugin.max_block_size` and `PluginChain.max_block_size` (the latter being the minimum across its plugins), so callers can size blocks against the real limit instead of guessing. `process_audio`'s internal block size now derives from it rather than a hard-coded 512.
 
 - **`vst3_state_split` / `vst3_state_join` (Python bindings).** Convert between a JUCE VST3 plugin-state blob (what `Plugin.get_state()` returns) and the raw component / controller chunks the `.vstpreset` format specifies. Used by `save_vstpreset` / `load_vstpreset`, and useful directly for anyone moving state between minihost and another host. Implemented in C++ rather than Python because JUCE's base64 is a custom variant -- a `"<size>."` prefix followed by LSB-first 6-bit groups over its own alphabet -- so `juce::MemoryBlock`'s own codec is used and stays in step with JUCE by construction. `vst3_state_split` raises for anything that is not a JUCE VST3 *host* blob, which is also the discrimination the preset loader relies on.
 
@@ -38,6 +47,8 @@ ABI stays at **2.2.0**. Two behaviour changes are called out under *Changed*.
 - **`Plugin.set_state` / `set_program_state` now raise on a blob the plugin demonstrably ignored** (see *Fixed*). Previously every call reported success. Code that was unknowingly feeding a plugin state it could not use will now see a `RuntimeError` where it used to see a silent no-op. Valid states -- including restoring the state a plugin is already in -- are unaffected.
 
 - **`save_vstpreset` now writes the raw component chunk** rather than JUCE's container, making the files readable by other VST3 hosts. Files written by earlier versions still load (they are detected and passed through), so this is forward-compatible in the direction that matters; presets written by this version are *not* readable by older minihost.
+
+- **`PluginChain.max_block_size` is now the minimum across its plugins**, not a fixed 8192. Chains whose members were opened with a smaller block size will reject an oversized block up front (with the real limit named) where they previously accepted it and failed mid-process. `AudioDevice` likewise now refuses to open when the plugin cannot span the device period, instead of opening and playing a buzz.
 
 - **MIDI port enumeration now includes virtual and software ports** (IAC buses, ALSA/JACK software ports, endpoints published by other applications), where previously it reported hardware ports only -- moot in practice, since the back-end was a stub and nothing was reported at all.
 
@@ -48,6 +59,10 @@ ABI stays at **2.2.0**. Two behaviour changes are called out under *Changed*.
 - **`tests/test_midiin_lifetime.py` + `tests/coremidi_loopback.py`** -- structural tests for the `MidiIn` lifetime fix plus an end-to-end reproduction that drives real MIDI through a minihost *virtual* input port and asserts the callback fires with an intact payload. The loopback is self-contained (a small ctypes CoreMIDI sender; no IAC bus, no second application, no new dependency), so it runs on any macOS machine. Confirmed adversarially: reintroducing the lifetime bug segfaults pytest at exactly that test. Four further tests need a real MIDI input port and skip without one.
 
 - **`tests/test_vstpreset_interop.py`** -- nine tests against a real plugin covering chunk extraction, a split/join round-trip through the plugin, save/load parameter restoration, a foreign-style preset built from a raw chunk, legacy pass-through, and a corrupt preset that must now raise instead of silently doing nothing. Both interop tests fail against the pre-fix code. Interop with an actual *third-party* preset file remains unverified -- a filesystem-wide search found none on the development machine -- so that claim rests on the written chunk being byte-identical to what the plugin's own `IComponent::getState` produced.
+
+- **`tests/test_block_size_contracts.py`** -- nine tests pinning the new behaviour across all three layers: the chain's derived limit and its up-front rejection, both graph preconditions, the device refusing an undersized plugin with an actionable message, and -- importantly -- that a plugin and device sized alike still opens, which an earlier draft of the validation wrongly rejected.
+
+- **`tests/test_concurrency.py::test_process_releases_the_gil`** -- deliberately not a threaded-vs-serial speedup assertion, which would conflate minihost's behaviour with the plugin's: Dexed (the default test plugin) serializes internally and measures 0.89x on 4 threads where three other VST3s measure 3.3-3.7x. It instead spins a counter in a background thread and samples it either side of one long `process()` call -- 0 increments before the fix, ~250k after, for both a self-serializing and a well-behaved plugin. It has no "too fast to measure" guard on purpose: holding the GIL makes the call *faster*, so such a guard skipped exactly the regression it exists to catch.
 
 - Mock-based tests in `tests/test_vstpreset.py` and `tests/test_cli.py` were asserting the old pass-through behaviour with arbitrary fake state bytes; they now use realistic JUCE-format blobs and assert the corrected contract.
 

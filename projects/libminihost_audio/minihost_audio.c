@@ -77,6 +77,11 @@ struct MH_AudioDevice {
     float** output_buffers;  // [channel][frame], buffer_channels entries
     int buffer_channels;     // channels allocated (>= channels)
     int buffer_capacity;     // frames allocated
+    // Largest block we may hand the processor: min(buffer_capacity, the
+    // processor's own max block size). The device period is normally well
+    // under this; it bounds the pathological case of a backend delivering a
+    // larger callback than its reported period.
+    int max_process_frames;
 
     // MIDI I/O
     MH_MidiIn* midi_in;
@@ -156,6 +161,33 @@ static ma_result resolve_device_ids(ma_context* ctx,
     return MA_SUCCESS;
 }
 
+// Reject a device whose block size the processor cannot handle.
+//
+// Every mh_process* rejects nframes above the plugin's max_block_size, and
+// discovering that per-block is useless: the callback has nowhere to report it
+// and the user hears silence or a repeating buzz. Check it once, at open, and
+// say exactly which number to change.
+//
+// `needed` is the device *period*, not the 2x internal headroom on the
+// conversion buffers -- requiring double the period would reject the common
+// and perfectly workable case of a plugin and device sized alike. The headroom
+// is handled by clamping instead (see max_process_frames). Returns 1 if usable.
+static int validate_block_size(int processor_max_block, int needed,
+                               const char* what,
+                               char* err_buf, size_t err_buf_size) {
+    if (processor_max_block > 0 && processor_max_block >= needed) {
+        return 1;
+    }
+    if (err_buf && err_buf_size > 0) {
+        snprintf(err_buf, err_buf_size,
+                 "%s was opened with max_block_size=%d but the audio device "
+                 "needs up to %d frames per callback. Reopen the %s with "
+                 "max_block_size >= %d, or request a smaller buffer_frames.",
+                 what, processor_max_block, needed, what, needed);
+    }
+    return 0;
+}
+
 // Allocate non-interleaved buffer array
 static float** alloc_channel_buffers(int channels, int frames) {
     float** buffers = (float**)malloc(channels * sizeof(float*));
@@ -207,9 +239,11 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
     int buf_ch = dev->buffer_channels;
     int frames = (int)frame_count;
 
-    // Clamp to our buffer capacity
-    if (frames > dev->buffer_capacity) {
-        frames = dev->buffer_capacity;
+    // Clamp to what we can actually process. Any excess is zero-filled at the
+    // end of the callback, so an over-large callback degrades to a short block
+    // plus silence rather than being refused outright.
+    if (frames > dev->max_process_frames) {
+        frames = dev->max_process_frames;
     }
 
     // Get input audio: capture (duplex) > input callback > silence.
@@ -251,17 +285,25 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
     MH_MidiEvent midi_out[256];
     int num_midi_out = 0;
 
+    // Every process entry point returns 0 on refusal (most commonly nframes
+    // above the plugin's max block size). The return value used to be ignored,
+    // and because output_buffers are allocated once and never cleared, a
+    // refused block left the *previous* block's samples in place -- so the
+    // device happily played stale audio on repeat, with no error anywhere.
+    // Open-time validation now makes this unreachable in practice; the check
+    // is kept so an unexpected refusal degrades to silence rather than a buzz.
+    int processed;
     if (dev->chain) {
         // Process through plugin chain
         if (num_midi_events > 0) {
-            mh_chain_process_midi_io(dev->chain,
+            processed = mh_chain_process_midi_io(dev->chain,
                               (const float* const*)dev->input_buffers,
                               dev->output_buffers,
                               frames,
                               midi_events, num_midi_events,
                               midi_out, 256, &num_midi_out);
         } else {
-            mh_chain_process(dev->chain,
+            processed = mh_chain_process(dev->chain,
                        (const float* const*)dev->input_buffers,
                        dev->output_buffers,
                        frames);
@@ -269,18 +311,24 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
     } else {
         // Process through single plugin
         if (num_midi_events > 0) {
-            mh_process_midi_io(dev->plugin,
+            processed = mh_process_midi_io(dev->plugin,
                               (const float* const*)dev->input_buffers,
                               dev->output_buffers,
                               frames,
                               midi_events, num_midi_events,
                               midi_out, 256, &num_midi_out);
         } else {
-            mh_process(dev->plugin,
+            processed = mh_process(dev->plugin,
                        (const float* const*)dev->input_buffers,
                        dev->output_buffers,
                        frames);
         }
+    }
+
+    if (!processed) {
+        memset(interleaved_output, 0,
+               (size_t)frame_count * channels * sizeof(float));
+        return;
     }
 
     // Send MIDI output
@@ -424,6 +472,17 @@ MH_AudioDevice* mh_audio_open(MH_Plugin* plugin, const MH_AudioConfig* config,
     // cover both what the device exchanges and what the plugin reads/writes --
     // see the buffer_channels note on MH_AudioDevice.
     dev->buffer_capacity = dev->buffer_frames * 2; // 2x headroom for safety
+
+    if (!validate_block_size(mh_get_max_block_size(plugin), dev->buffer_frames,
+                             "plugin", err_buf, err_buf_size)) {
+        ma_device_uninit(&dev->device);
+        ma_context_uninit(&dev->context);
+        free(dev);
+        return NULL;
+    }
+    dev->max_process_frames = mh_get_max_block_size(plugin);
+    if (dev->max_process_frames > dev->buffer_capacity)
+        dev->max_process_frames = dev->buffer_capacity;
     dev->buffer_channels = dev->channels;
     if (info.num_input_ch > dev->buffer_channels)
         dev->buffer_channels = info.num_input_ch;
@@ -605,6 +664,18 @@ MH_AudioDevice* mh_audio_open_chain(MH_PluginChain* chain, const MH_AudioConfig*
     // cover both what the device exchanges and what the chain reads/writes --
     // see the buffer_channels note on MH_AudioDevice.
     dev->buffer_capacity = dev->buffer_frames * 2; // 2x headroom for safety
+
+    if (!validate_block_size(mh_chain_get_max_block_size(chain),
+                             dev->buffer_frames, "chain",
+                             err_buf, err_buf_size)) {
+        ma_device_uninit(&dev->device);
+        ma_context_uninit(&dev->context);
+        free(dev);
+        return NULL;
+    }
+    dev->max_process_frames = mh_chain_get_max_block_size(chain);
+    if (dev->max_process_frames > dev->buffer_capacity)
+        dev->max_process_frames = dev->buffer_capacity;
     dev->buffer_channels = dev->channels;
     if (num_in_ch > dev->buffer_channels)
         dev->buffer_channels = num_in_ch;

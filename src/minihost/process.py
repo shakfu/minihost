@@ -59,12 +59,23 @@ def _normalize_peak(buf: AudioBuffer, target_dbfs: float) -> None:
     buf.apply_gain(target_linear / peak)
 
 
-def _resolve_block_size(block_size: int | None) -> int:
+_DEFAULT_BLOCK_SIZE = 512
+
+
+def _resolve_block_size(block_size: int | None, plugin_or_chain: Any = None) -> int:
+    """Block size for the internal process loop.
+
+    An explicit value wins. Otherwise use the processor's own limit, capped at
+    a sane default so a plugin opened with a huge max_block_size does not make
+    every render allocate proportionally. Falls back to the default if the
+    processor cannot report one.
+    """
     if block_size is not None:
         return int(block_size)
-    # Conservative default. Plugin.max_block_size isn't queryable
-    # post-construction; PluginChain has no public max_block_size.
-    return 512
+    limit = getattr(plugin_or_chain, "max_block_size", 0) or 0
+    if limit > 0:
+        return min(int(limit), _DEFAULT_BLOCK_SIZE)
+    return _DEFAULT_BLOCK_SIZE
 
 
 def _to_audiobuffer(audio: Any, in_ch_required: int) -> AudioBuffer:
@@ -217,7 +228,7 @@ def _prepare_render(
     the per-block process loop. Side effect: sets the plugin's
     transport when ``bpm`` is given.
     """
-    block = _resolve_block_size(block_size)
+    block = _resolve_block_size(block_size, plugin_or_chain)
     sample_rate = float(plugin_or_chain.sample_rate)
     in_ch_required = plugin_or_chain.num_input_channels
     out_ch = plugin_or_chain.num_output_channels

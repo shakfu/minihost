@@ -231,6 +231,32 @@ extern "C" MH_NodeId mh_graph_add_plugin(MH_PluginGraph* g, MH_Plugin* p,
         setErr(err_buf, err_buf_size, "mh_get_info failed on plugin");
         return -1;
     }
+    // The graph documents that every plugin node must have been opened at the
+    // graph's sample rate and be able to process its max_block_size, but never
+    // checked either. A rate mismatch rendered silently at the wrong rate; a
+    // block-size mismatch failed per-block inside mh_process and surfaced as a
+    // bare "render_block failed" that named neither the node nor the reason.
+    // Both are cheap to catch here, where the offending plugin is still in hand.
+    const double rate = mh_get_sample_rate(p);
+    if (std::fabs(rate - g->sample_rate) > 0.1)
+    {
+        setErrf(err_buf, err_buf_size,
+                "plugin sample rate %.0f Hz does not match the graph's %.0f Hz; "
+                "reopen the plugin at the graph's rate",
+                rate, g->sample_rate);
+        return -1;
+    }
+    const int plugin_max_block = mh_get_max_block_size(p);
+    if (plugin_max_block < g->max_block_size)
+    {
+        setErrf(err_buf, err_buf_size,
+                "plugin was opened with max_block_size=%d but the graph renders "
+                "blocks of up to %d frames; reopen the plugin with "
+                "max_block_size >= %d, or create the graph with a smaller "
+                "max_block_size",
+                plugin_max_block, g->max_block_size, g->max_block_size);
+        return -1;
+    }
     Node n;
     n.kind            = MH_NODE_PLUGIN;
     n.plugin          = p;

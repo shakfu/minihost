@@ -408,6 +408,10 @@ public:
         return mh_get_sidechain_channels(plugin_);
     }
 
+    int max_block_size() const {
+        return mh_get_max_block_size(plugin_);
+    }
+
     bool accepts_midi() const {
         MH_Info info;
         if (mh_get_info(plugin_, &info))
@@ -621,21 +625,38 @@ public:
 
     // State management
     nb::bytes get_state() const {
-        int size = mh_get_state_size(plugin_);
+        // nb::bytes construction needs the GIL; the serialisation does not.
+        std::vector<char> buffer;
+        int size = 0;
+        bool ok = true;
+        {
+            nb::gil_scoped_release nogil;
+            size = mh_get_state_size(plugin_);
+            if (size > 0) {
+                buffer.resize((size_t) size);
+                ok = mh_get_state(plugin_, buffer.data(), size) != 0;
+            }
+        }
         if (size <= 0) {
             return nb::bytes(nullptr, 0);
         }
-
-        std::vector<char> buffer(size);
-        if (!mh_get_state(plugin_, buffer.data(), size)) {
+        if (!ok) {
             throw std::runtime_error("Failed to get plugin state");
         }
-
         return nb::bytes(buffer.data(), size);
     }
 
     void set_state(nb::bytes data) {
-        if (!mh_set_state(plugin_, data.c_str(), static_cast<int>(data.size()))) {
+        // Resolve the buffer while we still hold the GIL; `data` keeps the
+        // (immutable) bytes object alive across the release.
+        const char* ptr = data.c_str();
+        const int size = static_cast<int>(data.size());
+        bool ok;
+        {
+            nb::gil_scoped_release nogil;
+            ok = mh_set_state(plugin_, ptr, size) != 0;
+        }
+        if (!ok) {
             throw std::runtime_error("Failed to set plugin state");
         }
     }
@@ -758,9 +779,17 @@ public:
         std::vector<MH_MidiEvent> midi_out(midi_out_capacity);
         int num_midi_out = 0;
 
-        if (!mh_process_midi_io(plugin_, in_ptrs.data(), out_ptrs.data(), in_frames,
-                                midi_events.data(), static_cast<int>(midi_events.size()),
-                                midi_out.data(), midi_out_capacity, &num_midi_out)) {
+        // Release the GIL for the native call only -- the surrounding code
+        // touches Python objects (the MIDI lists), so a whole-function
+        // call_guard would be unsafe. Errors are raised after the GIL is back.
+        bool ok;
+        {
+            nb::gil_scoped_release nogil;
+            ok = mh_process_midi_io(plugin_, in_ptrs.data(), out_ptrs.data(), in_frames,
+                                    midi_events.data(), static_cast<int>(midi_events.size()),
+                                    midi_out.data(), midi_out_capacity, &num_midi_out) != 0;
+        }
+        if (!ok) {
             throw std::runtime_error("Process failed");
         }
 
@@ -825,10 +854,18 @@ public:
         std::vector<MH_MidiEvent> midi_out(midi_out_capacity);
         int num_midi_out = 0;
 
-        if (!mh_process_auto(plugin_, in_ptrs.data(), out_ptrs.data(), in_frames,
-                             midi_events.data(), static_cast<int>(midi_events.size()),
-                             midi_out.data(), midi_out_capacity, &num_midi_out,
-                             changes.data(), static_cast<int>(changes.size()))) {
+        // Release the GIL for the native call only -- the surrounding code
+        // touches Python objects (the MIDI lists), so a whole-function
+        // call_guard would be unsafe. Errors are raised after the GIL is back.
+        bool ok;
+        {
+            nb::gil_scoped_release nogil;
+            ok = mh_process_auto(plugin_, in_ptrs.data(), out_ptrs.data(), in_frames,
+                                 midi_events.data(), static_cast<int>(midi_events.size()),
+                                 midi_out.data(), midi_out_capacity, &num_midi_out,
+                                 changes.data(), static_cast<int>(changes.size())) != 0;
+        }
+        if (!ok) {
             throw std::runtime_error("Process failed");
         }
 
@@ -1008,7 +1045,14 @@ public:
     }
 
     void set_program_state(nb::bytes data) {
-        if (!mh_set_program_state(plugin_, data.c_str(), static_cast<int>(data.size()))) {
+        const char* ptr = data.c_str();
+        const int size = static_cast<int>(data.size());
+        bool ok;
+        {
+            nb::gil_scoped_release nogil;
+            ok = mh_set_program_state(plugin_, ptr, size) != 0;
+        }
+        if (!ok) {
             throw std::runtime_error("Failed to set program state");
         }
     }
@@ -1245,6 +1289,10 @@ public:
         return mh_chain_get_tail_seconds(chain_);
     }
 
+    int max_block_size() const {
+        return mh_chain_get_max_block_size(chain_);
+    }
+
     // Reset all plugins
     void reset() {
         if (!mh_chain_reset(chain_)) {
@@ -1357,9 +1405,17 @@ public:
         std::vector<MH_MidiEvent> midi_out(midi_out_capacity);
         int num_midi_out = 0;
 
-        if (!mh_chain_process_midi_io(chain_, in_ptrs.data(), out_ptrs.data(), in_frames,
-                                       midi_events.data(), static_cast<int>(midi_events.size()),
-                                       midi_out.data(), midi_out_capacity, &num_midi_out)) {
+        // Release the GIL for the native call only -- the surrounding code
+        // touches Python objects (the MIDI lists), so a whole-function
+        // call_guard would be unsafe. Errors are raised after the GIL is back.
+        bool ok;
+        {
+            nb::gil_scoped_release nogil;
+            ok = mh_chain_process_midi_io(chain_, in_ptrs.data(), out_ptrs.data(), in_frames,
+                                          midi_events.data(), static_cast<int>(midi_events.size()),
+                                          midi_out.data(), midi_out_capacity, &num_midi_out) != 0;
+        }
+        if (!ok) {
             throw std::runtime_error("Chain process failed");
         }
 
@@ -1425,10 +1481,18 @@ public:
         std::vector<MH_MidiEvent> midi_out(midi_out_capacity);
         int num_midi_out = 0;
 
-        if (!mh_chain_process_auto(chain_, in_ptrs.data(), out_ptrs.data(), in_frames,
-                                    midi_events.data(), static_cast<int>(midi_events.size()),
-                                    midi_out.data(), midi_out_capacity, &num_midi_out,
-                                    changes.data(), static_cast<int>(changes.size()))) {
+        // Release the GIL for the native call only -- the surrounding code
+        // touches Python objects (the MIDI lists), so a whole-function
+        // call_guard would be unsafe. Errors are raised after the GIL is back.
+        bool ok;
+        {
+            nb::gil_scoped_release nogil;
+            ok = mh_chain_process_auto(chain_, in_ptrs.data(), out_ptrs.data(), in_frames,
+                                       midi_events.data(), static_cast<int>(midi_events.size()),
+                                       midi_out.data(), midi_out_capacity, &num_midi_out,
+                                       changes.data(), static_cast<int>(changes.size())) != 0;
+        }
+        if (!ok) {
             throw std::runtime_error("Chain process_auto failed");
         }
 
@@ -1600,11 +1664,19 @@ public:
         int num_midi_out = 0;
         int overflow = 0;
 
-        if (!mh_bus_process_midi_io(graph_, in_ptrs.data(), out_ptrs.data(),
-                                      in_fr, midi_events.data(),
-                                      static_cast<int>(midi_events.size()),
-                                      midi_out.data(), midi_out_capacity,
-                                      &num_midi_out, &overflow)) {
+        // Release the GIL for the native call only -- the surrounding code
+        // touches Python objects (the MIDI lists), so a whole-function
+        // call_guard would be unsafe. Errors are raised after the GIL is back.
+        bool ok;
+        {
+            nb::gil_scoped_release nogil;
+            ok = mh_bus_process_midi_io(graph_, in_ptrs.data(), out_ptrs.data(),
+                                        in_fr, midi_events.data(),
+                                        static_cast<int>(midi_events.size()),
+                                        midi_out.data(), midi_out_capacity,
+                                        &num_midi_out, &overflow) != 0;
+        }
+        if (!ok) {
             throw std::runtime_error("Bus process failed");
         }
 
@@ -1938,10 +2010,17 @@ public:
             out_top[i] = out_ptrs_per_node[i].data();
         }
 
-        if (!mh_graph_render_block(graph_,
-                                      in_top.data(),  num_in,
-                                      out_top.data(), num_out,
-                                      nframes))
+        bool ok;
+        {
+            // Native render only; the pointer tables above were built from
+            // Python lists and must not be touched without the GIL.
+            nb::gil_scoped_release nogil;
+            ok = mh_graph_render_block(graph_,
+                                       in_top.data(),  num_in,
+                                       out_top.data(), num_out,
+                                       nframes) != 0;
+        }
+        if (!ok)
             throw std::runtime_error("render_block failed");
     }
 
@@ -3369,6 +3448,7 @@ NB_MODULE(_core, m) {
              nb::arg("in_channels") = 2,
              nb::arg("out_channels") = 2,
              nb::arg("sidechain_channels") = 0,
+             nb::call_guard<nb::gil_scoped_release>(),
              "Open an audio plugin (VST3 or AudioUnit). Use sidechain_channels > 0 for sidechain support.")
 
         .def_static("from_descriptor", &Plugin::from_descriptor,
@@ -3397,6 +3477,9 @@ NB_MODULE(_core, m) {
                      "Plugin tail length in seconds")
         .def_prop_ro("sidechain_channels", &Plugin::sidechain_channels,
                      "Number of sidechain input channels (0 if none)")
+        .def_prop_ro("max_block_size", &Plugin::max_block_size,
+                     "Largest block (frames) this plugin was prepared for. "
+                     "Every process call rejects more than this.")
         .def_prop_ro("accepts_midi", &Plugin::accepts_midi,
                      "True if plugin accepts MIDI input")
         .def_prop_ro("produces_midi", &Plugin::produces_midi,
@@ -3480,7 +3563,7 @@ NB_MODULE(_core, m) {
                      "Bypass state")
 
         // Reset
-        .def("reset", &Plugin::reset,
+        .def("reset", &Plugin::reset, nb::call_guard<nb::gil_scoped_release>(),
              "Reset internal state (clears delay lines, reverb tails, etc.)")
 
         // Non-realtime mode
@@ -3505,7 +3588,7 @@ NB_MODULE(_core, m) {
 
         // Process
         .def("process", &Plugin::process,
-             nb::arg("input"), nb::arg("output"),
+             nb::arg("input"), nb::arg("output"), nb::call_guard<nb::gil_scoped_release>(),
              "Process audio (shape: [channels, frames])")
         .def("process_midi", &Plugin::process_midi,
              nb::arg("input"), nb::arg("output"), nb::arg("midi_in"),
@@ -3521,13 +3604,14 @@ NB_MODULE(_core, m) {
              "Returns the list of output MIDI events (capped at midi_out_capacity, default 256).")
         .def("process_sidechain", &Plugin::process_sidechain,
              nb::arg("main_in"), nb::arg("main_out"), nb::arg("sidechain_in"),
+             nb::call_guard<nb::gil_scoped_release>(),
              "Process audio with sidechain input (all arrays shape: [channels, frames])")
 
         // Double precision processing
         .def_prop_ro("supports_double", &Plugin::supports_double,
                      "True if plugin supports native double precision processing")
         .def("process_double", &Plugin::process_double,
-             nb::arg("input"), nb::arg("output"),
+             nb::arg("input"), nb::arg("output"), nb::call_guard<nb::gil_scoped_release>(),
              "Process audio with double precision (float64). Shape: "
              "[channels, frames]. Accepts float64 numpy arrays or AudioBufferD "
              "(via DLPack) -- the latter needs no numpy.")
@@ -3625,6 +3709,9 @@ NB_MODULE(_core, m) {
                      "Sample rate (all plugins have the same rate)")
         .def_prop_ro("tail_seconds", &PluginChain::tail_seconds,
                      "Maximum tail length in seconds (for reverbs, delays)")
+        .def_prop_ro("max_block_size", &PluginChain::max_block_size,
+                     "Largest block (frames) the chain can process -- the "
+                     "minimum across its plugins.")
 
         // Get plugin by index
         .def("get_plugin", &PluginChain::get_plugin,
@@ -3654,7 +3741,7 @@ NB_MODULE(_core, m) {
 
         // Process
         .def("process", &PluginChain::process,
-             nb::arg("input"), nb::arg("output"),
+             nb::arg("input"), nb::arg("output"), nb::call_guard<nb::gil_scoped_release>(),
              "Process audio through the chain (shape: [channels, frames])")
         .def("process_midi", &PluginChain::process_midi,
              nb::arg("input"), nb::arg("output"), nb::arg("midi_in"),
@@ -3715,7 +3802,7 @@ NB_MODULE(_core, m) {
         .def_prop_ro("tail_seconds", &PluginBus::tail_seconds,
                      "Maximum tail across all branches.")
         .def("process", &PluginBus::process,
-             nb::arg("input"), nb::arg("output"),
+             nb::arg("input"), nb::arg("output"), nb::call_guard<nb::gil_scoped_release>(),
              "Fan input to every branch, sum branch outputs (each "
              "scaled by its gain) into output.")
         .def("process_midi", &PluginBus::process_midi,
@@ -4059,20 +4146,28 @@ NB_MODULE(_core, m) {
     // Audio file I/O functions
     m.def("audio_read", [](const std::string& path) {
         char err[1024] = {0};
-        MH_AudioData* data = mh_audio_read(path.c_str(), err, sizeof(err));
-        if (!data) {
+        MH_AudioData* data = nullptr;
+        MhAudioBuffer* buf = nullptr;
+        unsigned int channels = 0, frames = 0, sample_rate = 0;
+        {
+            // Decode and de-interleave without the GIL -- all native, and the
+            // decode is disk-bound. Only the cast back to Python needs it.
+            nb::gil_scoped_release nogil;
+            data = mh_audio_read(path.c_str(), err, sizeof(err));
+            if (data) {
+                channels = data->channels;
+                frames = data->frames;
+                sample_rate = data->sample_rate;
+                // De-interleave directly into a fresh AudioBuffer. Avoids the
+                // numpy detour: this binding does not require numpy at all.
+                buf = new MhAudioBuffer((int)channels, (int)frames);
+                interleaved_to_planar(data->data, buf->data(), channels, frames);
+                mh_audio_data_free(data);
+            }
+        }
+        if (!buf) {
             throw std::runtime_error(std::string(err));
         }
-
-        unsigned int channels = data->channels;
-        unsigned int frames = data->frames;
-        unsigned int sample_rate = data->sample_rate;
-
-        // De-interleave directly into a fresh AudioBuffer. Avoids the
-        // numpy detour: this binding does not require numpy at all.
-        auto* buf = new MhAudioBuffer((int)channels, (int)frames);
-        interleaved_to_planar(data->data, buf->data(), channels, frames);
-        mh_audio_data_free(data);
 
         return nb::make_tuple(
             nb::cast(buf, nb::rv_policy::take_ownership),
@@ -4154,23 +4249,26 @@ NB_MODULE(_core, m) {
         planar_to_interleaved(data.data(), interleaved.data(), channels, frames_in);
 
         char err[1024] = {0};
-        MH_AudioData* result = mh_audio_resample(
-            interleaved.data(),
-            static_cast<unsigned int>(channels),
-            static_cast<unsigned int>(frames_in),
-            sample_rate_in, sample_rate_out,
-            err, sizeof(err));
-        if (!result) {
+        MhAudioBuffer* buf = nullptr;
+        {
+            nb::gil_scoped_release nogil;
+            MH_AudioData* result = mh_audio_resample(
+                interleaved.data(),
+                static_cast<unsigned int>(channels),
+                static_cast<unsigned int>(frames_in),
+                sample_rate_in, sample_rate_out,
+                err, sizeof(err));
+            if (result) {
+                // De-interleave directly into a fresh AudioBuffer. No numpy required.
+                buf = new MhAudioBuffer((int)result->channels, (int)result->frames);
+                interleaved_to_planar(result->data, buf->data(),
+                                      result->channels, result->frames);
+                mh_audio_data_free(result);
+            }
+        }
+        if (!buf) {
             throw std::runtime_error(std::string(err));
         }
-
-        unsigned int out_ch = result->channels;
-        unsigned int out_frames = result->frames;
-
-        // De-interleave directly into a fresh AudioBuffer. No numpy required.
-        auto* buf = new MhAudioBuffer((int)out_ch, (int)out_frames);
-        interleaved_to_planar(result->data, buf->data(), out_ch, out_frames);
-        mh_audio_data_free(result);
 
         return nb::cast(buf, nb::rv_policy::take_ownership);
     }, nb::arg("data"), nb::arg("sample_rate_in"), nb::arg("sample_rate_out"),

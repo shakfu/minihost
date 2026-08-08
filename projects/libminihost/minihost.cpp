@@ -1849,6 +1849,12 @@ extern "C" double mh_get_sample_rate(MH_Plugin* p)
     return p->sampleRate;
 }
 
+extern "C" int mh_get_max_block_size(MH_Plugin* p)
+{
+    if (!p) return 0;
+    return p->maxBlockSize;
+}
+
 extern "C" int mh_scan_directory(const char* directory_path,
                                  MH_ScanCallback callback,
                                  void* user_data)

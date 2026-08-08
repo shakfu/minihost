@@ -15,6 +15,10 @@ Two scenarios:
    and overflow is reported via callback_events_dropped() rather than
    silently lost.
 
+3. GIL release around native work: the process bindings must not hold the
+   GIL while the plugin runs, or a multi-threaded host gets no parallelism
+   at all and MIDI callbacks stall behind whatever is processing.
+
 Note: set_state and set_program are NOT safe vs. concurrent process
 (they call releaseResources / prepareToPlay). We do not test those.
 """
@@ -149,3 +153,70 @@ def test_callback_queue_overflow_is_reported_not_silent():
 
     # Drain whatever we managed to enqueue. Must not crash.
     plugin.poll_callbacks()
+
+
+# ---------------------------------------------------------------------------
+# GIL release (M1)
+# ---------------------------------------------------------------------------
+
+
+@skip_if_no_plugin
+def test_process_releases_the_gil():
+    """A pure-Python thread must make progress *during* one native call.
+
+    Every binding used to hold the GIL for the whole of processBlock, so a
+    multi-threaded host got no parallelism and a MidiIn callback could not run
+    until the in-flight process call returned.
+
+    Deliberately not measured as a threaded-vs-serial speedup: that conflates
+    minihost's behaviour with the plugin's. Some plugins serialize internally
+    (Dexed, the default test plugin, measures 0.89x on 4 threads while three
+    other VST3s measure 3.3-3.7x), so a speedup assertion would fail for
+    reasons that have nothing to do with the GIL.
+
+    Instead, spin a counter in a background thread and sample it either side of
+    a single long process() call. If the GIL is held for the duration, the
+    counter cannot advance at all. Measured: 0 before the fix, ~250k after,
+    for both a self-serializing and a well-behaved plugin.
+    """
+    import minihost
+
+    frames = 65536
+    plugin = minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=frames)
+    try:
+        buf_in = minihost.AudioBuffer(max(plugin.num_input_channels, 1), frames)
+        buf_out = minihost.AudioBuffer(max(plugin.num_output_channels, 1), frames)
+        plugin.process(buf_in, buf_out)  # warm up (first block may allocate)
+
+        counter = 0
+        stop = False
+
+        def spin():
+            nonlocal counter
+            while not stop:
+                counter += 1
+
+        spinner = threading.Thread(target=spin, daemon=True)
+        spinner.start()
+        try:
+            time.sleep(0.1)  # let the spinner get going
+            before = counter
+            started = time.perf_counter()
+            plugin.process(buf_in, buf_out)
+            elapsed = time.perf_counter() - started
+            during = counter - before
+        finally:
+            stop = True
+            spinner.join(timeout=5.0)
+    finally:
+        plugin.close()
+
+    # Deliberately no "too fast to measure" guard: holding the GIL makes the
+    # call *faster* (the spinner cannot compete for CPU), so such a guard would
+    # skip exactly the regression this test exists to catch. The discrimination
+    # is 0 vs ~250k, so a small threshold is ample.
+    assert during > 10, (
+        f"a background thread advanced its counter only {during} times during a "
+        f"{elapsed * 1000:.1f} ms process() call -- the GIL looks like it is "
+        f"being held across the native call"
+    )
