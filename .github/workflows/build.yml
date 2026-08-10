@@ -20,7 +20,7 @@ jobs:
     outputs:
       version: ${{ steps.compute.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: compute
         shell: bash
         run: |
@@ -45,14 +45,14 @@ jobs:
     # build-wheels.)
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
 
       # --only-group dev --no-install-project installs the exact ruff/mypy
       # pinned in uv.lock without compiling minihost, so local `make qa` and
@@ -90,7 +90,7 @@ jobs:
             cmake-args: -G "Visual Studio 17 2022"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -106,7 +106,7 @@ jobs:
             libcurl4-openssl-dev \
             pkg-config
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -138,7 +138,7 @@ jobs:
           cp build/projects/libminihost/Release/minihost.lib dist/ || true
           cp projects/libminihost/minihost.h dist/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact-name }}-${{ needs.version.outputs.version }}
           path: dist/
@@ -178,7 +178,7 @@ jobs:
             artifact-path: build/projects/minihost_desktop/Release/minihost_desktop.exe
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -195,7 +195,7 @@ jobs:
             xvfb \
             pkg-config
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -265,7 +265,7 @@ jobs:
           mkdir -p dist
           cp -R "${{ matrix.artifact-path }}" dist/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact-name }}-${{ needs.version.outputs.version }}
           path: dist/
@@ -293,9 +293,9 @@ jobs:
             artifact-name: wheels-windows-x64
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -318,7 +318,7 @@ jobs:
           CIBW_TEST_COMMAND: pytest {project}/tests -v
         run: cibuildwheel --output-dir wheelhouse
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact-name }}-${{ needs.version.outputs.version }}
           path: wheelhouse/*.whl
@@ -328,9 +328,9 @@ jobs:
     runs-on: ubuntu-22.04
     needs: [version]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -340,7 +340,7 @@ jobs:
       - name: Build sdist
         run: python -m build --sdist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sdist-${{ needs.version.outputs.version }}
           path: dist/*.tar.gz
@@ -388,7 +388,7 @@ jobs:
           echo "=== Release Contents (version ${VER}) ==="
           find release -type f | sort
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: minihost-all-${{ needs.version.outputs.version }}
           path: release/
@@ -402,7 +402,7 @@ jobs:
       contents: write
     steps:
       - name: Download aggregated artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: minihost-all-${{ needs.version.outputs.version }}
           path: release
@@ -435,7 +435,7 @@ jobs:
           cd ..
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             minihost-cli-macos-universal-${{ needs.version.outputs.version }}.tar.gz

@@ -47,7 +47,7 @@ jobs:
     # fails fast instead of sitting on a runner.
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Scheduled and path-triggered runs use the Makefile default (200k);
       # a manual dispatch can ask for a heavier workload.
