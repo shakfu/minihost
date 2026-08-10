@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.5.1]
+
 Continues the code-review pass: correct sidechain channel accounting, a host playhead that
 actually moves during offline renders, and two more silent-discard paths turned into errors.
 The C ABI moves to **2.4.0**: no symbols added or removed, but `MH_Info.num_input_ch`
