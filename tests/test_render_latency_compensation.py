@@ -8,7 +8,6 @@ what comes from the plugin AFTER skipping `latency` samples.
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from minihost.render import MidiRenderer
 
@@ -109,6 +108,37 @@ def test_latency_does_not_change_user_visible_total_samples():
         _FakePlugin(latency_samples=512), _make_midi(), block_size=128, tail_seconds=0.5
     )
     assert base.total_samples == with_lat.total_samples
+
+
+def test_render_block_then_render_all_covers_total_samples():
+    """The mixed block-then-drain path emits exactly total_samples frames.
+
+    render_all() pre-allocates from the internal _render_samples bound, which
+    includes the latency pre-roll, and trims to what was actually written. If
+    that trim regressed, the drained buffer would carry a tail of silence
+    instead of ending at the user-visible length -- and callers combining
+    render_block() with render_all() would see a longer render than
+    total_samples advertises.
+    """
+    LATENCY = 200
+    plug = _FakePlugin(latency_samples=LATENCY)
+    r = MidiRenderer(plug, _make_midi(), block_size=128, tail_seconds=0.1)
+
+    first = None
+    while first is None:
+        first = r.render_block()
+
+    rest = r.render_all()
+    assert r.is_finished
+    assert first.frames + rest.frames == r.total_samples
+
+    # The two halves must also join into one continuous stream: the fake
+    # plugin emits its own frame counter, so the joined output is the ramp
+    # starting at the first post-latency frame with no gap or repeat at the
+    # seam between the block and the drain.
+    joined = np.concatenate([np.asarray(first), np.asarray(rest)], axis=1)
+    expected = np.arange(LATENCY, LATENCY + joined.shape[1], dtype=np.float32)
+    assert np.array_equal(joined[0], expected)
 
 
 def test_latency_handles_skip_larger_than_block():

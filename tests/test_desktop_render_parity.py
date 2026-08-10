@@ -194,6 +194,10 @@ def test_desktop_midi_chain_matches_python(tmp_path):
         pytest.skip(f"test plugin not found: {plugin}")
     probe = minihost.Plugin(plugin)
     accepts = probe.accepts_midi
+    # The output node's width has to follow the synth: PluginGraph::connect
+    # rejects an edge whose endpoints disagree on channel count, so a
+    # hardcoded stereo sink fails outright against a mono instrument.
+    synth_out_ch = max(probe.num_output_channels, 1)
     del probe
     if not accepts:
         pytest.skip(f"{plugin} does not accept MIDI (needs an instrument)")
@@ -224,7 +228,7 @@ def test_desktop_midi_chain_matches_python(tmp_path):
                 {
                     "id": "out",
                     "kind": "output",
-                    "channels": 2,
+                    "channels": synth_out_ch,
                     "sink": str(sink),
                     "bit_depth": 24,
                 },

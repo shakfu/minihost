@@ -52,7 +52,11 @@ release/acquire publish and is validated by inspection.
 
 ## CI
 
-Not wired into CI by default. To add it, run `make tsan` in a Linux job on a
-clang/gcc image (it needs no audio device and finishes in seconds). Keep it a
-separate job from the normal build -- the binary is TSan-instrumented and must
-not be shipped.
+Wired up in `.github/workflows/tsan.yml`, deliberately as its own workflow
+rather than a job in `build.yml` -- the binary is TSan-instrumented and must
+not be shipped, and a timing-sensitive sanitizer run should not be able to
+block an unrelated release.
+
+It runs weekly, on manual dispatch (where the workload `N` is an input), and
+on pushes/PRs that touch the ring buffers or this harness. A clean run takes
+seconds, so the path-filtered trigger is effectively free.

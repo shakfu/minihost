@@ -33,6 +33,44 @@ jobs:
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "Resolved artifact version: $V"
 
+  qa:
+    name: Lint and typecheck
+    runs-on: ubuntu-22.04
+    # Fast PR gate: ruff and mypy only. Deliberately does NOT build the
+    # native extension -- mypy resolves the bindings through the checked-in
+    # src/minihost/_core.pyi stub, so the whole job runs in well under a
+    # minute instead of waiting on a JUCE download and a full C++ compile.
+    # (The stub is kept honest against the real module by
+    # tests/test_stub_coverage.py, which does run against a built wheel in
+    # build-wheels.)
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      # --only-group dev --no-install-project installs the exact ruff/mypy
+      # pinned in uv.lock without compiling minihost, so local `make qa` and
+      # this job cannot disagree because of a tool version bump.
+      - name: Install quality tools
+        run: uv sync --only-group dev --no-install-project
+
+      # Lint covers the whole tree; formatting is checked for src/ and tests/
+      # only (examples/ is not format-clean yet). Mirrors the Makefile targets.
+      - name: Ruff lint
+        run: uv run --no-sync ruff check .
+
+      - name: Ruff format check
+        run: uv run --no-sync ruff format --check src/ tests/
+
+      - name: Mypy
+        run: uv run --no-sync mypy src/
+
   build-cli:
     name: Build CLI (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

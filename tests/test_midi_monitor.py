@@ -1,7 +1,5 @@
 """Tests for MIDI monitor formatting in cli.py."""
 
-import pytest
-
 from minihost.cli import _format_midi_msg, _note_name
 
 

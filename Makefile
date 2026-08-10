@@ -2,8 +2,8 @@
 # Supports both C/C++ CLI tools and Python bindings
 
 .PHONY: all juce cli sync build rebuild test wheel sdist clean distclean help \
-		check publish-test publish lint format typecheck qa \
-		docs docs-serve docs-deploy desktop run-desktop tsan
+		check publish-test publish lint lint-fix format format-check \
+		typecheck qa docs docs-serve docs-deploy desktop run-desktop tsan
 
 # Default target - build Python bindings
 all: build
@@ -59,11 +59,28 @@ desktop: juce
 run-desktop: desktop
 	@./build-desktop/projects/minihost_desktop/minihost_desktop.app/Contents/MacOS/minihost_desktop
 
-# Run lint
-lint:
-	@uv run ruff check --fix src/
+# Quality gates. Checkers and fixers are deliberately separate targets: a
+# mutating check can rewrite the tree and still exit 0, which hides drift and
+# makes a local run non-reproducible against CI. `lint`, `format-check` and
+# `typecheck` never write; `lint-fix` and `format` do.
+#
+# Scope: ruff *lint* covers the whole tree (src, tests, examples) and matches
+# what CI runs. ruff *format* covers src/ and tests/ only -- examples/ is not
+# format-clean and reformatting it is a separate, deliberate change.
 
-# Run format
+# Lint (check only)
+lint:
+	@uv run ruff check .
+
+# Lint with auto-fix (mutates)
+lint-fix:
+	@uv run ruff check --fix .
+
+# Formatting check (no writes)
+format-check:
+	@uv run ruff format --check src/ tests/
+
+# Apply formatting (mutates)
 format:
 	@uv run ruff format src/ tests/
 
@@ -71,8 +88,8 @@ format:
 typecheck:
 	@uv run mypy src/
 
-# Run qa
-qa: test lint typecheck format
+# Full non-mutating quality gate; mirrors the CI `qa` job.
+qa: test lint format-check typecheck
 
 # Build wheel
 wheel: juce
@@ -137,10 +154,13 @@ help:
 	@echo "  build        - Build/rebuild Python extension"
 	@echo "  rebuild      - Alias for build"
 	@echo "  test         - Run Python tests"
-	@echo "  lint         - Run ruff linter with auto-fix"
-	@echo "  format       - Run code formatter"
+	@echo "  lint         - Run ruff linter (check only)"
+	@echo "  lint-fix     - Run ruff linter with auto-fix (mutates)"
+	@echo "  format-check - Check formatting (no writes)"
+	@echo "  format       - Apply code formatting (mutates)"
 	@echo "  typecheck    - Run mypy type checker"
-	@echo "  qa           - Run test, lint, typecheck, and format"
+	@echo "  qa           - Non-mutating gate: test, lint, format-check, typecheck"
+	@echo "  tsan         - ThreadSanitizer ring-buffer stress test"
 	@echo "  wheel        - Build wheel distribution"
 	@echo "  sdist        - Build source distribution"
 	@echo "  check        - Check distribution with twine"

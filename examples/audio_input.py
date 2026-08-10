@@ -30,7 +30,6 @@ Requirements:
 """
 
 import argparse
-import math
 import os
 import signal
 import sys
@@ -89,6 +88,9 @@ def example_sine_through_effect(plugin_path, sample_rate, buffer_size, capacity,
         while elapsed < duration and running:
             block, phase = generate_sine_block(440.0, actual_sr, channels, feed_block, phase)
             written = audio.write_input(block)
+            if written < feed_block:
+                print(f"  warning: input ring buffer full, dropped "
+                      f"{feed_block - written} frames")
             elapsed += feed_block / actual_sr
 
             # Pace the producer to roughly real time
@@ -118,7 +120,7 @@ def example_file_through_effect(plugin_path, input_path, sample_rate, buffer_siz
 
     if file_sr != sample_rate:
         print(f"  Warning: file is {file_sr} Hz, device will run at {sample_rate} Hz")
-        print(f"  (sample rate conversion is not yet supported)")
+        print("  (sample rate conversion is not yet supported)")
 
     plugin = minihost.Plugin(
         plugin_path, sample_rate=file_sr, max_block_size=buffer_size,
@@ -160,6 +162,9 @@ def example_file_through_effect(plugin_path, input_path, sample_rate, buffer_siz
                 chunk = chunk[:channels, :]
 
             written = audio.write_input(chunk)
+            if written < chunk.shape[1]:
+                print(f"  warning: input ring buffer full, dropped "
+                      f"{chunk.shape[1] - written} frames")
             pos = end
 
             # Pace to real time

@@ -1,0 +1,62 @@
+name: ThreadSanitizer
+
+# Kept out of the main Build workflow on purpose. The binary this produces is
+# TSan-instrumented and must never be shipped, and a sanitizer job has a
+# different failure profile (timing-dependent) than a build gate, so it should
+# not be able to block an unrelated release.
+#
+# Triggers:
+#   - weekly, to catch a race that only shows up under a different runner or a
+#     toolchain update rather than a code change;
+#   - on demand, with a configurable workload;
+#   - on pushes/PRs that actually touch the lock-free ring buffers or the
+#     harness. The run finishes in seconds, so gating those specific paths
+#     costs effectively nothing and catches the regression at review time.
+
+on:
+  schedule:
+    # Mondays 06:00 UTC.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      workload:
+        description: 'Items/frames per test (make tsan N=...)'
+        required: false
+        default: '2000000'
+  push:
+    branches: [main]
+    paths:
+      - 'projects/libminihost_audio/midi_ringbuffer.*'
+      - 'projects/libminihost_audio/audio_ringbuffer.*'
+      - 'tests/tsan/**'
+      - '.github/workflows/tsan.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'projects/libminihost_audio/midi_ringbuffer.*'
+      - 'projects/libminihost_audio/audio_ringbuffer.*'
+      - 'tests/tsan/**'
+      - '.github/workflows/tsan.yml'
+
+jobs:
+  tsan:
+    name: Ring-buffer race stress
+    runs-on: ubuntu-22.04
+    # The harness needs no JUCE, no Python and no audio device; a clean run is
+    # seconds. A cap this low means a hang (e.g. a deadlocked SPSC handshake)
+    # fails fast instead of sitting on a runner.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Scheduled and path-triggered runs use the Makefile default (200k);
+      # a manual dispatch can ask for a heavier workload.
+      - name: Run ThreadSanitizer stress
+        env:
+          N: ${{ github.event.inputs.workload }}
+        run: |
+          if [ -n "${N}" ]; then
+            make tsan TSAN_CXX=clang++ N="${N}"
+          else
+            make tsan TSAN_CXX=clang++
+          fi

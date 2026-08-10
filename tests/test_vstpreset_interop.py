@@ -43,12 +43,41 @@ def _open():
     return minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=512)
 
 
+def _commit_params(plugin):
+    """Push one silent block so pending parameter changes reach the processor.
+
+    VST3 separates the edit controller from the processor. A host-side
+    set_param lands on IEditController immediately -- get_param reads it back
+    at once -- but it only reaches IComponent through the parameter-change
+    queue that rides along with a process call. IComponent::getState is
+    exactly the chunk a .vstpreset stores, so without an intervening block it
+    still reports the *pre-change* value.
+
+    Plugins that mirror the value eagerly (Dexed, the default test plugin,
+    among them) hide this entirely. Against one that does not, these tests
+    failed while snapshotting rather than in the preset logic they exist to
+    cover. minihost is not doing anything wrong here: it sets the value via
+    JUCE's setValueNotifyingHost, and VST3 offers no guarantee that a
+    parameter is visible to the processor before it has processed.
+    """
+    frames = 64
+    inp = minihost.AudioBuffer(max(plugin.num_input_channels, 1), frames)
+    out = minihost.AudioBuffer(max(plugin.num_output_channels, 1), frames)
+    plugin.process_midi(inp, out, [])
+
+
 def _first_automatable_param(plugin):
-    """Index of a parameter whose value we can set and read back."""
+    """Index of a parameter whose value we can set and read back.
+
+    Leaves the chosen parameter committed to the processor (see
+    _commit_params), so a state snapshot taken straight after this call
+    contains the value the caller just set.
+    """
     for i in range(plugin.num_params):
         before = plugin.get_param(i)
         plugin.set_param(i, 0.25 if before > 0.5 else 0.75)
         if plugin.get_param(i) != before:
+            _commit_params(plugin)
             return i
     return None
 

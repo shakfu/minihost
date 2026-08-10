@@ -347,7 +347,6 @@ def test_scan_directory_empty_path_raises():
 def test_scan_directory_no_plugins():
     """Test that scanning directory with no plugins returns empty list."""
     import tempfile
-    import os
 
     # Create a temp directory with no plugins
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -1253,6 +1252,14 @@ class TestMidiRendering:
         assert renderer.is_finished
         assert renderer.progress == 1.0
 
+        # The block-at-a-time and drain-the-rest paths must together emit
+        # exactly the renderer's advertised length. total_samples is the
+        # user-visible span (MIDI + fixed tail); the extra _latency samples
+        # the renderer pushes through are trimmed off the front, so they must
+        # not show up in the emitted frame count.
+        assert audio.channels == block.channels
+        assert block.frames + audio.frames == renderer.total_samples
+
     def test_render_midi_from_file_path(self, synth_plugin):
         """Test rendering from MIDI file path."""
         import tempfile
@@ -1471,7 +1478,16 @@ class TestPluginChain:
         midi_out_auto = chain.process_auto(input_audio, output_audio, midi_in, [])
         midi_out_ref = chain.process_midi(input_audio, output_audio_ref, midi_in)
 
+        # Both entry points must fill the caller's buffer in place and hand
+        # back a MIDI-out list. Sample-exact parity between the two is
+        # deliberately not asserted: the chain is stateful and the reference
+        # call runs second, so any plugin with an envelope, delay line, or
+        # LFO has already advanced by the time it executes.
         assert isinstance(midi_out_auto, list)
+        assert isinstance(midi_out_ref, list)
+        assert output_audio.shape == output_audio_ref.shape
+        assert np.all(np.isfinite(output_audio))
+        assert np.all(np.isfinite(output_audio_ref))
 
     def test_empty_chain_raises_error(self):
         """Test that empty plugin list raises error."""

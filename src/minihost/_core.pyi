@@ -631,6 +631,33 @@ def audio_get_file_info(path: str) -> dict[str, Any]:
     """Get audio file metadata without decoding."""
     ...
 
+def vst3_state_split(state: bytes) -> tuple[bytes | None, bytes | None]:
+    """Split a JUCE VST3 plugin-state blob into its raw chunks.
+
+    Takes the bytes returned by :meth:`Plugin.get_state` and returns
+    ``(component_state, controller_state)`` -- what a .vstpreset file's
+    'Comp' and 'Cont' chunks actually hold. Either element is None if the
+    corresponding chunk is absent.
+
+    Raises:
+        RuntimeError: If the blob is not in JUCE's ``<VST3PluginState>``
+            container format (e.g. it is a raw VST3 component chunk, or the
+            plugin is not a JUCE-hosted VST3).
+    """
+    ...
+
+def vst3_state_join(
+    component_state: bytes,
+    controller_state: bytes | None = None,
+) -> bytes:
+    """Build a JUCE VST3 plugin-state blob from raw chunks.
+
+    The inverse of :func:`vst3_state_split`. The result is what
+    :meth:`Plugin.set_state` expects. An empty or absent controller chunk is
+    omitted from the container.
+    """
+    ...
+
 def vstpreset_read_class_id_from_bundle(vst3_path: str) -> str:
     """Read the processor class ID (32-char uppercase hex FUID) from a VST3 bundle."""
     ...

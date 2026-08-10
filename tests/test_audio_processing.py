@@ -13,6 +13,7 @@ import pytest
 
 from minihost._core import MidiFile
 from minihost.render import (
+    MidiRenderer,
     _build_tempo_map,
     _collect_midi_events,
     _event_to_midi_tuple,
@@ -20,13 +21,22 @@ from minihost.render import (
     _tick_to_seconds,
     render_midi,
     render_midi_stream,
-    MidiRenderer,
 )
 from minihost.automation import (
     _interpolate_keyframes,
-    _parse_time_key,
-    parse_automation_file,
 )
+
+
+def _expected_out_channels(plugin, midi_file, **renderer_kwargs) -> int:
+    """Output channel count the renderer will produce for this plugin.
+
+    Asked of MidiRenderer rather than written as a literal. The renderer
+    floors the plugin's own output channel count, and that floor has already
+    moved once (2 -> 1 in v0.3.0); the hardcoded copies of it in these tests
+    went stale silently and only kept passing because every plugin exercised
+    since happened to be at least stereo. A mono plugin exposed them.
+    """
+    return MidiRenderer(plugin, midi_file, **renderer_kwargs).channels
 
 
 # ---------------------------------------------------------------------------
@@ -426,7 +436,8 @@ class TestMidiRendererStateMachine:
 
     def test_midi_file_save_load_round_trip(self, tmp_path):
         """MidiFile saved and reloaded should produce identical events."""
-        import tempfile, os
+        import tempfile
+        import os
 
         mf = MidiFile()
         mf.ticks_per_quarter = 480
@@ -602,7 +613,9 @@ class TestProcessIntegration:
 
         assert isinstance(audio, np.ndarray)
         assert audio.ndim == 2
-        assert audio.shape[0] >= 2  # at least stereo
+        assert audio.shape[0] == _expected_out_channels(
+            plugin, mf, block_size=512, tail_seconds=0.5
+        )
         assert audio.shape[1] > 0  # non-empty
         assert np.all(np.isfinite(audio))
 
@@ -615,8 +628,10 @@ class TestProcessIntegration:
         mf.add_note_on(t, 0, 0, 60, 100)
         mf.add_note_off(t, 480, 0, 60, 0)
 
-        out_ch = max(plugin.num_output_channels, 2)
         block_size = 256
+        out_ch = _expected_out_channels(
+            plugin, mf, block_size=block_size, tail_seconds=0.1
+        )
         block_count = 0
 
         for block in render_midi_stream(

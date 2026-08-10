@@ -1,8 +1,5 @@
 """Tests for minihost.audio_io module."""
 
-import tempfile
-from pathlib import Path
-
 import numpy as np
 import pytest
 

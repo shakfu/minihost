@@ -20,6 +20,7 @@ from ``MINIHOST_TEST_PLUGIN`` (default: Dexed).
 
 from __future__ import annotations
 
+import functools
 import os
 import subprocess
 from pathlib import Path
@@ -97,37 +98,88 @@ def _cmd_id(args: list[str]) -> str:
     return " ".join(a for a in args if a != "{PLUGIN}")
 
 
+@functools.lru_cache(maxsize=1)
+def _morph_is_exercisable() -> bool:
+    """Whether `morph` can actually blend against the configured test plugin.
+
+    With no --a-state/--b-state or --a-program/--b-program, `morph` falls back
+    to the plugin's first two factory programs and exits non-zero when there
+    are fewer than two. A parameter-only synth exposing no program list is
+    therefore a legitimate "cannot run", not a CLI defect -- so the morph
+    cases assert agreement between the two binaries but do not demand success.
+
+    Unknown (minihost not importable, plugin fails to open) is reported as
+    exercisable so a genuine morph regression is never silently skipped.
+    """
+    try:
+        import minihost
+    except ImportError:
+        return True
+    try:
+        plugin = minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=512)
+    except Exception:
+        return True
+    try:
+        return plugin.num_programs >= 2
+    finally:
+        plugin.close()
+
+
+def _assert_stdout_identical(c, cpp, args) -> None:
+    if c.stdout == cpp.stdout:
+        return
+    # Produce a readable diff on failure rather than dumping raw bytes.
+    import difflib
+
+    c_lines = c.stdout.decode("utf-8", "replace").splitlines()
+    cpp_lines = cpp.stdout.decode("utf-8", "replace").splitlines()
+    diff = "\n".join(
+        difflib.unified_diff(
+            c_lines, cpp_lines, "minihost_c", "minihost_cpp", lineterm="", n=2
+        )
+    )
+    # Cap the diff so a large mismatch stays readable.
+    diff_head = "\n".join(diff.splitlines()[:40])
+    pytest.fail(
+        f"stdout differs for '{_cmd_id(args)}' "
+        f"(C={len(c.stdout)}b, CPP={len(cpp.stdout)}b):\n{diff_head}"
+    )
+
+
 @pytest.mark.parametrize("args", CONFORMANCE_COMMANDS, ids=_cmd_id)
 def test_c_and_cpp_stdout_identical(args):
     c = _run(C_BIN, args)
     cpp = _run(CPP_BIN, args)
+
+    # Interchangeability is the property under test, and it applies whether or
+    # not the command can run against this plugin: the two front-ends must
+    # succeed together or decline together, with the same output.
+    assert c.returncode == cpp.returncode, (
+        f"exit codes diverge for '{_cmd_id(args)}': "
+        f"minihost_c={c.returncode}, minihost_cpp={cpp.returncode}"
+    )
+    _assert_stdout_identical(c, cpp, args)
+
+    if args[0] == "morph" and not _morph_is_exercisable():
+        pytest.skip(
+            f"{PLUGIN} exposes < 2 factory programs; both CLIs decline morph "
+            f"identically (exit {c.returncode}), but the blend itself is "
+            f"unexercised. Point MINIHOST_TEST_PLUGIN at a plugin with "
+            f"factory presets to cover it."
+        )
 
     assert c.returncode == 0, f"minihost_c failed ({c.returncode}) for {_cmd_id(args)}"
     assert cpp.returncode == 0, (
         f"minihost_cpp failed ({cpp.returncode}) for {_cmd_id(args)}"
     )
 
-    if c.stdout != cpp.stdout:
-        # Produce a readable diff on failure rather than dumping raw bytes.
-        import difflib
-
-        c_lines = c.stdout.decode("utf-8", "replace").splitlines()
-        cpp_lines = cpp.stdout.decode("utf-8", "replace").splitlines()
-        diff = "\n".join(
-            difflib.unified_diff(
-                c_lines, cpp_lines, "minihost_c", "minihost_cpp", lineterm="", n=2
-            )
-        )
-        # Cap the diff so a large mismatch stays readable.
-        diff_head = "\n".join(diff.splitlines()[:40])
-        pytest.fail(
-            f"stdout differs for '{_cmd_id(args)}' "
-            f"(C={len(c.stdout)}b, CPP={len(cpp.stdout)}b):\n{diff_head}"
-        )
-
 
 def test_morph_blend_endpoints_match_across_clis():
     """A spot check that both CLIs interpolate identically at several t."""
+    # Checked in-body rather than via skipif so collection never loads a
+    # plugin (JUCE initialisation during collection is best avoided).
+    if not _morph_is_exercisable():
+        pytest.skip(f"{PLUGIN} exposes < 2 factory programs; morph cannot blend")
     for t in ("0.1", "0.5", "0.9"):
         args = ["morph", "{PLUGIN}", "-t", t, "-j"]
         c = _run(C_BIN, args)

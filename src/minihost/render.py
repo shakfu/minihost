@@ -8,7 +8,17 @@ provided.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Iterator, Optional, Union, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Iterator,
+    Optional,
+    Protocol,
+    Union,
+    cast,
+    runtime_checkable,
+)
 
 if TYPE_CHECKING:
     import numpy as np
@@ -17,6 +27,32 @@ from minihost._core import AudioBuffer, Plugin, PluginChain, MidiFile
 
 # Type alias for plugin or chain
 PluginOrChain = Union[Plugin, PluginChain]
+
+
+@runtime_checkable
+class SupportsTransport(Protocol):
+    """Anything the renderer can push a playhead into.
+
+    ``Plugin`` satisfies this; ``PluginChain`` does not, since there is no
+    chain-level transport to propagate. Keeping the capability in the type
+    system means the renderer's ``hasattr`` guard and its call site cannot
+    drift apart -- adding ``set_transport`` to ``PluginChain`` later is then
+    the only change needed to drive tempo-synced plugins inside a chain.
+    """
+
+    def set_transport(
+        self,
+        bpm: float,
+        time_sig_num: int = 4,
+        time_sig_denom: int = 4,
+        position_samples: int = 0,
+        position_beats: float = 0.0,
+        is_playing: bool = True,
+        is_recording: bool = False,
+        is_looping: bool = False,
+        loop_start: int = 0,
+        loop_end: int = 0,
+    ) -> None: ...
 
 
 def _coerce_block(block: AudioBuffer, as_: type | None) -> Any:
@@ -563,8 +599,12 @@ class MidiRenderer:
         self._output_buffer = AudioBuffer(self._out_channels, block_size)
 
         # PluginChain has no chain-level set_transport, so tempo-synced
-        # plugins inside a chain still cannot be driven from here.
-        self._can_set_transport = hasattr(plugin, "set_transport")
+        # plugins inside a chain still cannot be driven from here. Narrow
+        # once at construction rather than re-testing per block; None means
+        # "no transport to push".
+        self._transport: SupportsTransport | None = (
+            plugin if isinstance(plugin, SupportsTransport) else None
+        )
 
         # State
         self._current_sample = 0
@@ -677,10 +717,10 @@ class MidiRenderer:
         # anything tempo-synced (a synced delay, an arpeggiator, an LFO) ran at
         # its own default tempo with the playhead stuck at sample 0, so a
         # rendered MIDI file did not match the file's own tempo.
-        if self._can_set_transport:
+        if self._transport is not None:
             seconds = self._current_sample / self.sample_rate
             beats, bpm = _seconds_to_beats_and_bpm(seconds, self._tempo_map, self._tpq)
-            self.plugin.set_transport(
+            self._transport.set_transport(
                 bpm=bpm,
                 position_samples=self._current_sample,
                 position_beats=beats,

@@ -139,7 +139,7 @@ def main():
         midi_file = create_test_midi()
         print("MIDI: built-in C major chord (1 second at 120 BPM)")
 
-    print(f"Sample rate: 48000 Hz")
+    print("Sample rate: 48000 Hz")
     print()
 
     # --- Mode 1: Fixed tail (2 seconds) ---
@@ -196,7 +196,7 @@ def main():
 
     block_count = 0
     while not renderer.is_finished:
-        block = renderer.render_block()
+        renderer.render_block()
         block_count += 1
 
     actual_duration = renderer.current_sample / renderer.sample_rate

@@ -42,8 +42,6 @@ def _parse(argv):
     old_argv = sys.argv
     sys.argv = ["minihost"] + argv
     try:
-        from minihost.cli import main as _main
-
         parser = argparse.ArgumentParser(prog="minihost")
         parser.add_argument("-r", "--sample-rate", type=float, default=48000)
         parser.add_argument("-b", "--block-size", type=int, default=512)

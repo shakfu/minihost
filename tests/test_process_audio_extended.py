@@ -8,7 +8,6 @@ audio input). Plugin-gated; skipped without MINIHOST_TEST_PLUGIN.
 from __future__ import annotations
 
 import os
-import tempfile
 
 import pytest
 

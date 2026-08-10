@@ -174,7 +174,7 @@ def main():
         print(f"  MIDI Input: [{midi_input_port}] {inputs[midi_input_port]['name']}")
 
     # Open audio device
-    print(f"\nOpening audio device...")
+    print("\nOpening audio device...")
     try:
         audio = minihost.AudioDevice(
             plugin,
@@ -211,7 +211,7 @@ def main():
 
     # Start audio
     audio.start()
-    print(f"\nPlaying. Press Ctrl+C to stop.")
+    print("\nPlaying. Press Ctrl+C to stop.")
 
     if not args.midi and not args.virtual_midi:
         print("(No MIDI input configured. Use --midi N or --virtual-midi NAME)")

@@ -120,13 +120,20 @@ def test_in_place_rejects_tail_seconds():
 
 @skip_if_no_plugin
 def test_in_place_rejects_channel_mismatch():
-    """A synth (0 inputs declared, 2 outputs) won't satisfy the
-    matching-channels requirement when wrapped in an AudioBuffer."""
+    """in_place=True must refuse a buffer whose width is not the plugin's
+    output width, since the output cannot be written into it.
+
+    The buffer is deliberately built one channel wider than the plugin's
+    output rather than from ``num_input_channels``. A synth declares 0
+    inputs, and ``AudioBuffer`` clamps a request for 0 channels up to 1 (see
+    the jmax in the MhAudioBufferT constructor) -- so for a *mono* synth the
+    old construction produced a 1-channel buffer that matched the 1-channel
+    output and the guard correctly did not fire. Deriving the width from the
+    output side keeps the mismatch real for any plugin.
+    """
     plugin = minihost.Plugin(PLUGIN, sample_rate=48000)
-    if plugin.num_input_channels == plugin.num_output_channels:
-        plugin.close()
-        pytest.skip("plugin has matching I/O; cannot exercise mismatch path")
-    src = minihost.AudioBuffer(plugin.num_input_channels, 256)
+    src = minihost.AudioBuffer(plugin.num_output_channels + 1, 256)
+    assert src.channels != plugin.num_output_channels
     with pytest.raises(ValueError, match="matching channel counts"):
         minihost.process_audio(plugin, src, compensate_latency=False, in_place=True)
     plugin.close()
