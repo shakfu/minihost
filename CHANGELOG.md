@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.5.2]
+
+Follow-ups from a review pass over the Python bindings and CI. No C ABI change (stays at
+**2.4.0**): no symbols added or removed and no behaviour change on the C boundary -- the GIL
+fix is entirely on the Python binding side.
+
+### Fixed
+
+- **`Session.open` and `Plugin.from_descriptor` held the GIL across the blocking plugin load.** The direct `Plugin(...)` constructor releases the GIL around the multi-second native instantiation (added in 0.5.0), but its two siblings did not. So loading a plugin through a `Session` -- the shared-format-manager path meant for multi-plugin and directory-scanning workflows -- or from a serialized `PluginDescription` (`from_descriptor`, the AudioUnit path) stalled every other Python thread for the whole load. The advertised "load one plugin on a background thread while another runs" pattern silently serialized on exactly these entry points. Both now carry the same `gil_scoped_release` call guard as the constructor. `open_async`, which already went through the constructor, was never affected.
+
+### Testing
+
+- **The desktop test suite now runs in CI.** The `build-desktop` job compiled the `minihost_desktop` binary and smoke-checked it with `--save-roundtrip`, but never ran pytest against it; the `build-wheels` job ran the full suite but built no desktop binary. The two never intersected, so the entire `@skip_if_no_desktop` set -- undo, autosave / crash-recovery, headless-render smoke, and C++/Python render parity -- executed in no job at all. `build-desktop` now runs it, split by cost: the binary-only tests (undo, autosave -- the platform-sensitive recovery paths) run on all three platforms, while the tests that import the `minihost` package to compare against `render_project` (smoke, render parity) run on Linux, where a single extra headless build backs them. Plugin-gated cases (MIDI-chain parity, plugin scan) skip cleanly on runners with no plugin installed.
+
 ## [0.5.1]
 
 Continues the code-review pass: correct sidechain channel accounting, a host playhead that

@@ -2726,6 +2726,13 @@ NB_MODULE(_core, m) {
              nb::arg("out_channels") = 2,
              nb::arg("sidechain_channels") = 0,
              nb::rv_policy::take_ownership,
+             // Release the GIL across the blocking native load (marshaled to
+             // and waited on across the dedicated plugin thread), matching the
+             // direct Plugin(...) constructor. Without this, loading a plugin
+             // on the session path holds the GIL for the whole multi-second
+             // instantiation and serializes the concurrent multi-plugin /
+             // scan workflow the Session is meant for.
+             nb::call_guard<nb::gil_scoped_release>(),
              "Load a plugin using the session's shared format manager. "
              "Returns a Plugin. The returned Plugin does not depend on "
              "the session post-construction; it is safe to close the "
@@ -3458,6 +3465,9 @@ NB_MODULE(_core, m) {
              nb::arg("in_channels") = 2,
              nb::arg("out_channels") = 2,
              nb::rv_policy::take_ownership,
+             // Release the GIL across the blocking native load, matching the
+             // direct Plugin(...) constructor (see Session.open above).
+             nb::call_guard<nb::gil_scoped_release>(),
              "Open a plugin from a serialized juce::PluginDescription (its "
              "createXml() form). Required for AudioUnits, which have no file "
              "path. descriptor_xml is the UTF-8 XML string.")

@@ -152,8 +152,11 @@ jobs:
     # break under refactors of the C ABI or graph executor. Also runs a headless
     # smoke (--save-roundtrip) to prove the binary is not dead on arrival.
     # Backstop timeout well under the 6h default in case a headless-init hang
-    # slips through.
-    timeout-minutes: 45
+    # slips through. Raised from 45 to absorb the desktop test steps below: the
+    # Linux leg additionally installs the headless Python package (a second,
+    # independent build tree) so the render-parity/smoke tests can compare
+    # against minihost.render_project. mac/windows legs skip that second build.
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
@@ -248,6 +251,58 @@ jobs:
           set -e
           test "$code" -eq 2 || { echo "expected exit 2 for empty value, got $code"; exit 1; }
           echo "error-path exit codes OK"
+
+      # Run the actual desktop test suite. The guard above only compiles the
+      # binary and smoke-checks it; without the steps below the whole
+      # @skip_if_no_desktop set (undo, autosave/recovery, headless-render smoke,
+      # and C++/Python render parity) never runs in any CI job -- the wheels job
+      # runs pytest but builds no desktop binary, and this job builds the binary
+      # but never ran pytest.
+      #
+      # The suite is split by cost. The binary-only tests (undo, autosave) just
+      # drive the desktop binary as a subprocess and import no minihost package,
+      # so they run on ALL platforms -- cheap, and they cover the autosave/
+      # recovery paths, which are the platform-sensitive ones (per-OS settings
+      # dir, path handling, atomic rename). MINIHOST_DESKTOP_BIN pins the locator
+      # to the artifact just built rather than its newest-mtime search; on Linux
+      # the binary needs an X display, so pytest (which spawns it) runs under the
+      # same xvfb prefix as the smoke step.
+      - name: Install pytest
+        run: python -m pip install pytest
+
+      - name: Run desktop tests (binary only, all platforms)
+        shell: bash
+        timeout-minutes: 15
+        env:
+          MINIHOST_DESKTOP_BIN: ${{ matrix.bin }}
+        run: >
+          ${{ matrix.run-prefix }} python -m pytest -v
+          tests/test_desktop_undo.py
+          tests/test_desktop_autosave.py
+
+      # The smoke and render-parity tests import the minihost package to compare
+      # the desktop renderer against minihost.render_project(), which forces a
+      # second (headless) build. That output is deterministic audio math, so one
+      # platform is a strong signal -- run these on Linux only to keep the extra
+      # compile to a single runner. scikit-build-core builds the wheel in its own
+      # isolated tree, so this does not disturb the desktop `build/` just made.
+      # Plugin-gated cases (MIDI-chain parity, plugin scan) skip cleanly with no
+      # plugin installed on the runner.
+      - name: Install minihost (headless) + numpy
+        if: runner.os == 'Linux'
+        run: python -m pip install . numpy
+
+      - name: Run desktop tests (with package, Linux only)
+        if: runner.os == 'Linux'
+        shell: bash
+        timeout-minutes: 20
+        env:
+          MINIHOST_DESKTOP_BIN: ${{ matrix.bin }}
+        run: >
+          ${{ matrix.run-prefix }} python -m pytest -v
+          tests/test_desktop_smoke.py
+          tests/test_desktop_render_parity.py
+          tests/test_desktop_pluginscan.py
 
       # Stage into a clean dir first so the upload has a predictable layout.
       # `cp -R` on the macOS matrix preserves the minihost_desktop.app bundle
