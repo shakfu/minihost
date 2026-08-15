@@ -187,8 +187,9 @@ def test_graph_add_branch_rejects_channel_mismatch():
         # Input width is now a ceiling rather than an equality: a branch
         # may read fewer channels than the bus carries, but never more --
         # the caller supplies exactly num_in_channels pointers.
-        narrow = minihost.PluginBus(1, chain.num_output_channels,
-                                    max_block_size=512, sample_rate=48000.0)
+        narrow = minihost.PluginBus(
+            1, chain.num_output_channels, max_block_size=512, sample_rate=48000.0
+        )
         if chain.num_input_channels > 1:
             with pytest.raises(RuntimeError, match="exceed bus input channels"):
                 narrow.add_branch(chain)
@@ -449,10 +450,6 @@ def test_bus_fans_midi_to_all_branches():
 # ---------------------------------------------------------------------------
 
 
-
-
-
-
 @skip_if_no_synth
 def test_bus_accepts_a_branch_narrower_than_itself():
     # A two-channel bus carrying an instrument branch that reads nothing:
@@ -473,8 +470,6 @@ def test_bus_accepts_a_branch_narrower_than_itself():
         plugin.close()
 
     assert np.max(np.abs(out)) > 1e-6
-
-
 
 
 @skip_if_no_midi_fx
@@ -538,6 +533,7 @@ def test_bus_layers_a_direct_instrument_against_a_midi_effect_leg():
 # empty list; full merge/ordering verification needs a MIDI-emitting plugin
 # (an arpeggiator, a MIDI echo) supplied via MINIHOST_TEST_MIDI_FX.
 # ---------------------------------------------------------------------------
+
 
 @skip_if_no_fx
 def test_bus_process_midi_returns_events_and_overflow():

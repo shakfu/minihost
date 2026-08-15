@@ -299,7 +299,7 @@ def test_midi_fanout_drives_several_instruments_and_audio_sums():
         g.connect(n1, mix, 0)
         g.connect(n2, mix, 1)
         g.connect(mix, a_out)
-        g.connect_midi(mi, n1)   # same source feeds both instruments
+        g.connect_midi(mi, n1)  # same source feeds both instruments
         g.connect_midi(mi, n2)
         g.compile()
 
@@ -362,7 +362,7 @@ def test_plugin_to_plugin_midi_edge_drives_an_instrument():
             graph_inputs = [np.zeros((fx_in_ch, F), dtype=np.float32)]
         g.connect(n_syn, a_out)
         g.connect_midi(mi, n_fx)
-        g.connect_midi(n_fx, n_syn)   # the edge under test
+        g.connect_midi(n_fx, n_syn)  # the edge under test
         g.compile()
 
         block = np.zeros((out_ch, F), dtype=np.float32)

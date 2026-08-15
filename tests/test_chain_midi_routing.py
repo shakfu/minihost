@@ -32,7 +32,8 @@ SYNTH_PLUGIN = (
     os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
 )
 FX_PLUGIN = (
-    os.environ.get("MINIHOST_TEST_FX") or "/Library/Audio/Plug-Ins/VST3/TAL-Filter-2.vst3"
+    os.environ.get("MINIHOST_TEST_FX")
+    or "/Library/Audio/Plug-Ins/VST3/TAL-Filter-2.vst3"
 )
 MIDI_FX_PLUGIN = os.environ.get("MINIHOST_TEST_MIDI_FX")
 
@@ -222,11 +223,15 @@ def test_single_plugin_chain_matches_the_plugin_alone():
     try:
         in_ch = max(direct_plugin.num_input_channels, 1)
         silence = np.zeros((in_ch, BLOCK), dtype=np.float32)
-        out_direct = np.zeros((direct_plugin.num_output_channels, BLOCK), dtype=np.float32)
+        out_direct = np.zeros(
+            (direct_plugin.num_output_channels, BLOCK), dtype=np.float32
+        )
 
         direct = []
         for index in range(BLOCKS):
-            direct_plugin.process_midi(silence, out_direct, NOTE_ON if index == 0 else [])
+            direct_plugin.process_midi(
+                silence, out_direct, NOTE_ON if index == 0 else []
+            )
             direct.append(out_direct.copy())
         direct_audio = np.concatenate(direct, axis=1)
 
