@@ -40,10 +40,21 @@ MH_PluginBus* mh_bus_create(int num_in_channels,
                                  char* err_buf,
                                  size_t err_buf_size)
 {
-    if (num_in_channels <= 0 || num_out_channels <= 0)
+    // in_channels may be zero: a bus of instruments has nothing to feed
+    // its branches, since a plugin driven by MIDI alone exposes no audio
+    // input bus. Layering one MIDI part across parallel synths -- the
+    // headline use for mh_bus_process_midi_io -- is exactly that shape,
+    // and requiring a positive count made it impossible to build.
+    if (num_in_channels < 0)
     {
         setErr(err_buf, err_buf_size,
-               "Graph channel counts must be positive");
+               "Bus input channel count cannot be negative");
+        return nullptr;
+    }
+    if (num_out_channels <= 0)
+    {
+        setErr(err_buf, err_buf_size,
+               "Bus output channel count must be positive");
         return nullptr;
     }
     if (max_block_size <= 0)
@@ -87,12 +98,18 @@ int mh_bus_add_branch(MH_PluginBus* graph,
 
     int br_in = mh_chain_get_num_input_channels(chain);
     int br_out = mh_chain_get_num_output_channels(chain);
-    if (br_in != graph->in_channels)
+    // A branch may read fewer channels than the bus carries, and an
+    // instrument branch reads none at all -- the chain hands its first
+    // plugin only as many channel pointers as that plugin declares, so a
+    // narrower branch simply ignores the rest. Wider is still an error:
+    // the caller supplies exactly graph->in_channels pointers, and a
+    // branch wanting more would read past them.
+    if (br_in > graph->in_channels)
     {
         char msg[256];
         std::snprintf(msg, sizeof(msg),
-                      "Branch input channels (%d) do not match graph "
-                      "input channels (%d)",
+                      "Branch input channels (%d) exceed bus input "
+                      "channels (%d)",
                       br_in, graph->in_channels);
         setErr(err_buf, err_buf_size, msg);
         return -1;

@@ -819,7 +819,8 @@ input_audio = minihost.AudioBuffer(2, 512)
 output_audio = minihost.AudioBuffer(2, 512)
 chain.process(input_audio, output_audio)
 
-# Process with MIDI (MIDI goes to first plugin)
+# Process with MIDI (enters the first plugin that accepts it, then
+# carried on by any plugin that produces MIDI -- e.g. arpeggiator -> synth)
 midi_events = [(0, 0x90, 60, 100)]
 chain.process_midi(input_audio, output_audio, midi_events)
 
@@ -1037,7 +1038,7 @@ float* inputs[2] = { in_left, in_right };
 float* outputs[2] = { out_left, out_right };
 mh_chain_process(chain, inputs, outputs, 512);
 
-// Process with MIDI (MIDI goes to first plugin only)
+// Process with MIDI (carried onward by plugins that produce MIDI)
 MH_MidiEvent midi[] = { { 0, 0x90, 60, 100 } };
 mh_chain_process_midi_io(chain, inputs, outputs, 512, midi, 1, NULL, 0, NULL);
 

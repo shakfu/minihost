@@ -80,6 +80,18 @@ extern "C" {
 #endif
 
 // API version components. Bump per the policy described above.
+// 2.5.0: MIDI now flows through a chain rather than stopping at its first
+//   plugin. mh_chain_process_midi_io hands midi_in to the first plugin that
+//   accepts MIDI and lets every plugin reporting produces_midi replace the
+//   stream for the plugins behind it, so a MIDI effect can drive an
+//   instrument further down; previously those events were reported to the
+//   caller and dropped, and PluginChain([arpeggiator, synth]) rendered
+//   silence. Consequently midi_out now carries what leaves the LAST plugin,
+//   not the first. Also relaxes mh_bus_create / mh_bus_add_branch: a bus may
+//   have zero input channels and a branch may read fewer than the bus carries
+//   (never more), so instrument branches -- which expose no audio input bus --
+//   can finally be layered, which is what mh_bus_process_midi_io exists for.
+//   No symbols added or removed; no struct layout change.
 // 2.4.0: MH_Info.num_input_ch now reports the MAIN input bus only, not the sum
 //   of every input bus. A plugin opened with a sidechain previously reported
 //   main+sidechain, so callers had to over-provision the main input buffer and
@@ -96,7 +108,7 @@ extern "C" {
 //   mh_graph_* (parallel bus) -> mh_bus_* / MH_PluginGraph -> MH_PluginBus,
 //   and mh_graph_v2_* (DAG) -> mh_graph_* / MH_GraphV2 -> MH_PluginGraph.
 #define MH_API_VERSION_MAJOR 2
-#define MH_API_VERSION_MINOR 4
+#define MH_API_VERSION_MINOR 5
 #define MH_API_VERSION_PATCH 0
 
 // Single packed integer for compile-time comparison.

@@ -184,7 +184,7 @@ Change flag constants: `MH_CHANGE_LATENCY`, `MH_CHANGE_PARAM_INFO`, `MH_CHANGE_P
 
 ## PluginChain
 
-Chain multiple plugins for sequential processing.
+Chain multiple plugins for sequential processing. MIDI travels down the chain as well as audio, so a MIDI effect can drive an instrument behind it; see [MIDI Routing](midi_routing.md) for the rules and the ordering they imply.
 
 ### Constructor
 
@@ -210,7 +210,7 @@ All plugins must share the same sample rate.
 | Method | Description |
 |--------|-------------|
 | `process(input, output)` | Process audio through chain |
-| `process_midi(input, output, midi_events)` | Process with MIDI (MIDI goes to first plugin). Returns output MIDI events (max 256) |
+| `process_midi(input, output, midi_events)` | Process with MIDI. MIDI enters the first plugin that accepts it and is carried onward by any plugin reporting `produces_midi` (MIDI effect -> instrument). Returns the MIDI leaving the last plugin (max 256) |
 | `process_auto(input, output, midi_in, param_changes)` | Process with sample-accurate automation and MIDI. Returns output MIDI (max 256) |
 | `get_plugin(index)` | Get plugin by index |
 | `reset()` | Reset all plugins |
@@ -230,7 +230,7 @@ Run N `PluginChain` branches in parallel against the same input and sum their ou
 PluginBus(num_in_channels, num_out_channels, max_block_size=8192, sample_rate=48000.0)
 ```
 
-Every branch added later must accept exactly `num_in_channels` inputs, produce exactly `num_out_channels` outputs, and run at `sample_rate`; `add_branch` rejects mismatches with a descriptive error.
+Every branch added later must produce exactly `num_out_channels` outputs and run at `sample_rate`, and must read no more than `num_in_channels` inputs -- fewer is fine, and an instrument branch reads none at all. Pass `num_in_channels=0` for a bus that layers MIDI-driven instruments, which expose no audio input bus. `add_branch` rejects a branch that is wider than the bus, or whose output width or sample rate disagrees, with a descriptive error.
 
 ### Properties
 
@@ -260,6 +260,8 @@ Supports the context-manager protocol (`with minihost.PluginBus(...) as bus:`).
 ---
 
 ## PluginGraph
+
+See [MIDI Routing](midi_routing.md) for the MIDI edge model, the processor and merge nodes, and how a split MIDI path is wired.
 
 General-DAG executor: arbitrary node-to-node audio and MIDI routing (plugin, input, output, mix, channel pick/merge, and MIDI nodes). It backs project files (`load_project` / `render_project`); most users reach it through those rather than wiring nodes by hand. Build the graph (`add_*`, `connect`, `set_mix_gain`), call `compile()`, then `render_block()`.
 

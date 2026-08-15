@@ -35,9 +35,12 @@ typedef struct MH_PluginChain MH_PluginChain;
 typedef struct MH_PluginBus MH_PluginBus;
 
 // Create a graph configured for a fixed I/O channel layout and max
-// block size. Every branch added later must accept exactly
-// num_in_channels input channels and produce exactly num_out_channels
-// output channels; sample rates across branches must agree with the
+// block size. Every branch added later must produce exactly
+// num_out_channels output channels and read at most num_in_channels
+// input channels -- a branch may read fewer, and an instrument branch
+// reads none. num_in_channels itself may be 0, which is the shape of a
+// bus that layers several MIDI-driven instruments: they have no audio
+// input to receive. Sample rates across branches must agree with the
 // graph's sample_rate. Branches will be processed at up to
 // max_block_size frames per call.
 //

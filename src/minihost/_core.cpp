@@ -3704,7 +3704,11 @@ NB_MODULE(_core, m) {
              "Create a plugin chain from a list of Plugin instances. "
              "Audio flows sequentially through plugins (e.g., synth -> reverb -> limiter). "
              "All plugins must have the same sample rate. "
-             "MIDI is sent to the first plugin only.")
+             "MIDI flows alongside the audio: it enters the first plugin that accepts "
+             "MIDI, and any plugin reporting produces_midi replaces the stream for the "
+             "plugins after it, so a MIDI effect can drive an instrument further down "
+             "(e.g. arpeggiator -> synth -> reverb). A plugin reporting no MIDI output "
+             "ends the stream, so MIDI effects must come before the instrument.")
 
         // Properties
         .def_prop_ro("num_plugins", &PluginChain::num_plugins,
@@ -3756,8 +3760,11 @@ NB_MODULE(_core, m) {
         .def("process_midi", &PluginChain::process_midi,
              nb::arg("input"), nb::arg("output"), nb::arg("midi_in"),
              nb::arg("midi_out_capacity") = MIDI_OUT_CAPACITY,
-             "Process audio with MIDI (to first plugin). midi_in: list of (sample_offset, status, data1, data2). "
-             "Returns the list of output MIDI events (capped at midi_out_capacity, default 256).")
+             "Process audio with MIDI. midi_in: list of (sample_offset, status, data1, data2), "
+             "delivered to the first plugin that accepts MIDI and then carried onward by any "
+             "plugin that produces MIDI. "
+             "Returns the MIDI leaving the LAST plugin -- empty unless that plugin reports "
+             "produces_midi (capped at midi_out_capacity, default 256).")
         .def("process_auto", &PluginChain::process_auto,
              nb::arg("input"), nb::arg("output"), nb::arg("midi_in"), nb::arg("param_changes"),
              nb::arg("midi_out_capacity") = MIDI_OUT_CAPACITY,
@@ -3781,12 +3788,14 @@ NB_MODULE(_core, m) {
              nb::arg("num_out_channels"),
              nb::arg("max_block_size") = 8192,
              nb::arg("sample_rate") = 48000.0,
-             "Create a plugin bus. All branches added later must "
-             "accept num_in_channels inputs and produce num_out_channels "
-             "outputs at sample_rate. Branches are processed in parallel "
-             "and their outputs summed (with per-branch gain) into the "
-             "bus output. For arbitrary node-to-node routing use "
-             "PluginGraph instead.")
+             "Create a plugin bus. Branches added later must produce "
+             "num_out_channels outputs at sample_rate and read at most "
+             "num_in_channels inputs -- fewer is allowed, and an "
+             "instrument branch reads none. Pass num_in_channels=0 to "
+             "layer MIDI-driven instruments, which have no audio input. "
+             "Branches are processed in parallel and their outputs summed "
+             "(with per-branch gain) into the bus output. For arbitrary "
+             "node-to-node routing use PluginGraph instead.")
         .def("add_branch", &PluginBus::add_branch,
              nb::arg("chain"), nb::arg("gain") = 1.0f,
              nb::keep_alive<1, 2>(),

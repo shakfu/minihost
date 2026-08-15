@@ -10,6 +10,12 @@
 #include <cmath>
 #include <algorithm>
 
+// Ceiling on the MIDI events one plugin can hand the next within a
+// single block. Matches the 256 the C API documents elsewhere; a
+// producing plugin that exceeds it has its excess dropped rather than
+// allocating on the audio thread.
+static constexpr int kChainMidiStageCapacity = 256;
+
 struct MH_PluginChain
 {
     std::vector<MH_Plugin*> plugins;
@@ -34,6 +40,15 @@ struct MH_PluginChain
     std::vector<float*> autoChunkOut;
     std::vector<MH_MidiEvent> autoChunkMidiIn;
     std::vector<MH_MidiEvent> autoChunkMidiOut;
+
+    // MIDI routing state. accepts/produces are cached at construction
+    // because mh_get_info takes the plugin's mutex and the process path
+    // runs on the audio thread. midi_stage is a ping-pong pair carrying
+    // the stream from one plugin to the next: a producing plugin writes
+    // into the buffer the next stage will read.
+    std::vector<int> plugin_accepts_midi;
+    std::vector<int> plugin_produces_midi;
+    std::vector<MH_MidiEvent> midi_stage[2];
 
     // Per-plugin dry/wet mix. Defaults to 1.0 (full wet).
     // dry_storage[i] is non-empty only for plugins where in_ch == out_ch;
@@ -195,6 +210,17 @@ MH_PluginChain* mh_chain_create(MH_Plugin** plugins, int num_plugins,
     chain->autoChunkMidiIn.reserve(256);
     chain->autoChunkMidiOut.resize(256);
 
+    // Cached MIDI capabilities and the inter-stage MIDI buffers.
+    chain->plugin_accepts_midi.resize(num_plugins);
+    chain->plugin_produces_midi.resize(num_plugins);
+    for (int i = 0; i < num_plugins; ++i)
+    {
+        chain->plugin_accepts_midi[i] = infos[i].accepts_midi;
+        chain->plugin_produces_midi[i] = infos[i].produces_midi;
+    }
+    chain->midi_stage[0].resize(kChainMidiStageCapacity);
+    chain->midi_stage[1].resize(kChainMidiStageCapacity);
+
     // Per-plugin dry/wet mix state. Snapshot storage is only allocated
     // for plugins where in_ch == out_ch (the eligibility rule for mix);
     // all others stay at full-wet mix=1.0 forever.
@@ -278,89 +304,91 @@ int mh_chain_process_midi_io(MH_PluginChain* chain,
     if (num_midi_out)
         *num_midi_out = 0;
 
-    // Special case: single plugin
-    if (num_plugins == 1)
-    {
-        snapshotDry(chain, 0, inputs, nframes);
-        int r = mh_process_midi_io(chain->plugins[0],
-                                    inputs, outputs, nframes,
-                                    midi_in, num_midi_in,
-                                    midi_out, midi_out_capacity, num_midi_out);
-        if (!r) return 0;
-        applyMix(chain, 0, outputs, nframes);
-        return 1;
-    }
+    // The MIDI stream travelling down the chain. It starts as the
+    // caller's input and is replaced by a plugin's own MIDI output at
+    // every stage that declares producesMidi(). A stage that declares
+    // none ends the stream: JUCE treats whatever is left in the buffer
+    // as output, but a plugin answering producesMidi() == false has
+    // stated it emits nothing, so leftovers are the input it neglected
+    // to clear. Forwarding those would retrigger a downstream
+    // instrument with notes the upstream one already played.
+    const MH_MidiEvent* stream = (num_midi_in > 0) ? midi_in : nullptr;
+    int stream_count = (midi_in != nullptr) ? num_midi_in : 0;
+    int stage = 0;   // which midi_stage buffer currently holds the stream
 
-    // Multi-plugin chain processing
-
-    // Process first plugin with MIDI -> intermediate[0]
-    float* const* first_output = chain->intermediate_ptrs[0].data();
-    snapshotDry(chain, 0, inputs, nframes);
-    int result = mh_process_midi_io(chain->plugins[0],
-                                    inputs, first_output, nframes,
-                                    midi_in, num_midi_in,
-                                    midi_out, midi_out_capacity, num_midi_out);
-    if (!result) return 0;
-    applyMix(chain, 0, first_output, nframes);
-
-    // Process middle plugins (no MIDI): intermediate[i-1] -> intermediate[i]
-    for (int i = 1; i < num_plugins - 1; ++i)
+    for (int i = 0; i < num_plugins; ++i)
     {
         const float* const* in_ptrs =
-            const_cast<const float* const*>(chain->intermediate_ptrs[i - 1].data());
-        float* const* out_ptrs = chain->intermediate_ptrs[i].data();
+            (i == 0)
+                ? inputs
+                : const_cast<const float* const*>(chain->intermediate_ptrs[i - 1].data());
+        float* const* out_ptrs =
+            (i == num_plugins - 1) ? outputs : chain->intermediate_ptrs[i].data();
 
-        // Get channel info for this stage
-        MH_Info prev_info, curr_info;
-        mh_get_info(chain->plugins[i - 1], &prev_info);
-        mh_get_info(chain->plugins[i], &curr_info);
-
-        // Handle channel mismatch: zero extra input channels if needed
-        int prev_out_ch = prev_info.num_output_ch;
-        int curr_in_ch = curr_info.num_input_ch;
-
-        if (curr_in_ch > prev_out_ch)
+        // Zero-pad when this plugin reads more channels than the previous
+        // stage wrote. Counts come from the cache built at construction:
+        // mh_get_info locks the plugin's mutex, which the audio thread
+        // must not do.
+        if (i > 0)
         {
-            // Zero-pad extra input channels
+            const int prev_out_ch = chain->plugin_out_ch[i - 1];
+            const int curr_in_ch = chain->plugin_in_ch[i];
             for (int ch = prev_out_ch; ch < curr_in_ch; ++ch)
             {
                 std::memset(chain->intermediate_ptrs[i - 1][ch], 0,
-                           sizeof(float) * nframes);
+                            sizeof(float) * nframes);
             }
         }
 
+        const bool takes_midi = chain->plugin_accepts_midi[i] != 0 && stream_count > 0;
+        const bool makes_midi = chain->plugin_produces_midi[i] != 0;
+
         snapshotDry(chain, i, in_ptrs, nframes);
-        result = mh_process(chain->plugins[i], in_ptrs, out_ptrs, nframes);
+
+        int result;
+        int produced = 0;
+        if (takes_midi || makes_midi)
+        {
+            // Write into the buffer the *next* stage will read from, so
+            // the one being read this block stays intact.
+            MH_MidiEvent* out_buf =
+                makes_midi ? chain->midi_stage[stage ^ 1].data() : nullptr;
+            result = mh_process_midi_io(chain->plugins[i],
+                                        in_ptrs, out_ptrs, nframes,
+                                        takes_midi ? stream : nullptr,
+                                        takes_midi ? stream_count : 0,
+                                        out_buf,
+                                        out_buf ? kChainMidiStageCapacity : 0,
+                                        out_buf ? &produced : nullptr);
+        }
+        else
+        {
+            result = mh_process(chain->plugins[i], in_ptrs, out_ptrs, nframes);
+        }
         if (!result) return 0;
         applyMix(chain, i, out_ptrs, nframes);
-    }
 
-    // Process last plugin: intermediate[n-2] -> outputs
-    const float* const* last_input =
-        const_cast<const float* const*>(chain->intermediate_ptrs[num_plugins - 2].data());
-
-    // Handle channel mismatch for last plugin
-    MH_Info prev_info, last_info;
-    mh_get_info(chain->plugins[num_plugins - 2], &prev_info);
-    mh_get_info(chain->plugins[num_plugins - 1], &last_info);
-
-    int prev_out_ch = prev_info.num_output_ch;
-    int last_in_ch = last_info.num_input_ch;
-
-    if (last_in_ch > prev_out_ch)
-    {
-        // Zero-pad extra input channels
-        for (int ch = prev_out_ch; ch < last_in_ch; ++ch)
+        if (makes_midi)
         {
-            std::memset(chain->intermediate_ptrs[num_plugins - 2][ch], 0,
-                       sizeof(float) * nframes);
+            stage ^= 1;
+            stream = chain->midi_stage[stage].data();
+            stream_count = produced;
+        }
+        else
+        {
+            stream = nullptr;
+            stream_count = 0;
         }
     }
 
-    snapshotDry(chain, num_plugins - 1, last_input, nframes);
-    result = mh_process(chain->plugins[num_plugins - 1], last_input, outputs, nframes);
-    if (!result) return 0;
-    applyMix(chain, num_plugins - 1, outputs, nframes);
+    // What the chain emits is what leaves its last plugin.
+    if (midi_out != nullptr && midi_out_capacity > 0 && stream_count > 0)
+    {
+        const int n = std::min(stream_count, midi_out_capacity);
+        std::memcpy(midi_out, stream, sizeof(MH_MidiEvent) * static_cast<size_t>(n));
+        if (num_midi_out)
+            *num_midi_out = n;
+    }
     return 1;
 }
 

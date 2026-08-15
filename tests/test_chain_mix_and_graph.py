@@ -136,10 +136,19 @@ def test_chain_set_mix_rejects_mismatched_channels():
 
 
 def test_graph_create_rejects_bad_channels():
-    with pytest.raises(RuntimeError, match="channel counts must be positive"):
-        minihost.PluginBus(0, 2, max_block_size=512, sample_rate=48000.0)
-    with pytest.raises(RuntimeError, match="channel counts must be positive"):
+    # Zero input channels used to be rejected here. It is now legal and
+    # is the shape of an instrument-layering bus: plugins driven by MIDI
+    # alone expose no audio input bus, so there is nothing to feed them.
+    bus = minihost.PluginBus(0, 2, max_block_size=512, sample_rate=48000.0)
+    assert bus.num_input_channels == 0
+    bus.close()
+
+    with pytest.raises(RuntimeError, match="cannot be negative"):
+        minihost.PluginBus(-1, 2, max_block_size=512, sample_rate=48000.0)
+    with pytest.raises(RuntimeError, match="output channel count must be positive"):
         minihost.PluginBus(2, -1, max_block_size=512, sample_rate=48000.0)
+    with pytest.raises(RuntimeError, match="output channel count must be positive"):
+        minihost.PluginBus(2, 0, max_block_size=512, sample_rate=48000.0)
 
 
 def test_graph_create_rejects_bad_block_size():
@@ -169,11 +178,21 @@ def test_graph_empty_produces_silence():
 def test_graph_add_branch_rejects_channel_mismatch():
     chain, _p = _make_chain()
     try:
-        # Graph expects 4-channel I/O; chain is 2-channel.
-        g = minihost.PluginBus(4, 4, max_block_size=512, sample_rate=48000.0)
-        with pytest.raises(RuntimeError, match="input channels"):
-            g.add_branch(chain)
-        g.close()
+        # Output width must match exactly: branch buffers are sized to it.
+        wide = minihost.PluginBus(4, 4, max_block_size=512, sample_rate=48000.0)
+        with pytest.raises(RuntimeError, match="output channels"):
+            wide.add_branch(chain)
+        wide.close()
+
+        # Input width is now a ceiling rather than an equality: a branch
+        # may read fewer channels than the bus carries, but never more --
+        # the caller supplies exactly num_in_channels pointers.
+        narrow = minihost.PluginBus(1, chain.num_output_channels,
+                                    max_block_size=512, sample_rate=48000.0)
+        if chain.num_input_channels > 1:
+            with pytest.raises(RuntimeError, match="exceed bus input channels"):
+                narrow.add_branch(chain)
+        narrow.close()
     finally:
         chain.close()
 
@@ -335,6 +354,13 @@ skip_if_no_synth = pytest.mark.skipif(
     reason=f"instrument plugin not found at {SYNTH_PLUGIN}",
 )
 
+MIDI_FX_PLUGIN = os.environ.get("MINIHOST_TEST_MIDI_FX")
+
+skip_if_no_midi_fx = pytest.mark.skipif(
+    not (MIDI_FX_PLUGIN and os.path.exists(MIDI_FX_PLUGIN)),
+    reason="MIDI-emitting plugin not set via MINIHOST_TEST_MIDI_FX",
+)
+
 
 def _make_synth_chain():
     p = minihost.Plugin(SYNTH_PLUGIN, sample_rate=48000, max_block_size=512)
@@ -377,8 +403,11 @@ def test_bus_fans_midi_to_all_branches():
     in_ch = probe_chain.num_input_channels
     out_ch = probe_chain.num_output_channels
     probe_chain.close()
-    if in_ch < 1 or out_ch < 1:
-        pytest.skip("synth reports zero channels; bus requires positive I/O")
+    # in_ch is 0 for any instrument driven by MIDI alone, which is most of
+    # them. This test used to skip on that, so the layering it describes
+    # was never actually exercised; the bus now accepts a zero-width input.
+    if out_ch < 1:
+        pytest.skip("synth reports no output channels")
 
     silence_in = np.zeros((in_ch, 512), dtype=np.float32)
 
@@ -411,6 +440,96 @@ def test_bus_fans_midi_to_all_branches():
 
 
 # ---------------------------------------------------------------------------
+# PluginBus branch-width rules
+#
+# A branch may be narrower than the bus, including zero-width. That is not
+# an edge case: an instrument driven by MIDI alone exposes no audio input
+# bus, so every layering topology has zero-width branches, and the bus
+# used to reject them outright.
+# ---------------------------------------------------------------------------
+
+
+
+
+
+
+@skip_if_no_synth
+def test_bus_accepts_a_branch_narrower_than_itself():
+    # A two-channel bus carrying an instrument branch that reads nothing:
+    # the instrument ignores the audio, and the note still sounds.
+    chain, plugin = _make_synth_chain()
+    out_ch = chain.num_output_channels
+    try:
+        if chain.num_input_channels != 0:
+            pytest.skip("instrument reads audio; not the narrower-branch case")
+        bus = minihost.PluginBus(2, out_ch, max_block_size=512, sample_rate=48000.0)
+        bus.add_branch(chain)
+        src = np.zeros((2, 512), dtype=np.float32)
+        out = np.zeros((out_ch, 512), dtype=np.float32)
+        bus.process_midi(src, out, [(0, 0x90, 60, 100)])
+        bus.close()
+    finally:
+        chain.close()
+        plugin.close()
+
+    assert np.max(np.abs(out)) > 1e-6
+
+
+
+
+@skip_if_no_midi_fx
+@skip_if_no_synth
+def test_bus_layers_a_direct_instrument_against_a_midi_effect_leg():
+    # The full split: one MIDI part drives an instrument directly and,
+    # through a MIDI effect, a second instrument; the two are summed.
+    # Needs both the zero-width branch rule and chain-internal MIDI
+    # routing, so it fails without either.
+    note = [(0, 0x90, 60, 100)]
+    blocks = 32
+
+    def render(build):
+        plugins = build()
+        chains = [minihost.PluginChain(group) for group in plugins]
+        out_ch = chains[0].num_output_channels
+        bus = minihost.PluginBus(0, out_ch, max_block_size=512, sample_rate=48000.0)
+        for chain in chains:
+            bus.add_branch(chain)
+        src = np.zeros((0, 512), dtype=np.float32)
+        out = np.zeros((out_ch, 512), dtype=np.float32)
+        captured = []
+        for index in range(blocks):
+            bus.process_midi(src, out, note if index == 0 else [])
+            captured.append(out.copy())
+        bus.close()
+        for chain in chains:
+            chain.close()
+        for group in plugins:
+            for plugin in group:
+                plugin.close()
+        return np.concatenate(captured, axis=1)
+
+    def synth():
+        return minihost.Plugin(SYNTH_PLUGIN, sample_rate=48000, max_block_size=512)
+
+    def midi_fx():
+        return minihost.Plugin(MIDI_FX_PLUGIN, sample_rate=48000, max_block_size=512)
+
+    probe = midi_fx()
+    produces = probe.produces_midi
+    probe.close()
+    if not produces:
+        pytest.skip("configured MINIHOST_TEST_MIDI_FX reports no MIDI output")
+
+    direct_only = render(lambda: [[synth()]])
+    via_fx_only = render(lambda: [[midi_fx(), synth()]])
+    both = render(lambda: [[synth()], [midi_fx(), synth()]])
+
+    assert np.max(np.abs(direct_only)) > 1e-6, "direct instrument leg is silent"
+    assert np.max(np.abs(via_fx_only)) > 1e-6, "MIDI-effect leg is silent"
+    assert np.allclose(both, direct_only + via_fx_only, atol=1e-4)
+
+
+# ---------------------------------------------------------------------------
 # PluginBus MIDI-out merge
 #
 # process_midi collects and merges the MIDI produced by each branch (from
@@ -419,14 +538,6 @@ def test_bus_fans_midi_to_all_branches():
 # empty list; full merge/ordering verification needs a MIDI-emitting plugin
 # (an arpeggiator, a MIDI echo) supplied via MINIHOST_TEST_MIDI_FX.
 # ---------------------------------------------------------------------------
-
-MIDI_FX_PLUGIN = os.environ.get("MINIHOST_TEST_MIDI_FX")
-
-skip_if_no_midi_fx = pytest.mark.skipif(
-    not (MIDI_FX_PLUGIN and os.path.exists(MIDI_FX_PLUGIN)),
-    reason="MIDI-emitting plugin not set via MINIHOST_TEST_MIDI_FX",
-)
-
 
 @skip_if_no_fx
 def test_bus_process_midi_returns_events_and_overflow():
@@ -480,33 +591,62 @@ def _make_midi_fx_chain():
     return minihost.PluginChain([p]), p
 
 
+def _first_emitting_block(chain, note, blocks=16):
+    """Drive a MIDI-effect chain until it emits; return (block, events).
+
+    A MIDI effect need not answer in the block it was fed. Chord Prism 2
+    replies one block later, so a single-block probe sees nothing and
+    these tests skipped against a plugin that works perfectly well.
+    Returns (-1, []) if nothing arrives within ``blocks``.
+    """
+    silence = np.zeros((2, 512), dtype=np.float32)
+    out = np.zeros((2, 512), dtype=np.float32)
+    for index in range(blocks):
+        events = chain.process_midi(silence, out, note if index == 0 else [])
+        if events:
+            return index, events
+    return -1, []
+
+
+def _bus_events_at_block(bus, note, block_index):
+    """Run a bus up to ``block_index`` and return that block's merged MIDI."""
+    silence = np.zeros((bus.num_input_channels, 512), dtype=np.float32)
+    out = np.zeros((2, 512), dtype=np.float32)
+    events, overflow = [], False
+    for index in range(block_index + 1):
+        events, overflow = bus.process_midi(silence, out, note if index == 0 else [])
+    return events, overflow
+
+
 @skip_if_no_midi_fx
 def test_bus_process_midi_reports_overflow():
     # Force truncation with a capacity of 1 across two MIDI-emitting branches
     # (each emits >= 1 event), and confirm the overflow flag is set.
     note = [(0, 0x90, 60, 100)]
-    probe, _ = _make_midi_fx_chain()
-    ref = probe.process_midi(
-        np.zeros((2, 512), dtype=np.float32), np.zeros((2, 512), dtype=np.float32), note
-    )
+    probe, probe_plugin = _make_midi_fx_chain()
+    emit_block, ref = _first_emitting_block(probe, note)
     probe.close()
-    if len(ref) < 1:
+    probe_plugin.close()
+    if emit_block < 0:
         pytest.skip("configured MINIHOST_TEST_MIDI_FX emitted no MIDI")
 
-    bc1, _ = _make_midi_fx_chain()
-    bc2, _ = _make_midi_fx_chain()
-    g = minihost.PluginBus(2, 2, max_block_size=512, sample_rate=48000.0)
+    bc1, p1 = _make_midi_fx_chain()
+    bc2, p2 = _make_midi_fx_chain()
+    g = minihost.PluginBus(0, 2, max_block_size=512, sample_rate=48000.0)
     g.add_branch(bc1)
     g.add_branch(bc2)
-    events, overflow = g.process_midi(
-        np.zeros((2, 512), dtype=np.float32),
-        np.zeros((2, 512), dtype=np.float32),
-        note,
-        midi_out_capacity=1,
-    )
+    silence = np.zeros((0, 512), dtype=np.float32)
+    out = np.zeros((2, 512), dtype=np.float32)
+    events, overflow = [], False
+    for index in range(emit_block + 1):
+        events, overflow = g.process_midi(
+            silence, out, note if index == 0 else [], midi_out_capacity=1
+        )
     g.close()
     bc1.close()
     bc2.close()
+    p1.close()
+    p2.close()
     assert len(events) == 1
     assert overflow is True
 
@@ -518,26 +658,26 @@ def test_bus_merges_branch_midi_sorted_by_offset():
     # of both branches' output and (b) sorted by sample offset.
     note = [(0, 0x90, 60, 100)]
 
-    # Reference: one branch's MIDI output in isolation.
-    c1, _ = _make_midi_fx_chain()
-    ref = c1.process_midi(
-        np.zeros((2, 512), dtype=np.float32), np.zeros((2, 512), dtype=np.float32), note
-    )
+    # Reference: one branch's MIDI output in isolation, at whichever
+    # block the effect actually answers on.
+    c1, cp1 = _make_midi_fx_chain()
+    emit_block, ref = _first_emitting_block(c1, note)
     c1.close()
-    if not ref:
+    cp1.close()
+    if emit_block < 0:
         pytest.skip("configured MINIHOST_TEST_MIDI_FX emitted no MIDI")
 
-    bc1, _ = _make_midi_fx_chain()
-    bc2, _ = _make_midi_fx_chain()
-    g = minihost.PluginBus(2, 2, max_block_size=512, sample_rate=48000.0)
+    bc1, p1 = _make_midi_fx_chain()
+    bc2, p2 = _make_midi_fx_chain()
+    g = minihost.PluginBus(0, 2, max_block_size=512, sample_rate=48000.0)
     g.add_branch(bc1)
     g.add_branch(bc2)
-    merged, overflow = g.process_midi(
-        np.zeros((2, 512), dtype=np.float32), np.zeros((2, 512), dtype=np.float32), note
-    )
+    merged, overflow = _bus_events_at_block(g, note, emit_block)
     g.close()
     bc1.close()
     bc2.close()
+    p1.close()
+    p2.close()
 
     assert overflow is False
     # Both branches contribute: merged count == 2x a single branch.

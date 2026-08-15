@@ -4,11 +4,7 @@ Tasks are ordered by **user-facing value**: things a user notices first or unblo
 
 Desktop app work is tracked separately in [docs/dev/desktop_app_todo.md](docs/dev/desktop_app_todo.md) (design: [docs/dev/desktop_app.md](docs/dev/desktop_app.md)).
 
-Items tagged **(review Mn / Ln)** come from the 2026-08 code-review pass. That pass fixed
-every Critical and High finding plus M1 and M10 (see the 0.5.0 and Unreleased sections of
-[CHANGELOG.md](CHANGELOG.md)); what remains is carried below, slotted into the tiers by
-user-facing value rather than by original severity. Verification gaps left behind by the
-*fixed* items are listed too, since they are real outstanding work.
+Items tagged **(review Mn / Ln)** come from the 2026-08 code-review pass. That pass fixed every Critical and High finding plus M1 and M10 (see the 0.5.0 and Unreleased sections of [CHANGELOG.md](CHANGELOG.md)); what remains is carried below, slotted into the tiers by user-facing value rather than by original severity. Verification gaps left behind by the *fixed* items are listed too, since they are real outstanding work.
 
 ## Tier 1 - Correctness
 

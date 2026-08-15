@@ -247,7 +247,7 @@ for (int i = 0; i < count; i++) {
 | `mh_chain_create` | Create chain from array of plugins (all must share sample rate) |
 | `mh_chain_close` | Close chain (does not close individual plugins) |
 | `mh_chain_process` | Process audio through chain |
-| `mh_chain_process_midi_io` | Process with MIDI I/O (MIDI goes to first plugin) |
+| `mh_chain_process_midi_io` | Process with MIDI I/O. MIDI enters the first plugin that accepts it and is carried onward by any plugin reporting `produces_midi`, so a MIDI effect can drive an instrument behind it; `midi_out` is what leaves the last plugin |
 | `mh_chain_process_auto` | Process with sample-accurate parameter automation and MIDI |
 | `mh_chain_get_latency_samples` | Get total chain latency (sum of all plugins) |
 | `mh_chain_get_num_plugins` | Get number of plugins in chain |

@@ -299,7 +299,14 @@ class Plugin:
         ...
 
 class PluginChain:
-    """Chain of audio plugins for sequential processing."""
+    """Chain of audio plugins for sequential processing.
+
+    MIDI travels with the audio: it enters the first plugin that accepts
+    MIDI, and any plugin reporting ``produces_midi`` replaces the stream
+    for the plugins after it, so a MIDI effect can drive an instrument
+    further down the chain. A plugin that produces no MIDI ends the
+    stream, which is why MIDI effects belong before the instrument.
+    """
 
     def __init__(self, plugins: list[Plugin]) -> None: ...
     @property

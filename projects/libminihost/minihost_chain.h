@@ -59,15 +59,36 @@ int mh_chain_process(MH_PluginChain* chain,
                      int nframes);
 
 // Process audio through the chain with MIDI I/O.
-// MIDI is sent to the first plugin only (typical synth -> effects pattern).
-// Audio flows sequentially through all plugins.
+//
+// Audio flows sequentially through all plugins. MIDI flows alongside it:
+// midi_in enters the first plugin that accepts MIDI, and every plugin
+// declaring produces_midi=1 replaces the stream with its own output for
+// the plugins after it. That is what makes a MIDI-effect chain work --
+// arpeggiator -> instrument, or chorder -> arpeggiator -> instrument.
+//
+// A plugin declaring produces_midi=0 ends the stream: plugins after it
+// receive no MIDI, whether or not it accepted any. JUCE treats anything
+// left in the MIDI buffer as the plugin's output, but a plugin
+// answering producesMidi() == false has stated it emits none, so
+// leftovers are input it did not clear; passing them on would retrigger
+// a downstream instrument. The practical consequence is that MIDI
+// effects must come first: in [midi_fx, audio_fx, instrument] the audio
+// effect ends the stream and the instrument stays silent. Order it
+// [midi_fx, instrument, audio_fx] instead, which is the arrangement
+// that makes audio sense anyway. A plugin with accepts_midi=0 is handed
+// no MIDI regardless.
+//
+// At most 256 events carry from one plugin to the next in a block;
+// beyond that the excess is dropped rather than allocating on the audio
+// thread.
 //
 // inputs: input audio buffers (can be NULL)
 // outputs: output audio buffers (can be NULL)
 // nframes: number of frames to process
-// midi_in: input MIDI events (sent to first plugin)
+// midi_in: input MIDI events entering the chain
 // num_midi_in: number of input MIDI events
-// midi_out: buffer for output MIDI from first plugin (can be NULL)
+// midi_out: buffer receiving the MIDI that leaves the LAST plugin (can
+//           be NULL). Empty unless that plugin has produces_midi=1.
 // midi_out_capacity: size of midi_out buffer
 // num_midi_out: receives actual number of output events (can be NULL)
 //
@@ -116,7 +137,8 @@ int mh_chain_set_non_realtime(MH_PluginChain* chain, int non_realtime);
 // param_changes: array of parameter changes sorted by sample_offset
 // num_param_changes: number of parameter changes
 // Splits processing at change points for sample-accurate automation.
-// MIDI is sent to the first plugin only. Audio flows sequentially.
+// MIDI routing matches mh_chain_process_midi_io: it enters the first
+// plugin that accepts MIDI and is carried onward by producing plugins.
 //
 // Returns 1 on success, 0 on failure
 int mh_chain_process_auto(MH_PluginChain* chain,

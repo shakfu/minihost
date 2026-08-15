@@ -2,11 +2,79 @@
 
 ## [Unreleased]
 
+## [0.6.0]
+
+MIDI routing: it now flows through a chain instead of stopping at the first plugin, and a bus can hold the instrument branches its fan-out was built for. Both were features that existed on paper and could not be used, and both were guarded by tests that skipped on any ordinary synth. A minor rather than a patch release because callers can observe the change: `process_midi` on a chain now returns the MIDI leaving its **last** plugin rather than its first.
+
+The C ABI moves to **2.5.0**: no symbols added or removed and no struct layout change, but MIDI now flows through a chain instead of stopping at its first plugin, and a bus can finally hold the instrument branches its MIDI fan-out was built for -- see below.
+
+### Fixed
+
+- **`PluginBus` could not hold an instrument branch, which is the only thing its MIDI fan-out is for.** `mh_bus_create` rejected a zero input-channel count outright, and `mh_bus_add_branch` demanded a branch's input width equal the bus's exactly. An instrument driven by MIDI alone exposes no audio input bus and reports zero input channels -- Dexed and TyrellN6 both do -- so every layering topology was rejected at construction: `PluginBus(2, 2)` refused the branch, and `PluginBus(0, 2)` refused to exist. The documented headline use, "one MIDI part drives N parallel instruments whose audio is summed", could not be built with a typical synth at all.
+
+  A bus may now have zero input channels, and a branch may read fewer channels than the bus carries. Wider than the bus stays an error: the caller supplies exactly `num_in_channels` pointers and a wider branch would read past them. Output width and sample rate still have to match exactly. Combined with the chain fix above, the split topology works: one MIDI part into a bus whose first branch is an instrument and whose second is `[midi_effect, instrument]`, summed -- verified to produce output identical to the same topology wired by hand in `PluginGraph`, down to the spectrum of each leg.
+
+  This one hid behind a skip. `test_bus_fans_midi_to_all_branches`, whose own docstring calls itself "the headline use case", began with `if in_ch < 1: pytest.skip(...)` -- true for every MIDI-driven instrument, so with the default test plugin it never ran once. The same skip masked two more: `test_bus_process_midi_reports_overflow` and `test_bus_merges_branch_midi_sorted_by_offset` built a `PluginBus(2, 2)` around zero-input MIDI-effect chains that `add_branch` would have rejected, but they bailed out earlier still on a single-block probe that saw no MIDI (see below). All three now run.
+
+- **A MIDI effect in a `PluginChain` silently swallowed the notes behind it.** `mh_chain_process_midi_io` handed `midi_in` to plugin 0, reported that plugin's MIDI output back to the caller, and processed every plugin after it with `mh_process` -- no MIDI at all. For the arrangement this routing exists to serve, `PluginChain([arpeggiator, synth])`, that meant the arpeggiator consumed the incoming note, emitted its own, and the chain dropped it on the floor; the instrument was never told anything and the chain rendered digital silence. Nothing errored, so the symptom was a quiet render with no indication of why.
+
+  MIDI now travels with the audio: `midi_in` enters the first plugin that accepts MIDI, and every plugin reporting `produces_midi` replaces the stream for the plugins behind it. Verified with a chorder ahead of an FM synth -- feeding note 60 into `PluginChain([Chord Prism 2, Dexed])` produces the spectrum of note 72, matching what the synth renders when handed that note directly, where the pre-fix build produced -240 dBFS.
+
+  A plugin reporting `produces_midi == 0` ends the stream. JUCE's contract is that whatever a plugin leaves in the `MidiBuffer` is its output, and that a plugin should clear what it consumes -- but a plugin answering `producesMidi() == false` has declared it emits nothing, so leftovers are input it neglected to clear rather than output, and forwarding them would retrigger a downstream instrument with notes an upstream one already played. The practical consequence is that MIDI effects must come before the instrument: in `[midi_fx, audio_fx, instrument]` the audio effect terminates the stream. That is also the only ordering that makes audio sense, since an effect ahead of the instrument processes silence.
+
+  Two knock-on details. `midi_out` now reports the MIDI leaving the **last** plugin rather than the first -- what the chain emits, consistent with treating a chain as one composite plugin; for the single-plugin chains that dominate MIDI use, nothing changes. And the per-stage `mh_get_info` calls the process loop used for channel counts are gone: that function takes the plugin's mutex, which the audio thread must not do. Channel counts and the two MIDI capability flags are now cached at chain construction, and the inter-stage MIDI buffers are pre-allocated (256 events per stage, excess dropped rather than allocating on the audio thread).
+
+  `PluginGraph` needed no change here: it has always routed MIDI as explicit edges, including plugin to plugin. `PluginBus` inherits the fix inside each branch, since it drives branches through `mh_chain_process_midi_io` -- but it had a separate problem of its own, covered in the entry above.
+
+### Documentation
+
+- **New page: MIDI Routing** (`docs/midi_routing.md`, added to the nav). MIDI routing had no prose documentation at all -- `connect_midi`, the MIDI processor and merge nodes, and the bus fan-out lived only in C header comments and test files, which is a poor place to discover that a MIDI effect must precede its instrument. The page covers what each of the four routing objects does with MIDI, the chain's ordering rule and the reasoning behind it, the bus's zero-width input for layering, and the graph's edge model with a worked split topology. Every code example in it was run against real plugins. It also records three things that cost time to rediscover: a MIDI effect need not answer in the block it was fed, the high-level file renderers accept a plugin or a chain but not a graph, and a routing mistake shows up as silence rather than an error. `PluginChain` and `PluginGraph` in the Python API reference now link to it.
+
+### Testing
+
+- **`tests/test_graph_v2_midi.py::test_plugin_midi_input_from_graph_edge` never ran.** It skipped whenever the plugin reported no audio input channels, on the stated grounds that "graph_v2 requires plugin input port 0 to be connected". That has not been true for some time -- `mh_graph_add_plugin` gives instruments (`num_input_ch == 0`) zero input ports, compile tolerates them unwired, and the render path feeds them silence. Since instruments are exactly the plugins one drives over a MIDI edge, and the default test plugin is one, the graph's plugin MIDI edge went unexercised. The test now wires an audio input only when the plugin has one, and asserts the reference render is audible: it previously compared two buffers without checking either held anything, so it would have passed on silence == silence had the edge delivered nothing.
+
+- **Three bus MIDI tests never ran, for two different reasons.** `test_bus_fans_midi_to_all_branches` skipped on any instrument reporting zero input channels, which the bus fix above makes moot; it now runs. `test_bus_process_midi_reports_overflow` and `test_bus_merges_branch_midi_sorted_by_offset` probed the MIDI effect for exactly one block and skipped on "emitted no MIDI" -- but a MIDI effect need not answer in the block it was fed, and the plugin they were run against (Chord Prism 2) replies one block later. Both now drive the effect until it emits and compare at that block, so the branch MIDI merge and its overflow flag are finally exercised. The whole file runs with no skips when `MINIHOST_TEST_MIDI_FX` is set.
+
+- **New: `test_bus_accepts_a_branch_narrower_than_itself` and `test_bus_layers_a_direct_instrument_against_a_midi_effect_leg`.** The second is the full split topology -- a direct instrument branch summed against a `[midi_effect, instrument]` branch -- asserting the sum equals the two legs rendered separately. It depends on both fixes in this release and fails without either. The two pre-existing validation tests were updated rather than removed: `test_graph_create_rejects_bad_channels` now pins that a zero-width bus constructs while negative input and non-positive output are still refused, and `test_graph_add_branch_rejects_channel_mismatch` pins output width as an equality and input width as a ceiling.
+
+- **Two graph topologies had no test at all**, both added here. `test_midi_fanout_drives_several_instruments_and_audio_sums` fans one MIDI source to two instruments and sums their audio through a mix node, asserting the result is exactly twice a single instance's render -- the layering shape. `test_plugin_to_plugin_midi_edge_drives_an_instrument` wires a MIDI effect's output into an instrument and compares against pumping the effect's MIDI into the instrument by hand, block by block; it needs `MINIHOST_TEST_MIDI_FX` and skips without one. Both cover code that was already correct, so neither is a regression pin -- they close the gap that let the equivalent `PluginChain` bug ship unnoticed. The second renders sixteen blocks rather than one because a MIDI effect need not answer in the block it was fed: Chord Prism 2 emits its transformed note a block later, and a single-block version of this test skipped on "emitted nothing".
+
+- **`tests/test_chain_midi_routing.py`** -- seven tests over the routing rules: a MIDI effect drives an instrument behind it, the chain matches pumping the effect's output into the instrument by hand block by block, an audio effect after the instrument does not disturb it, a non-producing plugin ends the stream, `midi_out` is empty when the last plugin produces none, a single-plugin chain still matches the bare plugin, and instrument-into-effect still hears its MIDI. Four fail against the pre-fix build; the other three are the no-regression pins and pass against both. The three needing a MIDI-emitting plugin skip unless `MINIHOST_TEST_MIDI_FX` names one -- they were written against Chord Prism 2, but nothing depends on its particular transformation.
+
+### Added
+
+- **`examples/midi_split_routing.py`** -- splits one MIDI part across two instrument legs, one of them behind a MIDI effect, and sums them; builds that same topology twice, once with `PluginBus` and once with `PluginGraph`, and nulls the two renders against each other. Both legs also render alone so the split can be auditioned. It doubles as the reference implementation for something the high-level API does not cover: neither a bus nor a graph can be driven by `render_midi_to_file`, so the block loop here converts the file with `midi_file_to_events`, buckets the events per block with a reusable `events_by_block`, and feeds each router a block at a time. Renders to `build/output/routing/`.
+
+  The demo self-checks before it compares: summing is what both routers do, so each route's two-leg render must equal its own legs added together, and whichever route fails that is the one at fault. With that check in place the two routes null at -240 dBFS, correlation 1.000000 -- the bus and the graph render the same topology sample for sample.
+
+  Getting there turned up something worth writing down. **The first substantial render in a process leaves plugin state behind that changes every render after it.** Comparing two routes means rendering twice, so the route measured first came out different from the one measured second -- by a whole chord voicing, a residual only 1.3 dB under the signal, which reads exactly like a routing bug in whichever route happened to run first. It is not one. The MIDI delivered to the instruments is byte-identical in both routes (1226 events, compared event by event), two routes rendered back to back agree bit-exactly, and a fresh process renders the same result regardless of how long the plugins are given to settle. The effect is the plugins', not the host's; it was seen with Dexed plus Chord Prism 2 and reproduced outside the demo. The cure is a throwaway full render before anything is measured -- a short silent warm-up does not do it, and neither does a 64-block pass. It costs about half a second at these render speeds. Any A/B that renders the same material twice through separate plugin instances needs the same precaution.
+
+- **`examples/midi_render_instrument.py`** -- renders a MIDI file through an instrument plugin, AudioUnit or VST3, in four passes: straight (`render_midi` into memory, checked, then `write_audio`), one file per factory preset (`render_midi_to_file` with `Plugin.program`), instrument into an effect as a single `PluginChain` with a progress callback, and a transposed variant built with `MidiFile`'s write API and saved alongside the audio. Renders to `build/output/midi/`; roughly three seconds end to end against Dexed. `--instrument` names a plugin explicitly instead of searching, `--programs` and `--transpose` size or disable the corresponding passes, `--no-chain` drops the effect, and `--tail` / `--tail-threshold` / `--max-tail` control tail detection. Every render reports its channel count and level, and says so plainly when the result is silent.
+
+  Note that its default input, `tests/_midi/bach.mid`, is not currently tracked in git, so the example needs `--midi` pointed at a file of your own until that asset is committed. The effects example's input, `tests/_wav/piano.wav`, is tracked.
+
+  The tail is the part that carries over to other work. `tail_seconds="auto"` renders past the last note-off until the output falls under `tail_threshold`, capped by `max_tail_seconds`, and every render reports the tail it actually needed. That length is a property of the patch rather than something a caller can know: across four Dexed presets driven by the same 50.5 s file the detected tail ranged from 0.07 s to 7.06 s, so any fixed value would either truncate a decay or pad most renders with silence.
+
+  **Identifying an instrument turns out to need a behavioural test, not metadata.** The example originally filtered candidates on `accepts_midi`, output channel count and `is_midi_effect`, which is not sufficient in either direction: Dexed and TyrellN6 report zero audio inputs while Surge XT and TAL-NoiseMaker report two, exactly like an effect, and FabFilter Pro-R 2 answers True to `accepts_midi` because it accepts MIDI for parameter control -- so a reverb passed every metadata check and rendered fifty seconds of silence. Candidates are now sent a single test note and rejected if nothing comes out, which also catches instruments that load but cannot sound.
+
+  Two smaller things it makes visible. Renders are as wide as the instrument's output and nothing downmixes, so a multi-bus instrument yields a file wider than stereo -- Surge XT produces six channels (main plus a stereo pair per scene) and the example prints the bus layout so the extra channels are identifiable. And the in-memory first pass is checked for NaN and Inf before anything is written, because integer output formats cannot represent them: of the instruments tried while writing this, Quanta 2 renders non-finite samples headless, which a 24-bit file would have silently buried.
+
+- **`examples/fx_chain_au_vst3.py`** -- renders one input file through the same six-stage effects chain (EQ, saturation, compressor, delay, reverb, limiter) twice, once as AudioUnits and once as VST3s, at three parameter settings, then nulls the two results against each other. It covers the offline-rendering surface in one place: format-agnostic `Plugin` loading, `PluginChain` with `set_non_realtime(True)`, `process_audio_to_file` for block iteration, sample-rate conversion (the bundled input is mono 22.05 kHz), mono-to-stereo duplication, latency compensation and tail rendering, plus `read_audio` / `write_audio` / `resample` / `get_audio_info` for the measurements. Cumulative per-stage stems are written so each effect can be auditioned in isolation, and every output's peak is printed with a clipping flag. Renders into `build/output/<preset>/`; the whole run takes about 24 seconds and produces 52 files.
+
+  Parameters are addressed **by name with real-unit text** (`plugin.find_param("Ratio")` then `param_from_text(index, "3:1")`) rather than by index or normalized value. This is not stylistic: FabFilter's VST3 builds expose more parameters than their AudioUnit builds (Pro-Q 4: 737 against 600), so indices do not correspond between the two formats while names do. Setting the chain by name was verified to produce numerically identical parameter state in both formats. Any stage whose plugin is not installed is dropped with a warning, and a format with none installed is skipped, so the example degrades rather than failing.
+
+  The three presets -- `light`, `medium`, `aggressive`, selectable with `--presets` -- vary along two axes at once. The audible one is how hard the signal is worked: short-term dynamic range (the spread of 100 ms block RMS) falls from 19.4 dB dry to roughly 16, 12 and 6 dB. The measurable one is how much of the output comes from the delay and the reverb, which is what decides whether the null test still measures anything.
+
+  That second axis is the finding the example exists to document. **Timeless 3 and Pro-R 2 are not reproducible against themselves**: rendering the same chain twice through the same plugin instances, with `reset()` between passes, leaves a residual around -25 dBFS, because free-running modulation and analog-style drift carry internal state that `reset()` does not reseed. Pro-Q 4, Pro-C 3 and Pro-L 2 null at -240 dBFS under the same test. An AU-versus-VST3 null therefore says nothing on its own, and the first version of this example drew the wrong conclusion from one -- "the formats differ, correlation 0.87" was measuring the delay and reverb disagreeing with themselves. The example now renders each format twice to establish that run-to-run floor first and reports the format residual against it. Under `light` and `medium` the residual lands 15 dB or more below the signal and the comparison is decisive; under `aggressive` the 70 percent delay feedback and 150 percent reverb decay amplify that internal state until the residual rivals the signal (correlation 0.42) and the chain-level null stops discriminating, which the script says explicitly and flags as a `usable` column in its closing table. Cumulative-stem nulls stay informative at every setting and locate the transition exactly: EQ -155 dB, saturation -122 dB, compressor -98 dB at correlation 1.000000, then the delay.
+
+  Two things fall out of this that are worth knowing when using minihost for offline work. Dry stages can be driven as hard as you like without costing measurability; wet, self-feeding stages are what destroy it. And plugin nondeterminism is not noise in the dither sense -- it is deterministic DSP running from unreproducible initial state, so averaging more takes does not clean it up.
+
+  The example also gives incidental positive evidence for host-side latency compensation. Reduced to deterministic plugins (Pro-Q 4 plus Pro-L 2, which reports 3115 samples of latency), the AU and VST3 renders null at -149 dBFS -- the 24-bit files' own quantization floor -- which they could not do if `compensate_latency` were misaligning either format.
+
 ## [0.5.2]
 
-Follow-ups from a review pass over the Python bindings and CI. No C ABI change (stays at
-**2.4.0**): no symbols added or removed and no behaviour change on the C boundary -- the GIL
-fix is entirely on the Python binding side.
+Follow-ups from a review pass over the Python bindings and CI. No C ABI change (stays at **2.4.0**): no symbols added or removed and no behaviour change on the C boundary -- the GIL fix is entirely on the Python binding side.
 
 ### Fixed
 
@@ -18,10 +86,7 @@ fix is entirely on the Python binding side.
 
 ## [0.5.1]
 
-Continues the code-review pass: correct sidechain channel accounting, a host playhead that
-actually moves during offline renders, and two more silent-discard paths turned into errors.
-The C ABI moves to **2.4.0**: no symbols added or removed, but `MH_Info.num_input_ch`
-changes meaning -- see below.
+Continues the code-review pass: correct sidechain channel accounting, a host playhead that actually moves during offline renders, and two more silent-discard paths turned into errors. The C ABI moves to **2.4.0**: no symbols added or removed, but `MH_Info.num_input_ch` changes meaning -- see below.
 
 ### Fixed
 
@@ -65,13 +130,7 @@ changes meaning -- see below.
 
 ## [0.5.0]
 
-From a code-review pass over the native layer, the Python bindings, the CLI and the desktop
-app. All three crash-class findings are fixed, along with two subsystems that reported
-success while doing nothing: MIDI ports and `.vstpreset` interchange. Block-size and
-sample-rate contracts are now validated where they are configured rather than failing
-per-block, and the Python bindings finally release the GIL around native work. The C ABI
-bumps to **2.3.0** (additive: `mh_get_max_block_size`). Behaviour changes are called out
-under *Changed*.
+From a code-review pass over the native layer, the Python bindings, the CLI and the desktop app. All three crash-class findings are fixed, along with two subsystems that reported success while doing nothing: MIDI ports and `.vstpreset` interchange. Block-size and sample-rate contracts are now validated where they are configured rather than failing per-block, and the Python bindings finally release the GIL around native work. The C ABI bumps to **2.3.0** (additive: `mh_get_max_block_size`). Behaviour changes are called out under *Changed*.
 
 ### Fixed
 
