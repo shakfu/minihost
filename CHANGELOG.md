@@ -4,7 +4,7 @@
 
 ## [0.6.0]
 
-MIDI routing: it now flows through a chain instead of stopping at the first plugin, and a bus can hold the instrument branches its fan-out was built for. Both were features that existed on paper and could not be used, and both were guarded by tests that skipped on any ordinary synth. A minor rather than a patch release because callers can observe the change: `process_midi` on a chain now returns the MIDI leaving its **last** plugin rather than its first.
+MIDI routing: it now flows through a chain instead of stopping at the first plugin, and a bus can hold the instrument branches its fan-out was built for. Both were features that existed on paper and could not be used. A minor rather than a patch release because callers can observe the change: `process_midi` on a chain now returns the MIDI leaving its **last** plugin rather than its first.
 
 The C ABI moves to **2.5.0**: no symbols added or removed and no struct layout change, but MIDI now flows through a chain instead of stopping at its first plugin, and a bus can finally hold the instrument branches its MIDI fan-out was built for -- see below.
 

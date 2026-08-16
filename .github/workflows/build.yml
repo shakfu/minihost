@@ -410,28 +410,53 @@ jobs:
         with:
           path: artifacts
 
+      # Each platform's payload is packed here into one versioned zip, so
+      # the downloaded artifact needs no renaming or re-foldering by hand:
+      #
+      #   cli/minihost-cli-<VER>-<platform>.zip
+      #   desktop/minihost-desktop-<VER>-<platform>.zip
+      #
+      # Packing here rather than in the release job also fixes the +x bit
+      # for everyone, not just tagged builds. upload-artifact does not
+      # record the executable bit, so the payloads arrive non-executable;
+      # zip does record it, so restoring +x before packing makes the
+      # archives extract as runnable. Wheels and the sdist stay loose --
+      # their filenames already carry the version and they need no mode
+      # fixing.
       - name: Organize artifacts
         env:
           VER: ${{ needs.version.outputs.version }}
         run: |
-          mkdir -p release/cli/macos-universal
-          mkdir -p release/cli/linux-x64
-          mkdir -p release/cli/windows-x64
-          mkdir -p release/desktop/macos-universal
-          mkdir -p release/desktop/linux-x64
-          mkdir -p release/desktop/windows-x64
-          mkdir -p release/wheels
-          mkdir -p release/sdist
+          set -euo pipefail
+          ROOT="$PWD"
+          STAGE="$(mktemp -d)"
+          mkdir -p release/cli release/desktop release/wheels release/sdist
 
-          # CLI binaries
-          cp -r "artifacts/cli-macos-universal-${VER}/." release/cli/macos-universal/ || true
-          cp -r "artifacts/cli-linux-x64-${VER}/."       release/cli/linux-x64/ || true
-          cp -r "artifacts/cli-windows-x64-${VER}/."      release/cli/windows-x64/ || true
+          # pack <kind> <platform>: stage artifacts/<kind>-<platform>-<VER>,
+          # restore the executable bit, zip it into release/<kind>/.
+          pack() {
+            kind="$1"
+            platform="$2"
+            src="artifacts/${kind}-${platform}-${VER}"
+            if [ ! -d "$src" ]; then
+              echo "missing (skipped): $src"
+              return
+            fi
+            work="${STAGE}/${kind}-${platform}"
+            mkdir -p "$work"
+            cp -R "$src/." "$work/"
+            find "$work" -type f \
+              \( -name 'minihost_c' -o -name 'minihost_cpp' -o -name 'minihost_desktop' \) \
+              -exec chmod +x {} + 2>/dev/null || true
+            (cd "$work" && zip -qr \
+              "${ROOT}/release/${kind}/minihost-${kind}-${VER}-${platform}.zip" .)
+            echo "packed: release/${kind}/minihost-${kind}-${VER}-${platform}.zip"
+          }
 
-          # Desktop app (unsigned; see build-desktop notes)
-          cp -r "artifacts/desktop-macos-universal-${VER}/." release/desktop/macos-universal/ || true
-          cp -r "artifacts/desktop-linux-x64-${VER}/."       release/desktop/linux-x64/ || true
-          cp -r "artifacts/desktop-windows-x64-${VER}/."      release/desktop/windows-x64/ || true
+          for platform in macos-universal linux-x64 windows-x64; do
+            pack cli "$platform"
+            pack desktop "$platform"   # unsigned; see build-desktop notes
+          done
 
           # Wheels (filenames already carry the package version)
           cp artifacts/wheels-*-${VER}/*.whl release/wheels/ || true
@@ -462,32 +487,65 @@ jobs:
           name: minihost-all-${{ needs.version.outputs.version }}
           path: release
 
+      # The aggregate job packs every platform as zip, which is what the
+      # build artifact carries. Published releases keep their historical
+      # shapes instead: tar.gz for macOS and Linux, zip for Windows, and
+      # the platform-before-version naming that existing links use. The
+      # zip -> unzip -> tar round trip is lossless for the executable
+      # bit (zip records it, unzip restores it), so the tarballs still
+      # extract as runnable without a chmod.
       - name: Create archives
         env:
           VER: ${{ needs.version.outputs.version }}
         run: |
-          cd release
-          # upload-artifact strips the Unix +x bit, so the binaries arrive
-          # here non-executable. Restore it before archiving -- tar/zip record
-          # the mode, so the extracted Linux binaries are runnable straight
-          # from the release archive (no chmod needed by the user). macOS
-          # binaries get the same treatment: the CLI tools plus the Mach-O
-          # inside the .app bundle.
-          chmod +x cli/linux-x64/minihost_c cli/linux-x64/minihost_cpp 2>/dev/null || true
-          chmod +x desktop/linux-x64/minihost_desktop 2>/dev/null || true
-          chmod +x cli/macos-universal/minihost_c cli/macos-universal/minihost_cpp 2>/dev/null || true
-          find desktop/macos-universal -name minihost_desktop -path '*/MacOS/*' -exec chmod +x {} + 2>/dev/null || true
-          # CLI archives (tar.gz for Unix, zip for Windows)
-          tar -czvf "../minihost-cli-macos-universal-${VER}.tar.gz" -C cli/macos-universal .
-          tar -czvf "../minihost-cli-linux-x64-${VER}.tar.gz"       -C cli/linux-x64 .
-          (cd cli/windows-x64 && zip -r "../../../minihost-cli-windows-x64-${VER}.zip" .)
-          # Desktop archives (unsigned app / binaries)
-          tar -czvf "../minihost-desktop-macos-universal-${VER}.tar.gz" -C desktop/macos-universal .
-          tar -czvf "../minihost-desktop-linux-x64-${VER}.tar.gz"       -C desktop/linux-x64 .
-          (cd desktop/windows-x64 && zip -r "../../../minihost-desktop-windows-x64-${VER}.zip" .)
-          # Wheels archive
-          (cd wheels && zip -r "../../minihost-wheels-${VER}.zip" .)
-          cd ..
+          set -euo pipefail
+          STAGE="$(mktemp -d)"
+
+          repack_tar() {   # repack_tar <kind> <platform>
+            kind="$1"
+            platform="$2"
+            src="release/${kind}/minihost-${kind}-${VER}-${platform}.zip"
+            if [ ! -f "$src" ]; then
+              echo "missing (skipped): $src"
+              return
+            fi
+            work="${STAGE}/${kind}-${platform}"
+            mkdir -p "$work"
+            unzip -q "$src" -d "$work"
+            tar -czf "minihost-${kind}-${platform}-${VER}.tar.gz" -C "$work" .
+            echo "wrote minihost-${kind}-${platform}-${VER}.tar.gz"
+          }
+
+          copy_zip() {     # copy_zip <kind> <platform>
+            kind="$1"
+            platform="$2"
+            src="release/${kind}/minihost-${kind}-${VER}-${platform}.zip"
+            if [ ! -f "$src" ]; then
+              echo "missing (skipped): $src"
+              return
+            fi
+            cp "$src" "minihost-${kind}-${platform}-${VER}.zip"
+            echo "wrote minihost-${kind}-${platform}-${VER}.zip"
+          }
+
+          for kind in cli desktop; do
+            repack_tar "$kind" macos-universal
+            repack_tar "$kind" linux-x64
+            copy_zip   "$kind" windows-x64
+          done
+
+          # Wheels. upload-artifact drops empty directories, so
+          # release/wheels is absent rather than empty when none was built.
+          if compgen -G "release/wheels/*.whl" > /dev/null; then
+            (cd release/wheels && zip -qr "../../minihost-wheels-${VER}.zip" .)
+            echo "wrote minihost-wheels-${VER}.zip"
+          else
+            echo "no wheels to archive"
+          fi
+
+          echo "=== Release assets ==="
+          ls -1 minihost-*.tar.gz minihost-*.zip 2>/dev/null || true
+          ls -1 release/sdist/*.tar.gz 2>/dev/null || true
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
