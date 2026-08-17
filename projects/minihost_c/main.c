@@ -22,6 +22,10 @@
 
 #ifdef _MSC_VER
 #define strcasecmp _stricmp
+/* MSVC spells the re-entrant strtok differently. Same signature, same
+ * semantics; without this the C compiler assumes an int-returning
+ * strtok_r and the link fails on an unresolved symbol. */
+#define strtok_r strtok_s
 #endif
 
 static volatile sig_atomic_t g_running = 1;

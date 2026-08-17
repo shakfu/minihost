@@ -38,7 +38,7 @@ name = os.path.basename(path)
 if name.startswith("hang"):
     time.sleep(600)
 elif name.startswith("crash"):
-    os.abort()
+    os._exit(3)   # a death without an answer, and no Windows error dialog
 elif name.startswith("bad"):
     body = '{"ok": false, "error": "fake probe failure"}'
 else:
@@ -68,7 +68,7 @@ def scan_env(tmp_path: Path):
 
     env = dict(os.environ)
     env["MINIHOST_CACHE_DIR"] = str(tmp_path / "cache")
-    env["MINIHOST_SCAN_WORKER"] = f"{sys.executable} {worker}"
+    env["MINIHOST_SCAN_WORKER"] = f'"{sys.executable}" "{worker}"'
     env["MINIHOST_SCAN_TIMEOUT_MS"] = "1500"
     return plugin_dir, env, tmp_path / "cache" / "plugins.json"
 

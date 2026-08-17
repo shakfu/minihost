@@ -190,6 +190,23 @@ def _probe_to_entry(path: str) -> dict:
 # -- supervised probing ----------------------------------------------- #
 
 
+def _split_command(command: str, windows: bool | None = None) -> list[str]:
+    """Split a command line into argv.
+
+    Not ``shlex.split`` alone: on Windows a backslash is a path separator
+    rather than an escape, so POSIX rules turn
+    ``C:\\Users\\me\\python.exe`` into ``C:Usersmepython.exe``. Non-POSIX
+    mode keeps backslashes and still honours quotes, but leaves the quotes
+    attached to the token, so they come off here -- which is what lets a
+    path containing spaces be passed quoted on either platform.
+    """
+    if windows is None:
+        windows = os.name == "nt"
+    if not windows:
+        return shlex.split(command)
+    return [tok.strip('"') for tok in shlex.split(command, posix=False)]
+
+
 def _worker_command() -> list[str]:
     """The command to spawn per plugin, without the plugin path.
 
@@ -199,7 +216,7 @@ def _worker_command() -> list[str]:
     """
     env = os.environ.get("MINIHOST_SCAN_WORKER")
     if env:
-        return shlex.split(env)
+        return _split_command(env)
     return [sys.executable, "-m", "minihost._scan_worker"]
 
 

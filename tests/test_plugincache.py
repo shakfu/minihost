@@ -67,7 +67,9 @@ def cache_env(tmp_path, monkeypatch):
     monkeypatch.setattr(plugincache, "_probe", fake_probe.probe)
     # Supervised probing: the same answers, from a process of its own.
     worker = Path(fake_probe.__file__).resolve()
-    monkeypatch.setenv("MINIHOST_SCAN_WORKER", f"{sys.executable} {worker}")
+    # Quoted: both parsers are quote-aware, and a Windows temp path or
+    # interpreter can sit under "C:\\Program Files".
+    monkeypatch.setenv("MINIHOST_SCAN_WORKER", f'"{sys.executable}" "{worker}"')
     monkeypatch.setenv("MINIHOST_SCAN_TIMEOUT_MS", "5000")
 
     plugins = tmp_path / "plugins"
@@ -327,3 +329,51 @@ def test_in_process_scan_bypasses_the_worker(cache_env):
     results = plugincache.scan(plugins, supervised=False)
 
     assert {d["name"] for d in results} == {"crashX"}
+
+
+# -- worker command parsing -------------------------------------------- #
+#
+# MINIHOST_SCAN_WORKER is a command line, and the first version of this
+# split it with POSIX rules everywhere. On Windows that reads a backslash
+# as an escape, so C:\Users\me\python.exe arrived as C:Usersmepython.exe
+# and every scan failed with "cannot find the file specified". Both modes
+# are checked here, on whatever platform is running, because the one that
+# broke is the one this machine does not use.
+
+
+@pytest.mark.parametrize(
+    "command, expected",
+    [
+        (
+            r"C:\Users\me\python.exe C:\tmp\worker.py",
+            [r"C:\Users\me\python.exe", r"C:\tmp\worker.py"],
+        ),
+        (
+            r'"C:\Program Files\Py\python.exe" C:\tmp\worker.py',
+            [r"C:\Program Files\Py\python.exe", r"C:\tmp\worker.py"],
+        ),
+        (
+            r"python.exe -m minihost._scan_worker",
+            ["python.exe", "-m", "minihost._scan_worker"],
+        ),
+    ],
+)
+def test_windows_command_split_keeps_backslashes(command, expected):
+    assert plugincache._split_command(command, windows=True) == expected
+
+
+@pytest.mark.parametrize(
+    "command, expected",
+    [
+        (
+            "/usr/bin/python3 -m minihost._scan_worker",
+            ["/usr/bin/python3", "-m", "minihost._scan_worker"],
+        ),
+        (
+            "'/opt/py 3.13/bin/python3' /tmp/worker.py",
+            ["/opt/py 3.13/bin/python3", "/tmp/worker.py"],
+        ),
+    ],
+)
+def test_posix_command_split(command, expected):
+    assert plugincache._split_command(command, windows=False) == expected

@@ -75,7 +75,10 @@ def _worker_main(argv: list[str]) -> int:
 
         time.sleep(600)
     if name.startswith("crash"):
-        os.abort()
+        # Death without an answer, which is what the supervisor classifies
+        # on. Not os.abort(): on Windows that can raise the Error Reporting
+        # dialog and hang CI rather than exiting.
+        os._exit(3)
 
     try:
         body: dict = {"ok": True}

@@ -135,6 +135,13 @@ jobs:
         shell: bash
         run: python -m pytest -v tests/test_cli_conformance.py
 
+      # Supervised scanning spawns a process per plugin, so it is the part of
+      # the CLI most likely to differ per platform. The fake worker makes it
+      # runnable on a runner with no plugins installed.
+      - name: Supervised scan
+        shell: bash
+        run: python -m pytest -v tests/test_scan_supervised.py
+
       - name: Collect artifacts (Unix)
         if: runner.os != 'Windows'
         run: |

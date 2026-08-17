@@ -2871,9 +2871,21 @@ static juce::StringArray resolveWorkerArgv(const char* const* worker_argv,
                                            int worker_argc)
 {
     if (const auto* env = std::getenv("MINIHOST_SCAN_WORKER"))
+    {
         if (env[0] != '\0')
-            return juce::StringArray::fromTokens(juce::String::fromUTF8(env),
-                                                 " ", "");
+        {
+            // Quote-aware, because the obvious worker path on Windows is
+            // "C:\Program Files\...". JUCE leaves the quotes on the token,
+            // so they come off here. Backslashes are not escapes to this
+            // tokeniser, which is what a Windows path needs.
+            auto args = juce::StringArray::fromTokens(juce::String::fromUTF8(env),
+                                                      " ", "\"'");
+            args.removeEmptyStrings();
+            for (auto& a : args)
+                a = a.unquoted();
+            return args;
+        }
+    }
 
     juce::StringArray args;
     if (worker_argv != nullptr && worker_argc > 0)
