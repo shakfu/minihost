@@ -119,6 +119,22 @@ jobs:
       - name: Build
         run: cmake --build build --config Release
 
+      # The two CLI binaries are independent implementations over the same
+      # C API and are meant to be interchangeable, so they are run against
+      # each other here. Everything needing a plugin skips -- no runner has
+      # one installed -- but the resample, error-path and unknown-command
+      # cases do not, and those are what would otherwise never be checked:
+      # this job previously built the binaries and tested neither.
+      - name: Install pytest
+        run: python -m pip install pytest
+
+      # No MINIHOST_C_BIN / MINIHOST_CPP_BIN needed: the test locates the
+      # binaries under build/projects/... itself, which covers both the
+      # Unix layout and the Windows Release/*.exe one.
+      - name: CLI conformance (C vs C++)
+        shell: bash
+        run: python -m pytest -v tests/test_cli_conformance.py
+
       - name: Collect artifacts (Unix)
         if: runner.os != 'Windows'
         run: |

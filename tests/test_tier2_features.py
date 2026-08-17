@@ -148,11 +148,38 @@ def test_apply_length_mismatch_raises():
 
 
 def test_lerp_scalar_endpoints_and_midpoint():
-    a = [0.0, 1.0, 0.2]
-    b = [1.0, 0.0, 0.8]
+    # Values chosen to be exactly representable in float32, which is the
+    # precision snapshots live at: get_param hands back a float and
+    # set_param takes one, so lerp interpolates in float32 and returns
+    # what the plugin will actually receive. 0.2 is not representable,
+    # so a hand-written 0.2 comes back as 0.20000000298023224 -- see
+    # test_lerp_returns_values_at_parameter_precision below. Values that
+    # came from capture() are float32 already and round-trip exactly.
+    a = [0.0, 1.0, 0.25]
+    b = [1.0, 0.0, 0.75]
     assert morph.lerp(a, b, 0.0) == a
     assert morph.lerp(a, b, 1.0) == b
     assert morph.lerp(a, b, 0.5) == [0.5, 0.5, 0.5]
+
+
+def test_lerp_returns_values_at_parameter_precision():
+    """Non-representable inputs come back rounded to float32.
+
+    This is the observable edge of routing the arithmetic through the C
+    implementation rather than repeating it in Python. It is the same
+    rounding set_param would apply, so the snapshot matches what the
+    plugin ends up holding, but it means an exact == against a
+    double-precision literal no longer holds.
+    """
+    import struct
+
+    def as_float32(x: float) -> float:
+        return struct.unpack("f", struct.pack("f", x))[0]
+
+    got = morph.lerp([0.2], [0.8], 0.0)[0]
+    assert got == as_float32(0.2)
+    assert got != 0.2  # the double literal is not float32
+    assert got == pytest.approx(0.2, abs=1e-7)
 
 
 def test_lerp_per_parameter_blend():

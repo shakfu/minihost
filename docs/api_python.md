@@ -134,7 +134,9 @@ MIDI events are tuples of `(sample_offset, status, data1, data2)`. Parameter cha
 | `morph_apply(values)` | Apply a snapshot (values clamped to 0--1). Raises `ValueError` on length mismatch |
 | `morph(a, b, t)` | Interpolate snapshots `a` and `b` at blend `t`, apply, and return the applied snapshot |
 
-These three methods are native (C-backed) bindings over the libminihost `mh_morph_*` API, exposing parameter morphing at the binding layer for parity with the C/C++ front-ends. They are distinct from the pure-Python `minihost.morph` module (`capture_params` / `apply_params` / `lerp_params` / `morph_params`), which is duck-typed and works with any object exposing `get_param` / `set_param` / `num_params`. Use the module for A/B snapshot math on plain lists (including per-parameter `t` via `lerp_params`), and these methods when you want the native single-call path on a real `Plugin`.
+These three methods are native (C-backed) bindings over the libminihost `mh_morph_*` API, exposing parameter morphing at the binding layer for parity with the C/C++ front-ends. They are distinct from the `minihost.morph` module (`capture_params` / `apply_params` / `lerp_params` / `morph_params`), which is duck-typed and works with any object exposing `get_param` / `set_param` / `num_params`. Use the module for A/B snapshot math on plain lists (including per-parameter `t` via `lerp_params`), and these methods when you want the native single-call path on a real `Plugin`.
+
+The interpolation itself is shared: since 0.7.0 `lerp_params` delegates to the same C routine rather than repeating the arithmetic in Python, so the two paths cannot drift apart. One consequence is worth knowing: snapshots come back at **parameter precision (float32)**, which is what a plugin holds -- `get_param` returns a float and `set_param` takes one. Values from `capture_params` round-trip exactly at any blend; a hand-written double literal such as `0.2` comes back as its float32 neighbour, a difference around 1e-8.
 
 ### State Management
 
@@ -273,7 +275,9 @@ g.compile()
 g.render_block([in_buf], [out_buf], nframes)
 ```
 
-Key methods: `add_input`, `add_output`, `add_plugin`, `add_mix`, `add_pick_channel`, `add_merge_channels`, `add_midi_input`, `add_midi_output`, `add_midi_processor`, `add_midi_merge`, `connect`, `connect_midi`, `connect_midi_port`, `set_mix_gain`, `set_node_automation`, `set_midi_input_events`, `get_midi_output_events`, `compile`, `render_block`, `close`. See `_core.pyi` for full signatures.
+Key methods: `add_input`, `add_output`, `add_plugin`, `add_mix`, `add_pick_channel`, `add_merge_channels`, `add_midi_input`, `add_midi_output`, `add_midi_processor`, `add_midi_merge`, `connect`, `connect_midi`, `connect_midi_port`, `set_mix_gain`, `set_node_automation`, `set_midi_input_events`, `set_node_midi`, `get_midi_output_events`, `compile`, `render_block`, `close`. See `_core.pyi` for full signatures.
+
+`set_node_midi(node_id, events)` (added in 0.7.0) stages MIDI straight onto a plugin node, with no `MIDI_INPUT` node and no edge -- for graphs that drive a plugin directly instead of wiring a MIDI topology. If the node has an incoming MIDI edge, the edge wins and the staged events are ignored for that block.
 
 > Renamed in 0.2.0: this is the former `GraphV2`; the former `PluginGraph` > (parallel bus) is now `PluginBus`. See the [migration guide](migration.md).
 
@@ -735,6 +739,43 @@ plugin = future.result()  # blocks until ready
 
 ---
 
+## Session
+
+One shared JUCE plugin-format manager reused across loads, probes and scans. The
+non-session entry points register the formats on every call, which is wasted work as soon
+as you are loading or probing more than one plugin.
+
+```python
+session = minihost.Session()
+plugin = session.open("/path/to/Plugin.vst3", sample_rate=48000.0)
+info = session.probe("/path/to/Other.vst3")
+found = session.scan_directory("/Library/Audio/Plug-Ins/VST3")
+session.close()          # plugins loaded from it keep working
+```
+
+| Method | Description |
+|--------|-------------|
+| `open(path, ...)` | Load a plugin through the shared format manager |
+| `open_desc(pd_xml, ...)` | Load from a serialized `PluginDescription` -- the AudioUnit path |
+| `probe(path)` | Probe a plugin; same dict shape as the module-level `probe()` |
+| `scan_directory(path)` | Scan a directory; same list shape as `scan_directory()` |
+| `close()` | Release the format manager |
+
+A plugin does not depend on the session after construction, so closing the session while
+plugins remain in use is safe.
+
+`open_desc` (added in 0.7.0) is the AudioUnit route: AUs are identified by an id rather
+than a file path, so a descriptor is the only way to load one, and going through a session
+avoids re-registering the formats for each. The descriptor is the same string
+`Plugin.from_descriptor` accepts.
+
+```python
+session = minihost.Session()
+au = session.open_desc('<PLUGIN name="AUDelay" format="AudioUnit" file="AudioUnit:Effects/aufx,dely,appl"/>')
+```
+
+---
+
 ## Plugin Discovery
 
 ### Functions
@@ -750,6 +791,33 @@ scan_directory(directory_path: str) -> list[dict]
 ```
 
 Recursively scan a directory for plugins (VST3, AudioUnit). Returns list of plugin info dicts.
+Probing happens in this process, so a plugin that hangs or crashes on load takes the
+interpreter with it -- use `plugincache.scan` for anything you did not pick by hand.
+
+### The scan cache
+
+```python
+from minihost import plugincache
+
+plugincache.scan("/Library/Audio/Plug-Ins/VST3")           # supervised (default)
+plugincache.scan(directory, supervised=False)               # probe in this process
+plugincache.scan(directory, timeout=10.0, refresh=True)     # per-plugin deadline
+```
+
+`scan` probes each plugin in a child process it is willing to lose, because probing means
+loading and a real collection contains plugins that never come back -- five of the ~350 on
+the development machine hang, segfault or abort. Results are cached by path with an
+mtime + size fingerprint, so a repeat scan probes only what changed, and the file is shared
+with the CLI binaries' cache.
+
+Each entry carries a status: `ok`, `error` (probed and declined -- not a plugin), `timeout`
+(deadline exceeded, default 60 s or `MINIHOST_SCAN_TIMEOUT_MS`), or `crash` (the child died
+first). All four are fingerprinted, so a re-scan skips the bad ones rather than paying for
+them again. The cache is written as the scan proceeds, so interrupting it keeps the work.
+
+`info(path)` probes in this process instead: one named plugin is your own choice, so a hang
+there is visible and interruptible, unlike the same hang buried in a scan of several
+hundred.
 
 ---
 

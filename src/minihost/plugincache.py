@@ -8,9 +8,17 @@ returns instantly and never touches the plugins.
 
 What is cached: the probe-level metadata (name, vendor, version, format,
 unique_id, path, input/output channel counts, MIDI in/out) plus a
-validation status (``ok`` / ``error``). A plugin that fails to probe is
-remembered as an error so it is not re-probed on every scan. Parameter
-lists require a full plugin load and are deliberately not cached.
+validation status (``ok`` / ``error`` / ``timeout`` / ``crash``). A plugin
+that fails to probe is remembered so it is not re-probed on every scan.
+Parameter lists require a full plugin load and are deliberately not cached.
+
+Scanning probes each plugin in a child process by default, because probing
+means loading, and a plugin that hangs or corrupts its heap on load would
+otherwise take the scan -- and the interpreter running it -- with it. Five
+of the ~350 plugins installed on the development machine do exactly that.
+The last two statuses are the outcomes only that arrangement can report:
+``timeout`` for a plugin that never finished, ``crash`` for a worker that
+died before answering. Pass ``supervised=False`` to probe in-process.
 
 Cache location (override with ``MINIHOST_CACHE_DIR``):
   - macOS:   ~/Library/Caches/minihost/plugins.json
@@ -27,13 +35,24 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Callable
 
 import minihost
 
+from minihost._scan_worker import BEGIN as _WORKER_BEGIN
+from minihost._scan_worker import END as _WORKER_END
+from minihost._scan_worker import FLAG as _WORKER_FLAG
+
 SCHEMA_VERSION = 1
+
+# Seconds allowed for one probe before the child is killed and the plugin
+# recorded as a timeout. Matches the C library's default; the same
+# environment variable overrides both.
+DEFAULT_PROBE_TIMEOUT = 60.0
 
 # Path suffixes that denote a plugin bundle or binary. Discovery treats any
 # matching entry as a leaf (it is not descended into).
@@ -155,6 +174,9 @@ def _probe_to_entry(path: str) -> dict:
         fp = None
     try:
         desc = _probe(path)
+        # probe() reports no path (it is told one, so it does not repeat it
+        # back); the cache carries it, as the C scanner's entries do.
+        desc["path"] = path
         return {"status": "ok", "desc": desc, "fp": fp}
     except Exception as e:  # probe raises RuntimeError on failure
         return {
@@ -165,6 +187,85 @@ def _probe_to_entry(path: str) -> dict:
         }
 
 
+# -- supervised probing ----------------------------------------------- #
+
+
+def _worker_command() -> list[str]:
+    """The command to spawn per plugin, without the plugin path.
+
+    ``MINIHOST_SCAN_WORKER`` overrides it, which is how the C library's
+    supervisor is pointed at another worker too -- and how the tests get a
+    worker that misbehaves on demand without needing a plugin that does.
+    """
+    env = os.environ.get("MINIHOST_SCAN_WORKER")
+    if env:
+        return shlex.split(env)
+    return [sys.executable, "-m", "minihost._scan_worker"]
+
+
+def _probe_timeout(explicit: float | None) -> float:
+    if explicit is not None:
+        return explicit
+    env = os.environ.get("MINIHOST_SCAN_TIMEOUT_MS")
+    if env:
+        try:
+            ms = int(env)
+            if ms > 0:
+                return ms / 1000.0
+        except ValueError:
+            pass
+    return DEFAULT_PROBE_TIMEOUT
+
+
+def _payload(stdout: str) -> dict | None:
+    """The worker's answer, dug out of whatever the plugin printed."""
+    start = stdout.find(_WORKER_BEGIN)
+    end = stdout.find(_WORKER_END)
+    if start < 0 or end <= start:
+        return None
+    try:
+        parsed = json.loads(stdout[start + len(_WORKER_BEGIN) : end])
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _probe_to_entry_supervised(path: str, timeout: float) -> dict:
+    """Probe `path` in a child process, and survive whatever it does."""
+    try:
+        fp: Any = _fingerprint(path)
+    except OSError:
+        fp = None
+
+    def entry(status: str, error: str | None = None, desc: dict | None = None) -> dict:
+        out = {"status": status, "desc": desc or {"path": path}, "fp": fp}
+        if error is not None:
+            out["error"] = error
+        return out
+
+    cmd = [*_worker_command(), _WORKER_FLAG, path]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return entry("timeout", f"plugin did not finish probing within {timeout:g}s")
+    except OSError as e:
+        raise RuntimeError(f"could not start scan worker {cmd[0]!r}: {e}") from e
+
+    body = _payload(proc.stdout)
+    if body is None:
+        # No answer: the child died on this plugin. A signal death is the
+        # usual cause, so the return code is reported only when it is one a
+        # process chose to exit with.
+        detail = f" (exit code {proc.returncode})" if proc.returncode > 0 else ""
+        return entry("crash", f"scan worker died probing this plugin{detail}")
+
+    if body.get("ok"):
+        desc = {k: v for k, v in body.items() if k != "ok"}
+        desc["path"] = path
+        return entry("ok", desc=desc)
+    return entry("error", str(body.get("error", "probe failed")))
+
+
 # -- public API ------------------------------------------------------- #
 
 
@@ -173,6 +274,8 @@ def scan(
     *,
     refresh: bool = False,
     include_errors: bool = False,
+    supervised: bool = True,
+    timeout: float | None = None,
     on_progress: Callable[[int, int, str], None] | None = None,
 ) -> list[dict]:
     """Scan `directory` for plugins, using and updating the cache.
@@ -182,19 +285,40 @@ def scan(
     successfully-probed plugins (plus error stubs if `include_errors`).
     `refresh=True` re-probes every discovered plugin. `on_progress(done,
     total, path)` is called per plugin if provided.
+
+    Each plugin is probed in a child process, so one that hangs or crashes
+    on load is recorded as ``timeout`` / ``crash`` and the scan carries on.
+    `timeout` bounds one probe in seconds (default 60, or
+    ``MINIHOST_SCAN_TIMEOUT_MS``). `supervised=False` probes in this
+    process instead: faster by a process launch per plugin, and the way
+    this worked before -- at the price that a bad plugin ends the scan and
+    takes the interpreter with it.
+
+    The cache is written as the scan proceeds when supervised, so a scan
+    interrupted part way keeps what it had and a re-run resumes.
     """
     doc = _load_raw()
     entries = doc["entries"]
     paths = _discover_plugins(str(directory))
     results: list[dict] = []
-    changed = False
+    changed = 0
+    probe_timeout = _probe_timeout(timeout)
 
     for i, path in enumerate(paths):
         entry = entries.get(path)
         if refresh or entry is None or not _entry_fresh(entry, path):
-            entry = _probe_to_entry(path)
+            entry = (
+                _probe_to_entry_supervised(path, probe_timeout)
+                if supervised
+                else _probe_to_entry(path)
+            )
             entries[path] = entry
-            changed = True
+            changed += 1
+            # Flush periodically. In-process this guards against a plugin
+            # killing the interpreter; supervised it costs little and keeps
+            # a cancelled scan (Ctrl-C) from throwing away its work.
+            if changed % 16 == 0:
+                _save_raw(doc)
         if on_progress is not None:
             on_progress(i + 1, len(paths), path)
         if entry["status"] == "ok":
@@ -203,7 +327,7 @@ def scan(
             results.append(
                 {
                     "path": path,
-                    "status": "error",
+                    "status": entry["status"],
                     "error": entry.get("error"),
                 }
             )
@@ -216,7 +340,13 @@ def scan(
 def info(path: str | Path, *, refresh: bool = False) -> dict:
     """Return cached probe metadata for one plugin, probing (and caching)
     on a cache miss or stale fingerprint. Raises RuntimeError if the plugin
-    cannot be probed (the failure is also cached)."""
+    cannot be probed (the failure is also cached).
+
+    Probing happens in this process: one named plugin is the caller's own
+    choice, so a hang is visible and interruptible, unlike the same hang
+    buried in a scan of several hundred. Use ``scan`` on its directory to
+    get the supervised path.
+    """
     abspath = os.path.abspath(str(path))
     doc = _load_raw()
     entries = doc["entries"]

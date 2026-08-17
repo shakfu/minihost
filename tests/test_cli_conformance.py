@@ -60,13 +60,22 @@ def _find_binary(name: str, env_var: str) -> str | None:
 C_BIN = _find_binary("minihost_c", "MINIHOST_C_BIN")
 CPP_BIN = _find_binary("minihost_cpp", "MINIHOST_CPP_BIN")
 
-skip_reason = None
-if C_BIN is None or CPP_BIN is None:
-    skip_reason = "minihost_c and/or minihost_cpp binary not found (build them first)"
-elif not os.path.exists(PLUGIN):
-    skip_reason = f"test plugin not found at {PLUGIN}"
+# The binaries are required by every test here. The plugin is not: the
+# resample and error-path tests below run without one, which is what lets
+# this file do useful work in CI, where no runner has a plugin installed.
+pytestmark = pytest.mark.skipif(
+    C_BIN is None or CPP_BIN is None,
+    reason="minihost_c and/or minihost_cpp binary not found (build them first)",
+)
 
-pytestmark = pytest.mark.skipif(skip_reason is not None, reason=skip_reason or "")
+skip_if_no_plugin = pytest.mark.skipif(
+    not os.path.exists(PLUGIN), reason=f"test plugin not found at {PLUGIN}"
+)
+
+PIANO = _REPO_ROOT / "tests" / "_wav" / "piano.wav"
+skip_if_no_audio = pytest.mark.skipif(
+    not PIANO.exists(), reason=f"test audio not found at {PIANO}"
+)
 
 
 # Deterministic data commands. Each entry is the argument list following the
@@ -146,6 +155,7 @@ def _assert_stdout_identical(c, cpp, args) -> None:
     )
 
 
+@skip_if_no_plugin
 @pytest.mark.parametrize("args", CONFORMANCE_COMMANDS, ids=_cmd_id)
 def test_c_and_cpp_stdout_identical(args):
     c = _run(C_BIN, args)
@@ -174,6 +184,7 @@ def test_c_and_cpp_stdout_identical(args):
     )
 
 
+@skip_if_no_plugin
 def test_morph_blend_endpoints_match_across_clis():
     """A spot check that both CLIs interpolate identically at several t."""
     # Checked in-body rather than via skipif so collection never loads a
@@ -186,3 +197,241 @@ def test_morph_blend_endpoints_match_across_clis():
         cpp = _run(CPP_BIN, args)
         assert c.returncode == 0 and cpp.returncode == 0
         assert c.stdout == cpp.stdout, f"morph -t {t} diverges between CLIs"
+
+
+# ---------------------------------------------------------------------------
+# Rendering commands
+#
+# The stdout comparison above covers the data commands. The commands that
+# actually produce audio -- process, chain, bus -- were checked only by
+# hand until now, which is the half of the CLI that matters most.
+#
+# Comparing renders has to allow for plugins that are not reproducible
+# against themselves: several commercial effects carry free-running
+# modulation that reset() does not reseed, so two runs of the *same*
+# binary differ. Each test therefore measures that floor first, by
+# rendering twice with one binary, and only then asks whether the two
+# binaries differ by more than the plugin differs from itself. With a
+# deterministic plugin the floor is zero and the comparison is exact.
+# ---------------------------------------------------------------------------
+
+
+def _render(binary: str, args: list[str], out: Path) -> None:
+    resolved = [
+        a.replace("{PLUGIN}", PLUGIN)
+        .replace("{OUT}", str(out))
+        .replace("{PIANO}", str(PIANO))
+        for a in args
+    ]
+    proc = subprocess.run(
+        [binary, *resolved],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        timeout=300,
+    )
+    assert proc.returncode == 0, (
+        f"{Path(binary).name} {' '.join(resolved)} failed: "
+        f"{proc.stderr.decode(errors='replace')[-400:]}"
+    )
+    assert out.exists(), f"{Path(binary).name} wrote no output"
+
+
+def _residual_db(path_a: Path, path_b: Path) -> float:
+    """RMS difference between two renders, in dBFS. -inf when identical."""
+    if path_a.read_bytes() == path_b.read_bytes():
+        return float("-inf")
+    np = pytest.importorskip("numpy")
+    minihost = pytest.importorskip("minihost")
+    a, _ = minihost.read_audio(str(path_a), as_=np.ndarray)
+    b, _ = minihost.read_audio(str(path_b), as_=np.ndarray)
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    assert a.shape[0] == b.shape[0], "renders differ in channel count"
+    n = min(a.shape[-1], b.shape[-1])
+    assert abs(a.shape[-1] - b.shape[-1]) <= 1, "renders differ in length"
+    residual = a[:, :n] - b[:, :n]
+    return 20.0 * float(np.log10(max(float(np.sqrt(np.mean(residual**2))), 1e-12)))
+
+
+def _assert_binaries_agree(args: list[str], tmp_path: Path, label: str) -> None:
+    """Both binaries must agree to within the plugin's own repeatability."""
+    c_first = tmp_path / f"{label}_c1.wav"
+    c_second = tmp_path / f"{label}_c2.wav"
+    cpp_out = tmp_path / f"{label}_cpp.wav"
+
+    # A throwaway render first: the first render in a process leaves
+    # plugin state behind that changes later ones, so measuring the floor
+    # against a first render would overstate it.
+    _render(C_BIN, args, tmp_path / f"{label}_warm.wav")
+    _render(C_BIN, args, c_first)
+    _render(C_BIN, args, c_second)
+    _render(CPP_BIN, args, cpp_out)
+
+    floor = _residual_db(c_first, c_second)  # same binary, twice
+    across = _residual_db(c_first, cpp_out)  # C vs C++
+
+    if floor == float("-inf"):
+        assert across == float("-inf"), (
+            f"{label}: the plugin renders identically twice through minihost_c, "
+            f"but minihost_cpp differs ({across:.2f} dBFS residual)"
+        )
+    else:
+        assert across <= floor + 3.0, (
+            f"{label}: the two binaries differ by {across:.2f} dBFS, more than "
+            f"the plugin differs from itself ({floor:.2f} dBFS)"
+        )
+
+
+@skip_if_no_plugin
+@skip_if_no_audio
+def test_process_renders_identically_across_clis(tmp_path):
+    _assert_binaries_agree(
+        ["process", "{PLUGIN}", "-i", "{PIANO}", "-o", "{OUT}", "--tail", "0"],
+        tmp_path,
+        "process",
+    )
+
+
+@skip_if_no_plugin
+def test_process_midi_renders_identically_across_clis(tmp_path):
+    """The C binary's -m used to be unimplemented; this pins the parity."""
+    midi = _REPO_ROOT / "tests" / "_midi" / "bach.mid"
+    if not midi.exists():
+        pytest.skip(f"test MIDI not found at {midi}")
+    _assert_binaries_agree(
+        ["process", "{PLUGIN}", "-m", str(midi), "-o", "{OUT}", "--tail", "1"],
+        tmp_path,
+        "process_midi",
+    )
+
+
+@skip_if_no_plugin
+@skip_if_no_audio
+def test_chain_renders_identically_across_clis(tmp_path):
+    _assert_binaries_agree(
+        [
+            "chain",
+            "{PLUGIN}",
+            "{PLUGIN}",
+            "-i",
+            "{PIANO}",
+            "-o",
+            "{OUT}",
+            "--tail",
+            "0",
+        ],
+        tmp_path,
+        "chain",
+    )
+
+
+@skip_if_no_plugin
+@skip_if_no_audio
+def test_bus_renders_identically_across_clis(tmp_path):
+    _assert_binaries_agree(
+        ["bus", "{PLUGIN}", "{PLUGIN}", "-i", "{PIANO}", "-o", "{OUT}", "--tail", "0"],
+        tmp_path,
+        "bus",
+    )
+
+
+@skip_if_no_plugin
+def test_bus_sums_its_branches(tmp_path):
+    """A two-branch bus of one plugin must be that plugin, doubled.
+
+    Not a conformance check but a correctness one, and cheap here: it
+    catches a bus that drops or double-counts a branch, which comparing
+    the two binaries against each other cannot.
+    """
+    np = pytest.importorskip("numpy")
+    minihost = pytest.importorskip("minihost")
+
+    midi = _REPO_ROOT / "tests" / "_midi" / "bach.mid"
+    if not midi.exists():
+        pytest.skip(f"test MIDI not found at {midi}")
+
+    one = tmp_path / "one.wav"
+    two = tmp_path / "two.wav"
+    single = ["bus", "{PLUGIN}", "-m", str(midi), "-o", "{OUT}", "--tail", "0"]
+    doubled = [
+        "bus",
+        "{PLUGIN}",
+        "{PLUGIN}",
+        "-m",
+        str(midi),
+        "-o",
+        "{OUT}",
+        "--tail",
+        "0",
+    ]
+    _render(C_BIN, single, tmp_path / "warm.wav")  # discard the first render
+    _render(C_BIN, single, one)
+    _render(C_BIN, doubled, two)
+
+    a, _ = minihost.read_audio(str(one), as_=np.ndarray)
+    b, _ = minihost.read_audio(str(two), as_=np.ndarray)
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    n = min(a.shape[-1], b.shape[-1])
+    assert float(np.max(np.abs(a[:, :n]))) > 1e-6, (
+        "the instrument produced silence; the sum check would prove nothing"
+    )
+    # Doubling is exact for a deterministic plugin; allow the 24-bit
+    # quantization of the written files either way.
+    assert np.allclose(b[:, :n], 2.0 * a[:, :n], atol=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# Commands that need no plugin
+#
+# These are what make this file worth running in CI, where no runner has a
+# plugin installed and every test above skips.
+# ---------------------------------------------------------------------------
+
+
+@skip_if_no_audio
+def test_resample_matches_across_clis(tmp_path):
+    """Same input, same rate, same bytes out of both binaries."""
+    c_out = tmp_path / "c.wav"
+    cpp_out = tmp_path / "cpp.wav"
+    args = ["resample", str(PIANO), "{OUT}", "--rate", "44100"]
+    _render(C_BIN, args, c_out)
+    _render(CPP_BIN, args, cpp_out)
+    assert c_out.read_bytes() == cpp_out.read_bytes()
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["probe", "/nonexistent/plugin.vst3"],
+        ["info", "/nonexistent/plugin.vst3"],
+        ["params", "/nonexistent/plugin.vst3"],
+        ["process", "/nonexistent/plugin.vst3", "-o", "/tmp/never-written.wav"],
+        ["resample", "/nonexistent/input.wav", "/tmp/never-written.wav"],
+    ],
+    ids=lambda a: a[0] + "-missing-file",
+)
+def test_both_clis_fail_on_missing_files(args):
+    """A missing path is an error in both binaries, not a silent success."""
+    for binary in (C_BIN, CPP_BIN):
+        proc = subprocess.run(
+            [binary, *args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120,
+        )
+        assert proc.returncode != 0, (
+            f"{Path(binary).name} {' '.join(args)} exited 0 for a missing file"
+        )
+        assert proc.stderr, f"{Path(binary).name} reported nothing on stderr"
+
+
+def test_both_clis_reject_an_unknown_command():
+    for binary in (C_BIN, CPP_BIN):
+        proc = subprocess.run(
+            [binary, "definitely-not-a-command"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120,
+        )
+        assert proc.returncode != 0

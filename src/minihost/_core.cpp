@@ -322,6 +322,29 @@ public:
         dispatch_buffer_.reserve(CB_QUEUE_CAPACITY);
     }
 
+    // Session + descriptor: the AudioUnit path through a shared format
+    // manager. Loading several AUs one after another otherwise pays the
+    // format-registration cost per plugin, which is the whole point of a
+    // session.
+    struct SessionDescriptorTag {};
+    Plugin(SessionDescriptorTag, MH_Session* session, const std::string& pd_xml,
+           double sample_rate, int max_block_size,
+           int in_channels, int out_channels)
+        : sample_rate_(sample_rate), max_block_size_(max_block_size)
+    {
+        char err[1024] = {0};
+        plugin_ = mh_session_open_desc(session, pd_xml.c_str(), sample_rate,
+                                       max_block_size, in_channels,
+                                       out_channels, err, sizeof(err));
+        if (!plugin_) {
+            throw std::runtime_error(
+                std::string("Failed to open plugin from descriptor via session: ")
+                + err);
+        }
+        cb_queue_.reserve(CB_QUEUE_CAPACITY);
+        dispatch_buffer_.reserve(CB_QUEUE_CAPACITY);
+    }
+
     static Plugin* from_descriptor(const std::string& pd_xml,
                                    double sample_rate, int max_block_size,
                                    int in_channels, int out_channels) {
@@ -1897,6 +1920,22 @@ public:
                 "set_midi_input_events failed (bad node id or kind)");
     }
 
+    // Stage MIDI straight onto a plugin node, with no MIDI_INPUT node
+    // and no edge. An incoming MIDI edge takes precedence, so this is
+    // for graphs that drive a plugin directly rather than wiring a MIDI
+    // topology.
+    void set_node_midi(int node_id, nb::list events) {
+        auto& buf = midi_in_scratch_[node_id];
+        buf.clear();
+        for (auto item : events) buf.push_back(parse_midi_event(item));
+        if (!mh_graph_set_node_midi(
+                graph_, node_id,
+                buf.empty() ? nullptr : buf.data(),
+                (int) buf.size()))
+            throw std::runtime_error(
+                "set_node_midi failed (node is not a plugin, or out of range)");
+    }
+
     nb::list get_midi_output_events(int node_id) {
         int total = 0;
         if (!mh_graph_get_midi_output_events(graph_, node_id,
@@ -2702,6 +2741,44 @@ NB_MODULE(_core, m) {
           "Scan a directory for plugins (VST3, AudioUnit). Returns list of plugin metadata dicts.");
 
     // Session: shared format-manager state across loads/probes/scans.
+    // Snapshot interpolation, exposed so minihost.morph.lerp can delegate
+    // rather than reimplement the same arithmetic in Python. One
+    // implementation of the maths (mh_morph_lerp / _per_param) keeps the
+    // clamping and extrapolation behaviour from drifting between the two
+    // languages.
+    m.def("morph_lerp",
+          [](const std::vector<float>& a, const std::vector<float>& b, float t) {
+              if (a.size() != b.size())
+                  throw nb::value_error("snapshots differ in length");
+              std::vector<float> out(a.size());
+              if (!a.empty() && !mh_morph_lerp(a.data(), b.data(), out.data(),
+                                               (int) a.size(), t))
+                  throw std::runtime_error("mh_morph_lerp failed");
+              return out;
+          },
+          nb::arg("a"), nb::arg("b"), nb::arg("t"),
+          "Interpolate two snapshots at one blend amount, clamped to "
+          "[0, 1]. Backs minihost.morph.lerp for scalar t.");
+
+    m.def("morph_lerp_per_param",
+          [](const std::vector<float>& a, const std::vector<float>& b,
+             const std::vector<float>& t) {
+              if (a.size() != b.size())
+                  throw nb::value_error("snapshots differ in length");
+              if (t.size() != a.size())
+                  throw nb::value_error(
+                      "per-parameter t length does not match the snapshots");
+              std::vector<float> out(a.size());
+              if (!a.empty() && !mh_morph_lerp_per_param(a.data(), b.data(),
+                                                         out.data(),
+                                                         (int) a.size(), t.data()))
+                  throw std::runtime_error("mh_morph_lerp_per_param failed");
+              return out;
+          },
+          nb::arg("a"), nb::arg("b"), nb::arg("t"),
+          "Interpolate two snapshots with one blend amount per parameter, "
+          "clamped to [0, 1]. Backs minihost.morph.lerp for sequence t.");
+
     nb::class_<Session>(m, "Session")
         .def(nb::init<>(),
              "Create a session that holds one shared JUCE "
@@ -2737,6 +2814,26 @@ NB_MODULE(_core, m) {
              "Returns a Plugin. The returned Plugin does not depend on "
              "the session post-construction; it is safe to close the "
              "session while the Plugin remains in use.")
+        .def("open_desc",
+             [](Session& self, const std::string& pd_xml,
+                double sample_rate, int max_block_size,
+                int in_channels, int out_channels) {
+                 return new Plugin(Plugin::SessionDescriptorTag{}, self.raw(),
+                                   pd_xml, sample_rate, max_block_size,
+                                   in_channels, out_channels);
+             },
+             nb::arg("pd_xml"),
+             nb::arg("sample_rate") = 48000.0,
+             nb::arg("max_block_size") = 512,
+             nb::arg("in_channels") = 2,
+             nb::arg("out_channels") = 2,
+             nb::rv_policy::take_ownership,
+             nb::call_guard<nb::gil_scoped_release>(),
+             "Load a plugin from a serialized PluginDescription (see "
+             "Plugin.from_descriptor) using the session's shared format "
+             "manager. This is the AudioUnit path -- AUs are identified by "
+             "an id rather than a file path -- done without paying the "
+             "format-registration cost per plugin.")
         .def("probe",
              [](Session& self, const std::string& path) {
                  MH_PluginDesc desc;
@@ -3936,6 +4033,13 @@ NB_MODULE(_core, m) {
              "render_block. Each event is a "
              "(sample_offset, status, data1, data2) tuple. Cleared "
              "after render_block.")
+        .def("set_node_midi", &PluginGraph::set_node_midi,
+             nb::arg("node_id"), nb::arg("events"),
+             "Stage MIDI events directly on a plugin node for the next "
+             "render_block, without a MIDI_INPUT node or a MIDI edge. "
+             "Same event tuple shape as set_midi_input_events. If the "
+             "node has an incoming MIDI edge, that edge wins and these "
+             "events are ignored for the block.")
         .def("get_midi_output_events", &PluginGraph::get_midi_output_events,
              nb::arg("node_id"),
              "Drain MIDI events that flowed into a MIDI_OUTPUT node "

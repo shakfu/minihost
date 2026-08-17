@@ -12,9 +12,14 @@ all: build
 juce:
 	@python3 scripts/download_juce.py 2>/dev/null || python scripts/download_juce.py 2>/dev/null || ./scripts/download_juce.sh
 
-# Build C/C++ CLI tools only
+# Build C/C++ CLI tools only. CMAKE_BUILD_TYPE has to be set at configure
+# time: --config Release is read only by multi-config generators (Xcode,
+# Visual Studio), so with the Unix Makefiles generator it is silently ignored
+# and an unset build type means no optimization flags at all. Both are passed
+# so the one that applies to the generator in use takes effect.
 cli: juce
-	@mkdir -p build && cd build && cmake .. && cmake --build . --config Release
+	@cmake -B build -DCMAKE_BUILD_TYPE=Release
+	@cmake --build build --config Release
 
 # Sync Python environment (initial setup)
 sync:
@@ -54,10 +59,20 @@ desktop: juce
 		-DMINIHOST_BUILD_DESKTOP=ON -DMINIHOST_HEADLESS=OFF
 	@cmake --build build-desktop --config Release --target minihost_desktop
 
-# Build (if needed) and launch the desktop app. macOS path shown; on
-# Linux the binary is build-desktop/projects/minihost_desktop/minihost_desktop.
+# Build (if needed) and launch the desktop app. The binary sits in a
+# different place on each platform -- inside an .app bundle on macOS, bare
+# on Linux, under Release/ on Windows -- so pick whichever exists rather
+# than hardcoding one and leaving the target broken everywhere else.
+DESKTOP_DIR := build-desktop/projects/minihost_desktop
 run-desktop: desktop
-	@./build-desktop/projects/minihost_desktop/minihost_desktop.app/Contents/MacOS/minihost_desktop
+	@bin="$(DESKTOP_DIR)/minihost_desktop.app/Contents/MacOS/minihost_desktop"; \
+	[ -x "$$bin" ] || bin="$(DESKTOP_DIR)/minihost_desktop"; \
+	[ -x "$$bin" ] || bin="$(DESKTOP_DIR)/Release/minihost_desktop.exe"; \
+	if [ ! -x "$$bin" ]; then \
+		echo "minihost_desktop not found under $(DESKTOP_DIR)" >&2; \
+		exit 1; \
+	fi; \
+	exec "$$bin" $(ARGS)
 
 # Quality gates. Checkers and fixers are deliberately separate targets: a
 # mutating check can rewrite the tree and still exit 0, which hides drift and
@@ -128,9 +143,14 @@ docs-serve:
 docs-deploy:
 	@uv run --group docs mkdocs gh-deploy --force
 
-# Clean build artifacts
+# Clean build artifacts. build-*/ goes too: the desktop app configures its own
+# tree (non-headless), and hand-made ones such as build-cli/ accumulate. Left
+# behind they are not merely wasted disk -- tests/test_cli_conformance.py picks
+# the most recently built binary it can find across all of them, so a stale
+# tree can decide what gets tested.
 clean:
 	@rm -rf build/
+	@rm -rf build-*/
 	@rm -rf dist/
 	@rm -rf site/
 	@rm -rf *.egg-info/

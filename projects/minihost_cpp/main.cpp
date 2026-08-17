@@ -3,9 +3,13 @@
 
 #include "minihost.h"
 #include "minihost_audio.h"
+#include "minihost_chain.h"
+#include "minihost_graph.h"
 #include "minihost_audiofile.h"
 #include "minihost_midi.h"
 #include "minihost_vstpreset.h"
+#include <filesystem>
+#include <sstream>
 #include "MidiFile.h"
 #include "MidiEvent.h"
 #include "include/CLI11.hpp"
@@ -290,14 +294,44 @@ static void scan_callback(const MH_PluginDesc* desc, void* user_data) {
     ctx->count++;
 }
 
-int cmd_scan(const std::string& directory, bool json_output) {
+// Scan for plugins and refresh the shared cache. An empty `directory`
+// scans this platform's canonical plugin locations, which is what makes
+// name resolution usable without the user knowing where plugins live.
+int cmd_scan(const std::string& directory, bool json_output, bool in_process) {
     ScanContext ctx{json_output, 0, true};
+
+    if (!json_output) {
+        if (!directory.empty()) {
+            std::fprintf(stderr, "Scanning %s\n", directory.c_str());
+        } else {
+            char dir[1024] = {0};
+            std::fprintf(stderr, "Scanning the default plugin locations:\n");
+            for (int i = 0; mh_get_default_plugin_dir(i, dir, sizeof(dir)); i++)
+                std::fprintf(stderr, "  %s\n", dir);
+        }
+    }
 
     if (json_output) {
         std::printf("[\n");
     }
 
-    int result = mh_scan_directory(directory.c_str(), scan_callback, &ctx);
+    char scan_err[1024] = {0};
+    const char* dirs[1] = { directory.c_str() };
+    const char* const* dir_arg = directory.empty() ? nullptr : dirs;
+    const int num_dirs = directory.empty() ? 0 : 1;
+    int result;
+    if (in_process) {
+        result = mh_plugin_cache_scan(dir_arg, num_dirs, 0, scan_callback, &ctx,
+                                      scan_err, sizeof(scan_err));
+    } else {
+        // Each plugin is probed in a child process, so one that hangs or
+        // crashes on load costs that entry rather than the whole scan.
+        result = mh_plugin_cache_scan_supervised(dir_arg, num_dirs, 0,
+                                                 nullptr, 0, 0,
+                                                 scan_callback, &ctx,
+                                                 scan_err, sizeof(scan_err));
+    }
+    if (result < 0 && scan_err[0] != '\0') print_error(scan_err);
 
     if (json_output) {
         if (ctx.count > 0) std::printf("\n");
@@ -305,15 +339,65 @@ int cmd_scan(const std::string& directory, bool json_output) {
     }
 
     if (result < 0) {
-        print_error("Failed to scan directory");
+        print_error("Failed to scan");
         return 1;
     }
 
     if (!json_output) {
-        std::printf("\nFound %d plugin(s)\n", ctx.count);
+        char cache_path[1024] = {0};
+        mh_plugin_cache_path(cache_path, sizeof(cache_path));
+        std::printf("\nFound %d newly probed plugin(s); %d in the cache\n",
+                    ctx.count, result);
+        std::printf("Cache: %s\n", cache_path);
     }
 
     return 0;
+}
+
+// Resolve a plugin argument that may be a path or a cached name.
+//
+// A path wins whenever it exists, so nothing that worked before changes
+// meaning. Otherwise the argument is looked up in the shared scan cache
+// (the same file the Python CLI writes), case-insensitively. Returns the
+// resolved path, or an empty string after reporting the failure.
+static std::string g_plugin_format;      // --format au|vst3
+static bool g_plugin_fuzzy = false;      // --fuzzy: allow substring names
+
+std::string resolve_plugin_arg(const std::string& arg) {
+    if (arg.empty()) return {};
+    if (std::filesystem::exists(arg)) return arg;   // bundles are directories
+    if (arg.find('/') != std::string::npos) return arg;   // a path: let it fail loudly
+#ifdef _WIN32
+    if (arg.find('\\') != std::string::npos) return arg;
+#endif
+
+    char resolved[1024] = {0};
+    const char* fmt = g_plugin_format.empty() ? nullptr : g_plugin_format.c_str();
+    const int matches = mh_plugin_cache_lookup(arg.c_str(), fmt, g_plugin_fuzzy ? 1 : 0,
+                                               resolved, sizeof(resolved));
+    if (matches == 1) return resolved;
+
+    if (matches == 0) {
+        char cache_path[1024] = {0};
+        mh_plugin_cache_path(cache_path, sizeof(cache_path));
+        std::fprintf(stderr,
+                     "Error: no plugin named '%s' in the scan cache (%s)\n"
+                     "       run 'scan' first, or pass a path%s\n",
+                     arg.c_str(), cache_path,
+                     g_plugin_fuzzy ? "" : ", or --fuzzy to match part of a name");
+        return {};
+    }
+
+    std::fprintf(stderr, "Error: '%s' matches %d plugins:\n", arg.c_str(), matches);
+    for (int i = 0; i < matches; i++) {
+        char one[1024] = {0};
+        if (mh_plugin_cache_match(arg.c_str(), fmt, g_plugin_fuzzy ? 1 : 0, i,
+                                  one, sizeof(one)))
+            std::fprintf(stderr, "       %s\n", one);
+    }
+    std::fprintf(stderr, "       name it more precisely, pass a path, "
+                         "or pick a format with --format\n");
+    return {};
 }
 
 // ============================================================================
@@ -1514,6 +1598,508 @@ int cmd_process(const std::string& plugin_path,
 }
 
 // ============================================================================
+// Command: chain
+// ============================================================================
+
+// Process audio and/or MIDI through several plugins in series.
+//
+// MIDI enters the first plugin that accepts it and is carried onward by
+// any plugin that produces MIDI, so a MIDI effect placed ahead of an
+// instrument drives it. That is why the plugin list is taken in signal
+// order and why MIDI effects have to come first.
+int cmd_chain(const std::vector<std::string>& plugin_paths,
+              const std::string& input_file,
+              const std::string& output_file,
+              const std::string& midi_file,
+              double sample_rate,
+              int block_size,
+              bool non_realtime,
+              double bpm,
+              int bit_depth,
+              double tail_seconds,
+              const std::vector<std::string>& mix_specs) {
+    char err[1024] = {0};
+
+    if (plugin_paths.empty()) {
+        std::fprintf(stderr, "Error: chain needs at least one plugin\n");
+        return 1;
+    }
+    const bool has_audio_input = !input_file.empty();
+    const bool has_midi = !midi_file.empty();
+    if (!has_audio_input && !has_midi) {
+        std::fprintf(stderr, "Error: an input file (-i) or a MIDI file (-m) is required\n");
+        return 1;
+    }
+    if (output_file.empty()) {
+        std::fprintf(stderr, "Error: an output file (-o) is required\n");
+        return 1;
+    }
+
+    // --- Input audio (optional: an instrument chain needs none) ---
+    MH_AudioData* audio_data = nullptr;
+    int file_ch = 2;
+    int in_frames = 0;
+    if (has_audio_input) {
+        audio_data = mh_audio_read(input_file.c_str(), err, sizeof(err));
+        if (!audio_data) {
+            std::fprintf(stderr, "Error: %s\n", err);
+            return 1;
+        }
+        file_ch = static_cast<int>(audio_data->channels);
+        in_frames = static_cast<int>(audio_data->frames);
+        sample_rate = static_cast<double>(audio_data->sample_rate);
+    }
+    struct AudioGuard {
+        MH_AudioData* d;
+        ~AudioGuard() { if (d) mh_audio_data_free(d); }
+    } audio_guard{audio_data};
+
+    // --- Input MIDI (optional) ---
+    MH_MidiEvent* midi_events = nullptr;
+    int num_midi_events = 0;
+    double midi_duration = 0.0;
+    if (has_midi) {
+        char midi_err[1024] = {0};
+        if (!mh_midi_file_load(midi_file.c_str(), sample_rate, &midi_events,
+                               &num_midi_events, &midi_duration,
+                               midi_err, sizeof(midi_err))) {
+            std::fprintf(stderr, "Error: %s: %s\n", midi_file.c_str(), midi_err);
+            return 1;
+        }
+        if (!has_audio_input) {
+            in_frames = static_cast<int>(midi_duration * sample_rate);
+            if (in_frames <= 0) in_frames = static_cast<int>(sample_rate);
+        }
+    }
+    struct MidiGuard {
+        MH_MidiEvent* e;
+        ~MidiGuard() { mh_midi_file_free(e); }
+    } midi_guard{midi_events};
+
+    // --- Open every plugin, then bind them into a chain ---
+    std::vector<MH_Plugin*> plugins;
+    struct PluginGuard {
+        std::vector<MH_Plugin*>& v;
+        ~PluginGuard() { for (auto* p : v) mh_close(p); }
+    } plugin_guard{plugins};
+
+    // One session across the chain: mh_open builds and registers a JUCE
+    // plugin-format manager per call, which is wasted once you are
+    // loading more than one plugin.
+    MH_Session* session = mh_session_create(err, sizeof(err));
+    struct SessionGuard {
+        MH_Session* s;
+        ~SessionGuard() { if (s) mh_session_close(s); }   // plugins outlive it
+    } session_guard{session};
+
+    for (const auto& path : plugin_paths) {
+        MH_Plugin* p = session
+            ? mh_session_open(session, path.c_str(), sample_rate, block_size,
+                              2, 2, 0, err, sizeof(err))
+            : mh_open(path.c_str(), sample_rate, block_size, 2, 2,
+                      err, sizeof(err));
+        if (!p) {
+            std::fprintf(stderr, "Error: %s: %s\n", path.c_str(), err);
+            return 1;
+        }
+        plugins.push_back(p);
+        if (non_realtime) mh_set_non_realtime(p, 1);
+        if (bpm > 0.0) {
+            MH_TransportInfo tr{};
+            tr.bpm = bpm;
+            tr.time_sig_numerator = 4;
+            tr.time_sig_denominator = 4;
+            tr.is_playing = 1;
+            mh_set_transport(p, &tr);
+        }
+    }
+
+    MH_PluginChain* chain = mh_chain_create(plugins.data(),
+                                            static_cast<int>(plugins.size()),
+                                            err, sizeof(err));
+    if (!chain) {
+        std::fprintf(stderr, "Error: %s\n", err);
+        return 1;
+    }
+    struct ChainGuard {
+        MH_PluginChain* c;
+        ~ChainGuard() { mh_chain_close(c); }
+    } chain_guard{chain};
+
+    // --- Per-plugin dry/wet mix: --mix INDEX:VALUE ---
+    for (const auto& spec : mix_specs) {
+        int idx = 0;
+        float value = 1.0f;
+        if (std::sscanf(spec.c_str(), "%d:%f", &idx, &value) != 2) {
+            std::fprintf(stderr, "Error: --mix wants INDEX:VALUE, got '%s'\n", spec.c_str());
+            return 1;
+        }
+        if (!mh_chain_set_mix(chain, idx, value)) {
+            std::fprintf(stderr,
+                         "Error: could not set mix %s (index out of range, or the "
+                         "plugin's input and output channel counts differ)\n",
+                         spec.c_str());
+            return 1;
+        }
+    }
+
+    int in_ch = mh_chain_get_num_input_channels(chain);
+    int out_ch = mh_chain_get_num_output_channels(chain);
+    if (in_ch < 1) in_ch = 1;      // instruments read nothing; keep one silent channel
+    if (out_ch < 1) out_ch = 2;
+    const int latency = mh_chain_get_latency_samples(chain);
+    const int tail_frames = tail_seconds > 0 ? static_cast<int>(tail_seconds * sample_rate) : 0;
+    const int total_samples = in_frames + tail_frames;
+    const int output_total = total_samples + latency;
+
+    std::fprintf(stderr, "Chain of %zu plugin(s) @ %.0f Hz\n", plugins.size(), sample_rate);
+    for (size_t i = 0; i < plugins.size(); i++) {
+        MH_Info info{};
+        mh_get_info(plugins[i], &info);
+        const auto slash = plugin_paths[i].find_last_of('/');
+        const std::string name = slash == std::string::npos
+            ? plugin_paths[i] : plugin_paths[i].substr(slash + 1);
+        std::fprintf(stderr, "  [%zu] %-28s %din/%dout  midi in:%s out:%s  latency %d\n",
+                     i, name.c_str(), info.num_input_ch, info.num_output_ch,
+                     info.accepts_midi ? "yes" : "no",
+                     info.produces_midi ? "yes" : "no",
+                     mh_get_latency_samples(plugins[i]));
+    }
+    std::fprintf(stderr, "  Chain I/O:   %d in / %d out, latency %d samples\n",
+                 in_ch, out_ch, latency);
+    if (has_midi)
+        std::fprintf(stderr, "  MIDI events: %d (%.2fs)\n", num_midi_events, midi_duration);
+    std::fprintf(stderr, "  Output:      %s\n", output_file.c_str());
+
+    // --- Buffers ---
+    std::vector<std::vector<float>> in_storage(in_ch, std::vector<float>(output_total, 0.0f));
+    std::vector<std::vector<float>> out_storage(out_ch, std::vector<float>(output_total, 0.0f));
+    if (audio_data) {
+        for (int f = 0; f < in_frames; f++)
+            for (int c = 0; c < in_ch; c++)
+                in_storage[c][f] = (c < file_ch)
+                    ? audio_data->data[static_cast<size_t>(f) * file_ch + c]
+                    : 0.0f;
+    }
+
+    // --- Process ---
+    int midi_cursor = 0;
+    for (int start = 0; start < output_total; start += block_size) {
+        int end = std::min(start + block_size, output_total);
+        const int bsize = end - start;
+
+        std::vector<const float*> in_ptrs(in_ch);
+        std::vector<float*> out_ptrs(out_ch);
+        for (int c = 0; c < in_ch; c++) in_ptrs[c] = in_storage[c].data() + start;
+        for (int c = 0; c < out_ch; c++) out_ptrs[c] = out_storage[c].data() + start;
+
+        // Slice this block's MIDI out of the absolute-offset array and
+        // rebase each event to the block.
+        std::vector<MH_MidiEvent> block_midi;
+        while (midi_cursor < num_midi_events
+               && midi_events[midi_cursor].sample_offset < end) {
+            MH_MidiEvent ev = midi_events[midi_cursor];
+            ev.sample_offset = std::max(0, ev.sample_offset - start);
+            block_midi.push_back(ev);
+            midi_cursor++;
+        }
+
+        mh_chain_process_midi_io(chain, in_ptrs.data(), out_ptrs.data(), bsize,
+                                 block_midi.empty() ? nullptr : block_midi.data(),
+                                 static_cast<int>(block_midi.size()),
+                                 nullptr, 0, nullptr);
+    }
+
+    // --- Latency compensation and write ---
+    int write_offset = latency;
+    int write_frames = total_samples;
+    if (write_offset + write_frames > output_total)
+        write_frames = output_total - write_offset;
+    if (write_frames < 0) write_frames = 0;
+
+    std::vector<float> interleaved(static_cast<size_t>(out_ch) * write_frames);
+    for (int f = 0; f < write_frames; f++)
+        for (int c = 0; c < out_ch; c++)
+            interleaved[static_cast<size_t>(f) * out_ch + c] = out_storage[c][write_offset + f];
+
+    if (bit_depth <= 0) bit_depth = 24;
+    if (!mh_audio_write(output_file.c_str(), interleaved.data(),
+                        static_cast<unsigned>(out_ch),
+                        static_cast<unsigned>(write_frames),
+                        static_cast<unsigned>(sample_rate), bit_depth,
+                        err, sizeof(err))) {
+        std::fprintf(stderr, "Error: %s\n", err);
+        return 1;
+    }
+
+    std::fprintf(stderr, "Wrote %d samples (%.2fs) to %s\n", write_frames,
+                 static_cast<double>(write_frames) / sample_rate, output_file.c_str());
+    return 0;
+}
+
+// ============================================================================
+// Command: bus
+// ============================================================================
+
+// Split one input across parallel branches and sum their audio -- the
+// layering shape: one MIDI part driving several instruments at once.
+// Each entry in `branch_specs` is one branch; commas inside an entry
+// chain plugins in series within that branch.
+int cmd_bus(const std::vector<std::string>& branch_specs,
+            const std::string& input_file,
+            const std::string& output_file,
+            const std::string& midi_file,
+            double sample_rate,
+            int block_size,
+            bool non_realtime,
+            double bpm,
+            int bit_depth,
+            double tail_seconds,
+            const std::vector<std::string>& gain_specs) {
+    char err[1024] = {0};
+
+    if (branch_specs.empty()) {
+        std::fprintf(stderr, "Error: bus needs at least one branch\n");
+        return 1;
+    }
+    const bool has_audio_input = !input_file.empty();
+    const bool has_midi = !midi_file.empty();
+    if (!has_audio_input && !has_midi) {
+        std::fprintf(stderr, "Error: an input file (-i) or a MIDI file (-m) is required\n");
+        return 1;
+    }
+    if (output_file.empty()) {
+        std::fprintf(stderr, "Error: an output file (-o) is required\n");
+        return 1;
+    }
+
+    // --- Inputs ---
+    MH_AudioData* audio_data = nullptr;
+    int file_ch = 2;
+    int in_frames = 0;
+    if (has_audio_input) {
+        audio_data = mh_audio_read(input_file.c_str(), err, sizeof(err));
+        if (!audio_data) {
+            std::fprintf(stderr, "Error: %s\n", err);
+            return 1;
+        }
+        file_ch = static_cast<int>(audio_data->channels);
+        in_frames = static_cast<int>(audio_data->frames);
+        sample_rate = static_cast<double>(audio_data->sample_rate);
+    }
+    struct AudioGuard { MH_AudioData* d; ~AudioGuard() { if (d) mh_audio_data_free(d); } }
+        audio_guard{audio_data};
+
+    MH_MidiEvent* midi_events = nullptr;
+    int num_midi_events = 0;
+    double midi_duration = 0.0;
+    if (has_midi) {
+        char midi_err[1024] = {0};
+        if (!mh_midi_file_load(midi_file.c_str(), sample_rate, &midi_events,
+                               &num_midi_events, &midi_duration,
+                               midi_err, sizeof(midi_err))) {
+            std::fprintf(stderr, "Error: %s: %s\n", midi_file.c_str(), midi_err);
+            return 1;
+        }
+        if (!has_audio_input) {
+            in_frames = static_cast<int>(midi_duration * sample_rate);
+            if (in_frames <= 0) in_frames = static_cast<int>(sample_rate);
+        }
+    }
+    struct MidiGuard { MH_MidiEvent* e; ~MidiGuard() { mh_midi_file_free(e); } }
+        midi_guard{midi_events};
+
+    // --- Open each branch (comma-separated plugins run in series) ---
+    std::vector<MH_Plugin*> plugins;
+    std::vector<MH_PluginChain*> chains;
+    struct ChainGuard {
+        std::vector<MH_PluginChain*>& c;
+        std::vector<MH_Plugin*>& p;
+        ~ChainGuard() {
+            for (auto* ch : c) mh_chain_close(ch);
+            for (auto* pl : p) mh_close(pl);
+        }
+    } guard{chains, plugins};
+
+    // One session for every plugin across every branch.
+    MH_Session* session = mh_session_create(err, sizeof(err));
+    struct SessionGuard {
+        MH_Session* s;
+        ~SessionGuard() { if (s) mh_session_close(s); }
+    } session_guard{session};
+
+    for (size_t b = 0; b < branch_specs.size(); b++) {
+        std::vector<MH_Plugin*> branch;
+        std::stringstream ss(branch_specs[b]);
+        std::string path;
+        while (std::getline(ss, path, ',')) {
+            while (!path.empty() && path.front() == ' ') path.erase(path.begin());
+            if (path.empty()) continue;
+            MH_Plugin* p = session
+                ? mh_session_open(session, path.c_str(), sample_rate, block_size,
+                                  2, 2, 0, err, sizeof(err))
+                : mh_open(path.c_str(), sample_rate, block_size, 2, 2,
+                          err, sizeof(err));
+            if (!p) {
+                std::fprintf(stderr, "Error: %s: %s\n", path.c_str(), err);
+                return 1;
+            }
+            if (non_realtime) mh_set_non_realtime(p, 1);
+            if (bpm > 0.0) {
+                MH_TransportInfo tr{};
+                tr.bpm = bpm;
+                tr.time_sig_numerator = 4;
+                tr.time_sig_denominator = 4;
+                tr.is_playing = 1;
+                mh_set_transport(p, &tr);
+            }
+            plugins.push_back(p);
+            branch.push_back(p);
+        }
+        if (branch.empty()) {
+            std::fprintf(stderr, "Error: branch %zu names no plugin\n", b);
+            return 1;
+        }
+        MH_PluginChain* chain = mh_chain_create(branch.data(),
+                                                static_cast<int>(branch.size()),
+                                                err, sizeof(err));
+        if (!chain) {
+            std::fprintf(stderr, "Error: branch %zu: %s\n", b, err);
+            return 1;
+        }
+        chains.push_back(chain);
+    }
+
+    // Bus width: the widest branch input (zero for an instrument bus),
+    // and the branch output width, which every branch must share.
+    int bus_in = 0;
+    int bus_out = mh_chain_get_num_output_channels(chains[0]);
+    for (size_t i = 0; i < chains.size(); i++) {
+        bus_in = std::max(bus_in, mh_chain_get_num_input_channels(chains[i]));
+        const int co = mh_chain_get_num_output_channels(chains[i]);
+        if (co != bus_out) {
+            std::fprintf(stderr,
+                         "Error: branch %zu outputs %d channels, branch 0 outputs %d "
+                         "-- a bus sums branches, so their output widths must match\n",
+                         i, co, bus_out);
+            return 1;
+        }
+    }
+    if (bus_out < 1) bus_out = 2;
+
+    MH_PluginBus* bus = mh_bus_create(bus_in, bus_out, block_size, sample_rate,
+                                      err, sizeof(err));
+    if (!bus) {
+        std::fprintf(stderr, "Error: %s\n", err);
+        return 1;
+    }
+    struct BusGuard { MH_PluginBus* b; ~BusGuard() { mh_bus_close(b); } } bus_guard{bus};
+
+    for (size_t i = 0; i < chains.size(); i++) {
+        if (mh_bus_add_branch(bus, chains[i], 1.0f, err, sizeof(err)) < 0) {
+            std::fprintf(stderr, "Error: branch %zu: %s\n", i, err);
+            return 1;
+        }
+    }
+
+    // --- Per-branch gain: --gain INDEX:VALUE ---
+    for (const auto& spec : gain_specs) {
+        int idx = 0;
+        float value = 1.0f;
+        if (std::sscanf(spec.c_str(), "%d:%f", &idx, &value) != 2) {
+            std::fprintf(stderr, "Error: --gain wants INDEX:VALUE, got '%s'\n", spec.c_str());
+            return 1;
+        }
+        if (!mh_bus_set_branch_gain(bus, idx, value)) {
+            std::fprintf(stderr, "Error: branch index %d out of range\n", idx);
+            return 1;
+        }
+    }
+
+    const int latency = mh_bus_get_latency_samples(bus);
+    const int tail_frames = tail_seconds > 0 ? static_cast<int>(tail_seconds * sample_rate) : 0;
+    const int total_samples = in_frames + tail_frames;
+    const int output_total = total_samples + latency;
+
+    std::fprintf(stderr, "Bus of %zu branch(es) @ %.0f Hz\n", chains.size(), sample_rate);
+    for (size_t i = 0; i < chains.size(); i++)
+        std::fprintf(stderr, "  [%zu] %-44s %din/%dout\n", i, branch_specs[i].c_str(),
+                     mh_chain_get_num_input_channels(chains[i]),
+                     mh_chain_get_num_output_channels(chains[i]));
+    std::fprintf(stderr, "  Bus I/O:     %d in / %d out, latency %d samples\n",
+                 bus_in, bus_out, latency);
+    if (has_midi)
+        std::fprintf(stderr, "  MIDI events: %d (%.2fs) fanned to every branch\n",
+                     num_midi_events, midi_duration);
+    std::fprintf(stderr, "  Output:      %s\n", output_file.c_str());
+
+    // --- Buffers ---
+    const int in_alloc = bus_in > 0 ? bus_in : 1;
+    std::vector<std::vector<float>> in_storage(in_alloc, std::vector<float>(output_total, 0.0f));
+    std::vector<std::vector<float>> out_storage(bus_out, std::vector<float>(output_total, 0.0f));
+    if (audio_data) {
+        for (int f = 0; f < in_frames; f++)
+            for (int c = 0; c < bus_in; c++)
+                in_storage[c][f] = (c < file_ch)
+                    ? audio_data->data[static_cast<size_t>(f) * file_ch + c]
+                    : 0.0f;
+    }
+
+    // --- Process ---
+    int midi_cursor = 0;
+    for (int start = 0; start < output_total; start += block_size) {
+        const int end = std::min(start + block_size, output_total);
+        const int bsize = end - start;
+
+        std::vector<const float*> in_ptrs(in_alloc);
+        std::vector<float*> out_ptrs(bus_out);
+        for (int c = 0; c < in_alloc; c++) in_ptrs[c] = in_storage[c].data() + start;
+        for (int c = 0; c < bus_out; c++) out_ptrs[c] = out_storage[c].data() + start;
+
+        std::vector<MH_MidiEvent> block_midi;
+        while (midi_cursor < num_midi_events
+               && midi_events[midi_cursor].sample_offset < end) {
+            MH_MidiEvent ev = midi_events[midi_cursor];
+            ev.sample_offset = std::max(0, ev.sample_offset - start);
+            block_midi.push_back(ev);
+            midi_cursor++;
+        }
+
+        mh_bus_process_midi_io(bus, bus_in > 0 ? in_ptrs.data() : nullptr,
+                               out_ptrs.data(), bsize,
+                               block_midi.empty() ? nullptr : block_midi.data(),
+                               static_cast<int>(block_midi.size()),
+                               nullptr, 0, nullptr, nullptr);
+    }
+
+    // --- Latency compensation and write ---
+    int write_offset = latency;
+    int write_frames = total_samples;
+    if (write_offset + write_frames > output_total)
+        write_frames = output_total - write_offset;
+    if (write_frames < 0) write_frames = 0;
+
+    std::vector<float> interleaved(static_cast<size_t>(bus_out) * write_frames);
+    for (int f = 0; f < write_frames; f++)
+        for (int c = 0; c < bus_out; c++)
+            interleaved[static_cast<size_t>(f) * bus_out + c] = out_storage[c][write_offset + f];
+
+    if (bit_depth <= 0) bit_depth = 24;
+    if (!mh_audio_write(output_file.c_str(), interleaved.data(),
+                        static_cast<unsigned>(bus_out),
+                        static_cast<unsigned>(write_frames),
+                        static_cast<unsigned>(sample_rate), bit_depth,
+                        err, sizeof(err))) {
+        std::fprintf(stderr, "Error: %s\n", err);
+        return 1;
+    }
+
+    std::fprintf(stderr, "Wrote %d samples (%.2fs) to %s\n", write_frames,
+                 static_cast<double>(write_frames) / sample_rate, output_file.c_str());
+    return 0;
+}
+
+// ============================================================================
 // Helper: print MIDI message
 // ============================================================================
 
@@ -1887,6 +2473,14 @@ int cmd_resample(const std::string& input_path, const std::string& output_path,
 // ============================================================================
 
 int main(int argc, char** argv) {
+    // This binary is its own scan worker: a supervised scan re-runs it once
+    // per plugin with --mh-probe-one. Answer that before anything else --
+    // before the message thread, before CLI11 sees an argument it has no
+    // subcommand for -- since the worker exists only to probe one plugin.
+    if (mh_plugin_scan_worker_main(argc, argv)) {
+        return 0;
+    }
+
     // Cleanly stop the dedicated JUCE plugin thread at process exit. Without
     // this, any command that loads a plugin leaves the message thread's
     // std::thread joinable at static teardown, which calls std::terminate
@@ -1910,6 +2504,13 @@ int main(int argc, char** argv) {
         ->default_val(48000.0);
     app.add_option("-b,--block", block_size, "Block size (samples)")
         ->default_val(512);
+    // Plugin-name resolution. Both are inherited by the subcommands so they
+    // can be given before or after the command name.
+    app.add_option("--format", g_plugin_format,
+                   "Pick a format when a plugin name matches both (au|vst3)");
+    app.add_flag("--fuzzy", g_plugin_fuzzy,
+                 "Let a plugin name match part of a name");
+    app.get_option("--format")->configurable(false);
 
     // ========================================================================
     // Subcommand: probe
@@ -1923,6 +2524,8 @@ int main(int argc, char** argv) {
     probe_cmd->add_flag("-j,--json", probe_json, "Output as JSON");
 
     probe_cmd->callback([&]() {
+        probe_path = resolve_plugin_arg(probe_path);
+        if (probe_path.empty()) std::exit(1);
         std::exit(cmd_probe(probe_path, probe_json));
     });
 
@@ -1933,12 +2536,15 @@ int main(int argc, char** argv) {
     std::string scan_dir;
     bool scan_json = false;
 
-    scan_cmd->add_option("directory", scan_dir, "Directory to scan")
-        ->required();
+    scan_cmd->add_option("directory", scan_dir,
+                         "Directory to scan (default: this platform's plugin locations)");
     scan_cmd->add_flag("-j,--json", scan_json, "Output as JSON");
+    bool scan_in_process = false;
+    scan_cmd->add_flag("--in-process", scan_in_process,
+                       "Probe in this process instead of one child per plugin");
 
     scan_cmd->callback([&]() {
-        std::exit(cmd_scan(scan_dir, scan_json));
+        std::exit(cmd_scan(scan_dir, scan_json, scan_in_process));
     });
 
     // ========================================================================
@@ -1955,6 +2561,8 @@ int main(int argc, char** argv) {
     info_cmd->add_flag("-j,--json", info_json, "Output as JSON");
 
     info_cmd->callback([&]() {
+        info_path = resolve_plugin_arg(info_path);
+        if (info_path.empty()) std::exit(1);
         std::exit(cmd_info(info_path, sample_rate, block_size, info_probe, info_json));
     });
 
@@ -1972,6 +2580,8 @@ int main(int argc, char** argv) {
     params_cmd->add_flag("-V,--verbose", params_verbose, "Show extended info (ranges, defaults, flags)");
 
     params_cmd->callback([&]() {
+        params_path = resolve_plugin_arg(params_path);
+        if (params_path.empty()) std::exit(1);
         std::exit(cmd_params(params_path, sample_rate, block_size, params_json, params_verbose));
     });
 
@@ -1988,6 +2598,8 @@ int main(int argc, char** argv) {
         ->required();
 
     get_param_cmd->callback([&]() {
+        get_param_path = resolve_plugin_arg(get_param_path);
+        if (get_param_path.empty()) std::exit(1);
         std::exit(cmd_get_param(get_param_path, get_param_index, sample_rate, block_size));
     });
 
@@ -2009,6 +2621,8 @@ int main(int argc, char** argv) {
     set_param_cmd->add_option("-s,--state", set_param_state, "State file to load/save");
 
     set_param_cmd->callback([&]() {
+        set_param_path = resolve_plugin_arg(set_param_path);
+        if (set_param_path.empty()) std::exit(1);
         std::exit(cmd_set_param(set_param_path, set_param_index, set_param_value,
                                 sample_rate, block_size, set_param_state));
     });
@@ -2042,6 +2656,8 @@ int main(int argc, char** argv) {
                           "Overwrite --save output if it exists");
 
     presets_cmd->callback([&]() {
+        presets_path = resolve_plugin_arg(presets_path);
+        if (presets_path.empty()) std::exit(1);
         std::exit(cmd_presets(presets_path, sample_rate, block_size,
                               presets_json, presets_save, presets_program,
                               presets_state, presets_load_vstpreset,
@@ -2074,6 +2690,8 @@ int main(int argc, char** argv) {
     load_preset_cmd->add_option("-s,--state", load_preset_state, "Save state to file");
 
     load_preset_cmd->callback([&]() {
+        load_preset_path = resolve_plugin_arg(load_preset_path);
+        if (load_preset_path.empty()) std::exit(1);
         std::exit(cmd_load_preset(load_preset_path, load_preset_index,
                                   sample_rate, block_size, load_preset_state));
     });
@@ -2091,6 +2709,8 @@ int main(int argc, char** argv) {
         ->required();
 
     save_state_cmd->callback([&]() {
+        save_state_plugin = resolve_plugin_arg(save_state_plugin);
+        if (save_state_plugin.empty()) std::exit(1);
         std::exit(cmd_save_state(save_state_plugin, save_state_file, sample_rate, block_size));
     });
 
@@ -2109,6 +2729,8 @@ int main(int argc, char** argv) {
     load_state_cmd->add_flag("-p,--params", load_state_params, "Show parameters after loading");
 
     load_state_cmd->callback([&]() {
+        load_state_plugin = resolve_plugin_arg(load_state_plugin);
+        if (load_state_plugin.empty()) std::exit(1);
         std::exit(cmd_load_state(load_state_plugin, load_state_file,
                                  sample_rate, block_size, load_state_params));
     });
@@ -2150,6 +2772,8 @@ int main(int argc, char** argv) {
         ->default_val(2.0);
 
     process_cmd->callback([&]() {
+        process_plugin = resolve_plugin_arg(process_plugin);
+        if (process_plugin.empty()) std::exit(1);
         std::exit(cmd_process(process_plugin, process_input, process_output,
                               process_sidechain, process_midi,
                               sample_rate, block_size, process_state,
@@ -2161,6 +2785,82 @@ int main(int argc, char** argv) {
     // ========================================================================
     // Subcommand: morph
     // ========================================================================
+    // chain: N plugins in series, audio and/or MIDI in, one file out
+    std::vector<std::string> chain_plugins;
+    std::string chain_input, chain_output, chain_midi;
+    std::vector<std::string> chain_mix;
+    double chain_bpm = 0.0;
+    double chain_tail = 2.0;
+    int chain_bit_depth = 24;
+    bool chain_nrt = false;
+    auto* chain_cmd = app.add_subcommand(
+        "chain", "Process audio and/or MIDI through plugins in series");
+    chain_cmd->add_option("plugins", chain_plugins,
+                          "Plugin paths in signal order (MIDI effects first)")
+        ->required();
+    chain_cmd->add_option("-i,--input", chain_input, "Input audio file");
+    chain_cmd->add_option("-m,--midi-input", chain_midi, "Input MIDI file");
+    chain_cmd->add_option("-o,--output", chain_output, "Output audio file")->required();
+    chain_cmd->add_option("--mix", chain_mix,
+                          "Dry/wet mix for one plugin: \"INDEX:VALUE\" (repeatable)");
+    chain_cmd->add_flag("--non-realtime", chain_nrt, "Enable non-realtime processing mode");
+    chain_cmd->add_option("--bpm", chain_bpm, "Set transport BPM");
+    chain_cmd->add_option("--bit-depth", chain_bit_depth, "Output bit depth (16, 24, or 32)");
+    chain_cmd->add_option("-t,--tail", chain_tail, "Tail length in seconds (default: 2.0)");
+
+    chain_cmd->callback([&]() {
+        for (auto& path : chain_plugins) {
+            path = resolve_plugin_arg(path);
+            if (path.empty()) std::exit(1);
+        }
+        std::exit(cmd_chain(chain_plugins, chain_input, chain_output, chain_midi,
+                            sample_rate, block_size, chain_nrt, chain_bpm,
+                            chain_bit_depth, chain_tail, chain_mix));
+    });
+
+    // bus: parallel branches summed; commas chain plugins within a branch
+    std::vector<std::string> bus_branches;
+    std::string bus_input, bus_output, bus_midi;
+    std::vector<std::string> bus_gain;
+    double bus_bpm = 0.0;
+    double bus_tail = 2.0;
+    int bus_bit_depth = 24;
+    bool bus_nrt = false;
+    auto* bus_cmd = app.add_subcommand(
+        "bus", "Split input across parallel branches and sum them");
+    bus_cmd->add_option("branches", bus_branches,
+                        "One branch per argument; commas chain plugins in series")
+        ->required();
+    bus_cmd->add_option("-i,--input", bus_input, "Input audio file");
+    bus_cmd->add_option("-m,--midi-input", bus_midi, "Input MIDI file");
+    bus_cmd->add_option("-o,--output", bus_output, "Output audio file")->required();
+    bus_cmd->add_option("--gain", bus_gain, "Gain for one branch: \"INDEX:VALUE\" (repeatable)");
+    bus_cmd->add_flag("--non-realtime", bus_nrt, "Enable non-realtime processing mode");
+    bus_cmd->add_option("--bpm", bus_bpm, "Set transport BPM");
+    bus_cmd->add_option("--bit-depth", bus_bit_depth, "Output bit depth (16, 24, or 32)");
+    bus_cmd->add_option("-t,--tail", bus_tail, "Tail length in seconds (default: 2.0)");
+
+    bus_cmd->callback([&]() {
+        // A branch is a comma-separated list, so resolve each element and
+        // rebuild the branch string.
+        for (auto& branch : bus_branches) {
+            std::stringstream parts(branch);
+            std::string one, rebuilt;
+            while (std::getline(parts, one, ',')) {
+                while (!one.empty() && one.front() == ' ') one.erase(one.begin());
+                if (one.empty()) continue;
+                const std::string got = resolve_plugin_arg(one);
+                if (got.empty()) std::exit(1);
+                if (!rebuilt.empty()) rebuilt += ',';
+                rebuilt += got;
+            }
+            branch = rebuilt;
+        }
+        std::exit(cmd_bus(bus_branches, bus_input, bus_output, bus_midi,
+                          sample_rate, block_size, bus_nrt, bus_bpm,
+                          bus_bit_depth, bus_tail, bus_gain));
+    });
+
     auto* morph_cmd = app.add_subcommand(
         "morph", "Interpolate between two parameter snapshots (A/B morph)");
     std::string morph_plugin;
@@ -2186,6 +2886,8 @@ int main(int argc, char** argv) {
     morph_cmd->add_flag("-j,--json", morph_json, "Output as JSON");
 
     morph_cmd->callback([&]() {
+        morph_plugin = resolve_plugin_arg(morph_plugin);
+        if (morph_plugin.empty()) std::exit(1);
         std::exit(cmd_morph(morph_plugin, sample_rate, block_size,
                             morph_a_program, morph_b_program,
                             morph_a_state, morph_b_state,
@@ -2243,6 +2945,8 @@ int main(int argc, char** argv) {
     play_cmd->add_option("--param", play_params, "Set parameter: \"Name:value\" (repeatable)");
 
     play_cmd->callback([&]() {
+        play_plugin = resolve_plugin_arg(play_plugin);
+        if (play_plugin.empty()) std::exit(1);
         std::exit(cmd_play(play_plugin, sample_rate, block_size,
                            play_midi, play_virtual_midi, play_virtual_midi_out,
                            play_playback_device, play_capture_device, play_capture,
@@ -2259,11 +2963,20 @@ int main(int argc, char** argv) {
     int resample_bit_depth = 24;
     bool resample_overwrite = false;
 
+    // Both argument shapes are accepted so a command line is portable
+    // between the two binaries: minihost_c takes `resample IN OUT --rate N`,
+    // this one historically took `resample IN -o OUT -r N`, and a script
+    // written for one failed against the other.
+    std::string resample_output_pos;
     resample_cmd->add_option("input", resample_input, "Input audio file")
         ->required();
-    resample_cmd->add_option("-o,--output", resample_output, "Output audio file")
-        ->required();
-    resample_cmd->add_option("-r,--target-rate", resample_target_rate, "Target sample rate (Hz)")
+    // Named "output_path" rather than "output": CLI11 rejects a positional
+    // whose name collides with the long form of an option (--output).
+    resample_cmd->add_option("output_path", resample_output_pos,
+                             "Output audio file (or use -o)");
+    resample_cmd->add_option("-o,--output", resample_output, "Output audio file");
+    resample_cmd->add_option("-r,--target-rate,--rate", resample_target_rate,
+                             "Target sample rate (Hz)")
         ->required();
     resample_cmd->add_option("--bit-depth", resample_bit_depth, "Output bit depth (16, 24, or 32)")
         ->default_val(24)
@@ -2271,6 +2984,13 @@ int main(int argc, char** argv) {
     resample_cmd->add_flag("-y,--overwrite", resample_overwrite, "Overwrite output if it exists");
 
     resample_cmd->callback([&]() {
+        if (resample_output.empty()) resample_output = resample_output_pos;
+        if (resample_output.empty()) {
+            std::fprintf(stderr,
+                         "Error: an output file is required "
+                         "(second positional argument, or -o)\n");
+            std::exit(1);
+        }
         std::exit(cmd_resample(resample_input, resample_output,
                                resample_target_rate, resample_bit_depth,
                                resample_overwrite));

@@ -243,3 +243,181 @@ minihost resample input.wav -o output.wav -r 96000 -y
 | `-r, --target-rate HZ` | Target sample rate (required) |
 | `--bit-depth {16,24,32}` | Output bit depth (default: 24) |
 | `-y, --overwrite` | Overwrite output if it exists |
+
+---
+
+## Native CLI binaries
+
+The `minihost` command documented above is the Python one. The project also ships two
+native binaries, `minihost_c` (pure C) and `minihost_cpp` (C++), built from
+`projects/minihost_c` and `projects/minihost_cpp` and published in the `cli` release
+archive. They are independent implementations over the same C API and are meant to be
+interchangeable; `tests/test_cli_conformance.py` runs them against each other and fails if
+they diverge.
+
+They cover the single-plugin commands (`probe`, `scan`, `info`, `params`, `get-param`,
+`set-param`, `presets`, `devices`, `midi`, `play`, `load-preset`, `save-state`,
+`load-state`, `process`, `morph`, `resample`) plus the two routing commands below. Run
+either binary with no arguments for its full option list.
+
+### Naming plugins
+
+Anywhere a command takes a plugin you can give a **path** or a **name from the scan
+cache**, matched without regard to case:
+
+```bash
+minihost_c scan                     # index the plugins installed on this machine
+minihost_c probe dexed              # by name, any case
+minihost_c probe "pro-q"            # unique substring -> FabFilter Pro-Q 4
+minihost_c chain dexed gigaverb -m song.mid -o out.wav
+```
+
+An existing path always wins, so anything that worked before keeps working. Otherwise the
+whole name must match, ignoring case. Substring matching is opt-in via `--fuzzy`, because
+it is rarely decisive on a real collection -- on a machine with 343 plugins installed,
+`reverb` matches 5, `delay` 9 and `filter` 31, so it mostly buys an ambiguity error:
+
+```bash
+minihost_c --fuzzy probe "pro-q 3"     # substring, when you want it
+```
+
+The same plugin is often installed in two formats under one name (16 of those 343 were),
+which would make even an exact name ambiguous. When every match is one name differing only
+by format, one is chosen rather than refused: VST3 in preference to AudioUnit, or whatever
+`--format` asks for.
+
+```bash
+minihost_c --format au probe "FabFilter Pro-Q 4"    # pin the format
+```
+
+Both failure modes are explicit:
+
+```
+$ minihost_c probe nosuch
+Error: no plugin named 'nosuch' in the scan cache (~/Library/Caches/minihost/plugins.json)
+       run 'scan' first, or pass a path, or --fuzzy to match part of a name
+
+$ minihost_c --fuzzy probe pro-q
+Error: 'pro-q' matches 3 plugins:
+       /Library/Audio/Plug-Ins/Components/FabFilter Pro-Q 3.component
+       /Library/Audio/Plug-Ins/Components/FabFilter Pro-Q 4.component
+       /Library/Audio/Plug-Ins/VST3/FabFilter Pro-Q 4.vst3
+       name it more precisely, pass a path, or pick a format with --format
+```
+
+Plugins that failed to probe are never offered by name -- one that will not load cannot be
+loaded by name either.
+
+### `scan` -- build the index
+
+```bash
+minihost_c scan                     # this platform's plugin locations
+minihost_c scan /path/to/plugins    # or just this directory
+minihost_c scan -j                  # JSON on stdout
+```
+
+With no argument, `scan` walks the canonical locations for the platform:
+
+| Platform | Directories |
+|----------|-------------|
+| macOS | `/Library/Audio/Plug-Ins/{VST3,Components}` and the same two under `~/Library` |
+| Windows | `C:\Program Files\Common Files\VST3`, and the x86 equivalent |
+| Linux | `/usr/lib/vst3`, `/usr/local/lib/vst3`, `~/.vst3` |
+
+Directories that do not exist are skipped, and the ones being scanned are printed.
+
+Scanning **probes each plugin, which means loading it**, so a first pass over a large
+collection takes minutes. Results are cached with an mtime + size fingerprint, so a repeat
+scan re-probes only what changed, and the cache is written as the scan proceeds -- a scan
+that dies part way keeps what it had, and re-running resumes. The cache is the same file
+the Python CLI's `minihost cache` commands manage
+(`~/Library/Caches/minihost/plugins.json` on macOS, overridable with
+`MINIHOST_CACHE_DIR`), so a scan from either side serves the other.
+
+The Python `minihost scan` supervises the same way and takes the same `--in-process`
+flag, so either front-end can be pointed at an unfamiliar plugin directory.
+
+Each plugin is probed in a child process that the scan is willing to lose. That matters
+because probing means loading, and an installed collection can be relied on to hold a
+plugin that spins forever or corrupts its heap on load -- five of ~350 here do. In process
+the first of those ends the scan; supervised, it costs one entry:
+
+| status | meaning |
+|--------|---------|
+| `ok` | probed, and usable by name |
+| `error` | probed and declined the file -- not a plugin, or an unreadable one |
+| `timeout` | did not finish within the deadline (60 s, or `MINIHOST_SCAN_TIMEOUT_MS`) |
+| `crash` | the child died before answering |
+
+All four are recorded with the same file fingerprint, so a re-scan skips the bad plugins
+rather than paying for them again. `--in-process` probes in the scanning process instead,
+which is faster by the cost of one process launch per plugin and is how it worked before.
+
+!!! note "Probing in a child is also more reliable, not just safer"
+
+    The worker never starts the JUCE message thread, so it probes on its own main thread.
+    Several AudioUnits that hang or crash when probed on our message thread --
+    `AppleAES3Audio` among them -- probe perfectly there. A full scan of 333 AudioUnits
+    that stopped at entry 66 in process now completes: 331 ok, 2 that are not plugins.
+
+    The durable fix is scanning out of process, as the desktop app does
+    (`minihost_desktop --scan-plugins`); the CLI does not yet.
+
+### `process` -- one plugin
+
+```bash
+# audio in, audio out
+minihost_c process Plugin.vst3 -i input.wav -o output.wav --tail 3
+
+# MIDI in: an instrument needs no audio input
+minihost_c process Synth.vst3 -m song.mid -o output.wav --tail 2
+```
+
+`-m` renders a MIDI file through the plugin. It works in both binaries as of 0.7.0; before
+that the C binary parsed the flag and refused it.
+
+### `chain` -- plugins in series
+
+```bash
+minihost_c chain EQ.vst3 Reverb.vst3 -i input.wav -o output.wav --tail 3
+
+# a MIDI effect ahead of an instrument
+minihost_c chain Arpeggiator.component Synth.vst3 -m song.mid -o output.wav
+```
+
+Plugins are given in signal order. MIDI enters the first plugin that accepts it and is
+carried onward by any plugin that produces MIDI, so a MIDI effect drives the instrument
+behind it -- see [MIDI Routing](midi_routing.md) for the rules, including why MIDI effects
+have to come first. `--mix INDEX:VALUE` sets one plugin's dry/wet (repeatable).
+
+### `bus` -- branches in parallel, summed
+
+```bash
+# layer two instruments from one MIDI part
+minihost_c bus SynthA.vst3 SynthB.vst3 -m song.mid -o output.wav
+
+# a branch may itself be a chain: commas run plugins in series
+minihost_c bus Synth.vst3 "Chorder.component,Synth.vst3" -m song.mid -o out.wav --gain 1:0.7
+```
+
+Each argument is one branch and the same MIDI is fanned to all of them. `--gain
+INDEX:VALUE` sets a branch's gain (repeatable); `0.0` mutes it. Instrument branches carry
+no audio input, which is why a bus of instruments is built zero-width.
+
+### Options shared by the rendering commands
+
+| Option | Description |
+|--------|-------------|
+| `-i, --input FILE` | Input audio file |
+| `-m, --midi FILE` | Input MIDI file |
+| `-o, --output FILE` | Output audio file (required) |
+| `-t, --tail SECONDS` | Extra time rendered past the input, for delay and reverb tails |
+| `--bpm BPM` | Transport tempo reported to the plugins |
+| `--non-realtime` | Put the plugins in offline mode |
+| `--bit-depth {16,24,32}` | Output bit depth |
+
+`minihost_cpp` takes the same short options; its long forms differ in places (`-m` is
+`--midi-input` rather than `--midi`), since the two binaries use different argument
+parsers. Where the shapes had drifted apart they have been brought back together --
+`resample` now accepts both `resample IN OUT --rate N` and `resample IN -o OUT -r N` in
+either binary.

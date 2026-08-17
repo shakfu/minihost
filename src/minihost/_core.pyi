@@ -587,6 +587,16 @@ MH_CHANGE_NON_PARAM_STATE: int
 MH_PRECISION_SINGLE: int
 MH_PRECISION_DOUBLE: int
 
+def morph_lerp(a: list[float], b: list[float], t: float) -> list[float]:
+    """Interpolate two snapshots at one blend amount, clamped to [0, 1].
+
+    Backs `minihost.morph.lerp` for scalar `t`; the arithmetic lives in
+    the C library so it is not written out twice.
+    """
+
+def morph_lerp_per_param(a: list[float], b: list[float], t: list[float]) -> list[float]:
+    """Interpolate two snapshots with one blend amount per parameter."""
+
 # Default MIDI-output capacity for the process_* entry points.
 MIDI_OUT_CAPACITY: int
 

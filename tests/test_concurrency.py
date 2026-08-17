@@ -26,6 +26,7 @@ Note: set_state and set_program are NOT safe vs. concurrent process
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 
@@ -175,14 +176,34 @@ def test_process_releases_the_gil():
     reasons that have nothing to do with the GIL.
 
     Instead, spin a counter in a background thread and sample it either side of
-    a single long process() call. If the GIL is held for the duration, the
-    counter cannot advance at all. Measured: 0 before the fix, ~250k after,
-    for both a self-serializing and a well-behaved plugin.
+    a process() call. If the GIL is held for the duration, the counter cannot
+    advance at all. Measured: 0 before the fix, ~250k after, for both a
+    self-serializing and a well-behaved plugin.
+
+    Sampled over several calls rather than one, because the two outcomes are
+    not symmetric. A held GIL is deterministic: the spinner cannot run during
+    *any* call, so every sample reads zero. A released GIL only gives the
+    spinner an opportunity, and whether the OS takes it inside one call is
+    luck -- 65536 frames through the default test plugin is about 0.3 ms of
+    real work, shorter than Python's default 5 ms switch interval, so a single
+    sample on a loaded machine can read zero with the GIL released perfectly.
+    That flakiness was observed. Taking the best of several samples keeps the
+    discrimination (all-zero versus any-advance) and drops the luck; the switch
+    interval is shortened for the measurement so each call offers the spinner
+    several scheduling points.
     """
     import minihost
 
     frames = 65536
     plugin = minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=frames)
+    # A plugin may cap the block size below what was asked for; processing
+    # more frames than it accepts would make the call a no-op and measure
+    # nothing at all.
+    frames = min(frames, plugin.max_block_size)
+    trials = 20
+    best = 0
+    per_call_ms: list[float] = []
+    original_interval = sys.getswitchinterval()
     try:
         buf_in = minihost.AudioBuffer(max(plugin.num_input_channels, 1), frames)
         buf_out = minihost.AudioBuffer(max(plugin.num_output_channels, 1), frames)
@@ -196,27 +217,33 @@ def test_process_releases_the_gil():
             while not stop:
                 counter += 1
 
+        sys.setswitchinterval(1e-4)
         spinner = threading.Thread(target=spin, daemon=True)
         spinner.start()
         try:
             time.sleep(0.1)  # let the spinner get going
-            before = counter
-            started = time.perf_counter()
-            plugin.process(buf_in, buf_out)
-            elapsed = time.perf_counter() - started
-            during = counter - before
+            for _ in range(trials):
+                before = counter
+                started = time.perf_counter()
+                plugin.process(buf_in, buf_out)
+                per_call_ms.append((time.perf_counter() - started) * 1000.0)
+                best = max(best, counter - before)
+                if best > 10:
+                    break
         finally:
             stop = True
             spinner.join(timeout=5.0)
     finally:
+        sys.setswitchinterval(original_interval)
         plugin.close()
 
     # Deliberately no "too fast to measure" guard: holding the GIL makes the
     # call *faster* (the spinner cannot compete for CPU), so such a guard would
     # skip exactly the regression this test exists to catch. The discrimination
-    # is 0 vs ~250k, so a small threshold is ample.
-    assert during > 10, (
-        f"a background thread advanced its counter only {during} times during a "
-        f"{elapsed * 1000:.1f} ms process() call -- the GIL looks like it is "
-        f"being held across the native call"
+    # is 0 vs hundreds of thousands, so a small threshold is ample.
+    assert best > 10, (
+        f"a background thread never advanced its counter during {len(per_call_ms)} "
+        f"process() calls of {frames} frames "
+        f"(best {best}, calls averaged {sum(per_call_ms) / len(per_call_ms):.3f} ms) "
+        f"-- the GIL looks like it is being held across the native call"
     )

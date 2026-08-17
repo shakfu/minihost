@@ -283,6 +283,171 @@ The general DAG executor (Python `PluginGraph`) lives in `minihost_graph_v2.h` a
 
 ---
 
+## Plugin Discovery and the Scan Cache (minihost.h)
+
+| Function | Description |
+|----------|-------------|
+| `mh_get_default_plugin_dir` | Canonical plugin directory for this platform, by index |
+| `mh_plugin_cache_path` | Absolute path of the shared scan cache |
+| `mh_plugin_cache_scan` | Scan directories (or the canonical ones) and write the cache |
+| `mh_plugin_cache_scan_supervised` | The same, probing each plugin in a disposable child process |
+| `mh_plugin_scan_worker_main` | Answer the worker flag; call first thing in `main` |
+| `mh_plugin_cache_lookup` | Resolve a plugin name to a path, ignoring case |
+| `mh_plugin_cache_match` | Nth match for a name, for reporting an ambiguity |
+
+Both take a `format` preference (`"vst3"`, `"au"`/`"audiounit"`, or `NULL`) and an
+`allow_substring` flag.
+
+`mh_get_default_plugin_dir` enumerates until it returns 0, and skips
+directories that do not exist, so a caller sees what is actually installed:
+
+```c
+char dir[1024];
+for (int i = 0; mh_get_default_plugin_dir(i, dir, sizeof(dir)); i++)
+    printf("%s\n", dir);
+```
+
+| Platform | Directories |
+|----------|-------------|
+| macOS | `/Library/Audio/Plug-Ins/{VST3,Components}` and the same two under `~/Library` |
+| Windows | `C:\Program Files\Common Files\VST3`, and the x86 equivalent |
+| Linux | `/usr/lib/vst3`, `/usr/local/lib/vst3`, `~/.vst3` |
+
+Scanning probes each plugin, which means loading it, so a first full scan of
+a large collection takes minutes. The result is cached and keyed by path with
+an mtime + size fingerprint, so a repeat scan re-probes only what changed;
+pass `refresh = 1` to force. A plugin that fails to probe is remembered as an
+error rather than retried on every scan. The cache is written as the scan
+proceeds, so a scan that is interrupted keeps what it had and a re-run resumes.
+
+Probing is dispatched to the message thread, since instantiating an AudioUnit
+is thread-affine on macOS; callers need do nothing.
+
+`mh_plugin_cache_scan` probes in the calling process, so a plugin that hangs
+or crashes on load ends the scan. `mh_plugin_cache_scan_supervised` gives each
+plugin its own child process and a deadline instead:
+
+```c
+char err[512] = {0};
+int n = mh_plugin_cache_scan_supervised(NULL, 0, /*refresh=*/0,
+                                        NULL, 0,      /* worker: this binary */
+                                        /*timeout_ms=*/0,   /* 0 -> 60000 */
+                                        NULL, NULL, err, sizeof(err));
+```
+
+Passing `NULL` for the worker spawns this process's own executable, which
+works when the program answers the worker flag first thing in `main`:
+
+```c
+int main(int argc, char** argv) {
+    if (mh_plugin_scan_worker_main(argc, argv)) return 0;   /* was a worker */
+    ...
+}
+```
+
+An embedder whose executable is not ours -- a DAW, or Python -- passes its own
+worker command instead (`{"python3", "-m", "yourpkg.worker"}`), implementing
+the protocol documented in the header: one JSON object on stdout between
+`MH_SCAN_WORKER_BEGIN` and `MH_SCAN_WORKER_END`. The markers exist because
+plugins print to stdout while loading, so the answer has to be findable inside
+that noise. `MINIHOST_SCAN_WORKER` overrides the command, and
+`MINIHOST_SCAN_TIMEOUT_MS` the deadline.
+
+Cache entries gain two outcomes only the supervised path can report --
+`timeout` and `crash` -- both fingerprinted like any other entry, so a re-scan
+skips those plugins rather than paying for them again.
+
+```c
+char err[512] = {0};
+int cached = mh_plugin_cache_scan(NULL, 0, /*refresh=*/0, NULL, NULL,
+                                  err, sizeof(err));   /* NULL: canonical dirs */
+if (cached < 0) fprintf(stderr, "%s\n", err);
+```
+
+Name lookup ignores case and matches the whole name; pass `allow_substring = 1`
+to match part of one, which on a real collection is usually ambiguous. Entries
+that failed to probe are never offered. When every match is the same name in
+more than one format -- a common way to install a plugin -- one is chosen
+instead of reporting an ambiguity: the requested `format` if given, else VST3.
+The return value distinguishes the three outcomes:
+
+```c
+char path[1024];
+int n = mh_plugin_cache_lookup("dexed", NULL, /*allow_substring=*/0,
+                               path, sizeof(path));
+if (n == 1) {
+    /* unique match: path is filled in */
+} else if (n == 0) {
+    /* nothing matched -- scan first, or use a path */
+} else {
+    /* ambiguous: n candidates, path holds the first */
+    char one[1024];
+    for (int i = 0; mh_plugin_cache_match("dexed", NULL, 0, i,
+                                          one, sizeof(one)); i++)
+        fprintf(stderr, "  %s\n", one);
+}
+```
+
+The cache file and its JSON schema are shared with the Python CLI
+(`minihost.plugincache`), so a scan from either front-end serves the other.
+Location, honouring `MINIHOST_CACHE_DIR`:
+
+| Platform | Cache file |
+|----------|------------|
+| macOS | `~/Library/Caches/minihost/plugins.json` |
+| Windows | `%LOCALAPPDATA%/minihost/Cache/plugins.json` |
+| other | `$XDG_CACHE_HOME/minihost/plugins.json` (or `~/.cache/...`) |
+
+Added in C ABI 2.7.0.
+
+---
+
+## MIDI File Reading (minihost.h)
+
+| Function | Description |
+|----------|-------------|
+| `mh_midi_file_load` | Read a standard MIDI file into one time-ordered `MH_MidiEvent` array |
+| `mh_midi_file_free` | Release an array returned by `mh_midi_file_load` |
+
+Tracks are merged, the file's tempo map is applied, and meta events are
+dropped (they have no `MH_MidiEvent` form). `sample_offset` is absolute --
+measured in samples from the start of the file at the rate you pass in --
+so rebase it per block before handing events to a plugin:
+
+```c
+MH_MidiEvent* events = NULL;
+int count = 0;
+double duration = 0.0;
+char err[512] = {0};
+
+if (!mh_midi_file_load("song.mid", 48000.0, &events, &count, &duration,
+                       err, sizeof(err))) {
+    fprintf(stderr, "%s\n", err);
+    return 1;
+}
+
+int cursor = 0;
+for (int start = 0; start < total_frames; start += block) {
+    int end = start + block;
+    MH_MidiEvent block_midi[256];
+    int n = 0;
+    while (cursor < count && events[cursor].sample_offset < end && n < 256) {
+        block_midi[n] = events[cursor];
+        block_midi[n].sample_offset -= start;   /* rebase to this block */
+        n++;
+        cursor++;
+    }
+    mh_process_midi(p, inputs, outputs, block, block_midi, n);
+}
+
+mh_midi_file_free(events);
+```
+
+An empty file succeeds with `count == 0` and a NULL array. Added in C ABI
+2.6.0; before that, reading a MIDI file was possible only from Python.
+
+---
+
 ## MIDI Functions (minihost_midi.h)
 
 ### Port Enumeration

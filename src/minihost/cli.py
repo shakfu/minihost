@@ -83,6 +83,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
             results = plugincache.scan(
                 args.directory,
                 refresh=args.refresh,
+                supervised=not args.in_process,
                 on_progress=None if args.json else _progress,
             )
     except RuntimeError as e:
@@ -2076,6 +2077,11 @@ Examples:
         "--refresh",
         action="store_true",
         help="Re-probe every plugin, ignoring cached entries",
+    )
+    scan_p.add_argument(
+        "--in-process",
+        action="store_true",
+        help="Probe in this process instead of one child per plugin",
     )
     scan_p.add_argument(
         "--no-cache",

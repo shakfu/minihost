@@ -24,8 +24,11 @@
 #endif
 #include <juce_events/juce_events.h>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <functional>
 #include <future>
@@ -1176,11 +1179,11 @@ static void initFormatManager(AudioPluginFormatManager& fm)
 }
 
 // Internal probe using an existing format manager (avoids recreating one per call).
-static int probeWithFm(AudioPluginFormatManager& fm,
-                       const char* plugin_path,
-                       MH_PluginDesc* out_desc,
-                       char* err_buf,
-                       size_t err_buf_size)
+static int probeOnThisThread(AudioPluginFormatManager& fm,
+                             const char* plugin_path,
+                             MH_PluginDesc* out_desc,
+                             char* err_buf,
+                             size_t err_buf_size)
 {
     if (!plugin_path || plugin_path[0] == '\0')
     {
@@ -1248,6 +1251,26 @@ static int probeWithFm(AudioPluginFormatManager& fm,
     out_desc->num_outputs = desc.numOutputChannels;
 
     return 1;
+}
+
+// Probing is thread-affine on macOS: AudioUnit instantiation, which is what
+// findAllTypesForFile does to read a description, dispatches to the message
+// thread and waits. Our message thread services its own task queue and does
+// not pump JUCE's dispatch loop, so a probe issued from any other thread waits
+// on a dispatch nothing will run -- a hang, not a slow path. Going through
+// runOnMsg puts the probe on the message thread, where the dispatch is inline.
+// Runs inline (as it always did) when no message thread is enabled, and when
+// the caller is already on it.
+static int probeWithFm(AudioPluginFormatManager& fm,
+                       const char* plugin_path,
+                       MH_PluginDesc* out_desc,
+                       char* err_buf,
+                       size_t err_buf_size)
+{
+    return runOnMsg([&]() -> int
+    {
+        return probeOnThisThread(fm, plugin_path, out_desc, err_buf, err_buf_size);
+    });
 }
 
 extern "C" int mh_probe(const char* plugin_path,
@@ -2312,3 +2335,745 @@ extern "C" int mh_session_scan_directory(MH_Session* session,
     return scanDirectoryWithFm(session->fm, directory_path, callback, user_data);
 }
 
+
+// ---------------------------------------------------------------------------
+// Standard MIDI file reading
+// ---------------------------------------------------------------------------
+
+extern "C" int mh_midi_file_load(const char* path,
+                                  double sample_rate,
+                                  MH_MidiEvent** out_events,
+                                  int* out_count,
+                                  double* out_duration_seconds,
+                                  char* err_buf,
+                                  size_t err_buf_size)
+{
+    auto fail = [&](const char* msg) {
+        if (err_buf && err_buf_size) std::snprintf(err_buf, err_buf_size, "%s", msg);
+        return 0;
+    };
+
+    if (out_events) *out_events = nullptr;
+    if (out_count) *out_count = 0;
+    if (out_duration_seconds) *out_duration_seconds = 0.0;
+
+    if (path == nullptr || out_events == nullptr || out_count == nullptr)
+        return fail("path, out_events and out_count are required");
+    if (!(sample_rate > 0.0))
+        return fail("sample_rate must be positive");
+
+    juce::File file(juce::String::fromUTF8(path));
+    if (!file.existsAsFile())
+        return fail("MIDI file not found");
+
+    juce::FileInputStream stream(file);
+    if (!stream.openedOk())
+        return fail("could not open MIDI file");
+
+    juce::MidiFile midi;
+    if (!midi.readFrom(stream))
+        return fail("could not parse MIDI file");
+
+    // Convert ticks to seconds using the file's own tempo map, then merge
+    // every track into one stream. Meta events carry no MH_MidiEvent
+    // representation and are dropped by the isMetaEvent check below.
+    midi.convertTimestampTicksToSeconds();
+
+    juce::MidiMessageSequence merged;
+    for (int track = 0; track < midi.getNumTracks(); ++track)
+        merged.addSequence(*midi.getTrack(track), 0.0);
+    merged.updateMatchedPairs();
+    merged.sort();
+
+    std::vector<MH_MidiEvent> events;
+    events.reserve(static_cast<size_t>(merged.getNumEvents()));
+    double last_seconds = 0.0;
+
+    for (int i = 0; i < merged.getNumEvents(); ++i)
+    {
+        const auto& message = merged.getEventPointer(i)->message;
+        if (message.isMetaEvent())
+            continue;
+
+        const double seconds = message.getTimeStamp();
+        if (seconds > last_seconds) last_seconds = seconds;
+
+        const auto* data = message.getRawData();
+        const int size = message.getRawDataSize();
+        if (size < 1) continue;
+
+        MH_MidiEvent ev;
+        ev.sample_offset = static_cast<int>(seconds * sample_rate);
+        ev.status = data[0];
+        ev.data1 = size > 1 ? data[1] : 0;
+        ev.data2 = size > 2 ? data[2] : 0;
+        events.push_back(ev);
+    }
+
+    if (out_duration_seconds) *out_duration_seconds = last_seconds;
+
+    if (events.empty())
+        return 1;   // parsed fine, nothing playable in it
+
+    auto* buffer = static_cast<MH_MidiEvent*>(
+        std::malloc(sizeof(MH_MidiEvent) * events.size()));
+    if (buffer == nullptr)
+        return fail("out of memory");
+
+    std::memcpy(buffer, events.data(), sizeof(MH_MidiEvent) * events.size());
+    *out_events = buffer;
+    *out_count = static_cast<int>(events.size());
+    return 1;
+}
+
+extern "C" void mh_midi_file_free(MH_MidiEvent* events)
+{
+    std::free(events);
+}
+
+// ---------------------------------------------------------------------------
+// Plugin locations and the shared scan cache
+// ---------------------------------------------------------------------------
+//
+// The on-disk format is the one minihost.plugincache (Python) writes, so a
+// scan from either front-end serves the other:
+//
+//   { "schema": 1,
+//     "entries": { "<abs path>": { "status": "ok" | "error",
+//                                  "desc": { name, vendor, format, ... },
+//                                  "fp":   { "mtime": <double>, "size": <int> },
+//                                  "error": "<message>" } } }
+
+static constexpr int kPluginCacheSchema = 1;
+
+// Canonical install locations, most specific first. Missing ones are
+// skipped by the enumerator, so callers see only what exists here.
+static juce::StringArray defaultPluginDirs()
+{
+    juce::StringArray dirs;
+    const auto home = juce::File::getSpecialLocation(juce::File::userHomeDirectory);
+
+   #if JUCE_MAC
+    dirs.add("/Library/Audio/Plug-Ins/VST3");
+    dirs.add("/Library/Audio/Plug-Ins/Components");
+    dirs.add(home.getChildFile("Library/Audio/Plug-Ins/VST3").getFullPathName());
+    dirs.add(home.getChildFile("Library/Audio/Plug-Ins/Components").getFullPathName());
+   #elif JUCE_WINDOWS
+    dirs.add("C:\\Program Files\\Common Files\\VST3");
+    dirs.add("C:\\Program Files (x86)\\Common Files\\VST3");
+   #else
+    dirs.add("/usr/lib/vst3");
+    dirs.add("/usr/local/lib/vst3");
+    dirs.add(home.getChildFile(".vst3").getFullPathName());
+   #endif
+
+    juce::StringArray existing;
+    for (const auto& d : dirs)
+        if (juce::File(d).isDirectory())
+            existing.add(d);
+    return existing;
+}
+
+extern "C" int mh_get_default_plugin_dir(int index, char* buf, size_t buf_size)
+{
+    if (buf == nullptr || buf_size == 0 || index < 0) return 0;
+    const auto dirs = defaultPluginDirs();
+    if (index >= dirs.size()) return 0;
+    std::snprintf(buf, buf_size, "%s", dirs[index].toRawUTF8());
+    return 1;
+}
+
+static juce::File pluginCacheFile()
+{
+    if (const char* env = std::getenv("MINIHOST_CACHE_DIR"))
+        if (env[0] != '\0')
+            return juce::File(juce::String::fromUTF8(env)).getChildFile("plugins.json");
+
+    const auto home = juce::File::getSpecialLocation(juce::File::userHomeDirectory);
+   #if JUCE_MAC
+    return home.getChildFile("Library/Caches/minihost/plugins.json");
+   #elif JUCE_WINDOWS
+    const char* local = std::getenv("LOCALAPPDATA");
+    const juce::File base = (local != nullptr && local[0] != '\0')
+        ? juce::File(juce::String::fromUTF8(local))
+        : home.getChildFile("AppData/Local");
+    return base.getChildFile("minihost/Cache/plugins.json");
+   #else
+    const char* xdg = std::getenv("XDG_CACHE_HOME");
+    const juce::File base = (xdg != nullptr && xdg[0] != '\0')
+        ? juce::File(juce::String::fromUTF8(xdg))
+        : home.getChildFile(".cache");
+    return base.getChildFile("minihost/plugins.json");
+   #endif
+}
+
+extern "C" int mh_plugin_cache_path(char* buf, size_t buf_size)
+{
+    if (buf == nullptr || buf_size == 0) return 0;
+    std::snprintf(buf, buf_size, "%s", pluginCacheFile().getFullPathName().toRawUTF8());
+    return 1;
+}
+
+static juce::var loadPluginCache()
+{
+    const auto file = pluginCacheFile();
+    if (!file.existsAsFile()) return juce::var();
+    const auto doc = juce::JSON::parse(file.loadFileAsString());
+    if (!doc.isObject()) return juce::var();
+    if ((int) doc.getProperty("schema", juce::var(0)) != kPluginCacheSchema)
+        return juce::var();
+    return doc;
+}
+
+// Plugin bundles/binaries are leaves: matching one stops the descent.
+static bool isPluginPath(const juce::File& f)
+{
+    static const char* exts[] = { ".vst3", ".component", ".lv2", ".vst",
+                                  ".clap", ".dll", ".so" };
+    const auto name = f.getFileName().toLowerCase();
+    for (const char* e : exts)
+        if (name.endsWith(e)) return true;
+    return false;
+}
+
+static void discoverPlugins(const juce::File& dir, juce::StringArray& out, int depth = 0)
+{
+    if (depth > 8 || !dir.isDirectory()) return;
+    for (const auto& entry : juce::RangedDirectoryIterator(
+             dir, false, "*", juce::File::findFilesAndDirectories))
+    {
+        const auto f = entry.getFile();
+        if (isPluginPath(f))
+            out.add(f.getFullPathName());
+        else if (f.isDirectory())
+            discoverPlugins(f, out, depth + 1);
+    }
+}
+
+// What probing one plugin produced, however it was probed. The supervised
+// path adds two outcomes the in-process path cannot report, because in
+// process they are not outcomes at all -- they end the scan.
+struct ProbeOutcome
+{
+    enum class Status { ok, error, timeout, crash };
+    Status status = Status::error;
+    MH_PluginDesc desc{};
+    juce::String error;
+
+    const char* statusName() const
+    {
+        switch (status)
+        {
+            case Status::ok:      return "ok";
+            case Status::timeout: return "timeout";
+            case Status::crash:   return "crash";
+            case Status::error:   break;
+        }
+        return "error";
+    }
+};
+
+using ProbeFn = std::function<ProbeOutcome(const juce::String& path)>;
+
+static ProbeOutcome probeInThisProcess(const juce::String& path)
+{
+    ProbeOutcome out;
+    char err[512] = {0};
+    const bool ok = mh_probe(path.toRawUTF8(), &out.desc, err, sizeof(err)) != 0;
+    out.status = ok ? ProbeOutcome::Status::ok : ProbeOutcome::Status::error;
+    if (!ok) out.error = juce::String::fromUTF8(err);
+    return out;
+}
+
+// The scan itself, independent of how a plugin gets probed.
+static int scanIntoCache(const char* const* dirs, int num_dirs, int refresh,
+                         const ProbeFn& probeOne,
+                         MH_ScanCallback progress, void* user_data,
+                         char* err_buf, size_t err_buf_size)
+{
+    juce::StringArray roots;
+    if (dirs == nullptr || num_dirs <= 0)
+    {
+        roots = defaultPluginDirs();
+        if (roots.isEmpty())
+        {
+            if (err_buf && err_buf_size)
+                std::snprintf(err_buf, err_buf_size,
+                              "no plugin directories found for this platform");
+            return -1;
+        }
+    }
+    else
+    {
+        for (int i = 0; i < num_dirs; ++i)
+            if (dirs[i] != nullptr) roots.add(juce::String::fromUTF8(dirs[i]));
+    }
+
+    juce::StringArray paths;
+    for (const auto& root : roots)
+        discoverPlugins(juce::File(root), paths);
+    paths.removeDuplicates(false);
+
+    // Start from the existing cache so unchanged plugins are not re-probed,
+    // and so a scan of one directory does not discard entries from another.
+    const auto existing = loadPluginCache();
+    // Held as a var for the whole scan: juce::var takes ownership of a
+    // DynamicObject, so handing the raw pointer to each flush would let the
+    // first flush's temporary document free the map the loop is still
+    // filling. Keeping one reference here outlives every flush.
+    juce::var entries_var(new juce::DynamicObject());
+    auto* entries = entries_var.getDynamicObject();
+    if (auto* obj = existing.getDynamicObject())
+        if (const auto prev = obj->getProperty("entries"); prev.isObject())
+            for (const auto& kv : prev.getDynamicObject()->getProperties())
+                entries->setProperty(kv.name, kv.value);
+
+    // Probing loads each plugin in this process, and a plugin can take the
+    // process down -- some call exit() from a failed init or licence check.
+    // Writing the cache only at the end would lose an entire scan to one
+    // such plugin, so flush periodically: a re-run then skips everything
+    // already recorded (fingerprints match) and carries on from there.
+    auto flush = [&]() {
+        auto* doc = new juce::DynamicObject();
+        doc->setProperty("schema", kPluginCacheSchema);
+        doc->setProperty("entries", entries_var);   // shares, does not adopt
+        const auto out = pluginCacheFile();
+        out.getParentDirectory().createDirectory();
+        const auto tmp = out.getSiblingFile(out.getFileName() + ".tmp");
+        return tmp.replaceWithText(juce::JSON::toString(juce::var(doc), false) + "\n")
+            && tmp.moveFileTo(out);
+    };
+    constexpr int kFlushEvery = 16;
+
+    int cached = 0;
+    int since_flush = 0;
+    for (const auto& path : paths)
+    {
+        const juce::File file(path);
+        const double mtime = file.getLastModificationTime().toMilliseconds() / 1000.0;
+        const auto size = (juce::int64) file.getSize();
+
+        const juce::Identifier key(path);
+        bool fresh = false;
+        if (!refresh)
+        {
+            const auto prev = entries->getProperty(key);
+            if (const auto* prev_obj = prev.getDynamicObject())
+            {
+                const auto fp = prev_obj->getProperty("fp");
+                if (const auto* fp_obj = fp.getDynamicObject())
+                {
+                    const double prev_mtime = fp_obj->getProperty("mtime");
+                    const juce::int64 prev_size = (juce::int64) fp_obj->getProperty("size");
+                    fresh = prev_size == size && std::abs(prev_mtime - mtime) < 1.0;
+                }
+            }
+        }
+
+        if (!fresh)
+        {
+            const auto outcome = probeOne(path);
+            const auto& desc = outcome.desc;
+            const bool ok = outcome.status == ProbeOutcome::Status::ok;
+
+            auto* fp = new juce::DynamicObject();
+            fp->setProperty("mtime", mtime);
+            fp->setProperty("size", (juce::int64) size);
+
+            auto* d = new juce::DynamicObject();
+            d->setProperty("path", path);
+            if (ok)
+            {
+                d->setProperty("name", juce::String::fromUTF8(desc.name));
+                d->setProperty("vendor", juce::String::fromUTF8(desc.vendor));
+                d->setProperty("version", juce::String::fromUTF8(desc.version));
+                d->setProperty("format", juce::String::fromUTF8(desc.format));
+                d->setProperty("unique_id", juce::String::fromUTF8(desc.unique_id));
+                d->setProperty("num_inputs", desc.num_inputs);
+                d->setProperty("num_outputs", desc.num_outputs);
+                d->setProperty("accepts_midi", desc.accepts_midi != 0);
+                d->setProperty("produces_midi", desc.produces_midi != 0);
+            }
+
+            auto* entry = new juce::DynamicObject();
+            entry->setProperty("status", outcome.statusName());
+            entry->setProperty("desc", juce::var(d));
+            entry->setProperty("fp", juce::var(fp));
+            if (!ok) entry->setProperty("error", outcome.error);
+            entries->setProperty(key, juce::var(entry));
+
+            if (ok && progress != nullptr) progress(&desc, user_data);
+
+            if (++since_flush >= kFlushEvery)
+            {
+                flush();
+                since_flush = 0;
+            }
+        }
+        ++cached;
+    }
+
+    if (!flush())
+    {
+        if (err_buf && err_buf_size)
+            std::snprintf(err_buf, err_buf_size, "could not write %s",
+                          pluginCacheFile().getFullPathName().toRawUTF8());
+        return -1;
+    }
+    return cached;
+}
+
+extern "C" int mh_plugin_cache_scan(const char* const* dirs, int num_dirs, int refresh,
+                                     MH_ScanCallback progress, void* user_data,
+                                     char* err_buf, size_t err_buf_size)
+{
+    return scanIntoCache(dirs, num_dirs, refresh, probeInThisProcess,
+                         progress, user_data, err_buf, err_buf_size);
+}
+
+// ---------------------------------------------------------------------------
+// Supervised scanning
+// ---------------------------------------------------------------------------
+//
+// The worker writes its answer between sentinels because a plugin writes to
+// stdout too -- several print pages of their own diagnostics while loading --
+// so the payload has to be findable in the middle of that noise rather than
+// assumed to be the whole of it.
+static const char* const kProbeBegin = MH_SCAN_WORKER_BEGIN;
+static const char* const kProbeEnd   = MH_SCAN_WORKER_END;
+
+static constexpr int kDefaultProbeTimeoutMs = 60000;
+
+// Read a child's stdout to EOF, with a deadline. Reading is done on a thread
+// because the read blocks and a hung plugin produces no output at all, so
+// there is nothing to time out on in the reading itself; killing the child is
+// what ends the read (the pipe closes and the read returns 0).
+static bool readChildWithDeadline(juce::ChildProcess& proc, int timeout_ms,
+                                  juce::String& text_out)
+{
+    juce::MemoryOutputStream collected;
+    std::atomic<bool> finished{false};
+
+    std::thread reader([&]()
+    {
+        char buf[4096];
+        for (;;)
+        {
+            const int n = proc.readProcessOutput(buf, (int) sizeof(buf));
+            if (n <= 0) break;
+            collected.write(buf, (size_t) n);
+        }
+        finished.store(true);
+    });
+
+    const auto deadline = juce::Time::getMillisecondCounter()
+                          + (juce::uint32) juce::jmax(1, timeout_ms);
+    bool timed_out = false;
+    while (! finished.load())
+    {
+        if (juce::Time::getMillisecondCounter() >= deadline)
+        {
+            timed_out = true;
+            proc.kill();
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    reader.join();
+    text_out = collected.toString();
+    return ! timed_out;
+}
+
+static ProbeOutcome probeInChildProcess(const juce::StringArray& worker_prefix,
+                                        const juce::String& path,
+                                        int timeout_ms)
+{
+    ProbeOutcome out;
+
+    juce::StringArray args(worker_prefix);
+    args.add(MH_SCAN_WORKER_FLAG);
+    args.add(path);
+
+    juce::ChildProcess proc;
+    if (! proc.start(args, juce::ChildProcess::wantStdOut))
+    {
+        out.status = ProbeOutcome::Status::crash;
+        out.error = "could not start scan worker: " + worker_prefix.joinIntoString(" ");
+        return out;
+    }
+
+    juce::String text;
+    const bool completed = readChildWithDeadline(proc, timeout_ms, text);
+
+    const auto begin = text.indexOf(kProbeBegin);
+    const auto end   = text.indexOf(kProbeEnd);
+    if (begin >= 0 && end > begin)
+    {
+        const auto json = text.substring(begin + (int) std::strlen(kProbeBegin), end);
+        const auto parsed = juce::JSON::parse(json);
+        if (auto* obj = parsed.getDynamicObject())
+        {
+            if ((bool) obj->getProperty("ok"))
+            {
+                out.status = ProbeOutcome::Status::ok;
+                auto copy = [&](const char* prop, char* dest, size_t n)
+                {
+                    const auto s = obj->getProperty(prop).toString();
+                    std::snprintf(dest, n, "%s", s.toRawUTF8());
+                };
+                copy("name", out.desc.name, sizeof(out.desc.name));
+                copy("vendor", out.desc.vendor, sizeof(out.desc.vendor));
+                copy("version", out.desc.version, sizeof(out.desc.version));
+                copy("format", out.desc.format, sizeof(out.desc.format));
+                copy("unique_id", out.desc.unique_id, sizeof(out.desc.unique_id));
+                std::snprintf(out.desc.path, sizeof(out.desc.path), "%s",
+                              path.toRawUTF8());
+                out.desc.num_inputs = (int) obj->getProperty("num_inputs");
+                out.desc.num_outputs = (int) obj->getProperty("num_outputs");
+                out.desc.accepts_midi = (bool) obj->getProperty("accepts_midi") ? 1 : 0;
+                out.desc.produces_midi = (bool) obj->getProperty("produces_midi") ? 1 : 0;
+            }
+            else
+            {
+                out.status = ProbeOutcome::Status::error;
+                out.error = obj->getProperty("error").toString();
+            }
+            return out;
+        }
+    }
+
+    // No answer. Either it never finished, or it died before writing one.
+    if (! completed)
+    {
+        out.status = ProbeOutcome::Status::timeout;
+        out.error = "plugin did not finish probing within "
+                    + juce::String(timeout_ms) + " ms";
+    }
+    else
+    {
+        // The child died before answering. Its exit code is reported only
+        // when it carries information: a plugin that aborts or segfaults is
+        // killed by a signal, and JUCE reports that as 0, so printing "exit
+        // code 0" next to "crash" would just be confusing.
+        const auto code = (int) proc.getExitCode();
+        out.status = ProbeOutcome::Status::crash;
+        out.error = code != 0
+                        ? "scan worker died probing this plugin (exit code "
+                              + juce::String(code) + ")"
+                        : juce::String("scan worker died probing this plugin");
+    }
+    return out;
+}
+
+// The command to spawn per plugin, minus the flag and path.
+static juce::StringArray resolveWorkerArgv(const char* const* worker_argv,
+                                           int worker_argc)
+{
+    if (const auto* env = std::getenv("MINIHOST_SCAN_WORKER"))
+        if (env[0] != '\0')
+            return juce::StringArray::fromTokens(juce::String::fromUTF8(env),
+                                                 " ", "");
+
+    juce::StringArray args;
+    if (worker_argv != nullptr && worker_argc > 0)
+    {
+        for (int i = 0; i < worker_argc; ++i)
+            if (worker_argv[i] != nullptr)
+                args.add(juce::String::fromUTF8(worker_argv[i]));
+    }
+
+    if (args.isEmpty())
+        args.add(juce::File::getSpecialLocation(juce::File::currentExecutableFile)
+                     .getFullPathName());
+    return args;
+}
+
+extern "C" int mh_plugin_cache_scan_supervised(const char* const* dirs, int num_dirs,
+                                               int refresh,
+                                               const char* const* worker_argv,
+                                               int worker_argc, int timeout_ms,
+                                               MH_ScanCallback progress, void* user_data,
+                                               char* err_buf, size_t err_buf_size)
+{
+    const auto prefix = resolveWorkerArgv(worker_argv, worker_argc);
+    if (prefix.isEmpty())
+    {
+        if (err_buf && err_buf_size)
+            std::snprintf(err_buf, err_buf_size, "no scan worker command");
+        return -1;
+    }
+
+    int timeout = timeout_ms > 0 ? timeout_ms : kDefaultProbeTimeoutMs;
+    if (const auto* env = std::getenv("MINIHOST_SCAN_TIMEOUT_MS"))
+        if (const int parsed = std::atoi(env); parsed > 0)
+            timeout = parsed;
+    return scanIntoCache(dirs, num_dirs, refresh,
+                         [&](const juce::String& path)
+                         {
+                             return probeInChildProcess(prefix, path, timeout);
+                         },
+                         progress, user_data, err_buf, err_buf_size);
+}
+
+extern "C" int mh_plugin_scan_worker_main(int argc, char** argv)
+{
+    if (argv == nullptr) return 0;
+
+    for (int i = 1; i < argc; ++i)
+    {
+        if (argv[i] == nullptr || std::strcmp(argv[i], MH_SCAN_WORKER_FLAG) != 0)
+            continue;
+
+        const char* path = (i + 1 < argc) ? argv[i + 1] : nullptr;
+
+        MH_PluginDesc desc;
+        std::memset(&desc, 0, sizeof(desc));
+        char err[512] = {0};
+        const bool ok = path != nullptr
+                        && mh_probe(path, &desc, err, sizeof(err)) != 0;
+
+        auto* d = new juce::DynamicObject();
+        d->setProperty("ok", ok);
+        if (ok)
+        {
+            d->setProperty("name", juce::String::fromUTF8(desc.name));
+            d->setProperty("vendor", juce::String::fromUTF8(desc.vendor));
+            d->setProperty("version", juce::String::fromUTF8(desc.version));
+            d->setProperty("format", juce::String::fromUTF8(desc.format));
+            d->setProperty("unique_id", juce::String::fromUTF8(desc.unique_id));
+            d->setProperty("num_inputs", desc.num_inputs);
+            d->setProperty("num_outputs", desc.num_outputs);
+            d->setProperty("accepts_midi", desc.accepts_midi != 0);
+            d->setProperty("produces_midi", desc.produces_midi != 0);
+        }
+        else
+        {
+            d->setProperty("error", path == nullptr
+                                        ? juce::String("no plugin path given")
+                                        : juce::String::fromUTF8(err));
+        }
+
+        const auto json = juce::JSON::toString(juce::var(d), true);
+        std::printf("\n%s%s%s\n", kProbeBegin, json.toRawUTF8(), kProbeEnd);
+        std::fflush(stdout);
+        return 1;
+    }
+
+    return 0;
+}
+
+// One cached plugin considered for name resolution.
+struct CacheCandidate
+{
+    juce::String path;
+    juce::String name;     // lower case
+    juce::String format;   // lower case, as probed ("vst3", "audiounit", ...)
+};
+
+// User-supplied format spellings normalised to what mh_probe reports.
+static juce::String normaliseFormat(const juce::String& raw)
+{
+    const auto f = raw.trim().toLowerCase();
+    if (f == "au" || f == "component" || f == "audiounit") return "audiounit";
+    if (f == "vst3") return "vst3";
+    return f;
+}
+
+// Name matching: case-insensitive, whole name first; substring only when
+// the caller opts in. Entries that failed to probe are skipped -- a plugin
+// that would not probe cannot be loaded by name either.
+static juce::Array<CacheCandidate> cacheMatches(const juce::String& name,
+                                                 const juce::String& format,
+                                                 bool allow_substring)
+{
+    juce::Array<CacheCandidate> exact, partial;
+    const auto doc = loadPluginCache();
+    auto* obj = doc.getDynamicObject();
+    if (obj == nullptr) return exact;
+    const auto entries = obj->getProperty("entries");
+    auto* entry_obj = entries.getDynamicObject();
+    if (entry_obj == nullptr) return exact;
+
+    const auto needle = name.trim().toLowerCase();
+    const auto want_format = normaliseFormat(format);
+
+    for (const auto& kv : entry_obj->getProperties())
+    {
+        auto* entry = kv.value.getDynamicObject();
+        if (entry == nullptr) continue;
+        if (entry->getProperty("status").toString() != "ok") continue;
+        auto* d = entry->getProperty("desc").getDynamicObject();
+        if (d == nullptr) continue;
+
+        CacheCandidate c;
+        c.path = d->getProperty("path").toString();
+        c.name = d->getProperty("name").toString().toLowerCase();
+        c.format = d->getProperty("format").toString().toLowerCase();
+        if (c.name.isEmpty() || c.path.isEmpty()) continue;
+
+        // An explicit format filters the candidate set outright.
+        if (want_format.isNotEmpty() && c.format != want_format) continue;
+
+        if (c.name == needle) exact.add(c);
+        else if (allow_substring && c.name.contains(needle)) partial.add(c);
+    }
+
+    auto& matches = exact.isEmpty() ? partial : exact;
+
+    // The same plugin in two formats is one plugin as far as the user is
+    // concerned, so collapse rather than refuse: prefer the format asked
+    // for, else VST3, else AudioUnit.
+    if (matches.size() > 1)
+    {
+        bool same_name = true;
+        for (const auto& c : matches)
+            if (c.name != matches.getReference(0).name) { same_name = false; break; }
+
+        if (same_name)
+        {
+            const juce::String order[] = { want_format, "vst3", "audiounit" };
+            for (const auto& want : order)
+            {
+                if (want.isEmpty()) continue;
+                for (const auto& c : matches)
+                    if (c.format == want)
+                    {
+                        juce::Array<CacheCandidate> one;
+                        one.add(c);
+                        return one;
+                    }
+            }
+            juce::Array<CacheCandidate> one;
+            one.add(matches.getReference(0));
+            return one;
+        }
+    }
+    return matches;
+}
+
+extern "C" int mh_plugin_cache_lookup(const char* name, const char* format,
+                                       int allow_substring,
+                                       char* out_path, size_t out_size)
+{
+    if (name == nullptr || out_path == nullptr || out_size == 0) return 0;
+    const auto matches = cacheMatches(juce::String::fromUTF8(name),
+                                      format ? juce::String::fromUTF8(format) : juce::String(),
+                                      allow_substring != 0);
+    if (matches.isEmpty()) return 0;
+    std::snprintf(out_path, out_size, "%s", matches.getReference(0).path.toRawUTF8());
+    return matches.size();
+}
+
+extern "C" int mh_plugin_cache_match(const char* name, const char* format,
+                                      int allow_substring, int index,
+                                      char* out_path, size_t out_size)
+{
+    if (name == nullptr || out_path == nullptr || out_size == 0 || index < 0) return 0;
+    const auto matches = cacheMatches(juce::String::fromUTF8(name),
+                                      format ? juce::String::fromUTF8(format) : juce::String(),
+                                      allow_substring != 0);
+    if (index >= matches.size()) return 0;
+    std::snprintf(out_path, out_size, "%s", matches.getReference(index).path.toRawUTF8());
+    return 1;
+}

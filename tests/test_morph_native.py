@@ -112,8 +112,13 @@ def test_morph_length_mismatch_raises(plugin):
 
 
 @skip_if_no_plugin
-def test_native_matches_pure_python_module(plugin):
-    """The C-backed methods and the pure-Python module agree on the math."""
+def test_plugin_morph_matches_the_morph_module(plugin):
+    """Plugin.morph and minihost.morph.lerp agree on the math.
+
+    Both now route to the same C implementation -- morph.lerp used to
+    write the interpolation out again in Python, so this compared two
+    implementations; it now pins that the two entry points stay in step.
+    """
     from minihost import morph as pymorph
 
     a = plugin.morph_capture()
@@ -121,5 +126,35 @@ def test_native_matches_pure_python_module(plugin):
     b = [1.0 - x for x in a]
     t = 0.3
     native = plugin.morph(a, b, t)  # lerp + apply, returns snapshot
-    pure = pymorph.lerp(a, b, t)  # pure-Python lerp
-    assert native == pytest.approx(pure)
+    module = pymorph.lerp(a, b, t)
+    assert native == pytest.approx(module)
+
+
+def test_lerp_results_are_float32_exact():
+    """Snapshots come back at parameter precision, not double precision.
+
+    Parameters are float32 on both sides of the C API -- get_param hands
+    back a float, set_param takes one -- so the interpolation is done in
+    float32 and the result is exactly what the plugin will receive. It is
+    not the double-precision value a hand-written Python expression would
+    produce; the two differ around 1e-8, well under float32 resolution.
+    """
+    import struct
+
+    from minihost import morph as pymorph
+
+    def as_float32(x: float) -> float:
+        return struct.unpack("f", struct.pack("f", x))[0]
+
+    for a, b, t in (([0.1], [0.2], 0.3), ([0.7], [0.9], 1.0 / 3.0)):
+        got = pymorph.lerp(a, b, t)[0]
+        assert got == as_float32(got), "result is not representable in float32"
+        assert got == pytest.approx(a[0] + (b[0] - a[0]) * t, abs=1e-6)
+
+
+def test_lerp_accepts_empty_snapshots():
+    """A plugin with no parameters morphs to an empty snapshot, not an error."""
+    from minihost import morph as pymorph
+
+    assert pymorph.lerp([], [], 0.5) == []
+    assert pymorph.lerp([], [], []) == []

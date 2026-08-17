@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, List, Sequence, Union
 
+from minihost import _core
+
 if TYPE_CHECKING:
     from minihost._core import Plugin
 
@@ -68,19 +70,32 @@ def lerp(a: Sequence[float], b: Sequence[float], t: Blend) -> Snapshot:
     ``a``, ``t = 1`` returns ``b``. Results are clamped to ``[0, 1]`` so that
     extrapolated ``t`` (outside ``[0, 1]``) still yields valid normalized
     values. Raises ``ValueError`` on length mismatch.
+
+    Results come back at parameter precision (float32), which is what a
+    plugin holds: ``get_param`` returns a float and ``set_param`` takes
+    one. Snapshots from :func:`capture` therefore round-trip exactly, but
+    a hand-written double literal such as ``0.2`` comes back as its
+    float32 neighbour.
+
+    The arithmetic itself lives in the C library (``mh_morph_lerp`` and
+    ``mh_morph_lerp_per_param``), which this delegates to. It used to be
+    written out again here in Python: the same interpolation and the same
+    clamping in two languages, with nothing checking that they agreed, so
+    either could have drifted unnoticed. The length checks stay in Python
+    because the messages name the offending lengths.
     """
     if len(a) != len(b):
         raise ValueError(f"snapshots differ in length ({len(a)} vs {len(b)})")
-    if isinstance(t, (int, float)):
-        tf = float(t)
-        return [_clamp01(x + (y - x) * tf) for x, y in zip(a, b)]
 
-    ts = list(t)
+    if isinstance(t, (int, float)):
+        return _core.morph_lerp([float(x) for x in a], [float(x) for x in b], float(t))
+
+    ts = [float(x) for x in t]
     if len(ts) != len(a):
         raise ValueError(
             f"per-parameter t has {len(ts)} values but snapshots have {len(a)}"
         )
-    return [_clamp01(x + (y - x) * float(ti)) for x, y, ti in zip(a, b, ts)]
+    return _core.morph_lerp_per_param([float(x) for x in a], [float(x) for x in b], ts)
 
 
 def morph(

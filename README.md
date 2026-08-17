@@ -108,6 +108,8 @@ In short: `libminihost` runs the plugin; `libminihost_audio` connects it to spea
 
 `minihost_desktop` (`projects/minihost_desktop/`) is a developer-facing GUI host built on the same libraries. It loads VST3/AU/LV2 plugins, wires them into a node graph on a canvas, opens native plugin editor windows, renders the graph to disk offline, and drives a realtime audio device with live MIDI input and a transport (BPM / loop region). Project files are JSON, schema-versioned, and round-trip with the Python loader (`minihost.load_project` / `render_project`), so a graph built in the app renders identically from the command line.
 
+Each plugin window carries the host-side controls a plugin's own editor usually leaves out: a factory-program selector, a bypass toggle (backed by the plugin's own bypass parameter where it publishes one), and `.vstpreset` load/save for interchange with other hosts. Offline renders put every plugin into non-realtime mode for the duration, so a bounce uses the plugin's offline code path rather than its realtime one.
+
 Status: functional and pre-release. Both the offline renderer and the realtime engine are built and tested. Not yet done: packaging (code signing, notarization, installers). See [docs/dev/desktop_app.md](docs/dev/desktop_app.md) for the design and [docs/dev/desktop_app_todo.md](docs/dev/desktop_app_todo.md) for per-feature status.
 
 Plugins run **in-process**, the same trust model a DAW uses: a misbehaving plugin can crash the whole app and lose unsaved canvas edits. Two mitigations bound the harm. Plugin *scanning* is out-of-process, so a plugin that crashes while being catalogued takes down only a disposable child. And the working project is **autosaved** to a sidecar every few seconds; after an unclean exit the app offers to recover it on the next launch, so a crash costs at most a few seconds of unsaved editing. Save often regardless.
@@ -424,6 +426,54 @@ minihost resample input.wav -o output.wav -r 96000 -y  # overwrite
 | `-r, --sample-rate` | Sample rate in Hz (default: 48000) |
 | `-b, --block-size` | Block size in samples (default: 512) |
 
+### Native CLI binaries
+
+Alongside the Python `minihost` command, the project ships two native binaries --
+`minihost_c` (pure C) and `minihost_cpp` (C++) -- built into `build/projects/` and
+published in the `cli` release archive. They are independent implementations over the same
+C API and are meant to be interchangeable; a conformance test runs them against each other
+and fails if they diverge. Beyond the single-plugin commands they add the routing ones:
+
+Plugins are named by path, or by name once they have been scanned -- matching ignores case
+and takes the whole name:
+
+```bash
+minihost_c scan                    # index this platform's plugin locations
+minihost_c probe dexed             # by name (whole name, any case)
+minihost_c --fuzzy probe "pro-q 3" # --fuzzy to match part of a name
+minihost_c --format au probe "FabFilter Pro-Q 4"   # pin a format
+```
+
+A plugin installed in both AU and VST3 resolves to the VST3 unless `--format` says
+otherwise. Substring matching is opt-in because it is rarely decisive on a large
+collection: with 343 plugins installed here, `reverb` matches 5 and `filter` 31.
+
+`scan` takes an optional directory to scan instead of the defaults. It probes each plugin,
+so a first pass over a large collection takes minutes; results are cached (shared with the
+Python CLI's cache), written as the scan proceeds, and only changed plugins are re-probed.
+Each plugin is probed in a child process the scan is willing to lose, so one that hangs or
+crashes on load costs one cache entry (`timeout` / `crash`) instead of the scan --
+`--in-process` opts out. See the [CLI reference](docs/cli.md#scan-build-the-index).
+
+```bash
+# one plugin: audio in, or a MIDI file through an instrument
+minihost_c process Plugin.vst3 -i input.wav -o output.wav --tail 3
+minihost_c process Synth.vst3  -m song.mid  -o output.wav --tail 2
+
+# plugins in series; MIDI effects come first and drive what follows
+minihost_c chain EQ.vst3 Reverb.vst3 -i input.wav -o output.wav --mix 1:0.5 --tail 3
+minihost_c chain Arpeggiator.component Synth.vst3 -m song.mid -o output.wav
+
+# branches in parallel, summed -- one MIDI part layered across instruments.
+# A branch may itself be a chain: commas run plugins in series.
+minihost_c bus SynthA.vst3 SynthB.vst3 -m song.mid -o output.wav
+minihost_c bus Synth.vst3 "Chorder.component,Synth.vst3" -m song.mid -o out.wav --gain 1:0.7
+```
+
+See the [CLI reference](docs/cli.md#native-cli-binaries) for the full option list and
+[MIDI Routing](docs/midi_routing.md) for why MIDI effects must precede the instrument they
+drive.
+
 ## Python API
 
 Install:
@@ -533,6 +583,31 @@ print(f"Loaded: {plugin.num_params} params")
 # non-blocking (not parallel) loading.
 plugin.close()
 ```
+
+### Shared session for multi-plugin loading
+
+`mh_open` and its Python equivalent register the JUCE plugin formats on every call. A
+`Session` builds that format manager once and reuses it across loads, probes and scans,
+which is the difference between loading one plugin and loading a chain of them.
+
+```python
+import minihost
+
+session = minihost.Session()
+eq     = session.open("/path/to/EQ.vst3", sample_rate=48000)
+reverb = session.open("/path/to/Reverb.vst3", sample_rate=48000)
+
+# AudioUnits are identified by an id rather than a path, so they load from a
+# serialized PluginDescription -- through the session like anything else.
+delay = session.open_desc(
+    '<PLUGIN name="AUDelay" format="AudioUnit" file="AudioUnit:Effects/aufx,dely,appl"/>'
+)
+
+session.close()   # the plugins keep working; they do not depend on it
+```
+
+The native `chain` and `bus` commands load this way, which is where the saving shows: a
+four-plugin chain built four format managers before.
 
 ### Audio Device Enumeration and Selection
 
@@ -1063,6 +1138,40 @@ mh_chain_close(chain);  // Does not close individual plugins
 mh_close(synth);
 mh_close(reverb);
 mh_close(limiter);
+```
+
+### MIDI File Rendering
+
+Read a standard MIDI file into the event form `mh_process*` consumes. Tracks are merged and
+the file's tempo map is applied; `sample_offset` is absolute, so rebase it per block:
+
+```c
+MH_MidiEvent* events = NULL;
+int count = 0;
+double duration = 0.0;
+char err[512] = {0};
+
+if (!mh_midi_file_load("song.mid", 48000.0, &events, &count, &duration,
+                       err, sizeof(err))) {
+    fprintf(stderr, "%s\n", err);
+    return 1;
+}
+
+int cursor = 0;
+for (int start = 0; start < total_frames; start += block) {
+    int end = start + block;
+    MH_MidiEvent block_midi[256];
+    int n = 0;
+    while (cursor < count && events[cursor].sample_offset < end && n < 256) {
+        block_midi[n] = events[cursor];
+        block_midi[n].sample_offset -= start;   // rebase to this block
+        n++;
+        cursor++;
+    }
+    mh_process_midi(synth, inputs, outputs, block, block_midi, n);
+}
+
+mh_midi_file_free(events);
 ```
 
 ### Audio File I/O

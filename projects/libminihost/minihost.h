@@ -80,6 +80,23 @@ extern "C" {
 #endif
 
 // API version components. Bump per the policy described above.
+// 2.8.0: added supervised scanning -- mh_plugin_cache_scan_supervised and
+//   mh_plugin_scan_worker_main. Probing loads a plugin, and a plugin that
+//   hangs or crashes takes the scanning process with it, so an in-process
+//   scan of a large collection cannot be relied on to finish. The supervisor
+//   probes each plugin in a disposable child process with a deadline and
+//   records the outcome, so one bad plugin costs one entry instead of the
+//   scan (additive; mh_plugin_cache_scan is unchanged).
+// 2.7.0: added plugin discovery helpers -- mh_get_default_plugin_dir plus
+//   mh_plugin_cache_path / _scan / _lookup / _match. Front-ends had no way to
+//   ask where plugins live on this platform, and no name -> path index, so
+//   every command took an absolute path typed out in full. The cache file and
+//   its JSON schema are shared with the Python CLI's, so a scan from either
+//   side serves the other (additive).
+// 2.6.0: added mh_midi_file_load / mh_midi_file_free -- reading a standard
+//   MIDI file into MH_MidiEvent form had no C entry point at all, so a C
+//   consumer could drive a plugin with MIDI it built by hand but not with
+//   MIDI from a file (additive).
 // 2.5.0: MIDI now flows through a chain rather than stopping at its first
 //   plugin. mh_chain_process_midi_io hands midi_in to the first plugin that
 //   accepts MIDI and lets every plugin reporting produces_midi replace the
@@ -108,7 +125,7 @@ extern "C" {
 //   mh_graph_* (parallel bus) -> mh_bus_* / MH_PluginGraph -> MH_PluginBus,
 //   and mh_graph_v2_* (DAG) -> mh_graph_* / MH_GraphV2 -> MH_PluginGraph.
 #define MH_API_VERSION_MAJOR 2
-#define MH_API_VERSION_MINOR 5
+#define MH_API_VERSION_MINOR 8
 #define MH_API_VERSION_PATCH 0
 
 // Single packed integer for compile-time comparison.
@@ -705,6 +722,171 @@ int mh_session_scan_directory(MH_Session* session,
                                const char* directory_path,
                                MH_ScanCallback callback,
                                void* user_data);
+
+// ---------------------------------------------------------------------------
+// Plugin locations and the shared scan cache
+// ---------------------------------------------------------------------------
+//
+// Two conveniences for front-ends: where plugins live on this platform,
+// and a name -> path index so a user can say "dexed" instead of pasting
+// an absolute path.
+//
+// The cache file and its JSON schema are shared with the Python CLI
+// (minihost.plugincache), so a scan from either side is visible to the
+// other. Location, honouring MINIHOST_CACHE_DIR:
+//   macOS:   ~/Library/Caches/minihost/plugins.json
+//   Windows: %LOCALAPPDATA%/minihost/Cache/plugins.json
+//   other:   $XDG_CACHE_HOME/minihost/plugins.json (or ~/.cache/...)
+
+// Canonical plugin directories for this platform, by index. Returns 1 and
+// fills buf while index is in range, 0 once it is past the end -- so a
+// caller loops until it returns 0. Directories that do not exist on this
+// machine are skipped, so the enumeration is what is actually installed.
+int mh_get_default_plugin_dir(int index, char* buf, size_t buf_size);
+
+// Absolute path of the shared cache file. Returns 1 on success.
+int mh_plugin_cache_path(char* buf, size_t buf_size);
+
+// Scan for plugins and write the cache.
+//
+// dirs == NULL scans the canonical directories above; otherwise the given
+// directories are scanned. Entries whose file is unchanged (mtime + size)
+// are reused rather than re-probed, unless refresh is 1. A plugin that
+// fails to probe is remembered as an error so it is not retried on every
+// scan.
+//
+// Returns the number of cached plugins, or -1 on failure.
+int mh_plugin_cache_scan(const char* const* dirs, int num_dirs, int refresh,
+                         MH_ScanCallback progress, void* user_data,
+                         char* err_buf, size_t err_buf_size);
+
+// Supervised scan: same result as mh_plugin_cache_scan, but each plugin is
+// probed in a child process that is discarded afterwards.
+//
+// This is the difference between a scan that finishes and one that might.
+// Probing means instantiating, and an installed collection can be relied on
+// to contain a plugin that spins forever or corrupts its heap on load; on
+// the development machine 5 of ~350 did. In process, the first of those ends
+// the scan. Here it costs one entry: the child is killed at the deadline or
+// dies on its own, the outcome is recorded, and the scan continues.
+//
+// worker_argv is the command to spawn, WITHOUT the plugin path -- the
+// library appends MH_SCAN_WORKER_FLAG and the path. Pass NULL to use this
+// process's own executable, which is right for a program that calls
+// mh_plugin_scan_worker_main from main() (see below). An embedder whose
+// executable is not ours -- a DAW, or Python -- passes its own worker
+// instead, e.g. {"/usr/bin/python3", "-m", "minihost._scan_worker"}.
+// MINIHOST_SCAN_WORKER overrides both, as a command line split on spaces.
+//
+// timeout_ms bounds one probe; <= 0 uses a default of 60000, and
+// MINIHOST_SCAN_TIMEOUT_MS overrides both. A plugin that
+// exceeds it is recorded with status "timeout"; one whose child dies without
+// answering is recorded as "crash". Both are remembered like any other entry,
+// so the next scan skips them rather than paying for them again.
+//
+// Returns the number of cached plugins, or -1 on failure (which means the
+// scan could not be set up at all -- a bad worker command, say -- never a
+// misbehaving plugin).
+int mh_plugin_cache_scan_supervised(const char* const* dirs, int num_dirs,
+                                    int refresh,
+                                    const char* const* worker_argv,
+                                    int worker_argc, int timeout_ms,
+                                    MH_ScanCallback progress, void* user_data,
+                                    char* err_buf, size_t err_buf_size);
+
+// The argument that marks a process as a scan worker. A front-end that wants
+// to be its own worker calls mh_plugin_scan_worker_main first thing in main()
+// and exits immediately if it returns 1:
+//
+//   int main(int argc, char** argv) {
+//       if (mh_plugin_scan_worker_main(argc, argv)) return 0;
+//       ...
+//   }
+//
+// In the worker case it has already probed the one plugin named on the
+// command line and written the result to stdout, so there is nothing for the
+// caller to do but exit. Returns 0 in the ordinary case, leaving argv alone.
+#define MH_SCAN_WORKER_FLAG "--mh-probe-one"
+
+int mh_plugin_scan_worker_main(int argc, char** argv);
+
+// The worker protocol, for a worker that is not one of our binaries. Write
+// one JSON object between these two markers on stdout, then exit:
+//
+//   {"ok": true, "name": ..., "vendor": ..., "version": ..., "format": ...,
+//    "unique_id": ..., "num_inputs": N, "num_outputs": N,
+//    "accepts_midi": bool, "produces_midi": bool}
+//   {"ok": false, "error": "..."}
+//
+// The markers exist because plugins write to stdout as they load -- some
+// print pages of it -- so the answer has to be findable inside that noise
+// rather than being assumed to be all of it. Anything outside the markers is
+// ignored, and a worker that exits without writing them is treated as having
+// died on the plugin.
+#define MH_SCAN_WORKER_BEGIN "<<<MH_PROBE>>>"
+#define MH_SCAN_WORKER_END   "<<<MH_PROBE_END>>>"
+
+
+// Resolve a plugin name to a path using the cache. Matching ignores case.
+//
+// By default only a whole-name match counts. Substring matching is
+// opt-in (allow_substring = 1) because it is rarely decisive on a real
+// collection: on a machine with 343 plugins, "reverb" matches 5,
+// "delay" 9 and "filter" 31, so the convenience mostly buys an
+// ambiguity error.
+//
+// The same plugin is often installed in two formats under one name --
+// 16 of those 343 were -- which would make even an exact name
+// ambiguous. So when every match is the same name differing only by
+// format, one is chosen rather than refused: `format` if given ("vst3",
+// "au"/"audiounit"/"component"), else VST3 in preference to AudioUnit.
+// A non-NULL `format` also filters the candidate set, so a name can be
+// pinned to one format explicitly.
+//
+// Returns 1 on a unique match (path written to out_path), 0 if nothing
+// matched, or the number of matches (>= 2) when genuinely ambiguous --
+// in which case out_path holds the first and mh_plugin_cache_match
+// lists the rest.
+int mh_plugin_cache_lookup(const char* name, const char* format,
+                           int allow_substring,
+                           char* out_path, size_t out_size);
+
+// The index-th match for `name` under the same rules as
+// mh_plugin_cache_lookup, for reporting an ambiguity. Returns 1 while the
+// index is in range, 0 once past the end.
+int mh_plugin_cache_match(const char* name, const char* format,
+                          int allow_substring, int index,
+                          char* out_path, size_t out_size);
+
+// ---------------------------------------------------------------------------
+// Standard MIDI file reading
+// ---------------------------------------------------------------------------
+//
+// Flattens a MIDI file to one time-ordered array of MH_MidiEvent with
+// sample_offset measured in samples from the start of the file at
+// `sample_rate` -- the form the mh_process* entry points consume, so a
+// caller can slice it per block and feed an instrument. Tracks are
+// merged and the file's tempo map is applied; meta events are dropped,
+// having no MH_MidiEvent representation.
+//
+// Note that sample_offset here is an absolute position in the render,
+// not the within-block offset the process functions expect. Rebase it
+// per block before handing events to a plugin.
+//
+// On success returns 1 and sets *out_events (free with
+// mh_midi_file_free) and *out_count. Returns 0 on failure and fills
+// err_buf. An empty file succeeds with *out_count == 0 and
+// *out_events == NULL.
+int mh_midi_file_load(const char* path,
+                      double sample_rate,
+                      MH_MidiEvent** out_events,
+                      int* out_count,
+                      double* out_duration_seconds,
+                      char* err_buf,
+                      size_t err_buf_size);
+
+// Release an event array from mh_midi_file_load. NULL is a no-op.
+void mh_midi_file_free(MH_MidiEvent* events);
 
 #ifdef __cplusplus
 }

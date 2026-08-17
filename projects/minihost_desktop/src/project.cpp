@@ -718,6 +718,19 @@ bool renderProject(LoadedProject& proj,
     const int block = doc.block_size;
     const int total = proj.duration_frames;
 
+    // Offline bounce: tell every plugin it is not running live. Plugins
+    // use this to switch to their higher-quality, non-causal or
+    // higher-oversampling paths, and to stop dropping work under load --
+    // rendering a file in the realtime path gives a worse result than
+    // the same project deserves. Cleared again on the way out so the
+    // same LoadedProject can go back to live playback.
+    for (auto* plugin : proj.plugins)
+        mh_set_non_realtime(plugin, 1);
+    struct RealtimeRestore {
+        LoadedProject& p;
+        ~RealtimeRestore() { for (auto* pl : p.plugins) mh_set_non_realtime(pl, 0); }
+    } realtime_restore{proj};
+
     // Input buffer table covers file-source inputs (staged from
     // decoded WAV/FLAC data per block), device_input nodes (live
     // only; file render keeps them silent), and metronome nodes

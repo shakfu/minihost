@@ -1,54 +1,78 @@
 """Persistent plugin-scan cache.
 
-These tests use synthetic plugin files and a monkeypatched probe, so they
-need no real plugins. The cache file is redirected to a tmp dir via
+These tests use synthetic plugin files and a synthetic probe, so they need
+no real plugins. The cache file is redirected to a tmp dir via
 MINIHOST_CACHE_DIR. The central guarantee under test: a plugin is probed
 once, then served from cache until its fingerprint changes.
+
+Scanning probes in a child process by default, which a monkeypatched probe
+in this process would never reach -- so the fake answers come from
+``tests/fake_probe.py``, used both as the in-process probe and, via
+MINIHOST_SCAN_WORKER, as the scan worker. The cache semantics below are
+therefore exercised through the path that actually ships, and probes are
+counted through a log file rather than a list, since some of them happen
+in another process.
 """
 
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
 
 import pytest
 
+import fake_probe
 from minihost import plugincache
+
+
+class ProbeLog:
+    """The probes recorded so far, wherever they happened.
+
+    Reads the log file on every access, because the supervised path writes
+    it from child processes -- a list in this process would stay empty.
+    """
+
+    def __init__(self, path: Path):
+        self._path = path
+
+    def _entries(self) -> list[str]:
+        if not self._path.exists():
+            return []
+        return self._path.read_text().split()
+
+    def __len__(self) -> int:
+        return len(self._entries())
+
+    def __getitem__(self, i):
+        return self._entries()[i]
+
+    def __iter__(self):
+        return iter(self._entries())
+
+    def __contains__(self, item) -> bool:
+        return item in self._entries()
 
 
 @pytest.fixture
 def cache_env(tmp_path, monkeypatch):
-    """Isolate the cache file and replace the real probe with a synthetic,
-    call-counting one. Returns (plugins_dir, probe_calls)."""
+    """Isolate the cache file and answer probes synthetically, whether they
+    happen here or in a scan worker. Returns (plugins_dir, probe_log)."""
     monkeypatch.setenv("MINIHOST_CACHE_DIR", str(tmp_path / "cache"))
-    probe_calls: list[str] = []
 
-    def fake_probe(path: str) -> dict:
-        probe_calls.append(path)
-        name = os.path.splitext(os.path.basename(path))[0]
-        ext = os.path.splitext(path)[1].lower()
-        fmt = {".vst3": "VST3", ".component": "AudioUnit", ".lv2": "LV2"}.get(
-            ext, "VST3"
-        )
-        if name.startswith("broken"):
-            raise RuntimeError(f"cannot probe {name}")
-        return {
-            "name": name,
-            "vendor": "Acme" if "synth" in name else "Other",
-            "version": "1.0",
-            "format": fmt,
-            "unique_id": f"id-{name}",
-            "path": path,
-            "accepts_midi": name.startswith("synth"),
-            "produces_midi": name.startswith("arp"),
-            "num_inputs": 0 if name.startswith("synth") else 2,
-            "num_outputs": 2,
-        }
+    log = tmp_path / "probes.log"
+    monkeypatch.setenv("MINIHOST_PROBE_LOG", str(log))
 
-    monkeypatch.setattr(plugincache, "_probe", fake_probe)
+    # In-process probing (info(), and scan(supervised=False)).
+    monkeypatch.setattr(plugincache, "_probe", fake_probe.probe)
+    # Supervised probing: the same answers, from a process of its own.
+    worker = Path(fake_probe.__file__).resolve()
+    monkeypatch.setenv("MINIHOST_SCAN_WORKER", f"{sys.executable} {worker}")
+    monkeypatch.setenv("MINIHOST_SCAN_TIMEOUT_MS", "5000")
 
     plugins = tmp_path / "plugins"
     plugins.mkdir()
-    return plugins, probe_calls
+    return plugins, ProbeLog(log)
 
 
 def _touch_plugin(directory, name: str) -> str:
@@ -240,3 +264,66 @@ def test_corrupt_cache_file_is_ignored(cache_env):
     plugincache.cache_file().write_text("{ not valid json ]")
     res = plugincache.scan(plugins)  # re-probes since cache unreadable
     assert {d["name"] for d in res} == {"synthA"}
+
+
+# -- supervised probing ------------------------------------------------ #
+#
+# The reason scanning spawns a process per plugin: probing means loading,
+# and an installed collection can be relied on to contain a plugin that
+# hangs or crashes on load. These two outcomes exist only on that path --
+# in process they are not outcomes, they are the end of the scan (and of
+# the interpreter) -- so they also pin that the default really is
+# supervised, which the other tests cannot distinguish.
+
+
+def test_a_crashing_plugin_costs_one_entry(cache_env):
+    plugins, _ = cache_env
+    _touch_plugin(plugins, "synthA.vst3")
+    _touch_plugin(plugins, "crashX.vst3")  # the worker aborts on this one
+    _touch_plugin(plugins, "synthB.vst3")
+
+    results = plugincache.scan(plugins)
+
+    assert {d["name"] for d in results} == {"synthA", "synthB"}
+    entries = plugincache.all_entries(include_errors=True)
+    crashed = next(e for e in entries if "crashX" in e["path"])
+    assert crashed["status"] == "crash"
+
+
+def test_a_hanging_plugin_costs_one_entry(cache_env, monkeypatch):
+    plugins, _ = cache_env
+    monkeypatch.setenv("MINIHOST_SCAN_TIMEOUT_MS", "700")
+    _touch_plugin(plugins, "synthA.vst3")
+    _touch_plugin(plugins, "hangX.vst3")  # the worker sleeps for ten minutes
+
+    results = plugincache.scan(plugins)
+
+    assert {d["name"] for d in results} == {"synthA"}
+    entries = plugincache.all_entries(include_errors=True)
+    hung = next(e for e in entries if "hangX" in e["path"])
+    assert hung["status"] == "timeout"
+
+
+def test_bad_plugins_are_not_re_probed(cache_env, monkeypatch):
+    plugins, calls = cache_env
+    monkeypatch.setenv("MINIHOST_SCAN_TIMEOUT_MS", "700")
+    _touch_plugin(plugins, "hangX.vst3")
+    _touch_plugin(plugins, "crashX.vst3")
+
+    plugincache.scan(plugins)
+    after_first = len(calls)
+
+    plugincache.scan(plugins)
+
+    assert len(calls) == after_first  # both remembered, neither retried
+
+
+def test_in_process_scan_bypasses_the_worker(cache_env):
+    plugins, _ = cache_env
+    _touch_plugin(plugins, "crashX.vst3")
+
+    # In this process the name means nothing: the synthetic probe answers
+    # normally, which is how we know the worker was not consulted.
+    results = plugincache.scan(plugins, supervised=False)
+
+    assert {d["name"] for d in results} == {"crashX"}

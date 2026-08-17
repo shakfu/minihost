@@ -69,6 +69,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 
 #include "minihost.h"
+#include "minihost_vstpreset.h"
 #include "minihost_audiofile.h"
 #include "minihost_midi.h"
 #include "canvas.h"
@@ -309,12 +310,64 @@ public:
                 triggerRender(/*quitWhenDone=*/false);
             };
         }
-        renderBtn_.setBounds(8, 6, 480, kToolbarHeight - 12);
+        renderBtn_.setBounds(8, 6, 300, kToolbarHeight - 12);
         container->addAndMakeVisible(renderBtn_);
+
+        // Factory programs. A plugin's own editor usually offers no way
+        // to step through the programs the host can see, so the host
+        // lists them when there is more than one to choose from.
+        const int numPrograms = mh_get_num_programs(plugin_);
+        if (numPrograms > 1)
+        {
+            for (int i = 0; i < numPrograms; ++i)
+            {
+                char name[256] = {0};
+                mh_get_program_name(plugin_, i, name, sizeof(name));
+                juce::String label = juce::String(i) + ": "
+                    + juce::String(name).trim();
+                if (label.isEmpty()) label = juce::String(i);
+                programBox_.addItem(label, i + 1);   // id 0 is reserved
+            }
+            programBox_.setSelectedId(mh_get_program(plugin_) + 1,
+                                      juce::dontSendNotification);
+            programBox_.onChange = [this] {
+                const int index = programBox_.getSelectedId() - 1;
+                if (index >= 0) mh_set_program(plugin_, index);
+            };
+            programBox_.setBounds(316, 6, 220, kToolbarHeight - 12);
+            container->addAndMakeVisible(programBox_);
+        }
+
+        // Bypass. mh_set_bypass drives the plugin's own bypass parameter
+        // when it publishes one, so this matches what a DAW's bypass does
+        // rather than merely muting the node.
+        bypassBtn_.setButtonText("Bypass");
+        bypassBtn_.setToggleState(mh_get_bypass(plugin_) != 0,
+                                  juce::dontSendNotification);
+        bypassBtn_.onClick = [this] {
+            mh_set_bypass(plugin_, bypassBtn_.getToggleState() ? 1 : 0);
+        };
+        bypassBtn_.setBounds(numPrograms > 1 ? 544 : 316, 6, 90, kToolbarHeight - 12);
+        container->addAndMakeVisible(bypassBtn_);
+
+        // .vstpreset import/export. The plugin's own editor saves in
+        // whatever private format it likes; this is the interchange
+        // format other hosts read, and the app could neither write nor
+        // load one.
+        const int presetX = (numPrograms > 1 ? 544 : 316) + 96;
+        loadPresetBtn_.setButtonText("Load preset");
+        loadPresetBtn_.onClick = [this] { loadVstPreset(); };
+        loadPresetBtn_.setBounds(presetX, 6, 110, kToolbarHeight - 12);
+        container->addAndMakeVisible(loadPresetBtn_);
+
+        savePresetBtn_.setButtonText("Save preset");
+        savePresetBtn_.onClick = [this] { saveVstPreset(); };
+        savePresetBtn_.setBounds(presetX + 116, 6, 110, kToolbarHeight - 12);
+        container->addAndMakeVisible(savePresetBtn_);
 
         const int editorW = editor_ ? editor_->getWidth()  : 480;
         const int editorH = editor_ ? editor_->getHeight() : 100;
-        container->setSize(std::max(editorW, 500),
+        container->setSize(std::max(editorW, 900),
                            editorH + kToolbarHeight);
 
         setContentOwned(container, /*resizeToFit=*/true);
@@ -405,6 +458,111 @@ private:
             }
         }
         repaint();
+    }
+
+    // Load a .vstpreset and push its component chunk into the plugin.
+    // The class_id in the file is not checked against the plugin: hosts
+    // differ on how strict to be, and a mismatched chunk simply fails to
+    // apply, which is reported rather than guessed at.
+    void loadVstPreset()
+    {
+        preset_chooser_ = std::make_unique<juce::FileChooser>(
+            "Load .vstpreset", juce::File(), "*.vstpreset");
+        preset_chooser_->launchAsync(
+            juce::FileBrowserComponent::openMode
+                | juce::FileBrowserComponent::canSelectFiles,
+            [this](const juce::FileChooser& fc) {
+                const auto file = fc.getResult();
+                if (file == juce::File()) return;
+
+                MH_VstPreset preset;
+                std::memset(&preset, 0, sizeof(preset));
+                char err[512] = {0};
+                if (!mh_vstpreset_read(file.getFullPathName().toRawUTF8(),
+                                       &preset, err, sizeof(err)))
+                {
+                    showPresetMessage("Could not read preset", err);
+                    return;
+                }
+                const bool ok = preset.component_state != nullptr
+                    && mh_set_state(plugin_, preset.component_state,
+                                    preset.component_size) != 0;
+                mh_vstpreset_free(&preset);
+
+                if (!ok)
+                {
+                    showPresetMessage("Could not apply preset",
+                                      "the plugin rejected the state chunk "
+                                      "(most often it belongs to a different plugin)");
+                    return;
+                }
+                // The plugin may have jumped to another program.
+                if (programBox_.getNumItems() > 0)
+                    programBox_.setSelectedId(mh_get_program(plugin_) + 1,
+                                              juce::dontSendNotification);
+            });
+    }
+
+    // Save the plugin's current state as a .vstpreset. The class ID is
+    // read from the VST3 bundle's moduleinfo.json; AudioUnits have none,
+    // so the export is offered only where it can produce a valid file.
+    void saveVstPreset()
+    {
+        char class_id[64] = {0};
+        char err[512] = {0};
+        if (!mh_vstpreset_read_class_id_from_bundle(
+                opts_.plugin_path.toRawUTF8(), class_id, err, sizeof(err)))
+        {
+            showPresetMessage("Cannot write a .vstpreset for this plugin",
+                              juce::String(err)
+                              + "\n\n.vstpreset carries a VST3 class ID; "
+                                "AudioUnits and plugins without a readable "
+                                "moduleinfo.json have none.");
+            return;
+        }
+
+        preset_chooser_ = std::make_unique<juce::FileChooser>(
+            "Save .vstpreset",
+            juce::File::getSpecialLocation(juce::File::userHomeDirectory)
+                .getChildFile(juce::File(opts_.plugin_path).getFileNameWithoutExtension()
+                              + ".vstpreset"),
+            "*.vstpreset");
+        const juce::String cid(class_id);
+        preset_chooser_->launchAsync(
+            juce::FileBrowserComponent::saveMode
+                | juce::FileBrowserComponent::canSelectFiles
+                | juce::FileBrowserComponent::warnAboutOverwriting,
+            [this, cid](const juce::FileChooser& fc) {
+                const auto file = fc.getResult();
+                if (file == juce::File()) return;
+
+                const int size = mh_get_state_size(plugin_);
+                if (size <= 0)
+                {
+                    showPresetMessage("Nothing to save",
+                                      "the plugin reports no state");
+                    return;
+                }
+                std::vector<char> state(static_cast<size_t>(size));
+                if (!mh_get_state(plugin_, state.data(), size))
+                {
+                    showPresetMessage("Could not read plugin state", "");
+                    return;
+                }
+                char werr[512] = {0};
+                if (!mh_vstpreset_write(file.getFullPathName().toRawUTF8(),
+                                        cid.toRawUTF8(), state.data(), size,
+                                        nullptr, 0, werr, sizeof(werr)))
+                {
+                    showPresetMessage("Could not write preset", werr);
+                }
+            });
+    }
+
+    void showPresetMessage(const juce::String& title, const juce::String& detail)
+    {
+        juce::NativeMessageBox::showMessageBoxAsync(
+            juce::MessageBoxIconType::WarningIcon, title, detail, this);
     }
 
     void startProbe()
@@ -510,6 +668,11 @@ private:
     std::unique_ptr<juce::AudioProcessorEditor> editor_;
     std::unique_ptr<juce::Component>            placeholder_;
     juce::TextButton                            renderBtn_;
+    juce::ComboBox                              programBox_;
+    juce::ToggleButton                          bypassBtn_;
+    juce::TextButton                            loadPresetBtn_;
+    juce::TextButton                            savePresetBtn_;
+    std::unique_ptr<juce::FileChooser>          preset_chooser_;
     std::atomic<bool>                           renderBusy_{ false };
     std::unique_ptr<ParamTweakTimer>            tweaker_;
     std::unique_ptr<juce::Timer>                editor_toggler_;
