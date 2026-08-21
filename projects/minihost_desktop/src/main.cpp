@@ -45,6 +45,17 @@
 //       hermetic sidecar location. Exit 0 on success, 1 on any broken
 //       invariant. Driven by tests/test_desktop_autosave.py.
 //
+//   minihost_desktop --plugin-browser-selftest
+//       GUI self-test of the Plugin Browser dialog's lifetime: open it,
+//       re-request it while open (must reuse, not stack a second window),
+//       dismiss it the way the close button does, and reopen it. The
+//       reopen is the step that used to segfault -- launchAsync() enters
+//       the modal state with deleteWhenDismissed=true, so the window frees
+//       itself on dismissal and any owning pointer left dangling. Needs an
+//       X display (run under xvfb on headless Linux). Exit 0 on success, 1
+//       on any broken invariant. Driven by
+//       tests/test_desktop_pluginbrowser.py.
+//
 //   minihost_desktop --scan-plugins[=<dir1;dir2>] [--scan-out=<file.xml>]
 //                     [--scan-format=<VST3|AudioUnit|LV2>] [--scan-oop]
 //       (--scan-oop routes each probe through a disposable child process for
@@ -1350,6 +1361,16 @@ public:
             return;
         }
 
+        // Plugin Browser dialog lifetime self-test. Unlike the other
+        // selftests this one needs a real X display (it creates windows);
+        // on headless Linux run it under xvfb. Driven by
+        // tests/test_desktop_pluginbrowser.py.
+        if (args.containsOption("--plugin-browser-selftest"))
+        {
+            runPluginBrowserSelfTest();
+            return;
+        }
+
         // Headless plugin scan: register the host formats, scan the given
         // (or default) directories in-process, and write the resulting
         // KnownPluginList to XML. Proves addDefaultFormatsToManager yields
@@ -1513,6 +1534,7 @@ public:
         // a headless mode sharing the settings dir never clears a *different*
         // (crashed) GUI session's sidecar.
         if (autosave_timer_) autosave_timer_->stopTimer();
+        if (selftest_timer_)  selftest_timer_->stopTimer();
         if (autosave_enabled_) clearAutosave();
 
         if (live_) saveSettingsToDisk();
@@ -1522,7 +1544,14 @@ public:
         // and must NOT write it back, or they clobber a freshly-scanned
         // library with an empty one.
         if (owns_library_) saveKnownPlugins();
-        plugin_browser_window_.reset();
+        // Only if it is still on screen -- a dismissed one is already gone.
+        // Component::~Component makes the ModalComponentManager drop its
+        // auto-delete claim, so this never double-frees.
+        if (auto* w = plugin_browser_window_.getComponent())
+        {
+            plugin_browser_window_ = nullptr;
+            delete w;
+        }
         if (live_) live_->stop();
         live_.reset();
         editors_.clear();   // closes EditorWindows; each mh_close in dtor
@@ -1736,15 +1765,15 @@ public:
     }
 
     // The scan/manage UI. juce::PluginListComponent handles scan-path
-    // configuration, scanning (in-process; see the crash-resilience note
-    // in docs/dev/desktop_app.md), and rescans, persisting into
-    // known_plugins_. A dead-man's-pedal file lets a scan that crashed on
-    // a bad plugin skip it on the next attempt.
+    // configuration, scanning, and rescans, persisting into known_plugins_.
+    // Each probe runs out-of-process via the OutOfProcessPluginScanner
+    // installed in initialise(); a dead-man's-pedal file additionally lets a
+    // scan that crashed on a bad plugin skip it on the next attempt.
     void showPluginBrowser()
     {
-        if (plugin_browser_window_ != nullptr)
+        if (auto* existing = plugin_browser_window_.getComponent())
         {
-            plugin_browser_window_->toFront(true);
+            existing->toFront(true);
             return;
         }
         const auto dead_mans_pedal =
@@ -1763,7 +1792,7 @@ public:
         opts.useNativeTitleBar        = true;
         opts.resizable                = true;
 
-        plugin_browser_window_.reset(opts.launchAsync());
+        plugin_browser_window_ = opts.launchAsync();
     }
 
     // Shared plugin picker used by every "add / open a plugin" action.
@@ -2083,6 +2112,133 @@ private:
     //   4. the meta file records the origin path exactly;
     //   5. clearAutosave removes both files.
     // Exit 0 on success, 1 on any broken invariant.
+    // Plugin Browser dialog lifetime self-test.
+    //
+    // Regression cover for a use-after-free: DialogWindow::LaunchOptions::
+    // launchAsync() enters the modal state with deleteWhenDismissed=true, so
+    // the ModalComponentManager deletes the window as soon as it is
+    // dismissed. Holding it in an owning pointer left that pointer dangling,
+    // and the next showPluginBrowser() dereferenced it (segfault) while
+    // shutdown() double-freed it.
+    //
+    // Dismissal is asynchronous -- setVisible(false) only marks the modal
+    // item cancelled and posts to the manager, which deletes on a later
+    // message-loop pass -- so the steps run off a timer, one per tick, with
+    // the loop free to run in between. Asserts:
+    //   1. opening creates a window;
+    //   2. re-requesting while open reuses it (no second window stacked);
+    //   3. after dismissal the tracking pointer reads null (not dangling);
+    //   4. reopening after dismissal yields a live, fully-formed window;
+    //   5. the same holds a second time round, and the final dismissal
+    //      leaves nothing for shutdown() to free.
+    // Exit 0 on success, 1 on any broken invariant.
+    void runPluginBrowserSelfTest()
+    {
+        // Formats registered as in the GUI shell, so PluginListComponent is
+        // built against a realistic format manager. owns_library_ stays
+        // false: this mode must never write the user's known_plugins.xml.
+        juce::addDefaultFormatsToManager(plugin_format_manager_);
+
+        auto fail = [this](const juce::String& m) {
+            std::fprintf(stderr, "plugin-browser-selftest FAIL: %s\n",
+                         m.toRawUTF8());
+            setApplicationReturnValue(1);
+            if (selftest_timer_) selftest_timer_->stopTimer();
+            plugin_browser_window_.deleteAndZero();
+            quit();
+        };
+
+        // The first window, captured so step 1 can prove a re-request while
+        // it is still open reuses it instead of stacking a second dialog.
+        // Both pointers are live at that moment, so the comparison is valid;
+        // it is NOT reused across a dismissal (see step 3).
+        auto first = std::make_shared<juce::Component*>(nullptr);
+        auto step  = std::make_shared<int>(0);
+
+        selftest_timer_ = std::make_unique<CallbackTimer>(
+            [this, fail, first, step]() {
+                switch ((*step)++)
+                {
+                case 0:
+                    showPluginBrowser();
+                    if (plugin_browser_window_.getComponent() == nullptr)
+                        return fail("first open produced no window");
+                    *first = plugin_browser_window_.getComponent();
+                    return;
+
+                case 1:
+                    // Re-request while open: must reuse the same window.
+                    showPluginBrowser();
+                    if (plugin_browser_window_.getComponent() != *first)
+                        return fail("re-request while open did not reuse "
+                                    "the existing window");
+                    // Dismiss exactly as the close button / Escape does
+                    // (DialogWindow::closeButtonPressed -> setVisible false).
+                    plugin_browser_window_->setVisible(false);
+                    return;
+
+                case 2:
+                    // The manager owns the dismissed window and deletes it on
+                    // a later pass; the tracking pointer must have gone null
+                    // on its own rather than been left dangling.
+                    if (plugin_browser_window_.getComponent() != nullptr)
+                        return fail("window still tracked after dismissal -- "
+                                    "pointer is dangling or delete never ran");
+                    return;
+
+                case 3:
+                    // The step that used to segfault.
+                    //
+                    // Deliberately NOT compared against *first: the old
+                    // window was freed in step 2, so the allocator may hand
+                    // the very same block back here. Address identity across
+                    // a free/alloc cycle proves nothing either way. What is
+                    // load-bearing is step 2 (the pointer nulled itself, so
+                    // nothing dangled) plus a live, fully-formed window here.
+                    showPluginBrowser();
+                    if (auto* w = plugin_browser_window_.getComponent())
+                    {
+                        if (! w->isOnDesktop() || ! w->isVisible())
+                            return fail("reopened window is not a live "
+                                        "on-screen window");
+                        if (w->getNumChildComponents() == 0)
+                            return fail("reopened window has no content "
+                                        "component");
+                    }
+                    else
+                    {
+                        return fail("reopen after dismissal produced no "
+                                    "window");
+                    }
+                    plugin_browser_window_->setVisible(false);
+                    return;
+
+                case 4:
+                    if (plugin_browser_window_.getComponent() != nullptr)
+                        return fail("second dismissal left the window "
+                                    "tracked");
+                    // Third cycle: proves the reuse guard still holds after
+                    // the pointer has been recycled twice.
+                    showPluginBrowser();
+                    if (plugin_browser_window_.getComponent() == nullptr)
+                        return fail("third open produced no window");
+                    plugin_browser_window_->setVisible(false);
+                    return;
+
+                default:
+                    if (plugin_browser_window_.getComponent() != nullptr)
+                        return fail("third dismissal left the window "
+                                    "tracked");
+                    selftest_timer_->stopTimer();
+                    std::fprintf(stderr, "plugin-browser-selftest OK\n");
+                    setApplicationReturnValue(0);
+                    quit();
+                    return;
+                }
+            });
+        selftest_timer_->startTimer(120);
+    }
+
     void runAutosaveSelfTest(juce::File project_file)
     {
         auto fail = [this](const juce::String& m) {
@@ -2665,8 +2821,17 @@ private:
     // goes through mh_open.
     juce::AudioPluginFormatManager      plugin_format_manager_;
     juce::KnownPluginList               known_plugins_;
-    std::unique_ptr<juce::DialogWindow> plugin_browser_window_;
+    // NOT owning: DialogWindow::LaunchOptions::launchAsync() enters the modal
+    // state with deleteWhenDismissed=true, so the ModalComponentManager frees
+    // the window as soon as it is dismissed (close button or Escape). A
+    // unique_ptr here would dangle on the next showPluginBrowser() and
+    // double-free at shutdown; SafePointer nulls itself on that deletion.
+    juce::Component::SafePointer<juce::DialogWindow> plugin_browser_window_;
     std::unique_ptr<juce::FileChooser>  plugin_chooser_;
+
+    // Drives --plugin-browser-selftest one step per tick so the message
+    // loop runs between them (modal dismissal completes asynchronously).
+    std::unique_ptr<CallbackTimer> selftest_timer_;
 
     // Set only when this process was relaunched as a scan worker (see the
     // top of initialise()); keeps the child's IPC connection alive.

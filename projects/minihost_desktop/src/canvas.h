@@ -25,6 +25,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>  // juce::PluginDescription
 
 #include <functional>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -86,7 +87,13 @@ public:
     // counts (same path as the "Add Plugin..." file chooser). Used by
     // the plugin browser to add a selected plugin to the canvas. No-op
     // if no document is loaded. Records an undo step.
-    void addPluginFromFile(const juce::File& file);
+    //
+    // `is_instrument` is the plugin's declared category, when the caller
+    // knows it (a scanned juce::PluginDescription does). It only picks the
+    // generated node id's prefix -- "synth_N" vs "fx_N". Pass nullopt when
+    // unknown; the probe-based fallback then guesses. See probeAndAddPlugin.
+    void addPluginFromFile(const juce::File& file,
+                           std::optional<bool> is_instrument = std::nullopt);
 
     // Add a plugin node from a scanned juce::PluginDescription. Real files
     // (VST3/LV2) delegate to addPluginFromFile; formats without a usable
@@ -163,7 +170,8 @@ private:
     // probe_desc_xml is set, else by path), cache channel/MIDI info, name,
     // and push as an undoable edit.
     void probeAndAddPlugin(project::PluginNodeSpec p,
-                           const juce::String& probe_desc_xml);
+                           const juce::String& probe_desc_xml,
+                           std::optional<bool> is_instrument = std::nullopt);
     void addInputNode();            // file chooser -> source WAV; channels from file
     void addOutputNode();           // file chooser -> sink path; defaults to 2 channels
     // Convenience helper: stereo split into two pick_channel nodes

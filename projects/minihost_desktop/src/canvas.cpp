@@ -1086,17 +1086,30 @@ void CanvasComponent::addPluginNode()
         });
 }
 
-void CanvasComponent::addPluginFromFile(const juce::File& file)
+void CanvasComponent::addPluginFromFile(const juce::File& file,
+                                       std::optional<bool> is_instrument)
 {
     if (doc_ == nullptr || file == juce::File()) return;
     project::PluginNodeSpec p;
     p.path = file;
-    probeAndAddPlugin(std::move(p), /*probe_desc_xml=*/{});
+    probeAndAddPlugin(std::move(p), /*probe_desc_xml=*/{}, is_instrument);
 }
 
 void CanvasComponent::addPluginFromDescription(const juce::PluginDescription& pd)
 {
     if (doc_ == nullptr) return;
+
+    // isInstrument is the plugin's own declared category (VST3 kInstrument,
+    // AU 'aumu', LV2 InstrumentPlugin) and is the only reliable synth-vs-fx
+    // signal -- an instantiated instrument can look exactly like an effect
+    // (Surge XT is an instrument whose sole input bus is a stereo audio in).
+    // A scanned description carries it; the "Browse to file..." fallback
+    // synthesizes a description holding nothing but a path, so its
+    // isInstrument is a meaningless default. A non-empty name is what tells
+    // the two apart -- only then is the flag worth trusting.
+    const std::optional<bool> is_instrument
+        = pd.name.isNotEmpty() ? std::optional<bool>(pd.isInstrument)
+                               : std::nullopt;
 
     // Path-based formats (VST3, LV2, or a browsed file) keep loading by
     // path -- their fileOrIdentifier is a real file. Only formats without a
@@ -1104,7 +1117,7 @@ void CanvasComponent::addPluginFromDescription(const juce::PluginDescription& pd
     const juce::File f(pd.fileOrIdentifier);
     if (f.exists())
     {
-        addPluginFromFile(f);
+        addPluginFromFile(f, is_instrument);
         return;
     }
 
@@ -1119,14 +1132,15 @@ void CanvasComponent::addPluginFromDescription(const juce::PluginDescription& pd
                                       pd_xml.getNumBytesAsUTF8());
         p.descriptor = os.toString();
     }
-    probeAndAddPlugin(std::move(p), pd_xml);
+    probeAndAddPlugin(std::move(p), pd_xml, is_instrument);
 }
 
 // Shared tail for both add paths: probe the plugin (via descriptor when
 // `probe_desc_xml` is set, else by path), cache channel/MIDI info for
 // connect-time validation, name it, and push it as an undoable edit.
 void CanvasComponent::probeAndAddPlugin(project::PluginNodeSpec p,
-                                        const juce::String& probe_desc_xml)
+                                        const juce::String& probe_desc_xml,
+                                        std::optional<bool> is_instrument)
 {
     // Use the project's sample_rate / block_size so prepareToPlay matches
     // what loadProject will request later.
@@ -1139,9 +1153,10 @@ void CanvasComponent::probeAndAddPlugin(project::PluginNodeSpec p,
         : mh_open(p.path.getFullPathName().toRawUTF8(),
                   (double) doc_->sample_rate, doc_->block_size,
                   /*req_in=*/0, /*req_out=*/0, err, sizeof(err));
-    // Default to "fx" prefix; switch to "synth" below once the probe tells
-    // us whether it's an instrument.
+    // Default to "fx"; "synth" when the plugin is an instrument.
     juce::String id_prefix = "fx";
+    if (is_instrument.has_value())
+        id_prefix = *is_instrument ? "synth" : "fx";
     if (probe != nullptr)
     {
         MH_Info info{};
@@ -1151,7 +1166,15 @@ void CanvasComponent::probeAndAddPlugin(project::PluginNodeSpec p,
             p.probed_out_channels = info.num_output_ch;
             p.accepts_midi        = info.accepts_midi != 0;
             p.produces_midi       = info.produces_midi != 0;
-            if (info.num_input_ch == 0 || info.is_midi_effect)
+            // Fallback for callers with no declared category (the raw
+            // file-chooser path). An instantiated plugin does not expose its
+            // category, so this only guesses: "no audio in, or pure MIDI"
+            // catches classic synths but misses instruments that also take
+            // audio in, and every MIDI-driven effect would break the
+            // converse test on accepts_midi. Measured over 36 installed
+            // plugins this errs on 6, all instruments-with-audio-in.
+            if (! is_instrument.has_value()
+                && (info.num_input_ch == 0 || info.is_midi_effect))
                 id_prefix = "synth";
         }
         mh_close(probe);

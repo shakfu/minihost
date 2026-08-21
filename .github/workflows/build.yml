@@ -170,8 +170,8 @@ jobs:
     name: Build desktop (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     needs: [version]
-    # Guard job: compiles the minihost_desktop GUI app (MINIHOST_BUILD_DESKTOP=ON,
-    # MINIHOST_HEADLESS=OFF) so the ~7k lines of desktop code cannot silently
+    # Guard job: compiles the minihost_desktop GUI app (MINIHOST_BUILD_DESKTOP=ON)
+    # so the ~7k lines of desktop code cannot silently
     # break under refactors of the C ABI or graph executor. Also runs a headless
     # smoke (--save-roundtrip) to prove the binary is not dead on arrival.
     # Backstop timeout well under the 6h default in case a headless-init hang
@@ -231,7 +231,7 @@ jobs:
       - name: Configure CMake
         run: >
           cmake -B build -DCMAKE_BUILD_TYPE=Release
-          -DMINIHOST_BUILD_DESKTOP=ON -DMINIHOST_HEADLESS=OFF
+          -DMINIHOST_BUILD_DESKTOP=ON
           ${{ matrix.cmake-args }}
 
       - name: Build desktop app
@@ -302,6 +302,25 @@ jobs:
           ${{ matrix.run-prefix }} python -m pytest -v
           tests/test_desktop_undo.py
           tests/test_desktop_autosave.py
+
+      # Linux only, and deliberately not folded into either neighbouring step.
+      # Unlike the binary-only tests above it maps real windows to check the
+      # Plugin Browser dialog's lifetime, so it needs a window server rather
+      # than merely tolerating one -- xvfb gives us a dependable one on Linux,
+      # whereas the hosted macOS/Windows runners offer no comparable guarantee
+      # and would make this the only GUI-mapping test in the matrix. It needs no
+      # minihost package either, so it runs before the expensive install below
+      # and fails fast. Developers can still run it directly on any platform
+      # with a display; only CI is restricted.
+      - name: Run plugin browser test (Linux only)
+        if: runner.os == 'Linux'
+        shell: bash
+        timeout-minutes: 10
+        env:
+          MINIHOST_DESKTOP_BIN: ${{ matrix.bin }}
+        run: >
+          ${{ matrix.run-prefix }} python -m pytest -v
+          tests/test_desktop_pluginbrowser.py
 
       # The smoke and render-parity tests import the minihost package to compare
       # the desktop renderer against minihost.render_project(), which forces a

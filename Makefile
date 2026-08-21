@@ -56,7 +56,7 @@ tsan:
 # headless library / CLI / Python wheel build in build/ stays untouched.
 desktop: juce
 	@cmake -B build-desktop -DCMAKE_BUILD_TYPE=Release \
-		-DMINIHOST_BUILD_DESKTOP=ON -DMINIHOST_HEADLESS=OFF
+		-DMINIHOST_BUILD_DESKTOP=ON
 	@cmake --build build-desktop --config Release --target minihost_desktop
 
 # Build (if needed) and launch the desktop app. The binary sits in a

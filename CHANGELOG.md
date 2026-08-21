@@ -1,5 +1,39 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **Reopening the desktop Plugin Browser segfaulted.** Scanning worked, but closing the browser and opening it again took the app down. The window was launched with `DialogWindow::LaunchOptions::launchAsync()`, which enters the modal state with `deleteWhenDismissed = true` -- so the window frees *itself* on dismissal, and the `std::unique_ptr` the app held it in was left dangling the moment you closed it. The reopen path checked that pointer for null, found the stale address, and called `toFront()` on freed memory; `shutdown()` then double-freed the same block. The chain is entirely in JUCE and runs on both the close button and Escape: `closeButtonPressed` calls `setVisible(false)`, `ModalItem::componentVisibilityChanged` sees the window is no longer showing and cancels the modal item, and `~ModalItem` deletes the window because `autoDelete` is set.
+
+  The window is now tracked by a non-owning `juce::Component::SafePointer`, which nulls itself when JUCE performs that delete, so the reopen guard sees an empty slot and launches a fresh browser. `shutdown()` deletes the window only if it is still on screen, which cannot double-free because `Component::~Component` makes the modal manager drop its auto-delete claim first. The scan itself was never implicated -- it is simply what makes you close and reopen the window.
+
+- **Instruments were named `fx_N` on the canvas.** Adding Surge XT produced `fx_1` while its effects build produced `fx_2`, with nothing to tell them apart. The node id prefix came from a probe-time guess -- no audio input, or a pure MIDI effect, meant "synth" -- and the assumption that an instrument has no audio input is simply false: Surge XT's only input bus is a stereo audio in, so it probed as `num_input_ch = 2` and fell through to `fx`. Classic synths with no audio input (Dexed) were classified correctly, which is why the gap went unnoticed.
+
+  The answer was already on disk and being discarded. A scanned `juce::PluginDescription` carries `isInstrument`, taken from the plugin's own declared category (VST3 `kInstrument`, AU `aumu`, LV2 `InstrumentPlugin`) -- `known_plugins.xml` records `isInstrument="1"` for Surge XT and `"0"` for Surge XT Effects -- but the add path dropped the whole description for anything with a real file path and let the probe guess again. The declared category is now threaded through to the naming step, which is exact rather than heuristic.
+
+  The probe heuristic stays as the fallback for the "Browse to file..." path, which has no scanned description. It was left alone deliberately: swept over the 36 installed plugins against the scanner's `isInstrument` as ground truth, the existing rule errs on 6, every one of them an instrument that also takes audio in (Surge XT, Cardinal, Quanta 2, plugdata, FilterscapeVA, Element). Every `accepts_midi`-based alternative tried was **twice as bad** (12 wrong), because plenty of effects accept MIDI -- Presswerk, Satin, BYOD, Glitch2, Replicant 3 among them. No probe-only rule separates the two cases, since an instantiated plugin does not expose its category; only the declared one can. The browse fallback therefore still guesses, always in the "instrument called fx" direction.
+
+  Note that ids are minted once when a node is added and then persist in the project file, so nodes in existing projects keep the names they were given.
+
+### Changed
+
+- **`-DMINIHOST_HEADLESS=OFF` did nothing and has been removed from the build.** It was a real `option()` when headless mode was introduced, toggling a single `minihost` target between the headless and full JUCE format classes. The desktop-app work replaced that with two sibling targets built from the same sources -- `minihost` (headless) and `minihost_gui` (non-headless) -- and dropped the option, but the flag was left behind in `make desktop`, in the CI desktop job, and across the docs. Nothing had read it since: CMake recorded it as `MINIHOST_HEADLESS:UNINITIALIZED=OFF`, and the generated compile line for `minihost` is byte-identical with and without it. It was worse than merely inert, because it reads as though it disables headless mode and does not -- `minihost` still compiles with `MINIHOST_HEADLESS=1` when you pass `OFF`.
+
+  The compile definition itself is untouched and still load-bearing: `target_compile_definitions(minihost PRIVATE MINIHOST_HEADLESS=1)` is what selects `VST3PluginFormatHeadless` and friends over the full formats, and `minihost_gui` deliberately never receives it. Only the command-line flag is gone.
+
+### Documentation
+
+- **The docs told you to disable headless mode with a flag that does nothing.** `README.md`, `docs/getting_started.md` and `docs/hosting_guide.md` all instructed `cmake -DMINIHOST_HEADLESS=OFF` to obtain GUI support, which silently had no effect for anyone who followed it. They now point at `-DMINIHOST_BUILD_GUI_LIB=ON`, which builds `libminihost_gui.a` -- the same sources against the full `juce_audio_processors` -- alongside the headless `libminihost.a`, both in one build tree. Verified from a clean configure, including that `minihost_gui` is a member of the default `all` target so the documented `cmake --build build` really does produce it. The comments in the top-level `CMakeLists.txt` and `docs/dev/desktop_app.md`, which described the same non-existent switch, were corrected too.
+
+### Testing
+
+- **`--plugin-browser-selftest`, and `tests/test_desktop_pluginbrowser.py` to drive it.** The Plugin Browser had no coverage, which is how a use-after-free on its most ordinary interaction survived. Clicking through the dialog cannot be automated here, so this follows the pattern the undo and autosave selftests already set: the load-bearing part -- the window's ownership across open, dismiss and reopen -- is driven end-to-end through a mode in the binary. Dismissal is asynchronous (the modal manager deletes on a later message-loop pass), so the steps run one per timer tick with the loop free to run in between, and dismissal goes through `setVisible(false)`, the exact path the close button and Escape take. It asserts that opening creates a window, that re-requesting while open reuses it rather than stacking a second, that the tracking pointer nulls itself once dismissed, and that reopening then yields a live, fully-formed window.
+
+  The test was checked against the bug rather than only against the fix: reverting to the old owning pointer and rebuilding makes it report `window still tracked after dismissal -- pointer is dangling or delete never ran` and then die of SIGSEGV, which is the reported crash. It deliberately does **not** compare window addresses across a dismissal -- the old window is freed before the new one is allocated, so the allocator may hand back the same block and address identity would prove nothing either way. An earlier draft asserted exactly that and failed for precisely this reason.
+
+  Unlike the other desktop selftests it maps real windows and so needs a window server rather than merely tolerating one. CI runs it on Linux only, under the existing xvfb prefix; it skips cleanly with no display and can still be run by hand on any platform that has one.
+
 ## [0.7.0]
 
 Closing the gap between what the library can do and what the shipped binaries expose. A survey of all 135 C API functions found the CLI using 41 of them and the desktop app 18, against 126 for the Python bindings -- with whole tiers (chains, buses) reachable from Python and from nothing else, and several entry points reachable from nothing at all.

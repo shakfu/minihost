@@ -121,8 +121,8 @@ The app is opt-in and off by default (it requires a non-headless build, so it is
 # headless library / CLI / wheel build in build/ untouched)
 make desktop
 
-# Or configure it by hand (requires MINIHOST_HEADLESS=OFF):
-cmake -B build-desktop -DMINIHOST_BUILD_DESKTOP=ON -DMINIHOST_HEADLESS=OFF
+# Or configure it by hand:
+cmake -B build-desktop -DMINIHOST_BUILD_DESKTOP=ON
 cmake --build build-desktop --config Release --target minihost_desktop
 
 # Build (if needed) and launch it (macOS)
@@ -170,8 +170,9 @@ make
 cmake -B build -DJUCE_PATH=/path/to/JUCE
 cmake --build build
 
-# Disable headless mode (enables GUI support)
-cmake -B build -DMINIHOST_HEADLESS=OFF
+# Also build the non-headless libminihost_gui.a (GUI support: plugin
+# editor windows). The headless libminihost.a is still built alongside it.
+cmake -B build -DMINIHOST_BUILD_GUI_LIB=ON
 cmake --build build
 ```
 

@@ -32,7 +32,7 @@ JUCE C++, single binary, statically linked.
 
 - Audio engine v2: `juce_audio_devices` `AudioIODeviceCallback` driving the same graph executor.
 
-- Plugin editor windows: JUCE's `AudioProcessorEditor`, hosted in a `DocumentWindow` per plugin instance. Requires `MINIHOST_HEADLESS=OFF` for the GUI build; the headless build of `libminihost` is unaffected (separate CMake target).
+- Plugin editor windows: JUCE's `AudioProcessorEditor`, hosted in a `DocumentWindow` per plugin instance. Requires the non-headless `minihost_gui` archive, which `MINIHOST_BUILD_DESKTOP=ON` builds; the headless `minihost` archive is a separate CMake target and is unaffected.
 
 - Project file: JSON, schema-versioned. See [Project file](#project-file).
 
@@ -40,7 +40,7 @@ Rationale for JUCE C++ over Python+Qt or Tauri+web:
 
 1. Plugin editor windows require a native window handle that composes with JUCE's `AudioProcessorEditor`. Other shells force either window embedding or an out-of-process editor daemon — both add a permanent IPC seam between UI and audio that JUCE-native avoids.
 
-2. `libminihost` is already JUCE. The GUI build flips `MINIHOST_HEADLESS=OFF` and adds `juce_gui_basics` to the same CMake project; nothing is reimplemented.
+2. `libminihost` is already JUCE. The GUI build compiles the same sources a second time against the full `juce_audio_processors` (the `minihost_gui` target) and adds `juce_gui_basics` to the same CMake project; nothing is reimplemented.
 
 3. The Python bindings remain the supported scripting surface. The desktop app is not a Python application.
 

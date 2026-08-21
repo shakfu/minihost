@@ -47,10 +47,12 @@ if(NOT DEFINED SKBUILD)
     add_subdirectory(projects/minihost_cpp)
 endif()
 
-# Desktop GUI application. Opt-in via -DMINIHOST_BUILD_DESKTOP=ON; requires
-# MINIHOST_HEADLESS=OFF (the app hosts plugin editor windows). Default OFF to
-# keep the headless library, CLI, and Python wheel builds unaffected. See
-# docs/dev/desktop_app.md.
+# Desktop GUI application. Opt-in via -DMINIHOST_BUILD_DESKTOP=ON. The app
+# hosts plugin editor windows, so it links the non-headless `minihost_gui`
+# sibling archive, which this option also builds; the headless `minihost`
+# archive used by the CLI and the Python wheel is built either way and is
+# unaffected. Default OFF so those builds do not pay for the JUCE GUI
+# modules. See docs/dev/desktop_app.md.
 option(MINIHOST_BUILD_DESKTOP "Build the minihost_desktop GUI application" OFF)
 if(MINIHOST_BUILD_DESKTOP)
     add_subdirectory(projects/minihost_desktop)

@@ -52,7 +52,7 @@ minihost is a C/Python library for hosting VST3, AudioUnit, and LV2 plugins. It 
 
 - Any scenario where plugin UI is not needed
 
-Headless mode can be disabled with `cmake -DMINIHOST_HEADLESS=OFF` if GUI support is needed.
+If GUI support is needed, `cmake -DMINIHOST_BUILD_GUI_LIB=ON` additionally builds `libminihost_gui.a`, a non-headless build of the same sources against the full `juce_audio_processors`; link that in place of `libminihost.a`.
 
 The API is pure C for maximum compatibility, though the implementation uses C++ and JUCE internally. There is also a Python API based on nanobind.
 
