@@ -83,6 +83,7 @@
 #include "minihost_vstpreset.h"
 #include "minihost_audiofile.h"
 #include "minihost_midi.h"
+#include "minihost_version.h"
 #include "canvas.h"
 #include "live.h"
 #include "plugin_scanner.h"
@@ -1245,7 +1246,11 @@ class DesktopApplication : public juce::JUCEApplication
 {
 public:
     const juce::String getApplicationName() override    { return "minihost"; }
-    const juce::String getApplicationVersion() override { return "0.0.0"; }
+    // Release version, generated from pyproject.toml into minihost_version.h
+    // by the top-level CMakeLists. Previously hardcoded "0.0.0", which meant
+    // the About box and the macOS bundle disagreed with every other artifact
+    // in a release.
+    const juce::String getApplicationVersion() override { return MINIHOST_VERSION; }
     bool moreThanOneInstanceAllowed() override          { return true; }
 
     void initialise(const juce::String& cmdLine) override

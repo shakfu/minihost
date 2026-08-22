@@ -2052,6 +2052,17 @@ Examples:
     )
 
     # Global options
+    # Long form only, matching minihost_c/minihost_cpp where the short -V is
+    # already taken by --verbose. Reports the release version alongside the C
+    # ABI version of the linked library -- two independent axes.
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=(
+            f"minihost {minihost.__version__}\n"
+            f"libminihost ABI {minihost.api_version_string()}"
+        ),
+    )
     parser.add_argument(
         "-r",
         "--sample-rate",

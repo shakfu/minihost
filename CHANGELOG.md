@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.7.1]
+
+### Changed
+
+- **The version was only consistent at the packaging layer; the shipped binaries could not report it.** CI already derived every artifact name from the `version` field in `pyproject.toml`, so a release *archive* was correctly stamped -- but nothing inside it was. `minihost_c` and `minihost_cpp` had no `--version` flag at all, and the desktop app's `getApplicationVersion()` returned a hardcoded `"0.0.0"`, which is also what landed in the macOS bundle's `CFBundleShortVersionString`. Given a binary on disk there was no way to tell which release it came from, and the desktop app actively claimed the wrong answer.
+
+  `pyproject.toml` is now the single source of truth for everything, not just the archive names. The top-level `CMakeLists.txt` resolves the release version once -- from `SKBUILD_PROJECT_VERSION` for wheel builds, by parsing the same `version = "..."` line for standalone builds -- and generates `minihost_version.h` from `cmake/minihost_version.h.in`. An INTERFACE target carries the include directory, and the three executables link it. Both CLI binaries and the Python CLI gained a `--version` flag reporting the release version and the linked library's C ABI version; the desktop app returns the real string and sets both macOS bundle version keys from it. The generated header is listed in `CMAKE_CONFIGURE_DEPENDS`, so a version bump re-runs configure with no other edit.
+
+  The long `--version` is deliberate in all three: `-V` is already `--verbose` in `minihost_c`, and the three CLIs are kept spelled the same way rather than one of them differing.
+
+  `MH_API_VERSION_*` in `minihost.h` is untouched and stays a separate axis -- it versions the C ABI, is bumped when struct layouts or entry points change, and is currently 2.8.0 against a 0.7.1 release. Merging the two would force an ABI bump on every release and vice versa.
+
+  The one remaining hand-maintained copy is `__version__` in `src/minihost/__init__.py`, kept a literal so importing the package costs no metadata lookup.
+
 ### Fixed
 
 - **Reopening the desktop Plugin Browser segfaulted.** Scanning worked, but closing the browser and opening it again took the app down. The window was launched with `DialogWindow::LaunchOptions::launchAsync()`, which enters the modal state with `deleteWhenDismissed = true` -- so the window frees *itself* on dismissal, and the `std::unique_ptr` the app held it in was left dangling the moment you closed it. The reopen path checked that pointer for null, found the stale address, and called `toFront()` on freed memory; `shutdown()` then double-freed the same block. The chain is entirely in JUCE and runs on both the close button and Escape: `closeButtonPressed` calls `setVisible(false)`, `ModalItem::componentVisibilityChanged` sees the window is no longer showing and cancels the modal item, and `~ModalItem` deletes the window because `autoDelete` is set.
@@ -27,6 +41,10 @@
 - **The docs told you to disable headless mode with a flag that does nothing.** `README.md`, `docs/getting_started.md` and `docs/hosting_guide.md` all instructed `cmake -DMINIHOST_HEADLESS=OFF` to obtain GUI support, which silently had no effect for anyone who followed it. They now point at `-DMINIHOST_BUILD_GUI_LIB=ON`, which builds `libminihost_gui.a` -- the same sources against the full `juce_audio_processors` -- alongside the headless `libminihost.a`, both in one build tree. Verified from a clean configure, including that `minihost_gui` is a member of the default `all` target so the documented `cmake --build build` really does produce it. The comments in the top-level `CMakeLists.txt` and `docs/dev/desktop_app.md`, which described the same non-existent switch, were corrected too.
 
 ### Testing
+
+- **`tests/test_release_version.py`, which makes version drift un-mergeable.** The single-source-of-truth arrangement above is only worth anything if a violation fails the build rather than being noticed at release time. The tests assert that `minihost.__version__`, the `CHANGELOG.md` section heading, the Python CLI's `--version` and both native CLIs' `--version` all agree with `pyproject.toml`, and that `cmake/minihost_version.h.in` still contains placeholders rather than a literal that escaped into the template. The native-binary checks skip when there is no standalone build tree, since `make test` builds a wheel.
+
+  Checked against the failure it is meant to catch, not only against the fix: bumping `pyproject.toml` to a version nothing else knows about fails five of the seven tests, one per location that would otherwise have drifted silently.
 
 - **`--plugin-browser-selftest`, and `tests/test_desktop_pluginbrowser.py` to drive it.** The Plugin Browser had no coverage, which is how a use-after-free on its most ordinary interaction survived. Clicking through the dialog cannot be automated here, so this follows the pattern the undo and autosave selftests already set: the load-bearing part -- the window's ownership across open, dismiss and reopen -- is driven end-to-end through a mode in the binary. Dismissal is asynchronous (the modal manager deletes on a later message-loop pass), so the steps run one per timer tick with the loop free to run in between, and dismissal goes through `setVisible(false)`, the exact path the close button and Escape take. It asserts that opening creates a window, that re-requesting while open reuses it rather than stacking a second, that the tracking pointer nulls itself once dismissed, and that reopening then yields a live, fully-formed window.
 

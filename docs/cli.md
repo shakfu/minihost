@@ -12,6 +12,18 @@ minihost [-r SAMPLE_RATE] [-b BLOCK_SIZE] <command> [options]
 |--------|---------|-------------|
 | `-r, --sample-rate` | 48000 | Sample rate in Hz |
 | `-b, --block-size` | 512 | Block size in samples |
+| `--version` | | Print the release version and exit |
+
+`--version` reports two independent things: the minihost release version, and the C ABI
+version of the `libminihost` the binary is linked against. Quote both when filing a bug.
+It is spelled the same way in all three CLIs -- long form only, since `-V` is already
+`--verbose` in `minihost_c`.
+
+```console
+$ minihost --version
+minihost 0.7.1
+libminihost ABI 2.8.0
+```
 
 ## Commands
 
@@ -258,7 +270,9 @@ they diverge.
 They cover the single-plugin commands (`probe`, `scan`, `info`, `params`, `get-param`,
 `set-param`, `presets`, `devices`, `midi`, `play`, `load-preset`, `save-state`,
 `load-state`, `process`, `morph`, `resample`) plus the two routing commands below. Run
-either binary with no arguments for its full option list.
+either binary with no arguments for its full option list, or with `--version` to identify
+the build -- both report the same release version as the Python CLI, since all three read
+it from the `version` field in `pyproject.toml`.
 
 ### Naming plugins
 

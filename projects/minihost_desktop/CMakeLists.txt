@@ -42,6 +42,7 @@ target_link_libraries(minihost_desktop PRIVATE
     minihost_gui
     minihost_audio_gui
     midifile
+    minihost_version
     juce::juce_core
     juce::juce_data_structures
     juce::juce_events
@@ -77,10 +78,15 @@ if(MSVC)
 endif()
 
 if(APPLE)
+    # Both bundle version keys come from MINIHOST_VERSION (pyproject.toml via
+    # the top-level CMakeLists), so Finder's "Get Info", the About box and the
+    # release archive name all report the same string.
     set_target_properties(minihost_desktop PROPERTIES
         MACOSX_BUNDLE TRUE
         MACOSX_BUNDLE_BUNDLE_NAME "minihost"
         MACOSX_BUNDLE_GUI_IDENTIFIER "dev.minihost.desktop"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${MINIHOST_VERSION}"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${MINIHOST_VERSION}"
     )
     target_link_libraries(minihost_desktop PRIVATE
         "-framework AudioUnit"

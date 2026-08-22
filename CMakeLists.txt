@@ -1,11 +1,57 @@
 cmake_minimum_required(VERSION 3.20)
 
+# Single source of truth for the release version: the `version` field in
+# pyproject.toml. Wheel builds get it handed to them by scikit-build-core as
+# SKBUILD_PROJECT_VERSION; standalone builds parse the same line out of the
+# same file. Nothing else in the tree is allowed to spell the version out --
+# the CLI binaries and the desktop app read it from the generated
+# minihost_version.h below, so they cannot drift apart from the Python
+# package. tests/test_release_version.py enforces this.
+#
+# Note this is NOT the MH_API_VERSION_* in projects/libminihost/minihost.h:
+# that versions the C ABI and is bumped on its own schedule.
+if(DEFINED SKBUILD_PROJECT_VERSION)
+    set(MINIHOST_VERSION "${SKBUILD_PROJECT_VERSION}")
+else()
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/pyproject.toml" _minihost_pyproject)
+    string(REGEX MATCH "\nversion = \"([0-9]+\\.[0-9]+\\.[0-9]+[^\"]*)\""
+           _minihost_version_match "\n${_minihost_pyproject}")
+    if(NOT CMAKE_MATCH_1)
+        message(FATAL_ERROR
+            "Could not read 'version = \"X.Y.Z\"' from pyproject.toml. "
+            "The release version has exactly one source of truth; fix it there.")
+    endif()
+    set(MINIHOST_VERSION "${CMAKE_MATCH_1}")
+endif()
+
 # Handle scikit-build-core vs standalone build
 if(DEFINED SKBUILD_PROJECT_NAME)
     project(${SKBUILD_PROJECT_NAME} VERSION ${SKBUILD_PROJECT_VERSION} LANGUAGES C CXX)
 else()
-    project(minihost C CXX)
+    project(minihost VERSION ${MINIHOST_VERSION} LANGUAGES C CXX)
 endif()
+
+# project() splits the version for us; re-derive the parts for the header.
+set(MINIHOST_VERSION_MAJOR ${PROJECT_VERSION_MAJOR})
+set(MINIHOST_VERSION_MINOR ${PROJECT_VERSION_MINOR})
+set(MINIHOST_VERSION_PATCH ${PROJECT_VERSION_PATCH})
+
+# Generate minihost_version.h and expose it as an INTERFACE target. Any target
+# that wants to report its version links `minihost_version` and includes
+# <minihost_version.h>; the header is regenerated whenever pyproject.toml
+# changes, so a version bump needs no other edit.
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/minihost_version.h.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/minihost_version.h"
+    @ONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+             "${CMAKE_CURRENT_SOURCE_DIR}/pyproject.toml")
+
+add_library(minihost_version INTERFACE)
+target_include_directories(minihost_version
+    INTERFACE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+
+message(STATUS "minihost release version: ${MINIHOST_VERSION}")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

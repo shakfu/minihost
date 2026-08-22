@@ -8,6 +8,7 @@
 #include "minihost_audiofile.h"
 #include "minihost_midi.h"
 #include "minihost_vstpreset.h"
+#include "minihost_version.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,12 +41,13 @@ static void sigint_handler(int sig) {
 // ============================================================================
 
 static void print_usage(const char* prog) {
-    printf("minihost - Audio plugin hosting CLI (C version)\n\n");
+    printf("minihost %s - Audio plugin hosting CLI (C version)\n\n", MINIHOST_VERSION);
     printf("Usage: %s [OPTIONS] COMMAND [ARGS]\n\n", prog);
     printf("Global Options:\n");
     printf("  -r, --rate RATE      Sample rate in Hz (default: 48000)\n");
     printf("  -b, --block SIZE     Block size in samples (default: 512)\n");
-    printf("  -h, --help           Show this help message\n\n");
+    printf("  -h, --help           Show this help message\n");
+    printf("      --version        Show the minihost release version and exit\n\n");
     printf("Commands:\n");
     printf("  probe PLUGIN            Get plugin metadata without loading\n");
     printf("  scan [DIRECTORY]        Scan for plugins (default: this platform's locations)\n");
@@ -2767,6 +2769,14 @@ int main(int argc, char** argv) {
 
         if (str_eq(opt, "-h") || str_eq(opt, "--help")) {
             print_usage(argv[0]);
+            return 0;
+        } else if (str_eq(opt, "--version")) {
+            /* Release version (from pyproject.toml via minihost_version.h),
+             * then the C ABI version of the linked library -- two independent
+             * axes, both worth knowing when triaging a bug report. Note the
+             * short -V is already taken by --verbose. */
+            printf("minihost %s\n", MINIHOST_VERSION);
+            printf("libminihost ABI %s\n", mh_api_version_string());
             return 0;
         } else if (str_eq(opt, "-r") || str_eq(opt, "--rate")) {
             if (cmd_index + 1 >= argc) {

@@ -79,6 +79,35 @@ If you change the schema and forget one parser, those tests fail.
 
 Generating one parser from the other (e.g. via a JSON-schema codegen) would close the gap structurally; the current hand-maintained mirror is acceptable because the schema is small (4 node kinds, 1 edge kind, optional layout) and changes infrequently.
 
+## Version identity
+
+Two versions run on independent schedules and should not be confused.
+
+**The release version** is what a user means by "which minihost is this". It has exactly one source of truth: the `version` field in `pyproject.toml`. Everything else derives from it, so bumping a release is a one-line edit plus a mirror:
+
+| Consumer | How it gets the version |
+|---|---|
+| Python package | `__version__` in `src/minihost/__init__.py` -- the one hand-maintained copy, kept a literal so `import minihost` costs no metadata lookup |
+| Wheel build | `SKBUILD_PROJECT_VERSION`, handed to CMake by scikit-build-core |
+| Standalone CMake build | the top-level `CMakeLists.txt` parses the same `version = "..."` line |
+| `minihost_c`, `minihost_cpp`, `minihost_desktop` | `MINIHOST_VERSION` from the generated `minihost_version.h` |
+| macOS app bundle | `MACOSX_BUNDLE_SHORT_VERSION_STRING` / `..._BUNDLE_VERSION`, set from `MINIHOST_VERSION` |
+| CI artifact and archive names | the tag on `refs/tags/v*` builds, otherwise the same `pyproject.toml` line |
+
+`cmake/minihost_version.h.in` is configured into `${CMAKE_BINARY_DIR}/generated/minihost_version.h` and exposed by the `minihost_version` INTERFACE target; a target that wants to report its version links that target and includes the header. `pyproject.toml` is in `CMAKE_CONFIGURE_DEPENDS`, so editing it re-runs configure on the next build.
+
+All three CLIs answer `--version` with the release version and the linked library's ABI version. The long form is used everywhere because `-V` is already `--verbose` in `minihost_c`.
+
+**The C ABI version** is `MH_API_VERSION_{MAJOR,MINOR,PATCH}` in `projects/libminihost/minihost.h`, currently 2.8.0 against a 0.7.1 release. It moves when struct layouts or entry points change, which is what lets a wheel detect a mismatched separately-installed library. Tying it to the release version would force an ABI bump on every release and a release on every ABI bump, so the two are kept apart.
+
+### Bumping a release
+
+1. Edit `version` in `pyproject.toml`.
+2. Mirror it into `__version__` in `src/minihost/__init__.py`.
+3. Add the matching `## [X.Y.Z]` section to `CHANGELOG.md`.
+
+`tests/test_release_version.py` fails if any of these disagree, or if a CLI binary in the build tree reports something else. Nothing else needs editing -- the generated header picks the new value up on the next configure.
+
 ## Where changes propagate
 
 | Change in… | Affects Python wheel? | Affects desktop? |
@@ -90,6 +119,7 @@ Generating one parser from the other (e.g. via a JSON-schema codegen) would clos
 | `projects/minihost_desktop/src/project.{h,cpp}`     | No                    | Yes                 |
 | Schema doc-of-truth (the JSON shape itself) | Both -- must hand-port to both parsers |  |
 | `src/minihost/_core.cpp` (nanobind bindings)        | Yes                   | No                  |
+| `version` in `pyproject.toml`                        | Yes                   | Yes (via `minihost_version.h`) |
 | `projects/minihost_desktop/src/canvas.{h,cpp}` etc. | No                    | Yes                 |
 
 ## Build target topology

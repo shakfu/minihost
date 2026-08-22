@@ -8,6 +8,7 @@
 #include "minihost_audiofile.h"
 #include "minihost_midi.h"
 #include "minihost_vstpreset.h"
+#include "minihost_version.h"
 #include <filesystem>
 #include <sstream>
 #include "MidiFile.h"
@@ -2495,6 +2496,14 @@ int main(int argc, char** argv) {
 
     CLI::App app{"minihost - Audio plugin hosting CLI"};
     app.require_subcommand(1);
+
+    // Release version (from pyproject.toml via minihost_version.h) plus the C
+    // ABI version of the linked library -- two independent axes, both worth
+    // knowing when triaging a bug report. Long form only, matching minihost_c
+    // where the short -V is already --verbose.
+    app.set_version_flag("--version",
+                         std::string("minihost ") + MINIHOST_VERSION + "\n"
+                         + "libminihost ABI " + mh_api_version_string());
 
     // Global options
     double sample_rate = 48000.0;
