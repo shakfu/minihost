@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.7.2]
+
+### Testing
+
+- **A Native CLI workflow, because CI only ever built the native binaries in Release.** `build-cli` compiles `minihost_c` and `minihost_cpp` on three platforms and runs the CLI suite against them, but Release compiles out every `assert()` and licenses the optimizer to delete observable undefined behaviour, so a whole class of defect in the CLIs and `libminihost` was invisible to it. `.github/workflows/native.yml` adds the two configurations that can see those defects: a Debug matrix across macOS, Linux and Windows gating pushes and PRs that touch the native sources, and an ASan+UBSan job on Linux running weekly and on demand.
+
+  The sanitizer job is kept off the PR path deliberately -- it is a fully instrumented rebuild of JUCE and `libminihost`, far too slow to sit in front of every change, and its value is finding latent bugs rather than guarding a specific diff. Both jobs live outside the Build workflow for the reasons `tsan.yml` already documents: the binaries they produce must never ship, and neither should be able to block a release by failing on something unrelated to the published artifacts.
+
+  Build flags, sanitizer options and test selection live in `make cli-debug` / `make cli-asan` rather than in the YAML, so a developer runs exactly what CI runs and the two cannot drift. Leak detection is off by default: JUCE holds deliberately-immortal singletons to process exit, so LeakSanitizer reports them every run and would bury the real findings; turning it on (`make cli-asan ASAN_DETECT_LEAKS=1`) needs a suppression file first. clang is pinned in the sanitizer job for the same reason `tsan.yml` pins `clang++` -- it is the toolchain the flags were verified against, and a gcc failure would be ambiguous between a real bug and a different sanitizer.
+
+  Both configurations were built and run before the workflow was written, cold from an empty build directory. Neither reports anything today, so the jobs start green rather than being born red; the ASan runtime is confirmed genuinely linked in (46 `__asan` symbols, 14 `__ubsan` handlers) rather than silently dropped by the build.
+
+### Fixed
+
+- **`tests/test_release_version.py` could not see the native binaries on Windows, and broke any CI job without the wheel.** Two defects in the guard added in 0.7.1. It hardcoded the single-config binary layout (`build/projects/<name>/<name>`), which the Visual Studio generator does not produce -- so on the one platform where the layout differs it *skipped* rather than failed, quietly losing exactly the coverage it exists to provide. It also did `import minihost` at module scope, which turns any job that installs pytest without building the wheel into a collection error, taking the binary checks down with it.
+
+  The locator that `test_cli_conformance.py` already had -- it knows the `Release/<name>.exe` layout and honours `MINIHOST_C_BIN` / `MINIHOST_CPP_BIN` -- moved to `tests/cli_helpers.py` and is now shared by both, following the `desktop_helpers.py` convention rather than being copied and left to drift. The package import became lazy, so the pyproject/CHANGELOG/template/binary checks all run with only pytest installed and the two package-dependent cases skip. Verified against a bare virtualenv holding nothing but pytest: 5 pass, 2 skip.
+
 ## [0.7.1]
 
 ### Changed

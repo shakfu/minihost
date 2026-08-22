@@ -1,0 +1,217 @@
+name: Native CLI
+
+# Kept out of the main Build workflow on purpose, for the same reasons as
+# tsan.yml: the binaries these jobs produce are Debug or sanitizer-instrumented
+# and must never be shipped, and neither job should be able to block a release
+# by failing on something unrelated to the artifacts being published.
+#
+# What this adds over build-cli in build.yml, which already compiles both
+# native binaries on three platforms and runs the CLI suite against them:
+# build-cli only ever builds Release. That configuration compiles out every
+# assert() and hands the optimizer licence to delete the undefined behaviour
+# that would otherwise be observable, so a whole class of defect in
+# minihost_c / minihost_cpp / libminihost is invisible to it. These jobs build
+# the same binaries in the two configurations that can see those defects.
+#
+# Triggers:
+#   - the Debug matrix gates pushes and PRs that touch the native sources, the
+#     CLI tests, or the build files that shape them. It is a plain build plus
+#     the same pytest files build-cli runs, so gating those paths costs one
+#     compile and catches an assertion regression at review time.
+#   - the sanitizer job is weekly and on demand only. It is a full
+#     instrumented rebuild of JUCE and libminihost on one runner, far too slow
+#     to sit in front of every PR, and its value is finding latent memory and
+#     UB bugs rather than guarding a specific diff.
+
+on:
+  push:
+    branches: [main]
+    # NOTE: this list is duplicated under pull_request below. GitHub Actions
+    # does not support YAML anchors, so the two must be kept in sync by hand.
+    paths:
+      - 'projects/minihost_c/**'
+      - 'projects/minihost_cpp/**'
+      - 'projects/libminihost/**'
+      - 'projects/libminihost_audio/**'
+      - 'tests/test_cli_conformance.py'
+      - 'tests/test_release_version.py'
+      - 'tests/cli_helpers.py'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'Makefile'
+      - '.github/workflows/native.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'projects/minihost_c/**'
+      - 'projects/minihost_cpp/**'
+      - 'projects/libminihost/**'
+      - 'projects/libminihost_audio/**'
+      - 'tests/test_cli_conformance.py'
+      - 'tests/test_release_version.py'
+      - 'tests/cli_helpers.py'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'Makefile'
+      - '.github/workflows/native.yml'
+  schedule:
+    # Mondays 07:00 UTC, an hour after the tsan run so a bad toolchain update
+    # shows up in both without them competing for runners.
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+
+jobs:
+  debug:
+    name: Debug build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # Skipped on the weekly cron: nothing has changed since the last push that
+    # ran it, and the sanitizer job below is the point of the scheduled run.
+    if: github.event_name != 'schedule'
+    # A Debug build of JUCE is slower to compile than Release and the tests
+    # themselves take seconds, so the cap is dominated by the compile. Well
+    # under the 6h default so a hang fails fast.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            cmake-args: ""
+            c-bin: build-debug/projects/minihost_c/minihost_c
+            cpp-bin: build-debug/projects/minihost_cpp/minihost_cpp
+          - os: ubuntu-22.04
+            cmake-args: ""
+            c-bin: build-debug/projects/minihost_c/minihost_c
+            cpp-bin: build-debug/projects/minihost_cpp/minihost_cpp
+          # The Visual Studio generator is multi-config, so the binaries land
+          # under a per-config directory that the Unix layouts do not have.
+          - os: windows-2022
+            cmake-args: -G "Visual Studio 17 2022"
+            c-bin: build-debug/projects/minihost_c/Debug/minihost_c.exe
+            cpp-bin: build-debug/projects/minihost_cpp/Debug/minihost_cpp.exe
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libfreetype6-dev \
+            libfontconfig1-dev \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libgl1-mesa-dev \
+            libcurl4-openssl-dev \
+            pkg-config
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Download JUCE
+        run: python scripts/download_juce.py
+
+      - name: Configure CMake (Debug)
+        run: cmake -B build-debug -DCMAKE_BUILD_TYPE=Debug ${{ matrix.cmake-args }}
+
+      # Only the two CLI targets, not the whole `all` target: the desktop app
+      # and the GUI libraries are not what this job is about and would roughly
+      # double the compile.
+      - name: Build CLI binaries (Debug)
+        run: >
+          cmake --build build-debug --config Debug
+          --target minihost_c minihost_cpp
+
+      - name: Install pytest
+        run: python -m pip install pytest
+
+      # The minihost wheel is deliberately NOT installed -- this job is about
+      # the native binaries, and building it would cost a second full compile.
+      # test_release_version.py skips its two package-dependent cases in that
+      # environment and still checks that both binaries report the release
+      # version from pyproject.toml. Everything in test_cli_conformance.py that
+      # needs a plugin skips too; no runner has one installed.
+      #
+      # The binaries are pinned by env var rather than left to the locator's
+      # newest-mtime search, so this cannot silently test a stale Release build
+      # left in build/ by another step.
+      - name: Run CLI tests against the Debug binaries
+        shell: bash
+        timeout-minutes: 15
+        env:
+          MINIHOST_C_BIN: ${{ matrix.c-bin }}
+          MINIHOST_CPP_BIN: ${{ matrix.cpp-bin }}
+        run: >
+          python -m pytest -v
+          tests/test_cli_conformance.py
+          tests/test_release_version.py
+
+      # Supervised scanning spawns a process per plugin and is the most
+      # platform-sensitive part of the CLI, so it is worth running in Debug
+      # too -- the fake worker makes it runnable with no plugins installed.
+      - name: Supervised scan (Debug)
+        shell: bash
+        timeout-minutes: 10
+        env:
+          MINIHOST_C_BIN: ${{ matrix.c-bin }}
+          MINIHOST_CPP_BIN: ${{ matrix.cpp-bin }}
+        run: python -m pytest -v tests/test_scan_supervised.py
+
+  sanitizers:
+    name: ASan + UBSan
+    runs-on: ubuntu-22.04
+    # Weekly and on demand only -- see the trigger notes at the top.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # An instrumented rebuild of JUCE plus libminihost is the whole cost here;
+    # the tests run in seconds. Generous cap because ASan roughly doubles
+    # compile time, but still far below the 6h default.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libfreetype6-dev \
+            libfontconfig1-dev \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libgl1-mesa-dev \
+            libcurl4-openssl-dev \
+            pkg-config
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install pytest
+        run: python -m pip install pytest
+
+      # The build flags, sanitizer options and test selection live in the
+      # `cli-asan` Makefile target rather than here, so a developer runs
+      # exactly what CI runs with `make cli-asan` and the two cannot drift.
+      # PYTEST overrides the target's default `uv run pytest`, which would
+      # sync the project and build the Python wheel -- pure waste in a job
+      # whose subject is the native binaries.
+      #
+      # Leak detection is off by default (ASAN_DETECT_LEAKS in the Makefile).
+      # JUCE holds deliberately-immortal singletons to process exit, so
+      # LeakSanitizer reports them every run; they are by design, and letting
+      # them through would bury the real findings. Turning it on needs a
+      # suppression file first.
+      #
+      # clang is pinned for the same reason tsan.yml pins clang++: it is the
+      # toolchain the sanitizer flags in the Makefile were verified against,
+      # and gcc's ASan/UBSan differ enough in diagnostics and runtime linkage
+      # that letting the runner default decide would make a failure here
+      # ambiguous between "real bug" and "different sanitizer".
+      - name: Build with ASan + UBSan and run the CLI tests
+        env:
+          CC: clang
+          CXX: clang++
+        run: make cli-asan PYTEST="python -m pytest"

@@ -27,7 +27,21 @@ from pathlib import Path
 
 import pytest
 
-import minihost
+from cli_helpers import find_cli_binary
+
+# Imported lazily by the two tests that need it, NOT at module scope. The
+# native-binary checks below are the point of this file in the CLI/sanitizer CI
+# jobs, and those jobs install pytest without building the minihost wheel -- a
+# module-level `import minihost` would turn that into a collection error and
+# take the binary coverage down with it.
+try:
+    import minihost
+except ImportError:  # pragma: no cover - exercised only in package-less CI
+    minihost = None  # type: ignore[assignment]
+
+needs_package = pytest.mark.skipif(
+    minihost is None, reason="minihost package not installed in this environment"
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
@@ -41,6 +55,7 @@ def _pyproject_version() -> str:
     return match.group(1)
 
 
+@needs_package
 def test_package_version_matches_pyproject():
     assert minihost.__version__ == _pyproject_version(), (
         "minihost.__version__ has drifted from pyproject.toml. pyproject.toml "
@@ -76,6 +91,7 @@ def test_version_header_template_is_versionless():
         assert f"#define MINIHOST_VERSION_{part} @MINIHOST_VERSION_{part}@" in template
 
 
+@needs_package
 def test_python_cli_reports_the_release_version():
     result = subprocess.run(
         [sys.executable, "-m", "minihost.cli", "--version"],
@@ -90,17 +106,21 @@ def test_python_cli_reports_the_release_version():
 
 # The native binaries are only present in a standalone CMake build tree, which
 # `make test` (a wheel build) does not produce. Check them when they are there
-# rather than skipping the coverage entirely.
+# rather than skipping the coverage entirely. The locator is shared with
+# tests/test_cli_conformance.py so this knows about the Visual Studio layout
+# (Release/<name>.exe) too -- a Unix-only path list would *skip* on Windows
+# rather than fail, quietly losing the coverage on the one platform where the
+# build layout differs.
 _NATIVE_CLIS = [
-    REPO_ROOT / "build" / "projects" / "minihost_c" / "minihost_c",
-    REPO_ROOT / "build" / "projects" / "minihost_cpp" / "minihost_cpp",
+    ("minihost_c", find_cli_binary("minihost_c", "MINIHOST_C_BIN")),
+    ("minihost_cpp", find_cli_binary("minihost_cpp", "MINIHOST_CPP_BIN")),
 ]
 
 
-@pytest.mark.parametrize("binary", _NATIVE_CLIS, ids=lambda p: p.name)
-def test_native_cli_reports_the_release_version(binary: Path):
-    if not binary.exists():
-        pytest.skip(f"{binary.name} not built (standalone cmake build only)")
-    result = subprocess.run([str(binary), "--version"], capture_output=True, text=True)
+@pytest.mark.parametrize("name,binary", _NATIVE_CLIS, ids=[n for n, _ in _NATIVE_CLIS])
+def test_native_cli_reports_the_release_version(name: str, binary: str | None):
+    if binary is None:
+        pytest.skip(f"{name} not built (standalone cmake build only)")
+    result = subprocess.run([binary, "--version"], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert f"minihost {_pyproject_version()}" in result.stdout

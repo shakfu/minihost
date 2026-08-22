@@ -3,7 +3,8 @@
 
 .PHONY: all juce cli sync build rebuild test wheel sdist clean distclean help \
 		check publish-test publish lint lint-fix format format-check \
-		typecheck qa docs docs-serve docs-deploy desktop run-desktop tsan
+		typecheck qa docs docs-serve docs-deploy desktop run-desktop tsan \
+		cli-debug cli-asan
 
 # Default target - build Python bindings
 all: build
@@ -51,6 +52,62 @@ tsan:
 		-o build/tsan_ringbuffer_stress
 	@TSAN_OPTIONS="halt_on_error=1 $(TSAN_OPTIONS)" \
 		TSAN_STRESS_N=$(or $(N),200000) ./build/tsan_ringbuffer_stress
+
+# The two native CLI binaries built in configurations the Release build in CI
+# does not exercise. Both use their own build dir so the Release build/ tree
+# the wheel and the shipped binaries come from stays untouched, and both point
+# the test suite at what they just built via MINIHOST_C_BIN / MINIHOST_CPP_BIN
+# rather than relying on the newest-mtime search.
+#
+# CLI_TESTS is the subset that runs without a plugin installed -- which is the
+# subset CI can actually run. Override it to widen the sweep locally:
+#   make cli-asan MINIHOST_TEST_PLUGIN=/path/to/some.vst3
+CLI_TESTS ?= tests/test_cli_conformance.py tests/test_release_version.py
+
+# `uv run` would sync the project first, i.e. build the Python wheel -- pure
+# waste in a job whose subject is the native binaries. CI overrides this with
+# a plain interpreter that has only pytest installed:
+#   make cli-asan PYTEST="python -m pytest"
+# test_release_version.py skips its two package-dependent cases in that
+# environment and still checks the binaries.
+PYTEST ?= uv run pytest
+
+# Debug build: assertions live, no optimizer. Catches the JUCE and libminihost
+# assert()s that a Release build compiles out entirely.
+cli-debug: juce
+	@cmake -B build-debug -DCMAKE_BUILD_TYPE=Debug
+	@cmake --build build-debug --config Debug --target minihost_c minihost_cpp
+	@MINIHOST_C_BIN="$(CURDIR)/build-debug/projects/minihost_c/minihost_c" \
+	 MINIHOST_CPP_BIN="$(CURDIR)/build-debug/projects/minihost_cpp/minihost_cpp" \
+		$(PYTEST) -v $(CLI_TESTS)
+
+# AddressSanitizer + UndefinedBehaviorSanitizer. RelWithDebInfo (not Debug)
+# because ASan wants -O1 and frame pointers for usable stacks and tolerable
+# runtimes. -fno-sanitize-recover makes a UB finding fail the run rather than
+# print and continue, so CI cannot go green over one.
+#
+# Leak detection is off by default. JUCE keeps deliberately-immortal singletons
+# (the format manager, the message-manager instance) alive to process exit, so
+# LeakSanitizer -- which is Linux-only anyway, and a no-op on macOS -- reports
+# them every run. Those are by-design, not bugs, and drowning the real ASan
+# findings in them would make the job unreadable. Turn it on deliberately once
+# there is a suppression file:  make cli-asan ASAN_DETECT_LEAKS=1
+ASAN_DETECT_LEAKS ?= 0
+ASAN_FLAGS = -fsanitize=address,undefined -fno-omit-frame-pointer \
+			 -fno-sanitize-recover=undefined -g
+
+cli-asan: juce
+	@cmake -B build-asan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_C_FLAGS="$(ASAN_FLAGS)" \
+		-DCMAKE_CXX_FLAGS="$(ASAN_FLAGS)" \
+		-DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+	@cmake --build build-asan --config RelWithDebInfo \
+		--target minihost_c minihost_cpp
+	@ASAN_OPTIONS="detect_leaks=$(ASAN_DETECT_LEAKS) abort_on_error=1" \
+	 UBSAN_OPTIONS="print_stacktrace=1 halt_on_error=1" \
+	 MINIHOST_C_BIN="$(CURDIR)/build-asan/projects/minihost_c/minihost_c" \
+	 MINIHOST_CPP_BIN="$(CURDIR)/build-asan/projects/minihost_cpp/minihost_cpp" \
+		$(PYTEST) -v $(CLI_TESTS)
 
 # Build the desktop GUI app (non-headless) into its own build dir so the
 # headless library / CLI / Python wheel build in build/ stays untouched.
@@ -181,6 +238,8 @@ help:
 	@echo "  typecheck    - Run mypy type checker"
 	@echo "  qa           - Non-mutating gate: test, lint, format-check, typecheck"
 	@echo "  tsan         - ThreadSanitizer ring-buffer stress test"
+	@echo "  cli-debug    - Build native CLIs with assertions on, run CLI tests"
+	@echo "  cli-asan     - Build native CLIs with ASan+UBSan, run CLI tests"
 	@echo "  wheel        - Build wheel distribution"
 	@echo "  sdist        - Build source distribution"
 	@echo "  check        - Check distribution with twine"

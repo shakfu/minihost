@@ -27,6 +27,8 @@ from pathlib import Path
 
 import pytest
 
+from cli_helpers import find_cli_binary
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 PLUGIN = (
@@ -34,31 +36,8 @@ PLUGIN = (
 )
 
 
-def _find_binary(name: str, env_var: str) -> str | None:
-    """Locate a CLI binary via env var or common build locations.
-
-    Among the build-directory candidates the most recently built one wins,
-    so a fresh standalone build (e.g. ``build-cli/``) is preferred over a
-    stale artifact left in ``build/`` from an earlier configuration.
-    """
-    env = os.environ.get(env_var)
-    if env and os.path.exists(env):
-        return env
-    candidates = [
-        _REPO_ROOT / "build" / "projects" / name / name,
-        _REPO_ROOT / "build" / "projects" / name / "Release" / f"{name}.exe",
-        _REPO_ROOT / "build-cli" / "projects" / name / name,
-        _REPO_ROOT / "build-cli" / "projects" / name / "Release" / f"{name}.exe",
-        _REPO_ROOT / "build-desktop" / "projects" / name / name,
-    ]
-    existing = [c for c in candidates if c.exists()]
-    if not existing:
-        return None
-    return str(max(existing, key=lambda p: p.stat().st_mtime))
-
-
-C_BIN = _find_binary("minihost_c", "MINIHOST_C_BIN")
-CPP_BIN = _find_binary("minihost_cpp", "MINIHOST_CPP_BIN")
+C_BIN = find_cli_binary("minihost_c", "MINIHOST_C_BIN")
+CPP_BIN = find_cli_binary("minihost_cpp", "MINIHOST_CPP_BIN")
 
 # The binaries are required by every test here. The plugin is not: the
 # resample and error-path tests below run without one, which is what lets
