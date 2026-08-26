@@ -17,6 +17,7 @@ set(_minihost_audio_sources
     minihost_audiofile.c
     midi_ringbuffer.cpp
     param_ringbuffer.cpp
+    transport_ringbuffer.cpp
     audio_ringbuffer.cpp
     minihost_midi.cpp
     minihost_osc.cpp

@@ -17,6 +17,7 @@ extern "C" {
 
 // Forward declarations - require minihost.h/minihost_chain.h for actual use
 typedef struct MH_Plugin MH_Plugin;
+typedef struct MH_TransportInfo MH_TransportInfo;
 typedef struct MH_PluginChain MH_PluginChain;
 
 typedef struct MH_AudioDevice MH_AudioDevice;
@@ -169,6 +170,65 @@ int mh_audio_is_midi_output_virtual(MH_AudioDevice* dev);
 // two producers on an SPSC structure, corrupting its indices and losing or
 // duplicating events. Returns 1 if queued, 0 if the ring is full.
 int mh_audio_send_midi(MH_AudioDevice* dev, unsigned char status, unsigned char data1, unsigned char data2);
+
+// ---------------------------------------------------------------------------
+// Host playhead
+// ---------------------------------------------------------------------------
+//
+// Until this existed the live device had no transport at all: it never called
+// mh_set_transport, so a tempo-synced delay, an arpeggiator or an LFO running
+// under mh_audio_* saw no host tempo and a playhead pinned at sample 0.
+// Offline renders had one; realtime did not.
+//
+// The audio thread owns the transport and is its only writer. These setters
+// post commands to a lock-free ring which it drains at the top of each block,
+// so a change never tears and never blocks the caller. That also means a
+// setter's effect is visible one block later, which for tempo and playback
+// state is inaudible and for correctness is the point.
+//
+// Call the setters from a single thread (they share one producer ring).
+// Transport is off by default: a device that does not enable it behaves
+// exactly as before, passing no playhead to the plugin.
+
+// Enable or disable the host playhead. When disabled the plugin is told there
+// is no transport, which is what it saw before this existed.
+// Returns 1 on success, 0 on failure.
+int mh_audio_set_transport_enabled(MH_AudioDevice* dev, int enabled);
+
+// Is the host playhead enabled? Returns 1 or 0.
+int mh_audio_get_transport_enabled(MH_AudioDevice* dev);
+
+// Start and stop the playhead. Stopping holds the position; use
+// mh_audio_transport_set_position to rewind.
+int mh_audio_transport_play(MH_AudioDevice* dev);
+int mh_audio_transport_stop(MH_AudioDevice* dev);
+
+// Tempo in beats per minute. Must be > 0.
+int mh_audio_transport_set_bpm(MH_AudioDevice* dev, double bpm);
+
+// Time signature. Both must be > 0.
+int mh_audio_transport_set_time_sig(MH_AudioDevice* dev, int numerator, int denominator);
+
+// Move the playhead. Position is in samples from the start.
+int mh_audio_transport_set_position(MH_AudioDevice* dev, long long position_samples);
+
+// Loop points, in samples. enabled=0 disables looping; when enabled,
+// end must be greater than start.
+int mh_audio_transport_set_loop(MH_AudioDevice* dev, int enabled,
+                                long long start_samples, long long end_samples);
+
+// Recording flag. Passed to the plugin; minihost records nothing itself.
+int mh_audio_transport_set_recording(MH_AudioDevice* dev, int recording);
+
+// Read the current transport back.
+//
+// The audio thread publishes a snapshot each block and this copies the most
+// recently published one. Rotating buffers make a torn read require the
+// reader to be descheduled for several audio callbacks in the middle of a
+// struct copy; that is not a proof of atomicity, and the bound is stated
+// rather than hidden. Returns 1 on success, 0 if transport is disabled or
+// nothing has been published yet.
+int mh_audio_get_transport(MH_AudioDevice* dev, MH_TransportInfo* out);
 
 // Listen for OSC on a UDP port and drive parameters from it directly.
 //

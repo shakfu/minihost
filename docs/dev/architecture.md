@@ -103,7 +103,9 @@ All three CLIs answer `--version` with the release version and the linked librar
 ### Bumping a release
 
 1. Edit `version` in `pyproject.toml`.
+
 2. Mirror it into `__version__` in `src/minihost/__init__.py`.
+
 3. Add the matching `## [X.Y.Z]` section to `CHANGELOG.md`.
 
 `tests/test_release_version.py` fails if any of these disagree, or if a CLI binary in the build tree reports something else. Nothing else needs editing -- the generated header picks the new value up on the next configure.

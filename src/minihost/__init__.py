@@ -40,6 +40,8 @@ from minihost._core import (
     MidiIn,
     OscClient,
     OscServer,
+    osc_address_matches,
+    osc_is_valid_address,
     probe,
     scan_directory,
     midi_get_input_ports,
@@ -103,7 +105,8 @@ _make_as_ndarray_with_friendly_error(AudioBuffer)
 _make_as_ndarray_with_friendly_error(AudioBufferD)
 
 
-from minihost.control import MidiMapper
+from minihost.control import MidiMapper, OscMapper, slug
+from minihost.feedback import OscFeedback
 
 from minihost.process import (
     process_audio,
@@ -175,7 +178,11 @@ __all__ = [
     "MidiFile",
     "MidiIn",
     "OscClient",
+    "OscFeedback",
     "OscServer",
+    "osc_address_matches",
+    "osc_is_valid_address",
+    "slug",
     # Plugin discovery
     "probe",
     "scan_directory",
@@ -225,6 +232,7 @@ __all__ = [
     "query_plugins",
     # Control surface mapping
     "MidiMapper",
+    "OscMapper",
     # Async loading
     "open_async",
     # Automation

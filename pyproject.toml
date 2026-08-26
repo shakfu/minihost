@@ -46,6 +46,17 @@ classifiers = [
 # arrays in write_audio / resample / process_audio.
 numpy = ["numpy>=1.20"]
 
+# Install with: pip install minihost[touch]
+# Enables `minihost touch` to compile its generated layout into a .tosc.
+# Generation itself needs nothing: that command writes a complete .ui.json
+# with no py2tosc import at all, and only the compile step wants this.
+#
+# A floor rather than a minor pin. The ui_json dialect versions itself with a
+# `schema` number in the envelope, a reader rejects only what is above its
+# range, and 0.5.2 is where the case/when branch tables this generator emits
+# (schema 2) arrived. See docs/dev/osc_and_touch.md section 6.
+touch = ["py2tosc>=0.5.2"]
+
 [project.scripts]
 minihost = "minihost.cli:main"
 

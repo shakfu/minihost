@@ -96,6 +96,18 @@ int mh_osc_send_bang(MH_OscClient* client, const char* address);
 int mh_osc_send_floats(MH_OscClient* client, const char* address,
                        const float* values, int num_values);
 
+// Does an OSC address pattern match a concrete address?
+//
+// OSC senders may address with wildcards -- `?`, `*`, `[a-z]`, `{a,b}` -- so a
+// receiver holding concrete addresses has to match rather than look up. This
+// delegates to juce::OSCAddressPattern::matches rather than reimplementing the
+// spec, so both ends of a minihost connection agree by construction.
+//
+// pattern: the address pattern as received.
+// address: a concrete address, with no wildcards.
+// Returns 1 on a match, 0 on no match or if either side is malformed.
+int mh_osc_address_matches(const char* pattern, const char* address);
+
 // Check whether an address is a valid OSC address pattern.
 //
 // Exposed because the failure it prevents is otherwise silent: a control bound

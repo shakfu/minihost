@@ -241,6 +241,19 @@ int mh_osc_send_floats(MH_OscClient* client, const char* address,
     });
 }
 
+int mh_osc_address_matches(const char* pattern, const char* address) {
+    if (!pattern || !address) return 0;
+    try {
+        juce::OSCAddressPattern p{juce::String(pattern)};
+        juce::OSCAddress a{juce::String(address)};
+        return p.matches(a) ? 1 : 0;
+    } catch (const juce::OSCException&) {
+        // A malformed pattern or a concrete address that is not one (an
+        // address may not contain wildcards) matches nothing.
+        return 0;
+    }
+}
+
 int mh_osc_is_valid_address(const char* address) {
     return is_valid_address(address) ? 1 : 0;
 }

@@ -326,6 +326,143 @@ def cmd_params(args: argparse.Namespace) -> int:
 NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
 
+def cmd_touch(args: argparse.Namespace) -> int:
+    """Generate a touch control surface from a plugin's parameters."""
+    from minihost import touch
+
+    try:
+        plugin = minihost.Plugin(
+            args.plugin, sample_rate=args.sample_rate, max_block_size=args.block_size
+        )
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    indices = None
+    if args.params:
+        try:
+            indices = _parse_index_selection(args.params, plugin.num_params)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+
+    params = touch.collect_parameters(
+        plugin, automatable_only=not args.all, indices=indices
+    )
+    if not params:
+        print("Error: no parameters to put on a surface", file=sys.stderr)
+        return 1
+
+    total = plugin.num_params
+    skipped = total - len(params) if indices is None else 0
+    with_cc = sum(1 for p in params if p.cc is not None)
+
+    out_base = args.out or Path(args.plugin).stem
+
+    try:
+        layout_path, map_path = touch.write_files(
+            params,
+            out_base,
+            prefix=args.osc_prefix,
+            size=args.size,
+            columns=args.columns,
+            rows=args.rows,
+            midi=not args.osc_only,
+            osc=not args.midi_only,
+            plugin_name=Path(args.plugin).name,
+            version=minihost.__version__,
+        )
+    except (ValueError, OSError) as e:
+        print(f"Error writing surface: {e}", file=sys.stderr)
+        return 1
+
+    print(f"wrote {layout_path}, {map_path}")
+    if not args.osc_only:
+        print(f"  {with_cc} parameters bound to MIDI CC and OSC")
+    if with_cc < len(params):
+        # Said out loud rather than left as a surprise: py2tosc's own flat
+        # path lets the remainder go OSC-only in silence, which for a
+        # 300-parameter plugin is a discovery rather than a decision.
+        print(
+            f"  {len(params) - with_cc} parameters bound to OSC only "
+            f"(the 128 CC numbers ran out)"
+        )
+    if skipped:
+        print(f"  {skipped} non-automatable parameters skipped (--all to include)")
+
+    if args.no_compile:
+        print(f"  compile with: py2tosc convert {layout_path} -o {out_base}.tosc")
+        return 0
+
+    try:
+        # Optional extra (`minihost[touch]`), normally absent -- the command
+        # degrades to writing the .ui.json without compiling it, so mypy must
+        # not require the stubs to typecheck this file.
+        import py2tosc  # type: ignore[import-not-found]
+    except ImportError:
+        print(
+            f"  py2tosc is not installed, so no .tosc was produced.\n"
+            f"  The layout above is complete and valid; install the extra with\n"
+            f"    pip install 'minihost[touch]'\n"
+            f"  then: py2tosc convert {layout_path} -o {out_base}.tosc"
+        )
+        return 0
+
+    try:
+        doc = py2tosc.load(layout_path)
+        doc.save(f"{out_base}.tosc")
+    except Exception as e:
+        print(f"Error compiling {layout_path}: {e}", file=sys.stderr)
+        return 1
+
+    print(f"  compiled {out_base}.tosc")
+    return 0
+
+
+def _parse_index_selection(spec: str, num_params: int) -> list[int]:
+    """Parse '0-15,20,30-32' into a list of parameter indices."""
+    indices: list[int] = []
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part.lstrip("-"):
+            lo_text, _, hi_text = part.partition("-")
+            try:
+                lo, hi = int(lo_text), int(hi_text)
+            except ValueError:
+                raise ValueError(f"--params: {part!r} is not a range") from None
+            if lo > hi:
+                raise ValueError(f"--params: range {part!r} runs backwards")
+            indices.extend(range(lo, hi + 1))
+        else:
+            try:
+                indices.append(int(part))
+            except ValueError:
+                raise ValueError(f"--params: {part!r} is not an index") from None
+
+    out_of_range = [i for i in indices if not (0 <= i < num_params)]
+    if out_of_range:
+        raise ValueError(
+            f"--params: index {out_of_range[0]} is outside 0-{num_params - 1}"
+        )
+    return indices
+
+
+def _parse_size(text: str) -> tuple[int, int]:
+    """Read a WIDTHxHEIGHT canvas, so a typo is a message and not a crash."""
+    parts = text.lower().replace(",", "x").split("x")
+    try:
+        width, height = (int(part) for part in parts)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"{text!r} is not a size; write it as WIDTHxHEIGHT, such as 1024x768"
+        ) from None
+    if width < 1 or height < 1:
+        raise argparse.ArgumentTypeError(f"{text!r} has a side of no width")
+    return (width, height)
+
+
 def _note_name(note_num: int) -> str:
     """Convert MIDI note number to name like C4, D#5."""
     octave = (note_num // 12) - 1
@@ -840,11 +977,18 @@ def _load_map_file(path: str, mapper) -> int:
           "mappings": [
             {"channel": 0, "cc": 7,  "param": "Volume"},
             {"channel": 0, "cc": 10, "param": "Pan", "value_range": [-1.0, 1.0]},
-            {"channel": 0, "cc": 74, "param": "Cutoff", "curve": "exp"}
+            {"channel": 0, "cc": 74, "param": "Cutoff", "curve": "exp"},
+            {"channel": 0, "cc14": 1, "param": "Resonance"}
           ]
         }
 
-    Required fields per entry: ``channel``, ``cc``, ``param``.
+    Required fields per entry: ``channel``, ``param``, and exactly one of
+    ``cc`` (7-bit, 0-127) or ``cc14`` (14-bit; the MSB controller, 0-31,
+    with its LSB taken from that number plus 32).
+
+    ``cc14`` is a separate key rather than a ``"bits": 14`` modifier on
+    ``cc`` so there is one key to read and no invalid combination to
+    validate -- an entry cannot claim to be both.
     Optional fields: ``value_range`` (default ``[0.0, 1.0]``), ``curve``
     (default ``"linear"``; one of ``linear``, ``exp``, ``log``).
 
@@ -868,9 +1012,22 @@ def _load_map_file(path: str, mapper) -> int:
     for i, entry in enumerate(mappings):
         if not isinstance(entry, dict):
             raise ValueError(f"--map-file {path!r}: mappings[{i}] must be an object")
+        has_cc = "cc" in entry
+        has_cc14 = "cc14" in entry
+        if has_cc and has_cc14:
+            raise ValueError(
+                f"--map-file {path!r}: mappings[{i}] has both 'cc' and "
+                f"'cc14'; a mapping is 7-bit or 14-bit, not both"
+            )
+        if not has_cc and not has_cc14:
+            raise ValueError(
+                f"--map-file {path!r}: mappings[{i}] missing required field "
+                f"'cc' (7-bit) or 'cc14' (14-bit)"
+            )
+
         try:
             channel = entry["channel"]
-            cc = entry["cc"]
+            cc = entry["cc14"] if has_cc14 else entry["cc"]
             param = entry["param"]
         except KeyError as e:
             raise ValueError(
@@ -886,8 +1043,9 @@ def _load_map_file(path: str, mapper) -> int:
 
         curve = entry.get("curve", "linear")
 
-        # Delegates the channel/cc/curve/param-existence validation to map_cc.
-        mapper.map_cc(
+        # Delegates channel/cc/curve/param-existence validation to the mapper.
+        bind = mapper.map_cc14 if has_cc14 else mapper.map_cc
+        bind(
             channel=int(channel),
             cc=int(cc),
             param=str(param),
@@ -1121,8 +1279,9 @@ def cmd_play(args: argparse.Namespace) -> int:
     # AudioDevice.send_midi so the user can still play notes.
     midi_mapper: Optional[minihost.MidiMapper] = None
     map_specs = getattr(args, "map", None) or []
+    map14_specs = getattr(args, "map14", None) or []
     map_file = getattr(args, "map_file", None)
-    if map_specs or map_file:
+    if map_specs or map14_specs or map_file:
         midi_mapper = minihost.MidiMapper(plugin)
         if map_file:
             try:
@@ -1140,6 +1299,15 @@ def cmd_play(args: argparse.Namespace) -> int:
                     value_range=value_range,
                     curve=curve,
                 )
+            for spec in map14_specs:
+                channel, cc, param, value_range, curve = _parse_map_spec(spec)
+                midi_mapper.map_cc14(
+                    channel=channel,
+                    cc=cc,
+                    param=param,
+                    value_range=value_range,
+                    curve=curve,
+                )
         except (ValueError, RuntimeError) as e:
             # ValueError from _parse_map_spec; RuntimeError from
             # Plugin.find_param via MidiMapper.map_cc on unknown param.
@@ -1148,6 +1316,10 @@ def cmd_play(args: argparse.Namespace) -> int:
         print(f"  CC mappings: {len(midi_mapper.cc_mappings)}")
         for (ch, cc), pname in sorted(midi_mapper.cc_mappings.items()):
             print(f"    ch={ch} cc={cc:<3} -> {pname}")
+        if midi_mapper.cc14_mappings:
+            print(f"  14-bit CC mappings: {len(midi_mapper.cc14_mappings)}")
+            for (ch, cc), pname in sorted(midi_mapper.cc14_mappings.items()):
+                print(f"    ch={ch} cc={cc}+{cc + 32:<3} -> {pname}")
 
     # Determine MIDI configuration
     midi_port = -1
@@ -1247,6 +1419,12 @@ def cmd_play(args: argparse.Namespace) -> int:
 
         midi_mapper.set_on_unmapped(_forward_unmapped)
 
+        # Route parameter writes through the device's lock-free control ring
+        # rather than Plugin.set_param, which would take the plugin's state
+        # mutex on the MIDI thread while the audio thread is inside
+        # processBlock. Bound here because the device does not exist earlier.
+        midi_mapper.bind_device(audio)
+
         if midi_port >= 0:
             try:
                 midi_in_handle = minihost.MidiIn.open(midi_port, midi_mapper)
@@ -1286,6 +1464,51 @@ def cmd_play(args: argparse.Namespace) -> int:
         print(f"  Loop MIDI:  {loop_midi_path}")
 
     # Start audio
+    osc_server = None
+    osc_mapper = None
+    osc_port = getattr(args, "osc_port", None)
+    if osc_port is not None:
+        osc_mapper = minihost.OscMapper(plugin, device=audio)
+        bound = osc_mapper.bind_all(prefix=args.osc_prefix)
+        try:
+            osc_server = minihost.OscServer.open(osc_port, osc_mapper)
+        except RuntimeError as e:
+            print(f"Error opening OSC port: {e}", file=sys.stderr)
+            return 1
+        prefix = args.osc_prefix.rstrip("/")
+        print(f"  OSC: listening on port {osc_server.port}")
+        print(f"    {bound} parameters bound under {prefix}/<name>")
+        print(f"    numeric form also accepted: {prefix}/<index>")
+
+    osc_feedback = None
+    osc_feedback_client = None
+    if getattr(args, "osc_feedback", None):
+        if osc_mapper is None:
+            print(
+                "Error: --osc-feedback needs --osc-port (it echoes on the "
+                "addresses that port listens on)",
+                file=sys.stderr,
+            )
+            return 1
+        host, _, port_text = args.osc_feedback.rpartition(":")
+        if not host or not port_text.isdigit():
+            print(
+                f"Error: --osc-feedback expects HOST:PORT, got {args.osc_feedback!r}",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            osc_feedback_client = minihost.OscClient(host, int(port_text))
+        except RuntimeError as e:
+            print(f"Error opening OSC feedback client: {e}", file=sys.stderr)
+            return 1
+        targets = osc_mapper.feedback_addresses()
+        osc_feedback = minihost.OscFeedback(
+            plugin, osc_feedback_client, targets, mapper=osc_mapper
+        )
+        osc_feedback.start()
+        print(f"  OSC feedback: {host}:{port_text} ({len(targets)} parameters)")
+
     audio.start()
     print("\nPlaying. Press Ctrl+C to stop.")
 
@@ -1341,6 +1564,14 @@ def cmd_play(args: argparse.Namespace) -> int:
     audio.stop()
     if midi_in_handle is not None:
         midi_in_handle.close()
+    # Before the device goes: the OSC socket thread writes into the device's
+    # control ring, and close() joins that thread.
+    if osc_server is not None:
+        osc_server.close()
+    if osc_feedback is not None:
+        osc_feedback.stop()
+    if osc_feedback_client is not None:
+        osc_feedback_client.close()
     print("Done.")
     return 0
 
@@ -2158,6 +2389,66 @@ Examples:
     params_p.set_defaults(func=cmd_params)
 
     # midi
+    touch_p = subparsers.add_parser(
+        "touch",
+        help="Generate a TouchOSC control surface from a plugin's parameters",
+    )
+    touch_p.add_argument("plugin", help="Path to plugin")
+    touch_p.add_argument(
+        "-o",
+        "--out",
+        metavar="BASE",
+        help="Output base name (default: the plugin's file stem). Writes "
+        "BASE.ui.json and BASE.map.json, and BASE.tosc when py2tosc is "
+        "installed.",
+    )
+    touch_p.add_argument(
+        "--osc-prefix",
+        default="/mh/param",
+        metavar="ADDR",
+        help="OSC address prefix (default: /mh/param)",
+    )
+    touch_p.add_argument(
+        "--size",
+        type=_parse_size,
+        default=(1024, 768),
+        metavar="WxH",
+        help="Design canvas, e.g. 1024x768. TouchOSC scales a layout to the "
+        "screen that opens it, so this sets the aspect ratio and the room "
+        "controls get, not a pixel count.",
+    )
+    touch_p.add_argument(
+        "--columns", type=int, default=4, metavar="N", help="Controls across a page"
+    )
+    touch_p.add_argument(
+        "--rows", type=int, default=3, metavar="N", help="Controls down a page"
+    )
+    touch_p.add_argument(
+        "--params",
+        metavar="SPEC",
+        help="Only these parameters, as indices and ranges: '0-15,20,30-32'",
+    )
+    touch_p.add_argument(
+        "--all",
+        action="store_true",
+        help="Include non-automatable parameters (usually meters and readouts, "
+        "which a surface should not be writing to)",
+    )
+    touch_p.add_argument("--midi-only", action="store_true", help="No OSC addresses")
+    touch_p.add_argument("--osc-only", action="store_true", help="No MIDI CC bindings")
+    touch_p.add_argument(
+        "--no-compile",
+        action="store_true",
+        help="Stop at the .ui.json; do not produce a .tosc",
+    )
+    touch_p.add_argument(
+        "--sample-rate", type=float, default=48000.0, help="Sample rate for loading"
+    )
+    touch_p.add_argument(
+        "--block-size", type=int, default=512, help="Block size for loading"
+    )
+    touch_p.set_defaults(func=cmd_touch)
+
     midi_p = subparsers.add_parser("midi", help="List or monitor MIDI ports")
     midi_p.add_argument("-j", "--json", action="store_true", help="Output as JSON")
     midi_p.add_argument(
@@ -2292,6 +2583,30 @@ Examples:
     play_p = subparsers.add_parser("play", help="Play plugin with real-time audio/MIDI")
     play_p.add_argument("plugin", help="Path to plugin")
     play_p.add_argument(
+        "--osc-port",
+        type=int,
+        metavar="PORT",
+        help="Listen for OSC parameter control on this UDP port. "
+        "Use 0 to let the OS choose one (it is printed on startup). "
+        "Every automatable parameter is bound under --osc-prefix, "
+        "addressable by name (/mh/param/cutoff) or index (/mh/param/3), "
+        "each taking one float in 0..1.",
+    )
+    play_p.add_argument(
+        "--osc-feedback",
+        metavar="HOST:PORT",
+        help="Send parameter values back to a surface at HOST:PORT, so its "
+        "faders track preset loads and anything else that moves a parameter. "
+        "Polled at 30 Hz on the same addresses --osc-port listens on. "
+        "Requires --osc-port.",
+    )
+    play_p.add_argument(
+        "--osc-prefix",
+        default="/mh/param",
+        metavar="ADDR",
+        help="OSC address prefix for parameter control (default: /mh/param)",
+    )
+    play_p.add_argument(
         "-i",
         "--input",
         action="store_true",
@@ -2345,6 +2660,16 @@ Examples:
             "plugin so notes still play. "
             "Example: --map 0:74:Cutoff:0:1:exp"
         ),
+    )
+    play_p.add_argument(
+        "--map14",
+        action="append",
+        metavar="SPEC",
+        help="Map a 14-bit MIDI CC pair to a parameter: "
+        "'channel:msb_cc:param[:lo:hi[:curve]]'. Same grammar as --map, but "
+        "msb_cc is 0-31 and the LSB is taken from msb_cc+32 automatically. "
+        "16384 steps instead of 128, which matters on anything a 7-bit CC "
+        "makes audibly stepped. Repeatable.",
     )
     play_p.add_argument(
         "--map-file",

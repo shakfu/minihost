@@ -598,6 +598,9 @@ numpy = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
+touch = [
+    { name = "py2tosc" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -614,8 +617,11 @@ docs = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "numpy", marker = "extra == 'numpy'", specifier = ">=1.20" }]
-provides-extras = ["numpy"]
+requires-dist = [
+    { name = "numpy", marker = "extra == 'numpy'", specifier = ">=1.20" },
+    { name = "py2tosc", marker = "extra == 'touch'", specifier = ">=0.5.2" },
+]
+provides-extras = ["numpy", "touch"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -986,6 +992,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe6ef3fa267035b518369d9511ffab804f839851d2779/pluggy-1.6.0.tar.gz", hash = "sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3", size = 69412, upload-time = "2025-05-15T12:30:07.975Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538, upload-time = "2025-05-15T12:30:06.134Z" },
+]
+
+[[package]]
+name = "py2tosc"
+version = "0.5.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/50/80/d5466d0afbda88a6e510c5110c7cebb3939645f8ee45beea404e9fe1dc34/py2tosc-0.5.2.tar.gz", hash = "sha256:befbc0c095936bdfc19930b782a421eed5301719475e9b4d014be7a048833c4f", size = 115211, upload-time = "2026-08-26T16:09:34.129Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b8/ec/3f985a9cb38045f672b78871e85b25ca188b662bcfe4169e4ae5ef33036f/py2tosc-0.5.2-py3-none-any.whl", hash = "sha256:8615ff13ef35833b75ea30eb2462876132d08078bf1547e355dc08539f80db2c", size = 97876, upload-time = "2026-08-26T16:09:32.433Z" },
 ]
 
 [[package]]

@@ -2408,6 +2408,65 @@ public:
         }
     }
 
+    // ---- host playhead ----
+    //
+    // The audio thread owns the transport; these post commands to a ring it
+    // drains each block, so a setter never blocks and its effect is visible
+    // one block later.
+    void set_transport_enabled(bool enabled) {
+        mh_audio_set_transport_enabled(device_, enabled ? 1 : 0);
+    }
+
+    bool transport_enabled() const {
+        return mh_audio_get_transport_enabled(device_) != 0;
+    }
+
+    void transport_play() { mh_audio_transport_play(device_); }
+    void transport_stop() { mh_audio_transport_stop(device_); }
+
+    void transport_set_bpm(double bpm) {
+        if (!mh_audio_transport_set_bpm(device_, bpm))
+            throw nb::value_error("bpm must be greater than 0");
+    }
+
+    void transport_set_time_sig(int numerator, int denominator) {
+        if (!mh_audio_transport_set_time_sig(device_, numerator, denominator))
+            throw nb::value_error("time signature parts must be greater than 0");
+    }
+
+    void transport_set_position(long long position_samples) {
+        if (!mh_audio_transport_set_position(device_, position_samples))
+            throw nb::value_error("position_samples must not be negative");
+    }
+
+    void transport_set_loop(bool enabled, long long start, long long end) {
+        if (!mh_audio_transport_set_loop(device_, enabled ? 1 : 0, start, end))
+            throw nb::value_error(
+                "loop needs 0 <= start < end when enabled");
+    }
+
+    void transport_set_recording(bool recording) {
+        mh_audio_transport_set_recording(device_, recording ? 1 : 0);
+    }
+
+    nb::object transport() const {
+        MH_TransportInfo info;
+        if (!mh_audio_get_transport(device_, &info))
+            return nb::none();
+        nb::dict d;
+        d["bpm"] = info.bpm;
+        d["time_sig_numerator"] = info.time_sig_numerator;
+        d["time_sig_denominator"] = info.time_sig_denominator;
+        d["position_samples"] = info.position_samples;
+        d["position_beats"] = info.position_beats;
+        d["is_playing"] = info.is_playing != 0;
+        d["is_recording"] = info.is_recording != 0;
+        d["is_looping"] = info.is_looping != 0;
+        d["loop_start_samples"] = info.loop_start_samples;
+        d["loop_end_samples"] = info.loop_end_samples;
+        return d;
+    }
+
     // Native OSC parameter input: the socket thread pushes straight to the
     // control ring, taking neither a lock nor the GIL.
     void connect_osc(int port) {
@@ -2418,7 +2477,14 @@ public:
         }
     }
 
-    void disconnect_osc() { mh_audio_disconnect_osc(device_); }
+    void disconnect_osc() {
+        // No Python runs on this socket thread -- the native path parses the
+        // address in C -- but releasing the GIL while joining a thread is the
+        // rule here, and a future callback on that path would otherwise
+        // reintroduce the deadlock silently.
+        nb::gil_scoped_release nogil;
+        mh_audio_disconnect_osc(device_);
+    }
 
     int osc_port() const { return mh_audio_get_osc_port(device_); }
 
@@ -2852,8 +2918,13 @@ public:
 
     void close() {
         if (handle_) {
-            mh_midi_in_close(handle_);
+            MH_MidiIn* handle = handle_;
             handle_ = nullptr;
+            // Release the GIL for the same reason OscServer::close does: this
+            // stops the libremidi input thread, which may be inside
+            // midi_callback waiting for the GIL this thread holds.
+            nb::gil_scoped_release nogil;
+            mh_midi_in_close(handle);
         }
     }
 
@@ -2937,10 +3008,19 @@ public:
 
     void close() {
         if (handle_) {
-            // Blocks until the socket thread has stopped, so the callback
-            // cannot be running when this returns.
-            mh_osc_server_close(handle_);
+            MH_OscServer* handle = handle_;
             handle_ = nullptr;
+            // The GIL MUST be released here. mh_osc_server_close joins the
+            // socket thread, and that thread is very likely inside
+            // osc_callback waiting for the GIL we hold -- close would then
+            // wait for a thread that is waiting for us. It deadlocks in
+            // practice, not just in theory: any burst of queued messages at
+            // close time is enough.
+            //
+            // handle_ is cleared first so a concurrent close cannot enter
+            // the same join twice.
+            nb::gil_scoped_release nogil;
+            mh_osc_server_close(handle);
         }
     }
 
@@ -4595,6 +4675,45 @@ NB_MODULE(_core, m) {
              "single-producer queue (separate from the one the MIDI input port "
              "feeds, so the two do not interfere). Raises if that queue is full.")
 
+        // Host playhead
+        .def("set_transport_enabled", &AudioDevice::set_transport_enabled,
+             nb::arg("enabled"),
+             "Enable the host playhead. Off by default, in which case the "
+             "plugin is told there is no transport -- which is what the live "
+             "device did before this existed, so a tempo-synced delay or "
+             "arpeggiator ran at its own default with the playhead pinned at "
+             "sample 0.")
+        .def_prop_ro("transport_enabled", &AudioDevice::transport_enabled,
+                     "True if the host playhead is enabled.")
+        .def("transport_play", &AudioDevice::transport_play,
+             "Start the playhead. Takes effect at the next audio block.")
+        .def("transport_stop", &AudioDevice::transport_stop,
+             "Stop the playhead, holding its position.")
+        .def("transport_set_bpm", &AudioDevice::transport_set_bpm,
+             nb::arg("bpm"), "Set the tempo in beats per minute.")
+        .def("transport_set_time_sig", &AudioDevice::transport_set_time_sig,
+             nb::arg("numerator"), nb::arg("denominator"),
+             "Set the time signature, e.g. (4, 4).")
+        .def("transport_set_position", &AudioDevice::transport_set_position,
+             nb::arg("position_samples"),
+             "Move the playhead, in samples from the start.")
+        .def("transport_set_loop", &AudioDevice::transport_set_loop,
+             nb::arg("enabled"), nb::arg("start_samples") = 0,
+             nb::arg("end_samples") = 0,
+             "Set loop points in samples. When enabled, end must exceed start.")
+        .def("transport_set_recording", &AudioDevice::transport_set_recording,
+             nb::arg("recording"),
+             "Set the recording flag passed to the plugin. minihost records "
+             "nothing itself; this only tells the plugin what the host is "
+             "doing.")
+        .def_prop_ro("transport", &AudioDevice::transport,
+             "The current playhead as a dict, or None if transport is "
+             "disabled or no block has been rendered yet.\n\n"
+             "The audio thread publishes a snapshot each block and this reads "
+             "the most recent. Rotating buffers make a torn read require the "
+             "reader to be descheduled across several audio callbacks mid-"
+             "copy; that is a bound, not a proof of atomicity.")
+
         // Native OSC parameter input
         .def("connect_osc", &AudioDevice::connect_osc,
              nb::arg("port") = 0,
@@ -4675,6 +4794,27 @@ NB_MODULE(_core, m) {
         .def("__exit__", [](MidiIn& self, const nb::args&) {
             self.close();
         });
+
+    m.def("osc_address_matches",
+          [](const std::string& pattern, const std::string& address) {
+              return mh_osc_address_matches(pattern.c_str(), address.c_str()) != 0;
+          },
+          nb::arg("pattern"), nb::arg("address"),
+          "Does an OSC address pattern match a concrete address?\n\n"
+          "Senders may address with wildcards (?, *, [a-z], {a,b}), so a "
+          "receiver holding concrete addresses has to match rather than look "
+          "up. This delegates to JUCE's own OSCAddressPattern, so both ends of "
+          "a connection agree by construction rather than by two "
+          "implementations of the spec happening to concur.");
+
+    m.def("osc_is_valid_address",
+          [](const std::string& address) {
+              return mh_osc_is_valid_address(address.c_str()) != 0;
+          },
+          nb::arg("address"),
+          "Is this a valid OSC address pattern? Exposed because the failure it "
+          "prevents is silent: a control bound to an address the host will not "
+          "accept simply never arrives, with nothing logged at either end.");
 
     nb::class_<OscServer>(m, "OscServer", nb::type_slots(osc_server_slots))
         .def_static("open", &OscServer::open,

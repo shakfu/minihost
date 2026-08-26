@@ -380,3 +380,127 @@ def test_connect_osc_twice_rebinds_rather_than_leaking_the_first_port():
         # The first port must have been released, so it can be bound again.
         with minihost.OscServer.open(first, lambda a, v: None) as probe:
             assert probe.port == first
+
+
+# -- OscMapper over a real socket (Phase 2) -----------------------------------
+
+
+@skip_if_no_plugin
+def test_osc_mapper_drives_parameters_by_name_over_the_wire():
+    """The name-addressed path end to end: bind_all, then send by slug."""
+    import time
+
+    plugin = minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=512)
+    if plugin.num_params == 0:
+        pytest.skip("plugin exposes no parameters")
+
+    name = plugin.get_param_info(0)["name"]
+    address = f"/mh/param/{minihost.slug(name)}"
+
+    with minihost.AudioDevice(plugin, sample_rate=48000, buffer_frames=256) as audio:
+        mapper = minihost.OscMapper(plugin, device=audio)
+        bound = mapper.bind_all()
+        assert bound > 0
+        assert address in mapper.addresses
+
+        with minihost.OscServer.open(0, mapper) as server:
+            with minihost.OscClient("127.0.0.1", server.port) as client:
+                audio.start()
+                client.send(address, 0.35)
+                time.sleep(0.3)
+                audio.stop()
+
+    assert plugin.get_param(0) == pytest.approx(0.35, abs=1e-3)
+
+
+@skip_if_no_plugin
+def test_the_mapper_accepts_the_numeric_form_too():
+    """One port serves both spellings, so a sender written against
+    connect_osc's numeric addressing does not silently do nothing here."""
+    import time
+
+    plugin = minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=512)
+    if plugin.num_params == 0:
+        pytest.skip("plugin exposes no parameters")
+
+    with minihost.AudioDevice(plugin, sample_rate=48000, buffer_frames=256) as audio:
+        mapper = minihost.OscMapper(plugin, device=audio)
+        mapper.bind_all()
+        with minihost.OscServer.open(0, mapper) as server:
+            with minihost.OscClient("127.0.0.1", server.port) as client:
+                audio.start()
+                client.send("/mh/param/0", 0.45)
+                time.sleep(0.3)
+                audio.stop()
+
+    assert plugin.get_param(0) == pytest.approx(0.45, abs=1e-3)
+
+
+@skip_if_no_plugin
+def test_a_wildcard_sets_several_parameters_at_once():
+    import time
+
+    plugin = minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=512)
+    if plugin.num_params < 3:
+        pytest.skip("plugin exposes fewer than three parameters")
+
+    with minihost.AudioDevice(plugin, sample_rate=48000, buffer_frames=256) as audio:
+        mapper = minihost.OscMapper(plugin, device=audio)
+        # Numeric form only, so the wildcard has a predictable target set.
+        mapper.clear()
+        for i in range(3):
+            mapper.map_address(f"/p/{i}", plugin.get_param_info(i)["name"])
+
+        with minihost.OscServer.open(0, mapper) as server:
+            with minihost.OscClient("127.0.0.1", server.port) as client:
+                audio.start()
+                client.send("/p/*", 0.6)
+                time.sleep(0.3)
+                audio.stop()
+
+    for i in range(3):
+        assert plugin.get_param(i) == pytest.approx(0.6, abs=1e-3), f"param {i}"
+
+
+def test_closing_a_busy_server_does_not_deadlock():
+    """Regression: close() must release the GIL while joining the socket thread.
+
+    `mh_osc_server_close` joins the OSC receive thread, and that thread needs
+    the GIL to run a Python callback. Holding the GIL across the join means
+    close waits for a thread that is waiting for close -- a hard deadlock, not
+    a slow path.
+
+    The original test for close only sent one message, so the socket thread
+    was reliably idle by the time close ran and the bug stayed hidden. This
+    one closes with a burst still in flight, which is what exposed it.
+    """
+    received = []
+
+    def slow(address, args):
+        # Enough work per message that the queue is genuinely still draining
+        # when close() is called.
+        received.append(address)
+        for _ in range(200):
+            pass
+
+    server = minihost.OscServer.open(0, slow)
+    client = minihost.OscClient("127.0.0.1", server.port)
+    for i in range(300):
+        client.send(f"/burst/{i}", float(i))
+
+    # Before the fix this never returned.
+    server.close()
+    client.close()
+
+
+def test_closing_a_busy_midi_input_does_not_deadlock():
+    """The same hazard on MidiIn.close, fixed at the same time.
+
+    Cannot be provoked without a live MIDI source, so this only asserts that
+    open/close of a virtual port is not itself wedged.
+    """
+    try:
+        midi_in = minihost.MidiIn.open_virtual("minihost-test-in", lambda data: None)
+    except RuntimeError:
+        pytest.skip("platform does not support virtual MIDI input ports")
+    midi_in.close()

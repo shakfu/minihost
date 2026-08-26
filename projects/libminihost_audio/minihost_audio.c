@@ -10,6 +10,7 @@
 #include "minihost_osc.h"
 #include "midi_ringbuffer.h"
 #include "param_ringbuffer.h"
+#include "transport_ringbuffer.h"
 #include "audio_ringbuffer.h"
 #include "minihost.h"
 #include "minihost_chain.h"
@@ -41,6 +42,9 @@ static inline void mh_atomic_store_release_ptr(void* volatile* slot, void* value
     __atomic_store_n(slot, value, __ATOMIC_RELEASE);
 }
 #endif
+
+#define MH_TRANSPORT_PUB_SLOTS 4
+#define MH_TRANSPORT_MAX_TARGETS 64
 
 struct MH_AudioDevice {
     ma_device device;
@@ -112,6 +116,27 @@ struct MH_AudioDevice {
     // param_ctl_buffer, which is why mh_audio_send_param_control is
     // documented as belonging to one control thread: connecting OSC claims it.
     MH_OscServer* osc_server;
+
+    // Host playhead. `transport` is owned outright by the audio thread; every
+    // other thread posts commands to transport_commands and reads back
+    // through the published snapshots. transport_enabled is written only by
+    // the audio thread (via a command) and read by mh_audio_get_transport_*.
+    MH_TransportRingBuffer* transport_commands;
+    MH_TransportInfo transport;
+    int transport_enabled;
+    // Rotating published snapshots. The audio thread fills the next slot and
+    // publishes its address; readers take the address and copy. See the note
+    // on mh_audio_get_transport about what this does and does not guarantee.
+    MH_TransportInfo transport_pub[MH_TRANSPORT_PUB_SLOTS];
+    int transport_pub_next;
+    void* transport_pub_current;  // holds an MH_TransportInfo*
+    // Every plugin the playhead must be handed to, resolved once at open.
+    // A chain holds several, and mh_chain_get_plugin is a thread-safe (i.e.
+    // locking) accessor -- calling it per block from the audio thread would
+    // put a mutex on the audio path for no reason, since a chain's membership
+    // is fixed when it is created.
+    MH_Plugin* transport_targets[MH_TRANSPORT_MAX_TARGETS];
+    int transport_num_targets;
 
     int midi_in_port;   // -1 if not connected or virtual
     int midi_out_port;  // -1 if not connected or virtual
@@ -255,6 +280,101 @@ static void midi_input_callback(const unsigned char* data, size_t len, void* use
     mh_midi_ringbuffer_push(dev->midi_in_buffer, &event);
 }
 
+// Resolve, once at open, every plugin the playhead is handed to. A chain
+// beyond MH_TRANSPORT_MAX_TARGETS plugins simply gets the first that many;
+// the alternative is an allocation per device for a case that does not exist.
+static void transport_resolve_targets(MH_AudioDevice* dev) {
+    dev->transport_num_targets = 0;
+
+    if (dev->plugin) {
+        dev->transport_targets[dev->transport_num_targets++] = dev->plugin;
+        return;
+    }
+    if (!dev->chain) return;
+
+    int n = mh_chain_get_num_plugins(dev->chain);
+    if (n > MH_TRANSPORT_MAX_TARGETS) n = MH_TRANSPORT_MAX_TARGETS;
+    for (int i = 0; i < n; i++) {
+        MH_Plugin* p = mh_chain_get_plugin(dev->chain, i);
+        if (p) dev->transport_targets[dev->transport_num_targets++] = p;
+    }
+}
+
+// Apply queued transport commands. Audio thread only.
+static void transport_apply_commands(MH_AudioDevice* dev) {
+    if (!dev->transport_commands) return;
+
+    MH_TransportCommand cmds[32];
+    int n = mh_transport_ringbuffer_pop_all(dev->transport_commands, cmds, 32);
+    for (int i = 0; i < n; i++) {
+        MH_TransportCommand* c = &cmds[i];
+        switch (c->type) {
+            case MH_TRANSPORT_CMD_PLAY:
+                dev->transport.is_playing = 1;
+                break;
+            case MH_TRANSPORT_CMD_STOP:
+                dev->transport.is_playing = 0;
+                break;
+            case MH_TRANSPORT_CMD_SET_BPM:
+                dev->transport.bpm = c->dvalue;
+                break;
+            case MH_TRANSPORT_CMD_SET_TIME_SIG:
+                dev->transport.time_sig_numerator = c->ivalue;
+                dev->transport.time_sig_denominator = c->ivalue2;
+                break;
+            case MH_TRANSPORT_CMD_SET_POSITION_SAMPLES:
+                dev->transport.position_samples = c->lvalue;
+                break;
+            case MH_TRANSPORT_CMD_SET_LOOP:
+                dev->transport.is_looping = c->ivalue;
+                dev->transport.loop_start_samples = c->lvalue;
+                dev->transport.loop_end_samples = c->lvalue2;
+                break;
+            case MH_TRANSPORT_CMD_SET_RECORDING:
+                dev->transport.is_recording = c->ivalue;
+                break;
+            default:
+                break;
+        }
+    }
+
+    // position_beats is derived, never commanded: two sources of truth for
+    // the same instant is how a playhead ends up disagreeing with itself.
+    double sr = dev->sample_rate > 0 ? dev->sample_rate : 48000.0;
+    double seconds = (double)dev->transport.position_samples / sr;
+    dev->transport.position_beats = seconds * (dev->transport.bpm / 60.0);
+}
+
+// Advance the playhead past a rendered block, wrapping at the loop end.
+// Audio thread only.
+static void transport_advance(MH_AudioDevice* dev, int frames) {
+    if (!dev->transport.is_playing) return;
+
+    dev->transport.position_samples += frames;
+
+    if (dev->transport.is_looping &&
+        dev->transport.loop_end_samples > dev->transport.loop_start_samples &&
+        dev->transport.position_samples >= dev->transport.loop_end_samples) {
+        long long span = dev->transport.loop_end_samples -
+                         dev->transport.loop_start_samples;
+        long long over = dev->transport.position_samples -
+                         dev->transport.loop_start_samples;
+        // Modulo rather than a subtract: a loop shorter than one block would
+        // otherwise still sit past the end after wrapping.
+        dev->transport.position_samples =
+            dev->transport.loop_start_samples + (over % span);
+    }
+}
+
+// Publish a snapshot for readers. Audio thread only.
+static void transport_publish(MH_AudioDevice* dev) {
+    MH_TransportInfo* slot = &dev->transport_pub[dev->transport_pub_next];
+    *slot = dev->transport;
+    dev->transport_pub_next =
+        (dev->transport_pub_next + 1) % MH_TRANSPORT_PUB_SLOTS;
+    mh_atomic_store_release_ptr(&dev->transport_pub_current, slot);
+}
+
 // Audio callback - called from miniaudio's audio thread
 static void audio_callback(ma_device* device, void* output, const void* input, ma_uint32 frame_count) {
     MH_AudioDevice* dev = (MH_AudioDevice*)device->pUserData;
@@ -325,6 +445,19 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
     if (dev->param_send_buffer) {
         mh_param_ringbuffer_drain(dev->param_send_buffer, param_changes,
                                   MH_AUDIO_MAX_PARAM_CHANGES, &num_param_changes);
+    }
+
+    // Transport: commands, then hand the plugin the playhead for this block.
+    // Before processing, so the plugin sees the position of the samples it is
+    // about to render rather than the position after them.
+    if (dev->transport_commands) {
+        transport_apply_commands(dev);
+        if (dev->transport_enabled) {
+            for (int i = 0; i < dev->transport_num_targets; i++) {
+                mh_set_transport(dev->transport_targets[i], &dev->transport);
+            }
+            transport_publish(dev);
+        }
     }
 
     // Process through the plugin or chain with MIDI
@@ -422,6 +555,10 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
             msg[2] = midi_out[i].data2;
             mh_midi_out_send(dev->midi_out, msg, 3);
         }
+    }
+
+    if (dev->transport_enabled) {
+        transport_advance(dev, frames);
     }
 
     // Interleave output: non-interleaved [[L0,L1,...], [R0,R1,...]] -> interleaved [L0,R0,L1,R1,...]
@@ -608,6 +745,14 @@ MH_AudioDevice* mh_audio_open(MH_Plugin* plugin, const MH_AudioConfig* config,
     // per second, and the audio thread drains them every few milliseconds.
     dev->param_ctl_buffer = mh_param_ringbuffer_create(1024);
     dev->param_send_buffer = mh_param_ringbuffer_create(1024);
+
+    // Transport starts disabled and at a musically sane default, so enabling
+    // it does not first hand the plugin a tempo of zero.
+    dev->transport_commands = mh_transport_ringbuffer_create(64);
+    dev->transport.bpm = 120.0;
+    dev->transport.time_sig_numerator = 4;
+    dev->transport.time_sig_denominator = 4;
+    transport_resolve_targets(dev);
 
     // Connect MIDI ports if specified in config
     if (config) {
@@ -809,6 +954,14 @@ MH_AudioDevice* mh_audio_open_chain(MH_PluginChain* chain, const MH_AudioConfig*
     dev->param_ctl_buffer = mh_param_ringbuffer_create(1024);
     dev->param_send_buffer = mh_param_ringbuffer_create(1024);
 
+    // Transport starts disabled and at a musically sane default, so enabling
+    // it does not first hand the plugin a tempo of zero.
+    dev->transport_commands = mh_transport_ringbuffer_create(64);
+    dev->transport.bpm = 120.0;
+    dev->transport.time_sig_numerator = 4;
+    dev->transport.time_sig_denominator = 4;
+    transport_resolve_targets(dev);
+
     // Connect MIDI ports if specified in config
     if (config) {
         if (config->midi_input_port >= 0) {
@@ -868,6 +1021,9 @@ void mh_audio_close(MH_AudioDevice* dev) {
     }
     if (dev->param_send_buffer) {
         mh_param_ringbuffer_free(dev->param_send_buffer);
+    }
+    if (dev->transport_commands) {
+        mh_transport_ringbuffer_free(dev->transport_commands);
     }
 
     // Cleanup audio input ring buffer
@@ -1123,17 +1279,171 @@ static int parse_param_address(const char* address, int* out_slot, int* out_para
     return 1;
 }
 
+// Transport addresses, recognised alongside the parameter ones.
+//
+//   /mh/transport/play           (no argument, or non-zero to play)
+//   /mh/transport/stop
+//   /mh/transport/bpm      f
+//   /mh/transport/position f     beats
+//   /mh/transport/loop     f     non-zero enables
+//   /mh/transport/record   f     non-zero arms
+//
+// Handled here rather than in the Python mapper so a transport surface works
+// through the native path too, and so play/stop stays lock-free.
+static int handle_transport_address(MH_AudioDevice* dev, const char* address,
+                                    const float* args, int num_args) {
+    static const char prefix[] = "/mh/transport/";
+    const size_t prefix_len = sizeof(prefix) - 1;
+    if (strncmp(address, prefix, prefix_len) != 0) return 0;
+
+    const char* what = address + prefix_len;
+    // A surface's button sends 1.0 on press and 0.0 on release; treating the
+    // release as a command would make every press a press-and-undo.
+    float value = (num_args >= 1 && args) ? args[0] : 1.0f;
+
+    if (strcmp(what, "play") == 0) {
+        if (value != 0.0f) mh_audio_transport_play(dev);
+        return 1;
+    }
+    if (strcmp(what, "stop") == 0) {
+        if (value != 0.0f) mh_audio_transport_stop(dev);
+        return 1;
+    }
+    if (strcmp(what, "bpm") == 0) {
+        if (num_args >= 1) mh_audio_transport_set_bpm(dev, (double)value);
+        return 1;
+    }
+    if (strcmp(what, "position") == 0) {
+        if (num_args >= 1) {
+            // The wire carries beats, which is what a surface displays; the
+            // playhead counts samples, which is what a plugin needs.
+            double bpm = dev->transport.bpm > 0.0 ? dev->transport.bpm : 120.0;
+            double sr = dev->sample_rate > 0 ? dev->sample_rate : 48000.0;
+            double seconds = ((double)value) * (60.0 / bpm);
+            long long samples = (long long)(seconds * sr);
+            if (samples < 0) samples = 0;
+            mh_audio_transport_set_position(dev, samples);
+        }
+        return 1;
+    }
+    if (strcmp(what, "loop") == 0) {
+        if (num_args >= 1) {
+            mh_audio_transport_set_loop(dev, value != 0.0f,
+                                        dev->transport.loop_start_samples,
+                                        dev->transport.loop_end_samples);
+        }
+        return 1;
+    }
+    if (strcmp(what, "record") == 0) {
+        if (num_args >= 1) mh_audio_transport_set_recording(dev, value != 0.0f);
+        return 1;
+    }
+    return 0;
+}
+
 // Called on the OSC socket thread. Pushes to the ring and returns; no lock,
 // no allocation, no GIL.
 static void osc_param_callback(const char* address, const float* args,
                                int num_args, void* user_data) {
     MH_AudioDevice* dev = (MH_AudioDevice*)user_data;
-    if (!dev || !dev->param_ctl_buffer || num_args < 1 || !args) return;
+    if (!dev) return;
+
+    if (handle_transport_address(dev, address, args, num_args)) return;
+
+    if (!dev->param_ctl_buffer || num_args < 1 || !args) return;
 
     int slot = 0, param = 0;
     if (!parse_param_address(address, &slot, &param)) return;
 
     mh_param_ringbuffer_push(dev->param_ctl_buffer, slot, param, args[0]);
+}
+
+// ---------------------------------------------------------------------------
+// Host playhead
+// ---------------------------------------------------------------------------
+
+static int transport_push(MH_AudioDevice* dev, const MH_TransportCommand* cmd) {
+    if (!dev || !dev->transport_commands) return 0;
+    return mh_transport_ringbuffer_push(dev->transport_commands, cmd);
+}
+
+int mh_audio_set_transport_enabled(MH_AudioDevice* dev, int enabled) {
+    if (!dev) return 0;
+    // Read by the audio thread each block. A plain int store of 0 or 1 is the
+    // one case where tearing is not a concern, and gating it behind the
+    // command ring would mean the flag lags the commands that depend on it.
+    dev->transport_enabled = enabled ? 1 : 0;
+    return 1;
+}
+
+int mh_audio_get_transport_enabled(MH_AudioDevice* dev) {
+    return dev ? dev->transport_enabled : 0;
+}
+
+int mh_audio_transport_play(MH_AudioDevice* dev) {
+    MH_TransportCommand cmd = {0};
+    cmd.type = MH_TRANSPORT_CMD_PLAY;
+    return transport_push(dev, &cmd);
+}
+
+int mh_audio_transport_stop(MH_AudioDevice* dev) {
+    MH_TransportCommand cmd = {0};
+    cmd.type = MH_TRANSPORT_CMD_STOP;
+    return transport_push(dev, &cmd);
+}
+
+int mh_audio_transport_set_bpm(MH_AudioDevice* dev, double bpm) {
+    if (bpm <= 0.0) return 0;
+    MH_TransportCommand cmd = {0};
+    cmd.type = MH_TRANSPORT_CMD_SET_BPM;
+    cmd.dvalue = bpm;
+    return transport_push(dev, &cmd);
+}
+
+int mh_audio_transport_set_time_sig(MH_AudioDevice* dev, int numerator, int denominator) {
+    if (numerator <= 0 || denominator <= 0) return 0;
+    MH_TransportCommand cmd = {0};
+    cmd.type = MH_TRANSPORT_CMD_SET_TIME_SIG;
+    cmd.ivalue = numerator;
+    cmd.ivalue2 = denominator;
+    return transport_push(dev, &cmd);
+}
+
+int mh_audio_transport_set_position(MH_AudioDevice* dev, long long position_samples) {
+    if (position_samples < 0) return 0;
+    MH_TransportCommand cmd = {0};
+    cmd.type = MH_TRANSPORT_CMD_SET_POSITION_SAMPLES;
+    cmd.lvalue = position_samples;
+    return transport_push(dev, &cmd);
+}
+
+int mh_audio_transport_set_loop(MH_AudioDevice* dev, int enabled,
+                                long long start_samples, long long end_samples) {
+    if (enabled) {
+        if (start_samples < 0 || end_samples <= start_samples) return 0;
+    }
+    MH_TransportCommand cmd = {0};
+    cmd.type = MH_TRANSPORT_CMD_SET_LOOP;
+    cmd.ivalue = enabled ? 1 : 0;
+    cmd.lvalue = start_samples;
+    cmd.lvalue2 = end_samples;
+    return transport_push(dev, &cmd);
+}
+
+int mh_audio_transport_set_recording(MH_AudioDevice* dev, int recording) {
+    MH_TransportCommand cmd = {0};
+    cmd.type = MH_TRANSPORT_CMD_SET_RECORDING;
+    cmd.ivalue = recording ? 1 : 0;
+    return transport_push(dev, &cmd);
+}
+
+int mh_audio_get_transport(MH_AudioDevice* dev, MH_TransportInfo* out) {
+    if (!dev || !out || !dev->transport_enabled) return 0;
+    MH_TransportInfo* published =
+        (MH_TransportInfo*)mh_atomic_load_acquire_ptr(&dev->transport_pub_current);
+    if (!published) return 0;
+    *out = *published;
+    return 1;
 }
 
 int mh_audio_connect_osc(MH_AudioDevice* dev, int port) {

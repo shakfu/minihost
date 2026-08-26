@@ -32,6 +32,7 @@
 #include "audio_ringbuffer.h"
 #include "midi_ringbuffer.h"
 #include "param_ringbuffer.h"
+#include "transport_ringbuffer.h"
 
 namespace {
 
@@ -306,6 +307,65 @@ long stress_param(long N) {
     return fails;
 }
 
+// --- transport command ring: ordinary SPSC, so the guarantee is the strict
+// one -- every command delivered exactly once, in order, with intact fields.
+// Unlike parameters, transport commands do not supersede each other: dropping
+// a PLAY because a later STOP arrived would leave the playhead wrong.
+long stress_transport(long N) {
+    MH_TransportRingBuffer* rb = mh_transport_ringbuffer_create(256);
+    if (!rb) {
+        std::fprintf(stderr, "FAIL: transport ringbuffer create\n");
+        return 1;
+    }
+    long fails = 0;
+
+    std::thread producer([&] {
+        for (long i = 0; i < N; ++i) {
+            MH_TransportCommand cmd;
+            cmd.type = (int) (i % 7);
+            cmd.dvalue = (double) i;
+            cmd.lvalue = i;
+            cmd.lvalue2 = -i;
+            cmd.ivalue = (int) (i & 0xFFFF);
+            cmd.ivalue2 = (int) ((i >> 4) & 0xFFFF);
+            while (!mh_transport_ringbuffer_push(rb, &cmd)) {
+                std::this_thread::yield();
+            }
+        }
+    });
+
+    std::thread consumer([&] {
+        MH_TransportCommand out[64];
+        long expect = 0;
+        while (expect < N) {
+            int n = mh_transport_ringbuffer_pop_all(rb, out, 64);
+            for (int i = 0; i < n; ++i) {
+                const MH_TransportCommand& c = out[i];
+                if (c.type != (int) (expect % 7) ||
+                    c.dvalue != (double) expect ||
+                    c.lvalue != expect ||
+                    c.lvalue2 != -expect ||
+                    c.ivalue != (int) (expect & 0xFFFF) ||
+                    c.ivalue2 != (int) ((expect >> 4) & 0xFFFF)) {
+                    if (fails < 10) {
+                        std::fprintf(stderr,
+                            "FAIL: transport seq %ld got type=%d lvalue=%lld\n",
+                            expect, c.type, (long long) c.lvalue);
+                    }
+                    ++fails;
+                }
+                ++expect;
+            }
+            if (n == 0) std::this_thread::yield();
+        }
+    });
+
+    producer.join();
+    consumer.join();
+    mh_transport_ringbuffer_free(rb);
+    return fails;
+}
+
 int main() {
     const long N = stress_count();
     std::printf("TSan ring-buffer stress: N=%ld events/frames per test\n", N);
@@ -321,6 +381,10 @@ int main() {
 
     std::printf("  param (drain)...."); std::fflush(stdout);
     f = stress_param(N);           fails += f;
+    std::printf(" %s\n", f ? "FAIL" : "ok");
+
+    std::printf("  transport........"); std::fflush(stdout);
+    f = stress_transport(N);       fails += f;
     std::printf(" %s\n", f ? "FAIL" : "ok");
 
     std::printf("  audio............"); std::fflush(stdout);
