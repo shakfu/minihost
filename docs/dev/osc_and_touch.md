@@ -1,6 +1,7 @@
 # OSC support and generated touch surfaces
 
-Status: plan, nothing implemented. Companion to
+Status: Phase 0 and Phase 1 implemented; Phases 2-6 still plan. See the
+per-phase notes in section 4, and CHANGELOG.md for what each landed as. Companion to
 [desktop_app.md](desktop_app.md) in intent: a design that gets committed
 before the code, so the ordering decisions are arguable in review rather
 than discovered halfway through.
@@ -189,12 +190,17 @@ reached.
 Phase 0 is a prerequisite for 1, 3 and 5. The rest are independent enough to
 reorder.
 
-### Phase 0 -- parameter ring and `_auto` in the live path
+### Phase 0 -- parameter ring and `_auto` in the live path -- DONE
 
 As above. No user-visible feature; everything after it is cheaper and
 correct. Also fixes the existing 7-bit MIDI mapping path.
 
-### Phase 1 -- OSC transport layer
+### Phase 1 -- OSC transport layer -- DONE
+
+Landed as planned, with the device integration limited to numeric addressing
+(`/mh/param/<index>`, `/mh/<slot>/param/<index>`); name resolution moves to
+Phase 2, which can resolve at bind time and send numerically. Feedback
+(`mh_audio_set_osc_feedback`) stayed in Phase 4 where the plan puts it.
 
 `projects/libminihost_audio/minihost_osc.{h,cpp}`, sitting beside
 `minihost_midi.{h,cpp}` because it is the same kind of thing: an I/O
@@ -468,37 +474,63 @@ could choose widgets. With ui-json, minihost chooses the widget itself by
 emitting `{"button": ...}` or `{"radio": ...}` instead of `{"fader": ...}`.
 No py2tosc change is required at all. Drop that work.
 
-#### One consequence: `each` cannot vary the tag
+#### Heterogeneous tables: `each` with a branch table
 
-Substitution reaches values, never keys. So a row can change what a control
-is *called*, *bound to* and *numbered*, but not what it *is*: the tag stays
-fixed in the template, and one `each` yields one widget kind. Plugin
-parameters are mixed -- a bypass wants `button`, a waveform selector wants
-`radio`, a cutoff wants `fader`.
+Substitution reaches values, never keys, so the tag stays fixed in the
+template and one `each` builds one kind of control. That is a design
+invariant, not a limitation: keys carry the meaning (which tag, which
+property) and values carry the data, and a node whose type came from a row
+could not be checked against the tag table before expansion.
 
-Not a flaw. Keys carry the meaning (which tag, which property) and values
-carry the data; letting a row rewrite keys would mean a node's type and
-property set are unknown until expansion, so nothing could be validated
-against the tag table beforehand. That is the checkability the dialect is
-built on, and `{"$kind": "$name"}` would be worse to read than what it
-replaced.
+Plugin parameters are mixed, though -- a bypass wants `button`, a waveform
+selector `radio`, a cutoff `fader` -- so an earlier draft of this plan
+routed around it by emitting explicit per-parameter nodes and filed a
+feature request upstream.
 
-It does mean the generator picks one of:
+**py2tosc 0.5.2 shipped it.** An `of` may now hold a branch table instead of
+a node, and a row says which branch:
 
-1. **One `each` per widget kind.** Compact, but regroups by widget and
-   discards the plugin's own parameter order.
-2. **Explicit per-parameter nodes.** Verbose, exact, order-preserving.
-3. **Hybrid**: `each` for homogeneous runs, explicit nodes for mixed pages.
+```json
+{
+  "each": [
+    {"kind": "cont", "name": "cutoff", "cc": 74},
+    {"kind": "sw",   "name": "bypass", "cc": 75}
+  ],
+  "of": {"case": "$kind", "when": {
+    "cont": {"fader":  "$name", "messages": [{"midi_cc": "$cc"}]},
+    "sw":   {"button": "$name", "messages": [{"midi_cc": "$cc"}]}
+  }}
+}
+```
 
-Recommend (2). Verbosity costs nothing in a machine-written file, and
-parameter order is information the plugin author chose. `each` stays the
-right tool for hand-written templates, which is what `--template` injects
-into and where its compactness actually pays.
+Every key stays literal, so every branch is validated against the tag table
+before any row is read -- a branch naming two tags or none is refused
+whether or not a row selects it. This is `ui_json` **schema 2**.
 
-Filed as a feature request against py2tosc rather than worked around here:
-letting an `each` row select among fully-written branches would make
-heterogeneous tables expressible without touching the key invariant. See
-section 6, request 1. Phase 6 does not wait on it.
+Two behaviours worth knowing before writing the generator, both from the
+0.5.2 notes:
+
+- **Only the selected branch is substituted into.** A branch reads the
+  fields its own rows carry and no others, so a `sw` row needs no `steps`
+  for a `radio` branch that mentions one. Rows can therefore be exactly as
+  wide as their kind requires; no padding the table to a union of fields.
+- **A branch nothing selects is not an error.** A template carrying a
+  `radio` branch for a plugin with no stepped parameters is fine. A row
+  selecting a branch nobody wrote *is* an error, and names the value it
+  read. So minihost can emit one full-width template covering every widget
+  kind and let the parameter table decide what appears.
+
+**So the recommendation flips.** Use `each` with a `case`/`when` branch
+table as the default, not explicit per-parameter nodes. It keeps parameter
+order (rows expand in list order, each selecting its own branch), which was
+the objection that ruled out grouping by widget kind, and it keeps the
+compactness that made `each` worth targeting in the first place. The
+parameter table lands in the file as a table -- which is what it is, and
+what makes the output legible and hand-editable.
+
+Explicit nodes remain the fallback for anything the branch table cannot
+express, and the generator should be structured so that choice is one
+function, not a shape assumption spread through the emitter.
 
 #### Work in minihost
 
@@ -516,7 +548,12 @@ section 6, request 1. Phase 6 does not wait on it.
   `.ui.json` and the map file from that single table. This is the whole
   reason to do it in minihost rather than piping two CLIs: the layout and
   the host mapping cannot disagree because they come from the same rows.
-- Emit `"schema": 1` in the envelope and pin the extra accordingly (below).
+- Emit the rows as one `each` over a `case`/`when` branch table -- one
+  branch per widget kind, rows in plugin parameter order. A branch no row
+  selects is legal, so the template can carry all three unconditionally.
+- Stamp the envelope with `required_schema(document)` rather than a
+  constant, since `--template` means the layout is not wholly minihost's.
+  See the schema notes below.
 - Annotate with `//` comments: parameter index per control, and a header
   noting the plugin, its version, and the minihost version that generated
   the file.
@@ -549,38 +586,63 @@ and `pyproject.toml`'s core `dependencies = []` is untouched:
 
 ```toml
 [project.optional-dependencies]
-touch = ["py2tosc >= 0.5.0"]
+touch = ["py2tosc >= 0.5.2"]
 ```
 
-A floor, not a minor pin. `ui_json` versions itself: the envelope carries a
-`schema` number, `SCHEMA = 1` today, documented as "a change that would stop
-an already written file from reading gets a new one"
-(`ui_json.py:105`). `build()` rejects only `schema > SCHEMA`
-(`ui_json.py:901`), so a newer py2tosc still reads an older description --
-files are durable and readers advance. `docs/stability.md:73` points at the
-same mechanism: the dialect is provisional, "it carries a `schema` number of
-its own for the case where a change would stop an already written
-description from building."
+A floor, not a minor pin. Both JSON dialects version themselves: the
+envelope carries a `schema` number, and a reader rejects only what is above
+its range, so a newer py2tosc still builds an older description -- files are
+durable, readers advance. As of 0.5.2:
 
-So the thing to track is the schema, not the package version. minihost
-emits `"schema": 1` explicitly rather than letting it default, and keeps the
-mapping it targets:
+| dialect | `SCHEMA` | `SCHEMAS` |
+|---|---|---|
+| `ui_json` | 2 | `range(1, 3)` |
+| `json_codec` | 1 | `range(1, 2)` |
+
+0.5.2 is the floor because `case`/`when` is schema 2 and arrived in it.
+
+**Stamp the schema, and compute it rather than remember it.** `ui_json` is
+read and never written, so the producer stamps -- and minihost is the
+producer. A description carrying no `schema` key means "whatever the reader
+is", which is the ambiguity a version number exists to remove.
+
+Hardcoding `2` is the wrong fix, because with `--template` the layout is
+partly the user's and may use less (or later, more) than minihost's own
+emitter does. Ask instead:
+
+```python
+schema = py2tosc.ui_json.required_schema(document)   # lowest schema that builds it
+```
+
+Understating the stamp is the mistake nothing catches by building -- the
+reader that would catch it is by definition new enough not to care. It
+surfaces on someone else's older release as a `FormatError` about a node
+that is perfectly fine. `py2tosc validate` warns on it, and so does the
+vendored checker described in section 5.
+
+Check compatibility before writing, not after:
+
+```python
+if not py2tosc.ui_json.supports(schema):
+    # "this py2tosc reads ui_json schemas 1-2, this layout needs 3; upgrade py2tosc"
+```
+
+`SchemaError` (a `FormatError` subclass, new in 0.5.2) is the catch-first
+equivalent for the too-new case.
+
+The table minihost keeps:
 
 | minihost | emits ui_json schema | py2tosc known to build it |
 |---|---|---|
-| 0.8.x (planned) | 1 | 0.5.0 -- 0.5.1 |
-
-`ui_json` first appears in py2tosc 0.5.0, which sets the floor. No published
-mapping exists upstream yet -- the changelog has no `ui_json` or `schema`
-entries -- so this table is the record for now. The next py2tosc release
-versions the schemas properly; see section 6 for what that changes here, and
-for why minihost must stamp `"schema"` rather than let it default.
+| 0.8.x (planned) | 2 (1 for layouts using no schema-2 spelling) | 0.5.2+ |
 
 What the schema does not cover is a provisional change that alters *output*
-without stopping a file from building -- different default sizing, say. The
-generated-file golden tests in section 5 are what catch that, and they catch
-it on a deliberate extra bump rather than at a user's machine. That is the
-right place for the cost, and it is why the floor is a floor.
+without stopping a file from building -- different default sizing, say --
+nor, per the `required_schema` docstring, a future schema that changed what
+an existing spelling *does*, since the description would be textually
+identical. Golden files are the guard for both, and they catch it on a
+deliberate extra bump rather than at a user's machine. That is the right
+place for the cost, and it is why the floor is a floor.
 
 Import lazily inside `cmd_touch`, the same shape as the lazy `import json`
 already used through `cli.py`, and fail with an install hint rather than a
@@ -609,148 +671,117 @@ Nothing here justifies weakening the existing standard. Per phase:
   expected rate, recording `set_transport` calls the way
   `test_transport_advance.py` already does for the offline path.
 - **Phase 6**: golden-file tests on the generated `.ui.json` and map JSON.
-  Most of this suite needs no py2tosc at all, since generation is now pure
-  JSON emission -- assert the envelope, the widget choice per parameter
-  kind, the CC assignment, and that the map file and the layout name the
-  same addresses. Behind the optional extra, one round-trip test that
-  `py2tosc.load` accepts the generated file and that every address in the
-  resolved document resolves back to a real parameter index. Plus a test
-  that minihost's slugger and `py2tosc.surface.slug` agree on a corpus of
-  awkward parameter names, since a divergence there is a silently dead
-  address.
+  Nearly all of this needs no py2tosc, since generation is pure JSON
+  emission -- assert the envelope, the stamped schema, the branch a
+  parameter kind selects, the CC assignment, and that the map file and the
+  layout name the same addresses.
+
+  Vendor `scripts/check_json.py` from py2tosc into the test tree and run
+  every generated file through its `check(data)`. It is one stdlib-only
+  file written to be copied by projects that produce these descriptions, so
+  it costs no dependency and catches the class of fault a golden file
+  cannot: a key nothing reads, silently dropping a subtree while the output
+  still looks correct. Record its py2tosc version in `docs/vendored.md`
+  alongside the C libraries, and re-copy on a schema bump.
+
+  Assert the stamp specifically: that minihost stamps what
+  `required_schema` computes, not a constant. Since `required_schema`
+  detects spellings rather than meanings, pair it with a golden file -- that
+  is the documented guard for the case it cannot see.
+
+  Behind the optional extra, the tests that need the real compiler: that
+  `py2tosc.load` builds the generated file, that it resolves (a `sizes` that
+  does not divide and a row too narrow for its children are invisible to the
+  standalone checker), and that every address in the resolved document maps
+  back to a real parameter index.
+
+  Plus a test that minihost's slugger and `py2tosc.surface.slug` agree on a
+  corpus of awkward parameter names, since a divergence there is a silently
+  dead address.
 
 `make test` after each phase, per the project rule. `make qa` before
 declaring a phase done.
 
 
-## 6. Upstream: py2tosc schema versioning
+## 6. Upstream: what py2tosc 0.5.2 landed
 
-Recorded here because Phase 6 depends on it and the plan should not have to
-be re-derived when it lands.
+Both feature requests this plan raised shipped in py2tosc 0.5.2, in the
+shape proposed, plus two things nobody asked for that change how Phase 6 is
+tested. The changelog credits minihost by name as the caller that found the
+gaps -- a generator rather than a hand-author.
 
-**Coming in the next py2tosc release:** versioned schemas for `ui_json`,
-and possibly for `json_codec` as well -- the verbose dialect that mirrors
-the `.tosc` XML node for node.
+Recorded here so the plan does not have to be re-derived, and so the
+reasoning survives if any of it needs revisiting.
 
-The `schema` field is not new in either; what is coming is treating it as a
-tracked, documented thing rather than a constant nobody has yet had cause to
-bump. Both dialects sit at `SCHEMA = 1` today (`ui_json.py:105`,
-`json_codec.py:100`), and both reject a schema newer than they read.
+**1. `case`/`when` branch tables -- `ui_json` schema 2.** Covered in Phase
+6. The consequence for this plan is that the generator's default output
+shape flipped from explicit per-parameter nodes back to `each`.
 
-One asymmetry between them matters to minihost, and it is the reason this
-section exists:
+**2. `SCHEMAS`, `supports()`, `SchemaError`, on both dialects.** `SCHEMA`
+names only the newest and says nothing about the floor; `SCHEMAS` is the
+range a release builds and `supports(n)` asks about one, so a generator
+checks before writing rather than catching after. A schema above the range
+is now `SchemaError` (subclass of `FormatError`); a `schema` key that is not
+a number stays a plain `FormatError`, since that is an envelope fault rather
+than a version fault. 0.5.2 also started refusing a schema *below* the
+range -- there has never been a schema 0.
 
-- `json_codec` **writes** its own envelope, stamping `"schema": SCHEMA` at
-  `json_codec.py:324`. A file it produces is self-describing for free.
-- `ui_json` is **read and never written** -- there is no `to_ui_json`,
-  because a resolved layout has frames and no memory of the `row` that
-  placed them. It accepts `schema` and defaults it to `SCHEMA` when absent.
+**3. `required_schema()` and a `py2tosc validate` warning.** Not requested,
+and the more useful of the two additions for minihost. `SCHEMAS` answers
+what a release reads; `required_schema(data)` answers what a description
+needs -- the lowest schema that builds it, which is the number to stamp.
 
-So for the dialect Phase 6 targets, **the producer stamps the schema, and
-minihost is the producer**. Emitting `"schema": 1` explicitly rather than
-letting it default is therefore not a formality: a generated file with no
-`schema` key silently means "whatever the reader is", which is precisely the
-ambiguity versioning exists to remove. Any minihost-generated `.ui.json`
-must carry it.
+This closes a failure that is otherwise structurally uncatchable by the
+producer: understating the stamp cannot fail on the machine that wrote it,
+because the reader that would catch it is new enough to build the file
+anyway. It fails later, on someone else's older release, as an error about
+a node that is fine. `py2tosc validate` now warns:
 
-What changes once upstream versioning lands:
-
-- The compatibility table in Phase 6 stops being a unilateral record and
-  becomes checkable against a published mapping -- better still if the range
-  is readable at runtime, which is request 2 below.
-- A schema bump becomes minihost's signal to regenerate goldens and widen
-  the table, on a deliberate extra bump.
-- If `json_codec` is versioned too, a second, lower-level generation target
-  opens up: emitting the faithful node tree directly, bypassing the `ui`
-  combinators and their provisional status entirely. Not worth taking --
-  it means owning all sizing and layout arithmetic that `ui.resolve` does
-  for free -- but worth knowing the escape hatch exists if the `ui`
-  carve-out ever becomes intolerable.
-
-One observation from the design discussion, kept for whoever picks this up:
-**value-only substitution is a design invariant, not a limitation to work
-around.** The reasoning is in Phase 6; the short version is that keys carry
-meaning and values carry data, and rewritable keys would cost the dialect
-its static checkability. Do not file it as a bug. The request below works
-with that invariant rather than against it.
-
-#### Feature requests for py2tosc
-
-Two, both arising from minihost being a *generator* rather than a
-hand-author. Neither blocks Phase 6 -- the plan is written to work without
-them -- but both would remove real friction, and the second is close to
-free.
-
-**1. Heterogeneous `each` tables.**
-
-A generated parameter table is mixed by nature: a bypass wants `button`, a
-waveform selector wants `radio`, a cutoff wants `fader`. Because the tag is
-a key and keys are not substituted, one `each` yields one widget kind, so a
-generator either emits one `each` per kind (regrouping by widget, discarding
-the plugin's own parameter order) or abandons `each` and writes explicit
-nodes. Phase 6 takes the second, and it is fine -- but it means the dialect's
-best feature is unavailable to exactly the caller its docstring describes,
-"a generator with nothing to emit".
-
-The fix that keeps the invariant is selection among fully-written branches,
-chosen by a row's value at expansion time:
-
-```json
-{
-  "each": [
-    {"kind": "cont", "name": "cutoff", "caption": "Cutoff", "cc": 74},
-    {"kind": "sw",   "name": "bypass", "caption": "Bypass", "cc": 75}
-  ],
-  "of": {"case": "$kind", "when": {
-    "cont": {"fader":  "$name", "messages": [{"midi_cc": "$cc"}]},
-    "sw":   {"button": "$name", "messages": [{"midi_cc": "$cc"}]}
-  }}
-}
+```console
+$ py2tosc validate synth.ui.json
+warning: <envelope>: the description declares schema 1 and uses schema 2; a
+release reading only schema 1 will refuse it with a message about a node
 ```
 
-Why this shape rather than a substitutable tag:
+A warning, not a refusal -- a refusal would only ever fire on files the
+refusing reader can build. Exit codes unchanged. Two stated limits carry
+over into how minihost should test: `required_schema` detects spellings, not
+meanings, and the table behind it is a hand-written historical record that a
+future schema bump could under-extend.
 
-- Every key stays literal. No key anywhere is built from a row.
-- Every branch is a complete node, so the whole `when` table is checkable
-  against the tag table *before* expansion -- the property-set validation
-  that motivates the invariant is untouched.
-- The failure modes are nameable: a row selecting a branch that does not
-  exist, or a `when` branch no row selects.
-- It reads. `{"$kind": "$name"}` would not.
+**4. `scripts/check_json.py` -- a standalone, stdlib-only checker.** One
+file, no py2tosc import, explicitly meant to be copied into a project that
+*writes* these files. That is minihost's case exactly, and it is why section
+5's Phase 6 tests mostly do not need the optional extra.
 
-Naming is py2tosc's call -- `case`/`when` matches the existing plain-word
-vocabulary (`row`, `each`, `of`, `from`, `as`), but `choose`/`by` or making
-`of` accept a mapping alongside a node would do as well. The shape is the
-request; the spelling is not.
+It reads both dialects (told apart by `format`, as `py2tosc.load` does),
+exposes `check(data)` returning findings, and catches the failure class this
+format has to close: a key nothing reads, silently ignored, so a `childs`
+typo drops a subtree and the output looks like a file that read correctly.
+Also `$name` no repeat binds, a binding a control cannot carry, and a schema
+stamped below the spellings used.
 
-This is a schema-bumping change (a file using it will not build on an older
-reader), which is the mechanism working as intended.
+Conservative by construction -- everything it calls an error, py2tosc
+refuses too -- and the reverse is explicitly not promised: it resolves
+nothing, so a `sizes` that does not divide, a row too narrow for its
+children, and a property that will not coerce are invisible to it. Those
+need the real compiler, which is the one place Phase 6's tests want the
+extra installed.
 
-**2. A readable schema range: `SCHEMAS` or `supports(schema)`.**
+Its tables are generated off the live modules by
+`scripts/make_check_json.py` (with a `--check` mode for CI) rather than
+retyped, so the copy cannot drift silently.
 
-Today a producer cannot ask what the installed py2tosc reads. The only way
-to discover it is to build and catch `FormatError` -- which conflates "this
-schema is newer than I read" with "node 14 has a property that is not a
-property", two errors with completely different remedies. `SCHEMA` is a
-single number naming the newest, and says nothing about the floor.
+**Still outstanding upstream:** nothing this plan needs. `json_codec`
+remains at schema 1, which is fine -- Phase 6 does not target it, and the
+lower-level escape hatch noted earlier stays hypothetical.
 
-Requested, on both dialects:
-
-```python
-py2tosc.ui_json.SCHEMAS          # e.g. range(1, 3) -- what this release builds
-py2tosc.ui_json.supports(2)      # -> bool
-py2tosc.json_codec.SCHEMAS       # same, for the faithful dialect
-```
-
-That lets `minihost touch` check before writing and fail with "this py2tosc
-reads ui_json schemas 1-2, minihost emits 3; upgrade py2tosc" -- an error
-naming its own remedy, rather than one about a node.
-
-A distinguishable error type for the too-new case (a `SchemaError` subclass
-of `FormatError`, say) would serve the same end for callers that would
-rather catch than check, and is worth having either way since the two
-failures want different messages.
-
+One observation from the design discussion, kept because it explains the
+shape of item 1 and is worth not relitigating: **value-only substitution is
+a design invariant, not a limitation worked around.** The 0.5.2 notes make
+the same argument -- every key stays literal, so every branch is checked
+before any row is looked at, which is a check a node whose type came from a
+row could not have.
 
 ## 7. Open questions
 

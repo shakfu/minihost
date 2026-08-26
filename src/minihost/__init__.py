@@ -38,6 +38,8 @@ from minihost._core import (
     AudioDevice,
     MidiFile,
     MidiIn,
+    OscClient,
+    OscServer,
     probe,
     scan_directory,
     midi_get_input_ports,
@@ -172,6 +174,8 @@ __all__ = [
     "AudioDevice",
     "MidiFile",
     "MidiIn",
+    "OscClient",
+    "OscServer",
     # Plugin discovery
     "probe",
     "scan_directory",

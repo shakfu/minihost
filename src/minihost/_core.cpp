@@ -21,6 +21,7 @@
 #include "minihost_audio.h"
 #include "minihost_audiofile.h"
 #include "minihost_midi.h"
+#include "minihost_osc.h"
 #include "minihost_vstpreset.h"
 #include "MidiFile.h"
 
@@ -1158,13 +1159,57 @@ public:
         return cb_queue_dropped_.exchange(0, std::memory_order_relaxed);
     }
 
+    // ---- cyclic garbage collection ----
+    //
+    // Plugin holds Python callables. A callable defined at module scope
+    // reaches its module's __dict__ through __globals__, and that dict
+    // normally holds the Plugin too -- so `plugin.set_param_value_callback(
+    // lambda i, v: ...)` closes a reference cycle that runs through a C++
+    // member. Python's collector cannot see an edge held in C++ unless the
+    // type says where to look, so without these the cycle is uncollectable
+    // and the Plugin leaks for the life of the process, taking its native
+    // instance and the loaded plugin bundle with it.
+    //
+    // The callbacks are the only Python references held here; the deferred
+    // dispatch queue carries plain scalars, not objects.
+    static int tp_traverse(PyObject* self, visitproc visit, void* arg) {
+        // Instances are GC-tracked from allocation, which is before the C++
+        // constructor runs, so nothing may be read until the object is ready.
+        if (nb::inst_ready(self)) {
+            Plugin* p = nb::inst_ptr<Plugin>(self);
+            Py_VISIT(p->change_callback_.ptr());
+            Py_VISIT(p->param_value_callback_.ptr());
+            Py_VISIT(p->param_gesture_callback_.ptr());
+        }
+        // Heap types must visit their type object.
+        Py_VISIT(Py_TYPE(self));
+        return 0;
+    }
+
+    static int tp_clear(PyObject* self) {
+        if (nb::inst_ready(self)) {
+            Plugin* p = nb::inst_ptr<Plugin>(self);
+            // Only the Python references are dropped. The native callbacks
+            // stay registered: unregistering takes the plugin's state mutex,
+            // and taking a lock inside a GC pass invites a deadlock. It is
+            // safe to leave them -- poll_callbacks() checks each holder for
+            // validity before calling, and a cleared holder is invalid, so a
+            // trampoline that fires after this dispatches to nothing.
+            p->change_callback_.reset();
+            p->param_value_callback_.reset();
+            p->param_gesture_callback_.reset();
+        }
+        return 0;
+    }
+
 private:
     MH_Plugin* plugin_ = nullptr;
     double sample_rate_;
     int max_block_size_;
     bool non_realtime_ = false;
 
-    // Python callback holders (prevent GC)
+    // Python callback holders (prevent GC). Reachable by the collector
+    // through tp_traverse above -- see the note there for why that matters.
     nb::object change_callback_;
     nb::object param_value_callback_;
     nb::object param_gesture_callback_;
@@ -1225,6 +1270,25 @@ private:
 // Python wrapper class for MH_PluginChain
 class PluginChain {
 public:
+    static int tp_traverse(PyObject* self, visitproc visit, void* arg) {
+        if (nb::inst_ready(self)) {
+            PluginChain* c = nb::inst_ptr<PluginChain>(self);
+            Py_VISIT(c->owner_.ptr());
+        }
+        Py_VISIT(Py_TYPE(self));
+        return 0;
+    }
+
+    static int tp_clear(PyObject* self) {
+        if (nb::inst_ready(self)) {
+            PluginChain* c = nb::inst_ptr<PluginChain>(self);
+            // Close before releasing the plugins the chain points into.
+            c->close();
+            c->owner_.reset();
+        }
+        return 0;
+    }
+
     PluginChain(nb::list plugins)
     {
         if (nb::len(plugins) == 0) {
@@ -1243,6 +1307,12 @@ public:
             raw_ptrs.push_back(p.plugin_);
             plugin_refs_.push_back(&p);
         }
+
+        // Hold the caller's list so the raw plugin_refs_ cannot dangle. This
+        // used to be an nb::keep_alive<1, 2> on the binding, which pins the
+        // same lifetime in a nanobind side table the cycle collector cannot
+        // walk -- see AudioDevice::owner_ for the full story.
+        owner_ = std::move(plugins);
 
         char err[1024] = {0};
         chain_ = mh_chain_create(raw_ptrs.data(), static_cast<int>(raw_ptrs.size()),
@@ -1535,6 +1605,10 @@ public:
 private:
     MH_PluginChain* chain_ = nullptr;
     std::vector<Plugin*> plugin_refs_;  // Keep references to prevent plugins from being GC'd
+    // The caller's list, holding the Plugin objects plugin_refs_ points at.
+    // Reachable by the collector through tp_traverse above; see the note at
+    // the assignment in the constructor.
+    nb::object owner_;
 
     // Allow AudioDevice and PluginBus to access the raw chain pointer.
     friend class AudioDevice;
@@ -1545,6 +1619,24 @@ private:
 // Python wrapper class for MH_PluginBus
 class PluginBus {
 public:
+    static int tp_traverse(PyObject* self, visitproc visit, void* arg) {
+        if (nb::inst_ready(self)) {
+            PluginBus* b = nb::inst_ptr<PluginBus>(self);
+            Py_VISIT(b->owner_.ptr());
+        }
+        Py_VISIT(Py_TYPE(self));
+        return 0;
+    }
+
+    static int tp_clear(PyObject* self) {
+        if (nb::inst_ready(self)) {
+            PluginBus* b = nb::inst_ptr<PluginBus>(self);
+            b->close();
+            b->owner_.reset();
+        }
+        return 0;
+    }
+
     PluginBus(int num_in_channels, int num_out_channels,
                 int max_block_size, double sample_rate)
     {
@@ -1582,6 +1674,10 @@ public:
                 std::string("Failed to add graph branch: ") + err);
         }
         branch_refs_.push_back(&chain);
+        // Held here rather than by nb::keep_alive so the collector can see it.
+        if (!owner_.is_valid())
+            owner_ = nb::list();
+        nb::cast<nb::list>(owner_).append(nb::find(&chain));
         return idx;
     }
 
@@ -1718,15 +1814,34 @@ public:
 private:
     MH_PluginBus* graph_ = nullptr;
     std::vector<PluginChain*> branch_refs_;  // keep branches alive
+    nb::object owner_;  // list of the branch Python objects; see tp_traverse
 };
 
 
 // Python wrapper class for MH_PluginGraph (general-DAG executor).
-// Plugin refs are kept alive via plugin_refs_; add_plugin also uses
-// nb::keep_alive at the binding to tie the Plugin Python object's
-// lifetime to this graph.
+// Plugin refs are kept alive via plugin_refs_; add_plugin also appends the
+// Plugin's Python object to owner_, which ties its lifetime to this graph and
+// keeps the edge visible to the cycle collector.
 class PluginGraph {
 public:
+    static int tp_traverse(PyObject* self, visitproc visit, void* arg) {
+        if (nb::inst_ready(self)) {
+            PluginGraph* g = nb::inst_ptr<PluginGraph>(self);
+            Py_VISIT(g->owner_.ptr());
+        }
+        Py_VISIT(Py_TYPE(self));
+        return 0;
+    }
+
+    static int tp_clear(PyObject* self) {
+        if (nb::inst_ready(self)) {
+            PluginGraph* g = nb::inst_ptr<PluginGraph>(self);
+            g->close();
+            g->owner_.reset();
+        }
+        return 0;
+    }
+
     PluginGraph(int max_block_size, double sample_rate)
     {
         char err[256] = {0};
@@ -1760,6 +1875,10 @@ public:
             throw std::runtime_error(
                 std::string("add_plugin failed: ") + err);
         plugin_refs_.push_back(&p);
+        // Held here rather than by nb::keep_alive so the collector can see it.
+        if (!owner_.is_valid())
+            owner_ = nb::list();
+        nb::cast<nb::list>(owner_).append(nb::find(&p));
         return id;
     }
 
@@ -2071,6 +2190,7 @@ public:
 private:
     MH_PluginGraph* graph_ = nullptr;
     std::vector<Plugin*> plugin_refs_;
+    nb::object owner_;  // list of the node Python objects; see tp_traverse
     // Per-node automation scratch buffers that outlive Python call
     // boundaries (the graph borrows pointers during render_block).
     std::unordered_map<int, std::vector<MH_ParamChange>> autos_scratch_;
@@ -2288,6 +2408,37 @@ public:
         }
     }
 
+    // Native OSC parameter input: the socket thread pushes straight to the
+    // control ring, taking neither a lock nor the GIL.
+    void connect_osc(int port) {
+        if (!mh_audio_connect_osc(device_, port)) {
+            throw std::runtime_error(
+                "Failed to bind OSC port " + std::to_string(port) +
+                " (in use, or not permitted)");
+        }
+    }
+
+    void disconnect_osc() { mh_audio_disconnect_osc(device_); }
+
+    int osc_port() const { return mh_audio_get_osc_port(device_); }
+
+    // Send a parameter change programmatically. Goes through the ring the
+    // audio thread drains, so the write lands at a defined point in the block
+    // instead of racing processBlock through Plugin.set_param's mutex.
+    void send_param(int param_index, float value, int plugin_index) {
+        if (!mh_audio_send_param(device_, plugin_index, param_index, value)) {
+            throw std::runtime_error("Failed to send parameter (queue may be full)");
+        }
+    }
+
+    // Same, from a control-surface thread. Its own ring, so a surface and
+    // application code are never two producers on one.
+    void send_param_control(int param_index, float value, int plugin_index) {
+        if (!mh_audio_send_param_control(device_, plugin_index, param_index, value)) {
+            throw std::runtime_error("Failed to send parameter (queue may be full)");
+        }
+    }
+
     // Audio input via lock-free ring buffer (no GIL on audio thread)
     void enable_input(int capacity_frames = 0) {
         if (capacity_frames <= 0) {
@@ -2322,6 +2473,36 @@ public:
         return mh_audio_write_input(device_, interleaved.data(), frames);
     }
 
+    // Called from the constructor bindings, which have the Python argument in
+    // hand; the C++ constructors take a reference and cannot find it.
+    void set_owner(nb::object owner) { owner_ = std::move(owner); }
+
+    static int tp_traverse(PyObject* self, visitproc visit, void* arg) {
+        if (nb::inst_ready(self)) {
+            AudioDevice* d = nb::inst_ptr<AudioDevice>(self);
+            Py_VISIT(d->owner_.ptr());
+        }
+        Py_VISIT(Py_TYPE(self));
+        return 0;
+    }
+
+    static int tp_clear(PyObject* self) {
+        if (nb::inst_ready(self)) {
+            AudioDevice* d = nb::inst_ptr<AudioDevice>(self);
+            // Close the device before dropping the reference: the audio
+            // thread reaches the plugin through a raw pointer, so it must be
+            // stopped while the plugin is still guaranteed to be alive. Using
+            // the C entry point directly rather than stop(), which raises on
+            // failure -- an exception must not escape a GC pass.
+            if (d->device_) {
+                mh_audio_close(d->device_);
+                d->device_ = nullptr;
+            }
+            d->owner_.reset();
+        }
+        return 0;
+    }
+
     int input_available() const {
         return mh_audio_input_available(device_);
     }
@@ -2337,6 +2518,17 @@ public:
     }
 
 private:
+    // The Python object owning the plugin or chain this device processes.
+    //
+    // This used to be an nb::keep_alive<1, 2>, which pins the same lifetime
+    // but records it in nanobind's internal keep_alive table -- a side map the
+    // Python collector cannot walk. A plugin holding a module-scope callback
+    // reaches its module dict, which holds this device, which held the plugin:
+    // a cycle with one edge invisible to the collector, so nothing in it was
+    // ever freed. Holding the reference here instead makes that edge visible
+    // to tp_traverse below, and keeps the lifetime guarantee identical.
+    nb::object owner_;
+
     MH_AudioDevice* device_ = nullptr;
     Plugin* plugin_ref_ = nullptr;        // Keep reference to prevent plugin from being GC'd
     PluginChain* chain_ref_ = nullptr;    // Keep reference to prevent chain from being GC'd
@@ -2673,6 +2865,32 @@ public:
         close();
     }
 
+    // Cyclic garbage collection -- see Plugin::tp_traverse for why a type
+    // holding a Python callable in a C++ member needs these. MidiIn is the
+    // other such type: `MidiIn.open(0, mapper)` holds the mapper, and a
+    // mapper defined at module scope reaches the module dict that holds the
+    // MidiIn.
+    static int tp_traverse(PyObject* self, visitproc visit, void* arg) {
+        if (nb::inst_ready(self)) {
+            MidiIn* m = nb::inst_ptr<MidiIn>(self);
+            Py_VISIT(m->callback_.ptr());
+        }
+        Py_VISIT(Py_TYPE(self));
+        return 0;
+    }
+
+    static int tp_clear(PyObject* self) {
+        if (nb::inst_ready(self)) {
+            MidiIn* m = nb::inst_ptr<MidiIn>(self);
+            // Close the port first: unlike Plugin's deferred queue, this
+            // callback is invoked directly from the MIDI thread, so the
+            // reference must not be dropped while a port can still fire.
+            m->close();
+            m->callback_ = nb::callable();
+        }
+        return 0;
+    }
+
 private:
     MH_MidiIn* handle_;
     nb::callable callback_;
@@ -2686,6 +2904,154 @@ private:
             self->callback_(nb::bytes(reinterpret_cast<const char*>(data), len));
         }
     }
+};
+
+
+// OSC input. Shaped like MidiIn deliberately: same factory-plus-handle
+// pattern, same context-manager surface, same non-movable rule.
+class OscServer {
+public:
+    OscServer() : handle_(nullptr) {}
+
+    ~OscServer() { close(); }
+
+    // Neither copyable nor movable: the C layer stores this object's address
+    // as the callback user_data, exactly as for MidiIn.
+    OscServer(const OscServer&) = delete;
+    OscServer& operator=(const OscServer&) = delete;
+    OscServer(OscServer&&) = delete;
+    OscServer& operator=(OscServer&&) = delete;
+
+    static OscServer* open(int port, nb::callable callback) {
+        auto s = std::make_unique<OscServer>();
+        s->callback_ = std::move(callback);
+
+        char err[1024] = {0};
+        s->handle_ = mh_osc_server_open(port, &OscServer::osc_callback, s.get(),
+                                        err, sizeof(err));
+        if (!s->handle_) {
+            throw std::runtime_error(std::string("Failed to open OSC server: ") + err);
+        }
+        return s.release();
+    }
+
+    void close() {
+        if (handle_) {
+            // Blocks until the socket thread has stopped, so the callback
+            // cannot be running when this returns.
+            mh_osc_server_close(handle_);
+            handle_ = nullptr;
+        }
+    }
+
+    int port() const { return handle_ ? mh_osc_server_get_port(handle_) : -1; }
+
+    OscServer& enter() { return *this; }
+    void exit(nb::object, nb::object, nb::object) { close(); }
+
+    static int tp_traverse(PyObject* self, visitproc visit, void* arg) {
+        if (nb::inst_ready(self)) {
+            OscServer* s = nb::inst_ptr<OscServer>(self);
+            Py_VISIT(s->callback_.ptr());
+        }
+        Py_VISIT(Py_TYPE(self));
+        return 0;
+    }
+
+    static int tp_clear(PyObject* self) {
+        if (nb::inst_ready(self)) {
+            OscServer* s = nb::inst_ptr<OscServer>(self);
+            // Close before dropping the callable: it is invoked directly from
+            // the socket thread, so the reference must outlive the port.
+            s->close();
+            s->callback_ = nb::callable();
+        }
+        return 0;
+    }
+
+private:
+    MH_OscServer* handle_;
+    nb::callable callback_;
+
+    // NOTE: Called from the OSC socket thread. Acquires the GIL; the callback
+    // must return quickly, because that thread is the only reader and a slow
+    // handler costs incoming messages.
+    static void osc_callback(const char* address, const float* args, int num_args,
+                             void* user_data) {
+        nb::gil_scoped_acquire gil;
+        auto* self = static_cast<OscServer*>(user_data);
+        if (self->callback_.is_valid() && !self->callback_.is_none()) {
+            nb::list py_args;
+            for (int i = 0; i < num_args; ++i)
+                py_args.append(args[i]);
+            self->callback_(nb::str(address), py_args);
+        }
+    }
+};
+
+// OSC output.
+class OscClient {
+public:
+    OscClient(const std::string& host, int port) {
+        char err[1024] = {0};
+        handle_ = mh_osc_client_open(host.c_str(), port, err, sizeof(err));
+        if (!handle_) {
+            throw std::runtime_error(std::string("Failed to open OSC client: ") + err);
+        }
+    }
+
+    ~OscClient() { close(); }
+
+    OscClient(const OscClient&) = delete;
+    OscClient& operator=(const OscClient&) = delete;
+
+    void close() {
+        if (handle_) {
+            mh_osc_client_close(handle_);
+            handle_ = nullptr;
+        }
+    }
+
+    void send(const std::string& address, nb::object value) {
+        if (!handle_) throw std::runtime_error("OSC client is closed");
+
+        int ok;
+        if (value.is_none()) {
+            ok = mh_osc_send_bang(handle_, address.c_str());
+        } else if (nb::isinstance<nb::str>(value)) {
+            ok = mh_osc_send_string(handle_, address.c_str(),
+                                    nb::cast<std::string>(value).c_str());
+        } else if (nb::isinstance<nb::bool_>(value) || nb::isinstance<nb::int_>(value)) {
+            // bool before int: in Python bool IS an int, and a caller writing
+            // True means the integer 1, not a type error.
+            ok = mh_osc_send_int(handle_, address.c_str(), nb::cast<int>(value));
+        } else if (nb::isinstance<nb::float_>(value)) {
+            ok = mh_osc_send_float(handle_, address.c_str(), nb::cast<float>(value));
+        } else if (nb::isinstance<nb::list>(value) || nb::isinstance<nb::tuple>(value)) {
+            std::vector<float> values;
+            for (nb::handle item : value)
+                values.push_back(nb::cast<float>(item));
+            ok = mh_osc_send_floats(handle_, address.c_str(),
+                                    values.empty() ? nullptr : values.data(),
+                                    static_cast<int>(values.size()));
+        } else {
+            throw nb::type_error(
+                "OSC value must be float, int, bool, str, a sequence of floats, "
+                "or None for a message with no arguments");
+        }
+
+        if (!ok) {
+            throw std::runtime_error(
+                "Failed to send OSC message to '" + address +
+                "' (is the address a valid OSC pattern?)");
+        }
+    }
+
+    OscClient& enter() { return *this; }
+    void exit(nb::object, nb::object, nb::object) { close(); }
+
+private:
+    MH_OscClient* handle_ = nullptr;
 };
 
 
@@ -3530,7 +3896,30 @@ NB_MODULE(_core, m) {
     bind_audio_buffer(float{},  "AudioBuffer",  "float32");
     bind_audio_buffer(double{}, "AudioBufferD", "float64");
 
-    nb::class_<Plugin>(m, "Plugin",
+    // GC slots for the two types that hold Python callables in C++ members.
+    // See Plugin::tp_traverse for why a type in that position needs them.
+    // Supplying Py_tp_traverse is what makes nanobind set Py_TPFLAGS_HAVE_GC
+    // on the type, which is what puts its instances in front of the
+    // collector at all.
+    static PyType_Slot plugin_slots[] = {
+        { Py_tp_traverse, (void*) Plugin::tp_traverse },
+        { Py_tp_clear,    (void*) Plugin::tp_clear },
+        { 0, nullptr }
+    };
+
+    static PyType_Slot midi_in_slots[] = {
+        { Py_tp_traverse, (void*) MidiIn::tp_traverse },
+        { Py_tp_clear,    (void*) MidiIn::tp_clear },
+        { 0, nullptr }
+    };
+
+    static PyType_Slot osc_server_slots[] = {
+        { Py_tp_traverse, (void*) OscServer::tp_traverse },
+        { Py_tp_clear,    (void*) OscServer::tp_clear },
+        { 0, nullptr }
+    };
+
+    nb::class_<Plugin>(m, "Plugin", nb::type_slots(plugin_slots),
         "A loaded audio plugin (VST3 or AudioUnit).\n\n"
         "Threading: construction, destruction, and thread-affine control "
         "operations (state, parameter text, program names, reset, sample_rate, "
@@ -3790,14 +4179,15 @@ NB_MODULE(_core, m) {
         });
 
     // PluginChain class for chaining multiple plugins
-    nb::class_<PluginChain>(m, "PluginChain")
+    static PyType_Slot plugin_chain_slots[] = {
+        { Py_tp_traverse, (void*) PluginChain::tp_traverse },
+        { Py_tp_clear,    (void*) PluginChain::tp_clear },
+        { 0, nullptr }
+    };
+
+    nb::class_<PluginChain>(m, "PluginChain", nb::type_slots(plugin_chain_slots))
         .def(nb::init<nb::list>(),
              nb::arg("plugins"),
-             // keep_alive<1, 2>: tie the passed list's Python lifetime to the
-             // chain. The list holds references to its Plugin elements, so the
-             // raw Plugin* pointers stored in plugin_refs_ stay valid as long
-             // as the chain exists, even if the caller does not retain the list.
-             nb::keep_alive<1, 2>(),
              "Create a plugin chain from a list of Plugin instances. "
              "Audio flows sequentially through plugins (e.g., synth -> reverb -> limiter). "
              "All plugins must have the same sample rate. "
@@ -3879,7 +4269,13 @@ NB_MODULE(_core, m) {
         });
 
     // PluginBus: parallel-branches-summed routing
-    nb::class_<PluginBus>(m, "PluginBus")
+    static PyType_Slot plugin_bus_slots[] = {
+        { Py_tp_traverse, (void*) PluginBus::tp_traverse },
+        { Py_tp_clear,    (void*) PluginBus::tp_clear },
+        { 0, nullptr }
+    };
+
+    nb::class_<PluginBus>(m, "PluginBus", nb::type_slots(plugin_bus_slots))
         .def(nb::init<int, int, int, double>(),
              nb::arg("num_in_channels"),
              nb::arg("num_out_channels"),
@@ -3895,7 +4291,6 @@ NB_MODULE(_core, m) {
              "node-to-node routing use PluginGraph instead.")
         .def("add_branch", &PluginBus::add_branch,
              nb::arg("chain"), nb::arg("gain") = 1.0f,
-             nb::keep_alive<1, 2>(),
              "Add a PluginChain branch with the given summing gain "
              "(linear; default 1.0). The branch's input and output "
              "channel counts must match the graph's. Returns the "
@@ -3945,7 +4340,13 @@ NB_MODULE(_core, m) {
         });
 
     // PluginGraph: general-DAG executor with input/output/mix built-ins.
-    nb::class_<PluginGraph>(m, "PluginGraph")
+    static PyType_Slot plugin_graph_slots[] = {
+        { Py_tp_traverse, (void*) PluginGraph::tp_traverse },
+        { Py_tp_clear,    (void*) PluginGraph::tp_clear },
+        { 0, nullptr }
+    };
+
+    nb::class_<PluginGraph>(m, "PluginGraph", nb::type_slots(plugin_graph_slots))
         .def(nb::init<int, double>(),
              nb::arg("max_block_size"),
              nb::arg("sample_rate"),
@@ -3956,7 +4357,6 @@ NB_MODULE(_core, m) {
              "rate every plugin node must have been opened at.")
         .def("add_plugin", &PluginGraph::add_plugin,
              nb::arg("plugin"),
-             nb::keep_alive<1, 2>(),
              "Add a plugin node. The graph keeps a reference to the "
              "Plugin so it cannot be garbage-collected while the graph "
              "is alive. Returns the new node id.")
@@ -4074,8 +4474,27 @@ NB_MODULE(_core, m) {
         });
 
     // AudioDevice class for real-time playback
-    nb::class_<AudioDevice>(m, "AudioDevice")
-        .def(nb::init<Plugin&, double, int, int, int, int, bool, int, int>(),
+    static PyType_Slot audio_device_slots[] = {
+        { Py_tp_traverse, (void*) AudioDevice::tp_traverse },
+        { Py_tp_clear,    (void*) AudioDevice::tp_clear },
+        { 0, nullptr }
+    };
+
+    nb::class_<AudioDevice>(m, "AudioDevice", nb::type_slots(audio_device_slots))
+        .def("__init__",
+             [](AudioDevice* self, Plugin& plugin, double sample_rate,
+                int buffer_frames, int output_channels, int midi_input_port,
+                int midi_output_port, bool capture, int playback_device_index,
+                int capture_device_index) {
+                 new (self) AudioDevice(plugin, sample_rate, buffer_frames,
+                                        output_channels, midi_input_port,
+                                        midi_output_port, capture,
+                                        playback_device_index,
+                                        capture_device_index);
+                 // Holds the plugin alive, and does so where tp_traverse can
+                 // see it. This replaces nb::keep_alive<1, 2>.
+                 self->set_owner(nb::find(&plugin));
+             },
              nb::arg("plugin"),
              nb::arg("sample_rate") = 0.0,
              nb::arg("buffer_frames") = 0,
@@ -4085,9 +4504,6 @@ NB_MODULE(_core, m) {
              nb::arg("capture") = false,
              nb::arg("playback_device_index") = -1,
              nb::arg("capture_device_index") = -1,
-             // Pin the Plugin's Python lifetime to the AudioDevice so the
-             // device's stored raw Plugin* (plugin_ref_) cannot dangle.
-             nb::keep_alive<1, 2>(),
              "Open an audio device for real-time playback with a single plugin. "
              "sample_rate=0 uses device default. "
              "buffer_frames=0 uses auto (~256-512). "
@@ -4099,7 +4515,18 @@ NB_MODULE(_core, m) {
              "pass an index from audio_get_playback_devices() to select a specific one. "
              "capture_device_index=-1 uses the system default input device (only consulted when capture=True); "
              "pass an index from audio_get_capture_devices() to select a specific one.")
-        .def(nb::init<PluginChain&, double, int, int, int, int, bool, int, int>(),
+        .def("__init__",
+             [](AudioDevice* self, PluginChain& chain, double sample_rate,
+                int buffer_frames, int output_channels, int midi_input_port,
+                int midi_output_port, bool capture, int playback_device_index,
+                int capture_device_index) {
+                 new (self) AudioDevice(chain, sample_rate, buffer_frames,
+                                        output_channels, midi_input_port,
+                                        midi_output_port, capture,
+                                        playback_device_index,
+                                        capture_device_index);
+                 self->set_owner(nb::find(&chain));
+             },
              nb::arg("chain"),
              nb::arg("sample_rate") = 0.0,
              nb::arg("buffer_frames") = 0,
@@ -4109,8 +4536,6 @@ NB_MODULE(_core, m) {
              nb::arg("capture") = false,
              nb::arg("playback_device_index") = -1,
              nb::arg("capture_device_index") = -1,
-             // Pin the PluginChain's Python lifetime to the AudioDevice.
-             nb::keep_alive<1, 2>(),
              "Open an audio device for real-time playback with a plugin chain. "
              "sample_rate=0 uses device default. "
              "buffer_frames=0 uses auto (~256-512). "
@@ -4170,6 +4595,48 @@ NB_MODULE(_core, m) {
              "single-producer queue (separate from the one the MIDI input port "
              "feeds, so the two do not interfere). Raises if that queue is full.")
 
+        // Native OSC parameter input
+        .def("connect_osc", &AudioDevice::connect_osc,
+             nb::arg("port") = 0,
+             "Listen for OSC on a UDP port and drive parameters directly, with "
+             "no Python in the path.\n\n"
+             "Recognised addresses, each taking one float in 0..1:\n"
+             "  /mh/param/<index>          parameter <index>\n"
+             "  /mh/<slot>/param/<index>   parameter <index> of chain slot <slot>\n"
+             "Anything else is ignored.\n\n"
+             "Only numeric addressing: resolving a parameter name would mean a "
+             "name table and a lock on the socket thread. Bind names to indices "
+             "up front and send numerically, or use OscServer and route in "
+             "Python if you want name handling per message.\n\n"
+             "Prefer this to OscServer + send_param_control when the traffic is "
+             "parameter automation: it takes neither a lock nor the GIL, where a "
+             "Python callback pays a GIL acquisition per message.\n\n"
+             "port=0 lets the OS choose; read it back from osc_port.")
+        .def("disconnect_osc", &AudioDevice::disconnect_osc,
+             "Stop listening for OSC. Blocks until the socket thread has stopped.")
+        .def_prop_ro("osc_port", &AudioDevice::osc_port,
+             "The UDP port OSC is bound to, or -1 if not connected.")
+
+        // Programmatic parameter automation
+        .def("send_param", &AudioDevice::send_param,
+             nb::arg("param_index"), nb::arg("value"), nb::arg("plugin_index") = 0,
+             "Queue a parameter change, applied by the audio thread at the start "
+             "of the next block. value is normalized 0..1. plugin_index selects "
+             "the chain slot on a device opened with a PluginChain; leave it 0 "
+             "for a single plugin. "
+             "Prefer this to Plugin.set_param while a device is running: set_param "
+             "takes the plugin's state mutex and writes the parameter underneath a "
+             "running processBlock, so the change lands at an undefined point. "
+             "Call from a single thread -- the changes go through a lock-free "
+             "single-producer queue (separate from the control-surface one). "
+             "Raises if that queue is full.")
+        .def("send_param_control", &AudioDevice::send_param_control,
+             nb::arg("param_index"), nb::arg("value"), nb::arg("plugin_index") = 0,
+             "As send_param, but writes the queue reserved for control-surface "
+             "input -- a MidiIn callback or an OSC thread -- so a surface and "
+             "application code are not two producers on one queue. This is what "
+             "MidiMapper uses when bound to a device.")
+
         // Audio input for effect processing (lock-free ring buffer)
         .def("enable_input", &AudioDevice::enable_input,
              nb::arg("capacity_frames") = 0,
@@ -4193,7 +4660,7 @@ NB_MODULE(_core, m) {
         });
 
     // MidiIn class for standalone MIDI input monitoring
-    nb::class_<MidiIn>(m, "MidiIn")
+    nb::class_<MidiIn>(m, "MidiIn", nb::type_slots(midi_in_slots))
         .def_static("open", &MidiIn::open,
              nb::arg("port_index"), nb::arg("callback"),
              nb::rv_policy::take_ownership,
@@ -4206,6 +4673,55 @@ NB_MODULE(_core, m) {
              "Close the MIDI input")
         .def("__enter__", &MidiIn::enter, nb::rv_policy::reference)
         .def("__exit__", [](MidiIn& self, const nb::args&) {
+            self.close();
+        });
+
+    nb::class_<OscServer>(m, "OscServer", nb::type_slots(osc_server_slots))
+        .def_static("open", &OscServer::open,
+             nb::arg("port"), nb::arg("callback"),
+             nb::rv_policy::take_ownership,
+             "Listen for OSC on a UDP port. callback(address, args) is called "
+             "for each incoming message, where address is the OSC address "
+             "pattern and args is a list of floats.\n\n"
+             "Pass port=0 to let the OS choose a free port and read it back "
+             "from the .port property.\n\n"
+             "The callback runs on the OSC socket thread, which is the only "
+             "reader, so it must return quickly or incoming messages are lost. "
+             "Push to a queue rather than working in it. To drive plugin "
+             "parameters, call AudioDevice.send_param_control from here: it is "
+             "lock-free and applies the value at the next block boundary.\n\n"
+             "Argument types: float32 arrives as itself and int32 is "
+             "converted; any other OSC type (string, blob) is reported as 0.0 "
+             "rather than dropped, so positions stay aligned with what the "
+             "sender wrote.")
+        .def_prop_ro("port", &OscServer::port,
+             "The UDP port actually bound. Meaningful after opening on port 0.")
+        .def("close", &OscServer::close,
+             "Stop listening. Blocks until the socket thread has stopped, so "
+             "the callback is not running when this returns.")
+        .def("__enter__", &OscServer::enter, nb::rv_policy::reference)
+        .def("__exit__", [](OscServer& self, const nb::args&) {
+            self.close();
+        });
+
+    nb::class_<OscClient>(m, "OscClient")
+        .def(nb::init<const std::string&, int>(),
+             nb::arg("host"), nb::arg("port"),
+             "Open an OSC sender aimed at host:port.\n\n"
+             "UDP has no connection, so this fails only on a hostname that "
+             "will not resolve. Messages sent to a host that is not listening "
+             "are discarded by the network with no error -- that is the "
+             "protocol, not a limitation of this wrapper.")
+        .def("send", &OscClient::send,
+             nb::arg("address"), nb::arg("value") = nb::none(),
+             "Send one OSC message.\n\n"
+             "value may be a float, an int, a bool (sent as int), a str, a "
+             "sequence of floats, or None for a message with no arguments "
+             "(a trigger such as /mh/transport/play). Raises if the address "
+             "is not a valid OSC pattern.")
+        .def("close", &OscClient::close, "Close the sender")
+        .def("__enter__", &OscClient::enter, nb::rv_policy::reference)
+        .def("__exit__", [](OscClient& self, const nb::args&) {
             self.close();
         });
 

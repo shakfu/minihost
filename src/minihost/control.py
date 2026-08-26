@@ -15,7 +15,7 @@ HID-layer support; they appear as standard MIDI input ports.
 from __future__ import annotations
 
 import threading
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from minihost._core import Plugin
 
@@ -95,6 +95,8 @@ class MidiMapper:
         self,
         plugin: Plugin,
         on_unmapped: Optional[Callable[[bytes], None]] = None,
+        device: Optional[Any] = None,
+        plugin_index: int = 0,
     ):
         """Create a mapper bound to a plugin.
 
@@ -107,12 +109,42 @@ class MidiMapper:
                 raw MIDI bytes. Useful for forwarding non-controller
                 events (e.g., keyboard notes from a hybrid controller)
                 onward to the plugin via ``audio_device.send_midi``.
+            device: Optional :class:`AudioDevice`. When given, parameter
+                writes are queued on the device rather than written
+                through :meth:`Plugin.set_param`, so they are applied by
+                the audio thread at a block boundary instead of racing
+                a running ``processBlock``. See :meth:`bind_device`.
+            plugin_index: Chain slot the mappings address, when ``device``
+                was opened on a :class:`PluginChain`. Ignored otherwise.
         """
         self._plugin = plugin
         self._cc: dict[tuple[int, int], _CCMapping] = {}
         self._note: dict[tuple[int, int], _NoteMapping] = {}
         self._on_unmapped = on_unmapped
+        self._device = device
+        self._plugin_index = plugin_index
         self._lock = threading.RLock()
+
+    def bind_device(self, device: Optional[Any], plugin_index: int = 0) -> None:
+        """Route parameter writes through an :class:`AudioDevice`.
+
+        Without a device, a CC write calls :meth:`Plugin.set_param`, which
+        takes the plugin's state mutex and sets the value underneath
+        whatever the audio thread is doing -- so the change lands at an
+        undefined point, and the MIDI thread can block behind an offline
+        caller holding that mutex. With one, the write goes onto the
+        device's lock-free control queue and the audio thread applies it
+        at the start of the next block through the sample-accurate
+        process entry point.
+
+        Bind whenever a device is running. The unbound path remains
+        correct for offline use, where there is no audio thread to race.
+
+        Pass ``None`` to unbind. Thread-safe: a single reassignment is
+        atomic under the GIL.
+        """
+        self._plugin_index = plugin_index
+        self._device = device
 
     # ---- mapping configuration ----
 
@@ -234,6 +266,25 @@ class MidiMapper:
         with self._lock:
             return set(self._note.keys())
 
+    # ---- parameter writes ----
+
+    def _write_param(self, param_idx: int, value: float) -> None:
+        """Apply one parameter write, through the device when bound.
+
+        A full control queue is dropped rather than raised: this runs on the
+        MIDI input thread, where an exception would escape into the callback,
+        and the value it carries is superseded by the next turn of the fader
+        anyway.
+        """
+        device = self._device
+        if device is None:
+            self._plugin.set_param(param_idx, value)
+            return
+        try:
+            device.send_param_control(param_idx, value, self._plugin_index)
+        except RuntimeError:
+            pass
+
     # ---- MidiIn callback interface ----
 
     def __call__(self, data: bytes) -> None:
@@ -256,7 +307,7 @@ class MidiMapper:
             with self._lock:
                 cc_map = self._cc.get((channel, cc))
             if cc_map is not None:
-                self._plugin.set_param(cc_map.param_idx, cc_map.normalize(value))
+                self._write_param(cc_map.param_idx, cc_map.normalize(value))
                 return
 
         # Note-on: status 0x90-0x9F, 3 bytes total, velocity > 0

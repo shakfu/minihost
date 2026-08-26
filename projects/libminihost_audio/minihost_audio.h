@@ -21,6 +21,14 @@ typedef struct MH_PluginChain MH_PluginChain;
 
 typedef struct MH_AudioDevice MH_AudioDevice;
 
+// Distinct parameters the audio thread will apply in one block.
+//
+// The bound is on distinct parameters, not on writes: the drain coalesces, so
+// a fader emitting hundreds of values inside one block occupies one slot. A
+// block that changes more than this many *different* parameters is a preset
+// load rather than a gesture, and the excess is applied on the next block.
+#define MH_AUDIO_MAX_PARAM_CHANGES 64
+
 typedef struct MH_AudioConfig {
     double sample_rate;      // 0 = use device default
     int buffer_frames;       // 0 = auto (~256-512 depending on platform)
@@ -161,6 +169,63 @@ int mh_audio_is_midi_output_virtual(MH_AudioDevice* dev);
 // two producers on an SPSC structure, corrupting its indices and losing or
 // duplicating events. Returns 1 if queued, 0 if the ring is full.
 int mh_audio_send_midi(MH_AudioDevice* dev, unsigned char status, unsigned char data1, unsigned char data2);
+
+// Listen for OSC on a UDP port and drive parameters from it directly.
+//
+// Addresses recognised, with one float argument in 0..1:
+//
+//   /mh/param/<index>              parameter <index> of the plugin
+//   /mh/<slot>/param/<index>       parameter <index> of chain slot <slot>
+//
+// Anything else is ignored. This is deliberately the numeric-only subset:
+// resolving a parameter *name* means holding a name table and a lock, and the
+// socket thread must do neither. Name-addressed control belongs in the mapping
+// layer above this, which can resolve at bind time and send numerically.
+//
+// The value goes straight onto the control parameter ring, so the socket
+// thread never blocks and never takes the GIL -- which is the advantage of
+// this over receiving in Python and calling mh_audio_send_param_control. A
+// Python callback pays a GIL acquisition per message.
+//
+// port: the UDP port to bind, or 0 to let the OS choose one (see
+//   mh_audio_get_osc_port). Disconnects any existing OSC connection first.
+// Returns 1 on success, 0 on failure (port in use, or not permitted).
+int mh_audio_connect_osc(MH_AudioDevice* dev, int port);
+
+// Stop listening for OSC. Returns 1 on success, 0 if nothing was connected.
+// Blocks until the socket thread has stopped.
+int mh_audio_disconnect_osc(MH_AudioDevice* dev);
+
+// The UDP port OSC is bound to, or -1 if not connected.
+int mh_audio_get_osc_port(MH_AudioDevice* dev);
+
+// Queue a parameter change for the plugin from application code.
+//
+// Call from a single thread, exactly as mh_audio_send_midi requires and for
+// the same reason: the change goes onto a lock-free single-producer ring, and
+// a second concurrent producer would corrupt its indices. A control surface
+// driving parameters from its own thread uses mh_audio_send_param_control
+// instead, which has a ring of its own.
+//
+// plugin_index selects the chain slot on a device opened with
+// mh_audio_open_chain; pass 0 on a device opened with mh_audio_open, where any
+// other value is discarded.
+//
+// value is normalized 0..1 and clamped when applied, matching mh_set_param.
+//
+// The change is applied by the audio thread at the start of the next block,
+// through the _auto process entry point, rather than by writing the parameter
+// underneath a running processBlock. Returns 1 if queued, 0 if the ring is
+// full.
+int mh_audio_send_param(MH_AudioDevice* dev, int plugin_index, int param_index, float value);
+
+// Queue a parameter change from a control-surface thread.
+//
+// Identical to mh_audio_send_param but writes the ring reserved for control
+// input -- a MIDI input callback, or an OSC socket thread -- so that a surface
+// and application code are not two producers on one ring. Call from a single
+// thread.
+int mh_audio_send_param_control(MH_AudioDevice* dev, int plugin_index, int param_index, float value);
 
 // Enable ring-buffer-based audio input for effect processing.
 // Creates an internal ring buffer and installs an input callback that reads from it.

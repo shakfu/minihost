@@ -48,6 +48,7 @@ tsan:
 		-Iprojects/libminihost_audio -Iprojects/libminihost \
 		tests/tsan/ringbuffer_stress.cpp \
 		projects/libminihost_audio/midi_ringbuffer.cpp \
+		projects/libminihost_audio/param_ringbuffer.cpp \
 		projects/libminihost_audio/audio_ringbuffer.cpp \
 		-o build/tsan_ringbuffer_stress
 	@TSAN_OPTIONS="halt_on_error=1 $(TSAN_OPTIONS)" \

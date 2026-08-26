@@ -16,8 +16,10 @@ set(_minihost_audio_sources
     minihost_audio.c
     minihost_audiofile.c
     midi_ringbuffer.cpp
+    param_ringbuffer.cpp
     audio_ringbuffer.cpp
     minihost_midi.cpp
+    minihost_osc.cpp
     ${CMAKE_SOURCE_DIR}/projects/tflac/tflac.c
 )
 
@@ -41,6 +43,12 @@ function(_minihost_audio_configure_common target)
         ${CMAKE_SOURCE_DIR}/projects/libremidi/include
         ${CMAKE_SOURCE_DIR}/projects/tflac
     )
+
+    # juce_osc: OSC transport. Depends only on juce_events, which
+    # juce_audio_processors_headless already pulls in, so this adds no new
+    # dependency and nothing GUI. Linked PRIVATE because the C API in
+    # minihost_osc.h exposes no JUCE type -- consumers never see it.
+    target_link_libraries(${target} PRIVATE juce::juce_osc)
 
     # libremidi header-only mode.
     #

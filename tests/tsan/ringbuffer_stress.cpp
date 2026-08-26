@@ -1,6 +1,7 @@
 // ThreadSanitizer stress harness for minihost's lock-free SPSC ring buffers.
 //
-// The MIDI and audio ring buffers (midi_ringbuffer.cpp / audio_ringbuffer.cpp)
+// The MIDI, parameter and audio ring buffers (midi_ringbuffer.cpp,
+// param_ringbuffer.cpp / audio_ringbuffer.cpp)
 // are the project's only hand-rolled lock-free code: a single producer thread
 // and a single consumer thread coordinate through release/acquire atomics with
 // no lock. That is exactly the kind of code where a missing fence is invisible
@@ -30,6 +31,7 @@
 
 #include "audio_ringbuffer.h"
 #include "midi_ringbuffer.h"
+#include "param_ringbuffer.h"
 
 namespace {
 
@@ -192,6 +194,118 @@ long stress_audio(long N) {
 
 }  // namespace
 
+// --- parameter ring buffer: the drain coalesces, so exactly-once delivery is
+// the wrong guarantee to assert. What must hold instead, and what a wrong
+// memory order would break, is that the consumer never sees a value that was
+// not pushed, never sees a torn (plugin_index, param_index, value) triple, and
+// ends up holding the producer's *last* value for every parameter once the
+// producer has finished.
+//
+// The value encodes its own sequence number so a torn write is detectable, and
+// the parameters are spread over more slots than the drain array holds so the
+// overflow branch is exercised too.
+long stress_param(long N) {
+    const int PARAMS = 96;      // > MAX_OUT below, so drains overflow
+    const int MAX_OUT = 64;     // mirrors MH_AUDIO_MAX_PARAM_CHANGES
+
+    MH_ParamRingBuffer* rb = mh_param_ringbuffer_create(1024);
+    if (!rb) {
+        std::fprintf(stderr, "FAIL: param ringbuffer create\n");
+        return 1;
+    }
+    long fails = 0;
+
+    // The last value the producer pushed for each parameter, so the consumer's
+    // final state can be checked against it.
+    float last_pushed[PARAMS];
+    for (int i = 0; i < PARAMS; ++i) last_pushed[i] = -1.0f;
+
+    // What the consumer has most recently applied for each parameter.
+    float applied[PARAMS];
+    for (int i = 0; i < PARAMS; ++i) applied[i] = -1.0f;
+
+    std::atomic<bool> done{false};
+
+    std::thread producer([&] {
+        for (long i = 0; i < N; ++i) {
+            int param = static_cast<int>(i % PARAMS);
+            // A value that is a function of the sequence number, so the
+            // consumer can tell a real value from a torn or invented one.
+            float value = static_cast<float>(i & 0xFFFF) / 65535.0f;
+            last_pushed[param] = value;
+            while (!mh_param_ringbuffer_push(rb, 0, param, value)) {
+                std::this_thread::yield();  // buffer full: spin
+            }
+        }
+        done.store(true, std::memory_order_release);
+    });
+
+    std::thread consumer([&] {
+        MH_ChainParamChange out[MAX_OUT];
+        for (;;) {
+            bool was_done = done.load(std::memory_order_acquire);
+
+            int count = 0;
+            mh_param_ringbuffer_drain(rb, out, MAX_OUT, &count);
+
+            for (int i = 0; i < count; ++i) {
+                if (out[i].plugin_index != 0 ||
+                    out[i].param_index < 0 || out[i].param_index >= PARAMS ||
+                    out[i].sample_offset != 0 ||
+                    out[i].value < 0.0f || out[i].value > 1.0f) {
+                    if (fails < 10) {
+                        std::fprintf(stderr,
+                            "FAIL: param drain torn: slot=%d param=%d offset=%d value=%f\n",
+                            out[i].plugin_index, out[i].param_index,
+                            out[i].sample_offset, (double)out[i].value);
+                    }
+                    ++fails;
+                    continue;
+                }
+                applied[out[i].param_index] = out[i].value;
+
+                // Coalescing invariant: a drain never reports one parameter
+                // twice, so every index in `out` must be distinct.
+                for (int j = 0; j < i; ++j) {
+                    if (out[j].param_index == out[i].param_index &&
+                        out[j].plugin_index == out[i].plugin_index) {
+                        if (fails < 10) {
+                            std::fprintf(stderr,
+                                "FAIL: param %d appears twice in one drain\n",
+                                out[i].param_index);
+                        }
+                        ++fails;
+                    }
+                }
+            }
+
+            // Drain once more after seeing `done` so nothing is left behind.
+            if (was_done && mh_param_ringbuffer_is_empty(rb)) break;
+            if (count == 0) std::this_thread::yield();
+        }
+    });
+
+    producer.join();
+    consumer.join();
+
+    // Every parameter must have converged on the producer's final value: the
+    // whole point of coalescing is that intermediate values may be dropped and
+    // the last one may not.
+    for (int i = 0; i < PARAMS; ++i) {
+        if (last_pushed[i] != applied[i]) {
+            if (fails < 10) {
+                std::fprintf(stderr,
+                    "FAIL: param %d settled at %f, producer last pushed %f\n",
+                    i, (double)applied[i], (double)last_pushed[i]);
+            }
+            ++fails;
+        }
+    }
+
+    mh_param_ringbuffer_free(rb);
+    return fails;
+}
+
 int main() {
     const long N = stress_count();
     std::printf("TSan ring-buffer stress: N=%ld events/frames per test\n", N);
@@ -203,6 +317,10 @@ int main() {
 
     std::printf("  midi (pop_all)..."); std::fflush(stdout);
     f = stress_midi_pop_all(N);    fails += f;
+    std::printf(" %s\n", f ? "FAIL" : "ok");
+
+    std::printf("  param (drain)...."); std::fflush(stdout);
+    f = stress_param(N);           fails += f;
     std::printf(" %s\n", f ? "FAIL" : "ok");
 
     std::printf("  audio............"); std::fflush(stdout);

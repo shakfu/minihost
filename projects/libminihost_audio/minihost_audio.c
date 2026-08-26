@@ -7,7 +7,9 @@
 
 #include "minihost_audio.h"
 #include "minihost_midi.h"
+#include "minihost_osc.h"
 #include "midi_ringbuffer.h"
+#include "param_ringbuffer.h"
 #include "audio_ringbuffer.h"
 #include "minihost.h"
 #include "minihost_chain.h"
@@ -94,6 +96,23 @@ struct MH_AudioDevice {
     MH_MidiRingBuffer* midi_in_buffer;   // MIDI thread -> audio thread
     MH_MidiRingBuffer* midi_send_buffer; // app thread  -> audio thread
     MH_MidiRingBuffer* midi_out_buffer;  // audio thread -> MIDI output
+
+    // Parameter changes, same one-producer-per-ring rule as the MIDI pair
+    // above and for the same reason. param_ctl_buffer belongs to whichever
+    // thread drives a control surface (the MIDI input callback today, an OSC
+    // socket thread later); param_send_buffer belongs to application code
+    // calling mh_audio_send_param. The audio thread drains both into one
+    // coalesced array and hands it to the _auto process entry point, so a
+    // parameter write lands at a defined point in the block instead of
+    // racing processBlock through mh_set_param's mutex.
+    MH_ParamRingBuffer* param_ctl_buffer;  // control thread -> audio thread
+    MH_ParamRingBuffer* param_send_buffer; // app thread     -> audio thread
+
+    // OSC input. Its socket thread is the single producer on
+    // param_ctl_buffer, which is why mh_audio_send_param_control is
+    // documented as belonging to one control thread: connecting OSC claims it.
+    MH_OscServer* osc_server;
+
     int midi_in_port;   // -1 if not connected or virtual
     int midi_out_port;  // -1 if not connected or virtual
     int midi_in_virtual;   // 1 if virtual port, 0 if physical
@@ -293,9 +312,31 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
             256 - num_midi_events);
     }
 
+    // Drain parameter changes from both producer rings into one coalesced
+    // array. The control ring is drained first, so on the rare block that
+    // fills the array it is application writes that get deferred rather than
+    // a surface's -- the surface is the one with a human waiting on it.
+    MH_ChainParamChange param_changes[MH_AUDIO_MAX_PARAM_CHANGES];
+    int num_param_changes = 0;
+    if (dev->param_ctl_buffer) {
+        mh_param_ringbuffer_drain(dev->param_ctl_buffer, param_changes,
+                                  MH_AUDIO_MAX_PARAM_CHANGES, &num_param_changes);
+    }
+    if (dev->param_send_buffer) {
+        mh_param_ringbuffer_drain(dev->param_send_buffer, param_changes,
+                                  MH_AUDIO_MAX_PARAM_CHANGES, &num_param_changes);
+    }
+
     // Process through the plugin or chain with MIDI
     MH_MidiEvent midi_out[256];
     int num_midi_out = 0;
+
+    // The _auto entry points are used only when there is something to
+    // automate. With no pending change they are equivalent to the plain ones
+    // (mh_process_auto delegates outright), but going through them
+    // unconditionally would make every silent block pay for the branch and
+    // would change the code path that years of use have exercised.
+    const int have_params = num_param_changes > 0;
 
     // Every process entry point returns 0 on refusal (most commonly nframes
     // above the plugin's max block size). The return value used to be ignored,
@@ -307,7 +348,15 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
     int processed;
     if (dev->chain) {
         // Process through plugin chain
-        if (num_midi_events > 0) {
+        if (have_params) {
+            processed = mh_chain_process_auto(dev->chain,
+                              (const float* const*)dev->input_buffers,
+                              dev->output_buffers,
+                              frames,
+                              midi_events, num_midi_events,
+                              midi_out, 256, &num_midi_out,
+                              param_changes, num_param_changes);
+        } else if (num_midi_events > 0) {
             processed = mh_chain_process_midi_io(dev->chain,
                               (const float* const*)dev->input_buffers,
                               dev->output_buffers,
@@ -322,7 +371,28 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
         }
     } else {
         // Process through single plugin
-        if (num_midi_events > 0) {
+        if (have_params) {
+            // Project the drained array down to the single-plugin form. A
+            // write addressed to a slot other than 0 has no meaning on a
+            // device opened with mh_audio_open and is discarded rather than
+            // applied to the only plugin there is.
+            MH_ParamChange flat[MH_AUDIO_MAX_PARAM_CHANGES];
+            int num_flat = 0;
+            for (int i = 0; i < num_param_changes; i++) {
+                if (param_changes[i].plugin_index != 0) continue;
+                flat[num_flat].sample_offset = param_changes[i].sample_offset;
+                flat[num_flat].param_index = param_changes[i].param_index;
+                flat[num_flat].value = param_changes[i].value;
+                num_flat++;
+            }
+            processed = mh_process_auto(dev->plugin,
+                              (const float* const*)dev->input_buffers,
+                              dev->output_buffers,
+                              frames,
+                              midi_events, num_midi_events,
+                              midi_out, 256, &num_midi_out,
+                              flat, num_flat);
+        } else if (num_midi_events > 0) {
             processed = mh_process_midi_io(dev->plugin,
                               (const float* const*)dev->input_buffers,
                               dev->output_buffers,
@@ -533,6 +603,12 @@ MH_AudioDevice* mh_audio_open(MH_Plugin* plugin, const MH_AudioConfig* config,
     dev->midi_send_buffer = mh_midi_ringbuffer_create(256);
     dev->midi_out_buffer = mh_midi_ringbuffer_create(256);
 
+    // Create parameter ring buffers. Sized well past any plausible control
+    // rate: a surface sending a thousand values a second fills two of these
+    // per second, and the audio thread drains them every few milliseconds.
+    dev->param_ctl_buffer = mh_param_ringbuffer_create(1024);
+    dev->param_send_buffer = mh_param_ringbuffer_create(1024);
+
     // Connect MIDI ports if specified in config
     if (config) {
         if (config->midi_input_port >= 0) {
@@ -727,6 +803,12 @@ MH_AudioDevice* mh_audio_open_chain(MH_PluginChain* chain, const MH_AudioConfig*
     dev->midi_send_buffer = mh_midi_ringbuffer_create(256);
     dev->midi_out_buffer = mh_midi_ringbuffer_create(256);
 
+    // Create parameter ring buffers. Sized well past any plausible control
+    // rate: a surface sending a thousand values a second fills two of these
+    // per second, and the audio thread drains them every few milliseconds.
+    dev->param_ctl_buffer = mh_param_ringbuffer_create(1024);
+    dev->param_send_buffer = mh_param_ringbuffer_create(1024);
+
     // Connect MIDI ports if specified in config
     if (config) {
         if (config->midi_input_port >= 0) {
@@ -774,6 +856,18 @@ void mh_audio_close(MH_AudioDevice* dev) {
     }
     if (dev->midi_out_buffer) {
         mh_midi_ringbuffer_free(dev->midi_out_buffer);
+    }
+    // Before the ring it produces into is freed. mh_osc_server_close joins
+    // the socket thread, so no push can be in flight afterwards.
+    if (dev->osc_server) {
+        mh_osc_server_close(dev->osc_server);
+        dev->osc_server = NULL;
+    }
+    if (dev->param_ctl_buffer) {
+        mh_param_ringbuffer_free(dev->param_ctl_buffer);
+    }
+    if (dev->param_send_buffer) {
+        mh_param_ringbuffer_free(dev->param_send_buffer);
     }
 
     // Cleanup audio input ring buffer
@@ -980,6 +1074,103 @@ int mh_audio_send_midi(MH_AudioDevice* dev, unsigned char status, unsigned char 
     event.data2 = data2;
 
     return mh_midi_ringbuffer_push(dev->midi_send_buffer, &event);
+}
+
+// Parse a decimal integer occupying the whole of [begin, end).
+// Returns -1 on anything else, including empty, negative and overflowing.
+static int parse_index(const char* begin, const char* end) {
+    if (begin >= end) return -1;
+    long value = 0;
+    for (const char* p = begin; p < end; p++) {
+        if (*p < '0' || *p > '9') return -1;
+        value = value * 10 + (*p - '0');
+        if (value > 1000000) return -1;  // far past any real parameter count
+    }
+    return (int)value;
+}
+
+// Match "/mh/param/<index>" or "/mh/<slot>/param/<index>".
+// Returns 1 and fills the outputs on a match, 0 otherwise.
+static int parse_param_address(const char* address, int* out_slot, int* out_param) {
+    static const char prefix[] = "/mh/";
+    const size_t prefix_len = sizeof(prefix) - 1;
+    if (strncmp(address, prefix, prefix_len) != 0) return 0;
+
+    const char* rest = address + prefix_len;
+
+    // "/mh/param/<index>"
+    static const char param[] = "param/";
+    const size_t param_len = sizeof(param) - 1;
+    if (strncmp(rest, param, param_len) == 0) {
+        int index = parse_index(rest + param_len, rest + strlen(rest));
+        if (index < 0) return 0;
+        *out_slot = 0;
+        *out_param = index;
+        return 1;
+    }
+
+    // "/mh/<slot>/param/<index>"
+    const char* slash = strchr(rest, '/');
+    if (!slash) return 0;
+    int slot = parse_index(rest, slash);
+    if (slot < 0) return 0;
+    if (strncmp(slash + 1, param, param_len) != 0) return 0;
+    const char* tail = slash + 1 + param_len;
+    int index = parse_index(tail, tail + strlen(tail));
+    if (index < 0) return 0;
+    *out_slot = slot;
+    *out_param = index;
+    return 1;
+}
+
+// Called on the OSC socket thread. Pushes to the ring and returns; no lock,
+// no allocation, no GIL.
+static void osc_param_callback(const char* address, const float* args,
+                               int num_args, void* user_data) {
+    MH_AudioDevice* dev = (MH_AudioDevice*)user_data;
+    if (!dev || !dev->param_ctl_buffer || num_args < 1 || !args) return;
+
+    int slot = 0, param = 0;
+    if (!parse_param_address(address, &slot, &param)) return;
+
+    mh_param_ringbuffer_push(dev->param_ctl_buffer, slot, param, args[0]);
+}
+
+int mh_audio_connect_osc(MH_AudioDevice* dev, int port) {
+    if (!dev) return 0;
+
+    mh_audio_disconnect_osc(dev);
+
+    char err[256] = {0};
+    dev->osc_server = mh_osc_server_open(port, osc_param_callback, dev,
+                                         err, sizeof(err));
+    return dev->osc_server ? 1 : 0;
+}
+
+int mh_audio_disconnect_osc(MH_AudioDevice* dev) {
+    if (!dev || !dev->osc_server) return 0;
+    mh_osc_server_close(dev->osc_server);
+    dev->osc_server = NULL;
+    return 1;
+}
+
+int mh_audio_get_osc_port(MH_AudioDevice* dev) {
+    if (!dev || !dev->osc_server) return -1;
+    return mh_osc_server_get_port(dev->osc_server);
+}
+
+int mh_audio_send_param(MH_AudioDevice* dev, int plugin_index, int param_index, float value) {
+    // Note: NOT param_ctl_buffer -- that ring belongs to the control-input
+    // thread. See the struct comment.
+    if (!dev || !dev->param_send_buffer) return 0;
+    if (param_index < 0 || plugin_index < 0) return 0;
+    return mh_param_ringbuffer_push(dev->param_send_buffer, plugin_index, param_index, value);
+}
+
+int mh_audio_send_param_control(MH_AudioDevice* dev, int plugin_index, int param_index, float value) {
+    if (!dev || !dev->param_ctl_buffer) return 0;
+    if (param_index < 0 || plugin_index < 0) return 0;
+    return mh_param_ringbuffer_push(dev->param_ctl_buffer, plugin_index, param_index, value);
 }
 
 // Internal callback that reads from the audio ring buffer
