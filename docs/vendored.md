@@ -20,10 +20,7 @@ This file tracks the vendored C/C++ libraries included in `projects/`. JUCE is n
 
 3. Build and run tests: `make clean && make build && make test`.
 
-Note that `tests/check_json.py` is a test-only vendoring, not a build
-dependency: a single stdlib-only file that py2tosc publishes for projects
-which *generate* `.ui.json` descriptions and want to validate them without
-depending on the compiler. It is re-copied on a py2tosc schema bump.
+Note that `tests/check_json.py` is a test-only vendoring, not a build dependency: a single stdlib-only file that py2tosc publishes for projects which *generate* `.ui.json` descriptions and want to validate them without depending on the compiler. It is re-copied on a py2tosc schema bump.
 
 4. Check for API changes in headers consumed by minihost (`minihost_audiofile.c`, `minihost_audio.c`, `minihost_midi.cpp`, `_core.cpp`).
 

@@ -54,10 +54,7 @@ cmake --build build
 
 ### Headless Mode
 
-The library is built headless -- without GUI dependencies -- as
-`libminihost.a`. If you need GUI support (plugin editor windows), build the
-non-headless sibling archive `libminihost_gui.a` as well and link that
-instead. Both are produced in the same build tree:
+The library is built headless -- without GUI dependencies -- as `libminihost.a`. If you need GUI support (plugin editor windows), build the non-headless sibling archive `libminihost_gui.a` as well and link that instead. Both are produced in the same build tree:
 
 ```bash
 cmake -B build -DMINIHOST_BUILD_GUI_LIB=ON

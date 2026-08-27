@@ -60,7 +60,7 @@ The TL;DR: **three artifacts, one C core.** The wheel and the desktop binary are
 
 ## The schema-duplication pinch
 
-The JSON project file format (schema v1, declared in `src/minihost/project.py` and re-declared in `projects/minihost_desktop/src/project.{h,cpp}`) is the **one load-bearing coupling outside the C ABI**.
+The JSON project file format (schema v1, declared in `src/minihost/project.py` and re-declared in `projects/minihost_desktop/src/project.{h,cpp}`) is the **one structural coupling outside the C ABI**.
 
 Both parsers must accept the same documents and produce equivalent in-memory shapes. A schema change requires editing both:
 

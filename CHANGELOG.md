@@ -148,7 +148,7 @@
 
 - **`-DMINIHOST_HEADLESS=OFF` did nothing and has been removed from the build.** It was a real `option()` when headless mode was introduced, toggling a single `minihost` target between the headless and full JUCE format classes. The desktop-app work replaced that with two sibling targets built from the same sources -- `minihost` (headless) and `minihost_gui` (non-headless) -- and dropped the option, but the flag was left behind in `make desktop`, in the CI desktop job, and across the docs. Nothing had read it since: CMake recorded it as `MINIHOST_HEADLESS:UNINITIALIZED=OFF`, and the generated compile line for `minihost` is byte-identical with and without it. It was worse than merely inert, because it reads as though it disables headless mode and does not -- `minihost` still compiles with `MINIHOST_HEADLESS=1` when you pass `OFF`.
 
-  The compile definition itself is untouched and still load-bearing: `target_compile_definitions(minihost PRIVATE MINIHOST_HEADLESS=1)` is what selects `VST3PluginFormatHeadless` and friends over the full formats, and `minihost_gui` deliberately never receives it. Only the command-line flag is gone.
+  The compile definition itself is untouched and still structural: `target_compile_definitions(minihost PRIVATE MINIHOST_HEADLESS=1)` is what selects `VST3PluginFormatHeadless` and friends over the full formats, and `minihost_gui` deliberately never receives it. Only the command-line flag is gone.
 
 ### Documentation
 
@@ -160,7 +160,7 @@
 
   Checked against the failure it is meant to catch, not only against the fix: bumping `pyproject.toml` to a version nothing else knows about fails five of the seven tests, one per location that would otherwise have drifted silently.
 
-- **`--plugin-browser-selftest`, and `tests/test_desktop_pluginbrowser.py` to drive it.** The Plugin Browser had no coverage, which is how a use-after-free on its most ordinary interaction survived. Clicking through the dialog cannot be automated here, so this follows the pattern the undo and autosave selftests already set: the load-bearing part -- the window's ownership across open, dismiss and reopen -- is driven end-to-end through a mode in the binary. Dismissal is asynchronous (the modal manager deletes on a later message-loop pass), so the steps run one per timer tick with the loop free to run in between, and dismissal goes through `setVisible(false)`, the exact path the close button and Escape take. It asserts that opening creates a window, that re-requesting while open reuses it rather than stacking a second, that the tracking pointer nulls itself once dismissed, and that reopening then yields a live, fully-formed window.
+- **`--plugin-browser-selftest`, and `tests/test_desktop_pluginbrowser.py` to drive it.** The Plugin Browser had no coverage, which is how a use-after-free on its most ordinary interaction survived. Clicking through the dialog cannot be automated here, so this follows the pattern the undo and autosave selftests already set: the structural part -- the window's ownership across open, dismiss and reopen -- is driven end-to-end through a mode in the binary. Dismissal is asynchronous (the modal manager deletes on a later message-loop pass), so the steps run one per timer tick with the loop free to run in between, and dismissal goes through `setVisible(false)`, the exact path the close button and Escape take. It asserts that opening creates a window, that re-requesting while open reuses it rather than stacking a second, that the tracking pointer nulls itself once dismissed, and that reopening then yields a live, fully-formed window.
 
   The test was checked against the bug rather than only against the fix: reverting to the old owning pointer and rebuilding makes it report `window still tracked after dismissal -- pointer is dangling or delete never ran` and then die of SIGSEGV, which is the reported crash. It deliberately does **not** compare window addresses across a dismissal -- the old window is freed before the new one is allocated, so the allocator may hand back the same block and address identity would prove nothing either way. An earlier draft asserted exactly that and failed for precisely this reason.
 
@@ -176,9 +176,7 @@ The CLI binaries also gain test coverage, which they had almost none of: their o
 
 The C ABI moves to **2.8.0**, in three additive steps: MIDI file reading, plugin discovery and the scan cache, then supervised scanning.
 
-Scanning is also no longer something to supervise by hand: each plugin is probed in a
-child process the scan is willing to lose, which is what it takes to get through a real
-collection -- five of the ~350 installed here hang or crash on load.
+Scanning is also no longer something to supervise by hand: each plugin is probed in a child process the scan is willing to lose, which is what it takes to get through a real collection -- five of the ~350 installed here hang or crash on load.
 
 Plugin discovery closes the last gap between the two front-ends: the binaries take plugin names rather than paths, `scan` finds this platform's plugin locations on its own, and both go through a cache shared with the Python CLI. Probing an AudioUnit while the message thread was running turned out to deadlock, which is what made a full AU scan impossible; it is fixed here.
 

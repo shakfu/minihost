@@ -439,14 +439,9 @@ minihost resample input.wav -o output.wav -r 96000 -y  # overwrite
 
 ### Native CLI binaries
 
-Alongside the Python `minihost` command, the project ships two native binaries --
-`minihost_c` (pure C) and `minihost_cpp` (C++) -- built into `build/projects/` and
-published in the `cli` release archive. They are independent implementations over the same
-C API and are meant to be interchangeable; a conformance test runs them against each other
-and fails if they diverge. Beyond the single-plugin commands they add the routing ones:
+Alongside the Python `minihost` command, the project ships two native binaries -- `minihost_c` (pure C) and `minihost_cpp` (C++) -- built into `build/projects/` and published in the `cli` release archive. They are independent implementations over the same C API and are meant to be interchangeable; a conformance test runs them against each other and fails if they diverge. Beyond the single-plugin commands they add the routing ones:
 
-Plugins are named by path, or by name once they have been scanned -- matching ignores case
-and takes the whole name:
+Plugins are named by path, or by name once they have been scanned -- matching ignores case and takes the whole name:
 
 ```bash
 minihost_c scan                    # index this platform's plugin locations
@@ -455,16 +450,9 @@ minihost_c --fuzzy probe "pro-q 3" # --fuzzy to match part of a name
 minihost_c --format au probe "FabFilter Pro-Q 4"   # pin a format
 ```
 
-A plugin installed in both AU and VST3 resolves to the VST3 unless `--format` says
-otherwise. Substring matching is opt-in because it is rarely decisive on a large
-collection: with 343 plugins installed here, `reverb` matches 5 and `filter` 31.
+A plugin installed in both AU and VST3 resolves to the VST3 unless `--format` says otherwise. Substring matching is opt-in because it is rarely decisive on a large collection: with 343 plugins installed here, `reverb` matches 5 and `filter` 31.
 
-`scan` takes an optional directory to scan instead of the defaults. It probes each plugin,
-so a first pass over a large collection takes minutes; results are cached (shared with the
-Python CLI's cache), written as the scan proceeds, and only changed plugins are re-probed.
-Each plugin is probed in a child process the scan is willing to lose, so one that hangs or
-crashes on load costs one cache entry (`timeout` / `crash`) instead of the scan --
-`--in-process` opts out. See the [CLI reference](docs/cli.md#scan-build-the-index).
+`scan` takes an optional directory to scan instead of the defaults. It probes each plugin, so a first pass over a large collection takes minutes; results are cached (shared with the Python CLI's cache), written as the scan proceeds, and only changed plugins are re-probed. Each plugin is probed in a child process the scan is willing to lose, so one that hangs or crashes on load costs one cache entry (`timeout` / `crash`) instead of the scan -- `--in-process` opts out. See the [CLI reference](docs/cli.md#scan-build-the-index).
 
 ```bash
 # one plugin: audio in, or a MIDI file through an instrument
@@ -481,9 +469,7 @@ minihost_c bus SynthA.vst3 SynthB.vst3 -m song.mid -o output.wav
 minihost_c bus Synth.vst3 "Chorder.component,Synth.vst3" -m song.mid -o out.wav --gain 1:0.7
 ```
 
-See the [CLI reference](docs/cli.md#native-cli-binaries) for the full option list and
-[MIDI Routing](docs/midi_routing.md) for why MIDI effects must precede the instrument they
-drive.
+See the [CLI reference](docs/cli.md#native-cli-binaries) for the full option list and [MIDI Routing](docs/midi_routing.md) for why MIDI effects must precede the instrument they drive.
 
 ## Python API
 
@@ -597,9 +583,7 @@ plugin.close()
 
 ### Shared session for multi-plugin loading
 
-`mh_open` and its Python equivalent register the JUCE plugin formats on every call. A
-`Session` builds that format manager once and reuses it across loads, probes and scans,
-which is the difference between loading one plugin and loading a chain of them.
+`mh_open` and its Python equivalent register the JUCE plugin formats on every call. A `Session` builds that format manager once and reuses it across loads, probes and scans, which is the difference between loading one plugin and loading a chain of them.
 
 ```python
 import minihost
@@ -617,8 +601,7 @@ delay = session.open_desc(
 session.close()   # the plugins keep working; they do not depend on it
 ```
 
-The native `chain` and `bus` commands load this way, which is where the saving shows: a
-four-plugin chain built four format managers before.
+The native `chain` and `bus` commands load this way, which is where the saving shows: a four-plugin chain built four format managers before.
 
 ### Audio Device Enumeration and Selection
 
@@ -1153,8 +1136,7 @@ mh_close(limiter);
 
 ### MIDI File Rendering
 
-Read a standard MIDI file into the event form `mh_process*` consumes. Tracks are merged and
-the file's tempo map is applied; `sample_offset` is absolute, so rebase it per block:
+Read a standard MIDI file into the event form `mh_process*` consumes. Tracks are merged and the file's tempo map is applied; `sample_offset` is absolute, so rebase it per block:
 
 ```c
 MH_MidiEvent* events = NULL;

@@ -1,15 +1,8 @@
 # Composition Pipelines
 
-`minihost.Compose` is a callable, composable pipeline layer inspired by
-[audiomentations](https://github.com/iver56/audiomentations). Where the
-native `Plugin`, `PluginChain`, and `PluginBus` classes model *real-time*
-signal routing, `Compose` models an *offline* pipeline: an ordered list of
-transforms applied to a whole buffer and returned as a new one.
+`minihost.Compose` is a callable, composable pipeline layer inspired by [audiomentations](https://github.com/iver56/audiomentations). Where the native `Plugin`, `PluginChain`, and `PluginBus` classes model *real-time* signal routing, `Compose` models an *offline* pipeline: an ordered list of transforms applied to a whole buffer and returned as a new one.
 
-A pipeline collapses an effect chain to a single `with` block, mixes real
-plugins with pure-python DSP, and -- with the stochastic combinators --
-becomes a data-augmentation engine that runs training audio through real
-plugins.
+A pipeline collapses an effect chain to a single `with` block, mixes real plugins with pure-python DSP, and -- with the stochastic combinators -- becomes a data-augmentation engine that runs training audio through real plugins.
 
 ## Quick start
 
@@ -24,25 +17,23 @@ with minihost.Compose([
     fx.to_file("in.wav", "out.wav")     # file-to-file
 ```
 
-`Compose` owns the plugins it is given and closes them on exit, so the
-per-plugin context managers are no longer needed.
+`Compose` owns the plugins it is given and closes them on exit, so the per-plugin context managers are no longer needed.
 
 ## The transform protocol
 
 A *transform* is any of:
 
-- a native processor -- `Plugin`, `PluginChain`, or `PluginBus` (run over
-  the buffer via [`process_audio`](api_python.md#offline-processing));
+- a native processor -- `Plugin`, `PluginChain`, or `PluginBus` (run over the buffer via [`process_audio`](api_python.md#offline-processing));
+
 - a nested `Compose`;
+
 - a pure-python transform: `Gain`, `Normalize`, `Trim`, `Fade`;
-- a stochastic combinator: `Maybe`, `OneOf`, `SomeOf`, `RandomParam`,
-  `AddGaussianNoise`;
+
+- a stochastic combinator: `Maybe`, `OneOf`, `SomeOf`, `RandomParam`, `AddGaussianNoise`;
+
 - any user callable with the signature `fn(audio, sample_rate) -> audio`.
 
-The working type is `AudioBuffer`, so numpy stays optional. A transform
-receives an `AudioBuffer` and returns one (a returned numpy array is
-coerced). To reuse a numpy-based function, convert at the boundary with
-`buffer.as_ndarray()` / `AudioBuffer.from_numpy(array)`.
+The working type is `AudioBuffer`, so numpy stays optional. A transform receives an `AudioBuffer` and returns one (a returned numpy array is coerced). To reuse a numpy-based function, convert at the boundary with `buffer.as_ndarray()` / `AudioBuffer.from_numpy(array)`.
 
 ## Calling a pipeline
 
@@ -60,32 +51,23 @@ The input container family is preserved:
 | numpy `(channels, frames)` | numpy `(channels, frames)` |
 | numpy `(frames,)` (mono) | numpy `(frames,)` |
 
-`sample_rate` is inferred from the first native processor in the pipeline
-and may be omitted then. A pipeline of only pure-python transforms has no
-processor to infer from, so `sample_rate` is required.
+`sample_rate` is inferred from the first native processor in the pipeline and may be omitted then. A pipeline of only pure-python transforms has no processor to infer from, so `sample_rate` is required.
 
-!!! note "Sample rate is validated, never silently resampled"
-    Native processors are constructed at a fixed sample rate. Running a
-    pipeline at a different rate raises `ValueError` rather than corrupt
-    the signal. Reconstruct the plugin at the target rate instead.
+!!! note "Sample rate is validated, never silently resampled" Native processors are constructed at a fixed sample rate. Running a pipeline at a different rate raises `ValueError` rather than corrupt the signal. Reconstruct the plugin at the target rate instead.
 
 ## Tails
 
 Tail handling happens once, at the pipeline boundary:
 
 - `tail_seconds=0.0` (default) -- length-preserving.
-- `tail_seconds=<float>` -- pads the input with that many seconds of
-  silence up front so every element (delay, reverb) rings out into it.
-- `tail_seconds="auto"` -- over-renders by `max_tail_seconds` (default
-  30 s) and trims trailing silence below `tail_threshold` (default `1e-4`,
-  ~ -80 dBFS). Requires numpy.
+
+- `tail_seconds=<float>` -- pads the input with that many seconds of silence up front so every element (delay, reverb) rings out into it.
+
+- `tail_seconds="auto"` -- over-renders by `max_tail_seconds` (default 30 s) and trims trailing silence below `tail_threshold` (default `1e-4`, ~ -80 dBFS). Requires numpy.
 
 ## Lifetime
 
-By default (`close_children=True`) `Compose` closes the native processors
-and nested `Compose` objects it holds when its `with` block exits (or when
-`close()` is called). Pass `close_children=False` when a plugin is shared
-with code outside the pipeline:
+By default (`close_children=True`) `Compose` closes the native processors and nested `Compose` objects it holds when its `with` block exits (or when `close()` is called). Pass `close_children=False` when a plugin is shared with code outside the pipeline:
 
 ```python
 plugin = minihost.Plugin("reverb.vst3", sample_rate=48000)
@@ -95,13 +77,11 @@ with minihost.Compose([plugin], close_children=False) as fx:
 plugin.close()
 ```
 
-Closing a `PluginChain` given to `Compose` releases the chain but not the
-individual plugins inside it (matching `PluginChain.close` semantics).
+Closing a `PluginChain` given to `Compose` releases the chain but not the individual plugins inside it (matching `PluginChain.close` semantics).
 
 ## Pure-python transforms
 
-Deterministic, `AudioBuffer`-native transforms usable inside or outside a
-pipeline:
+Deterministic, `AudioBuffer`-native transforms usable inside or outside a pipeline:
 
 ```python
 minihost.Gain(db)                               # fixed gain in dB
@@ -119,9 +99,7 @@ quieter = minihost.Gain(-6.0)(buf, 48000)
 
 ## Stochastic combinators
 
-For data augmentation. Every call re-rolls choices from the pipeline's
-seeded RNG, so a pipeline is reproducible across runs but varied across
-calls.
+For data augmentation. Every call re-rolls choices from the pipeline's seeded RNG, so a pipeline is reproducible across runs but varied across calls.
 
 ```python
 minihost.Maybe(transform, p=0.5)                # apply with probability p, else pass through
@@ -132,15 +110,13 @@ minihost.RandomParam(plugin, param, lo, hi)     # set a plugin param at random, 
 minihost.AddGaussianNoise(0.001, 0.015)         # add white noise, random amplitude
 ```
 
-- `Compose(..., seed=0)` seeds the RNG; `None` (default) uses system
-  entropy.
-- `Compose(..., shuffle=True)` randomizes the transform order on every
-  call.
-- `RandomParam`'s `param` is a parameter name (case-insensitive) or an
-  integer index; `lo`/`hi` are normalized parameter units (0..1).
-- The routing combinators use Python's `random` module (no numpy);
-  `AddGaussianNoise` uses numpy, seeded deterministically from the
-  pipeline RNG.
+- `Compose(..., seed=0)` seeds the RNG; `None` (default) uses system entropy.
+
+- `Compose(..., shuffle=True)` randomizes the transform order on every call.
+
+- `RandomParam`'s `param` is a parameter name (case-insensitive) or an integer index; `lo`/`hi` are normalized parameter units (0..1).
+
+- The routing combinators use Python's `random` module (no numpy); `AddGaussianNoise` uses numpy, seeded deterministically from the pipeline RNG.
 
 ### Augmentation example
 
@@ -168,9 +144,6 @@ variants = [augment(samples, sample_rate=16000) for _ in range(3)]  # 3 differen
 | Chain from a JSON/YAML file | [`load_chain`](api_python.md#offline-processing) |
 | Callable offline pipeline, plugins + DSP, augmentation | `Compose` (this page) |
 
-`Compose` is a Python-level orchestration layer that *uses* the native
-classes as elements -- a `Compose` transform can itself be a `PluginBus`
-or a nested `Compose`, giving serial-of-parallel without dropping to
-`PluginGraph`.
+`Compose` is a Python-level orchestration layer that *uses* the native classes as elements -- a `Compose` transform can itself be a `PluginBus` or a nested `Compose`, giving serial-of-parallel without dropping to `PluginGraph`.
 
 See `examples/compose.py` for a runnable walkthrough.

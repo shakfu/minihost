@@ -14,10 +14,7 @@ minihost [-r SAMPLE_RATE] [-b BLOCK_SIZE] <command> [options]
 | `-b, --block-size` | 512 | Block size in samples |
 | `--version` | | Print the release version and exit |
 
-`--version` reports two independent things: the minihost release version, and the C ABI
-version of the `libminihost` the binary is linked against. Quote both when filing a bug.
-It is spelled the same way in all three CLIs -- long form only, since `-V` is already
-`--verbose` in `minihost_c`.
+`--version` reports two independent things: the minihost release version, and the C ABI version of the `libminihost` the binary is linked against. Quote both when filing a bug. It is spelled the same way in all three CLIs -- long form only, since `-V` is already `--verbose` in `minihost_c`.
 
 ```console
 $ minihost --version
@@ -181,10 +178,7 @@ minihost play synth.vst3 --midi 0 --map14 0:1:Cutoff
 minihost play synth.vst3 --osc-port 9000 --osc-feedback 192.168.1.40:9001
 ```
 
-`--osc-port` binds every automatable parameter under `--osc-prefix`, reachable
-by name (`/mh/param/cutoff`) or index (`/mh/param/3`), each taking one float in
-0..1. Transport addresses are accepted on the same port: `/mh/transport/play`,
-`/stop`, `/bpm`, `/position` (beats), `/loop`, `/record`.
+`--osc-port` binds every automatable parameter under `--osc-prefix`, reachable by name (`/mh/param/cutoff`) or index (`/mh/param/3`), each taking one float in 0..1. Transport addresses are accepted on the same port: `/mh/transport/play`, `/stop`, `/bpm`, `/position` (beats), `/loop`, `/record`.
 
 `--map-file` takes JSON, with `cc` for 7-bit and `cc14` for a 14-bit pair:
 
@@ -199,8 +193,7 @@ by name (`/mh/param/cutoff`) or index (`/mh/param/3`), each taking one float in
 }
 ```
 
-An entry carries `cc` or `cc14`, never both. Curves are `linear`, `exp` or
-`log`. This is the format `minihost touch` writes.
+An entry carries `cc` or `cc14`, never both. Curves are `linear`, `exp` or `log`. This is the format `minihost touch` writes.
 
 ### `touch` -- Generate a control surface from a plugin's parameters
 
@@ -210,17 +203,13 @@ minihost touch synth.vst3 -o synth --params 0-23 --size 1024x768
 minihost touch synth.vst3 --osc-only --no-compile
 ```
 
-Writes `<out>.ui.json` (a layout in the `py2tosc.ui` dialect) and
-`<out>.map.json` (a `--map-file` mapping), then compiles `<out>.tosc` when the
-optional extra is installed:
+Writes `<out>.ui.json` (a layout in the `py2tosc.ui` dialect) and `<out>.map.json` (a `--map-file` mapping), then compiles `<out>.tosc` when the optional extra is installed:
 
 ```bash
 pip install 'minihost[touch]'
 ```
 
-Both files come from one parameter table, so the layout and the host's mapping
-cannot disagree. Widget choice follows the plugin's own metadata: a boolean
-parameter becomes a button, a stepped one a radio, everything else a fader.
+Both files come from one parameter table, so the layout and the host's mapping cannot disagree. Widget choice follows the plugin's own metadata: a boolean parameter becomes a button, a stepped one a radio, everything else a fader.
 
 | Option | Description |
 |--------|-------------|
@@ -234,18 +223,13 @@ parameter becomes a button, a stepped one a radio, everything else a fader.
 | `--midi-only` / `--osc-only` | Emit one kind of binding rather than both |
 | `--no-compile` | Stop at the `.ui.json` |
 
-Generation imports nothing: without py2tosc the command still writes a
-complete, valid `.ui.json` and prints how to compile it. That also makes the
-output a source file rather than an artefact -- a `.tosc` is a zipped XML blob
-nobody hand-edits, so it can be reviewed, edited and recompiled:
+Generation imports nothing: without py2tosc the command still writes a complete, valid `.ui.json` and prints how to compile it. That also makes the output a source file rather than an artefact -- a `.tosc` is a zipped XML blob nobody hand-edits, so it can be reviewed, edited and recompiled:
 
 ```bash
 py2tosc convert synth.ui.json -o synth.tosc
 ```
 
-MIDI has 128 controller numbers, so a plugin with more parameters than that
-gets the remainder bound over OSC only. The command says so rather than
-leaving it to be discovered.
+MIDI has 128 controller numbers, so a plugin with more parameters than that gets the remainder bound over OSC only. The command says so rather than leaving it to be discovered.
 
 Then drive it:
 
@@ -354,24 +338,13 @@ minihost resample input.wav -o output.wav -r 96000 -y
 
 ## Native CLI binaries
 
-The `minihost` command documented above is the Python one. The project also ships two
-native binaries, `minihost_c` (pure C) and `minihost_cpp` (C++), built from
-`projects/minihost_c` and `projects/minihost_cpp` and published in the `cli` release
-archive. They are independent implementations over the same C API and are meant to be
-interchangeable; `tests/test_cli_conformance.py` runs them against each other and fails if
-they diverge.
+The `minihost` command documented above is the Python one. The project also ships two native binaries, `minihost_c` (pure C) and `minihost_cpp` (C++), built from `projects/minihost_c` and `projects/minihost_cpp` and published in the `cli` release archive. They are independent implementations over the same C API and are meant to be interchangeable; `tests/test_cli_conformance.py` runs them against each other and fails if they diverge.
 
-They cover the single-plugin commands (`probe`, `scan`, `info`, `params`, `get-param`,
-`set-param`, `presets`, `devices`, `midi`, `play`, `load-preset`, `save-state`,
-`load-state`, `process`, `morph`, `resample`) plus the two routing commands below. Run
-either binary with no arguments for its full option list, or with `--version` to identify
-the build -- both report the same release version as the Python CLI, since all three read
-it from the `version` field in `pyproject.toml`.
+They cover the single-plugin commands (`probe`, `scan`, `info`, `params`, `get-param`, `set-param`, `presets`, `devices`, `midi`, `play`, `load-preset`, `save-state`, `load-state`, `process`, `morph`, `resample`) plus the two routing commands below. Run either binary with no arguments for its full option list, or with `--version` to identify the build -- both report the same release version as the Python CLI, since all three read it from the `version` field in `pyproject.toml`.
 
 ### Naming plugins
 
-Anywhere a command takes a plugin you can give a **path** or a **name from the scan
-cache**, matched without regard to case:
+Anywhere a command takes a plugin you can give a **path** or a **name from the scan cache**, matched without regard to case:
 
 ```bash
 minihost_c scan                     # index the plugins installed on this machine
@@ -380,19 +353,13 @@ minihost_c probe "pro-q"            # unique substring -> FabFilter Pro-Q 4
 minihost_c chain dexed gigaverb -m song.mid -o out.wav
 ```
 
-An existing path always wins, so anything that worked before keeps working. Otherwise the
-whole name must match, ignoring case. Substring matching is opt-in via `--fuzzy`, because
-it is rarely decisive on a real collection -- on a machine with 343 plugins installed,
-`reverb` matches 5, `delay` 9 and `filter` 31, so it mostly buys an ambiguity error:
+An existing path always wins, so anything that worked before keeps working. Otherwise the whole name must match, ignoring case. Substring matching is opt-in via `--fuzzy`, because it is rarely decisive on a real collection -- on a machine with 343 plugins installed, `reverb` matches 5, `delay` 9 and `filter` 31, so it mostly buys an ambiguity error:
 
 ```bash
 minihost_c --fuzzy probe "pro-q 3"     # substring, when you want it
 ```
 
-The same plugin is often installed in two formats under one name (16 of those 343 were),
-which would make even an exact name ambiguous. When every match is one name differing only
-by format, one is chosen rather than refused: VST3 in preference to AudioUnit, or whatever
-`--format` asks for.
+The same plugin is often installed in two formats under one name (16 of those 343 were), which would make even an exact name ambiguous. When every match is one name differing only by format, one is chosen rather than refused: VST3 in preference to AudioUnit, or whatever `--format` asks for.
 
 ```bash
 minihost_c --format au probe "FabFilter Pro-Q 4"    # pin the format
@@ -413,8 +380,7 @@ Error: 'pro-q' matches 3 plugins:
        name it more precisely, pass a path, or pick a format with --format
 ```
 
-Plugins that failed to probe are never offered by name -- one that will not load cannot be
-loaded by name either.
+Plugins that failed to probe are never offered by name -- one that will not load cannot be loaded by name either.
 
 ### `scan` -- build the index
 
@@ -434,21 +400,11 @@ With no argument, `scan` walks the canonical locations for the platform:
 
 Directories that do not exist are skipped, and the ones being scanned are printed.
 
-Scanning **probes each plugin, which means loading it**, so a first pass over a large
-collection takes minutes. Results are cached with an mtime + size fingerprint, so a repeat
-scan re-probes only what changed, and the cache is written as the scan proceeds -- a scan
-that dies part way keeps what it had, and re-running resumes. The cache is the same file
-the Python CLI's `minihost cache` commands manage
-(`~/Library/Caches/minihost/plugins.json` on macOS, overridable with
-`MINIHOST_CACHE_DIR`), so a scan from either side serves the other.
+Scanning **probes each plugin, which means loading it**, so a first pass over a large collection takes minutes. Results are cached with an mtime + size fingerprint, so a repeat scan re-probes only what changed, and the cache is written as the scan proceeds -- a scan that dies part way keeps what it had, and re-running resumes. The cache is the same file the Python CLI's `minihost cache` commands manage (`~/Library/Caches/minihost/plugins.json` on macOS, overridable with `MINIHOST_CACHE_DIR`), so a scan from either side serves the other.
 
-The Python `minihost scan` supervises the same way and takes the same `--in-process`
-flag, so either front-end can be pointed at an unfamiliar plugin directory.
+The Python `minihost scan` supervises the same way and takes the same `--in-process` flag, so either front-end can be pointed at an unfamiliar plugin directory.
 
-Each plugin is probed in a child process that the scan is willing to lose. That matters
-because probing means loading, and an installed collection can be relied on to hold a
-plugin that spins forever or corrupts its heap on load -- five of ~350 here do. In process
-the first of those ends the scan; supervised, it costs one entry:
+Each plugin is probed in a child process that the scan is willing to lose. That matters because probing means loading, and an installed collection can be relied on to hold a plugin that spins forever or corrupts its heap on load -- five of ~350 here do. In process the first of those ends the scan; supervised, it costs one entry:
 
 | status | meaning |
 |--------|---------|
@@ -457,9 +413,7 @@ the first of those ends the scan; supervised, it costs one entry:
 | `timeout` | did not finish within the deadline (60 s, or `MINIHOST_SCAN_TIMEOUT_MS`) |
 | `crash` | the child died before answering |
 
-All four are recorded with the same file fingerprint, so a re-scan skips the bad plugins
-rather than paying for them again. `--in-process` probes in the scanning process instead,
-which is faster by the cost of one process launch per plugin and is how it worked before.
+All four are recorded with the same file fingerprint, so a re-scan skips the bad plugins rather than paying for them again. `--in-process` probes in the scanning process instead, which is faster by the cost of one process launch per plugin and is how it worked before.
 
 !!! note "Probing in a child is also more reliable, not just safer"
 
@@ -481,8 +435,7 @@ minihost_c process Plugin.vst3 -i input.wav -o output.wav --tail 3
 minihost_c process Synth.vst3 -m song.mid -o output.wav --tail 2
 ```
 
-`-m` renders a MIDI file through the plugin. It works in both binaries as of 0.7.0; before
-that the C binary parsed the flag and refused it.
+`-m` renders a MIDI file through the plugin. It works in both binaries as of 0.7.0; before that the C binary parsed the flag and refused it.
 
 ### `chain` -- plugins in series
 
@@ -493,10 +446,7 @@ minihost_c chain EQ.vst3 Reverb.vst3 -i input.wav -o output.wav --tail 3
 minihost_c chain Arpeggiator.component Synth.vst3 -m song.mid -o output.wav
 ```
 
-Plugins are given in signal order. MIDI enters the first plugin that accepts it and is
-carried onward by any plugin that produces MIDI, so a MIDI effect drives the instrument
-behind it -- see [MIDI Routing](midi_routing.md) for the rules, including why MIDI effects
-have to come first. `--mix INDEX:VALUE` sets one plugin's dry/wet (repeatable).
+Plugins are given in signal order. MIDI enters the first plugin that accepts it and is carried onward by any plugin that produces MIDI, so a MIDI effect drives the instrument behind it -- see [MIDI Routing](midi_routing.md) for the rules, including why MIDI effects have to come first. `--mix INDEX:VALUE` sets one plugin's dry/wet (repeatable).
 
 ### `bus` -- branches in parallel, summed
 
@@ -508,9 +458,7 @@ minihost_c bus SynthA.vst3 SynthB.vst3 -m song.mid -o output.wav
 minihost_c bus Synth.vst3 "Chorder.component,Synth.vst3" -m song.mid -o out.wav --gain 1:0.7
 ```
 
-Each argument is one branch and the same MIDI is fanned to all of them. `--gain
-INDEX:VALUE` sets a branch's gain (repeatable); `0.0` mutes it. Instrument branches carry
-no audio input, which is why a bus of instruments is built zero-width.
+Each argument is one branch and the same MIDI is fanned to all of them. `--gain INDEX:VALUE` sets a branch's gain (repeatable); `0.0` mutes it. Instrument branches carry no audio input, which is why a bus of instruments is built zero-width.
 
 ### Options shared by the rendering commands
 
@@ -524,8 +472,4 @@ no audio input, which is why a bus of instruments is built zero-width.
 | `--non-realtime` | Put the plugins in offline mode |
 | `--bit-depth {16,24,32}` | Output bit depth |
 
-`minihost_cpp` takes the same short options; its long forms differ in places (`-m` is
-`--midi-input` rather than `--midi`), since the two binaries use different argument
-parsers. Where the shapes had drifted apart they have been brought back together --
-`resample` now accepts both `resample IN OUT --rate N` and `resample IN -o OUT -r N` in
-either binary.
+`minihost_cpp` takes the same short options; its long forms differ in places (`-m` is `--midi-input` rather than `--midi`), since the two binaries use different argument parsers. Where the shapes had drifted apart they have been brought back together -- `resample` now accepts both `resample IN OUT --rate N` and `resample IN -o OUT -r N` in either binary.

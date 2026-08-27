@@ -142,7 +142,7 @@ The two channel-count nits formerly here (`minihost.cpp` `jmax(1,...)` and `rend
 
 - [ ] **`_READ_EXTENSIONS` is dead** (review L9). `audio_io.py` defines it and nothing uses it; `read_audio` does no extension validation, so an unsupported file surfaces as a raw miniaudio error code.
 
-- [ ] **Decide on `sdist.include = ["thirdparty/JUCE"]`** (review L10). The sdist ships the whole JUCE tree (24 MB compressed, 4377 files, verified self-contained). That is deliberate and load-bearing -- a source install builds without fetching JUCE -- but if the directory is absent at build time the sdist silently ships without it, which is the worse failure. Either document the intent or make its absence an error.
+- [ ] **Decide on `sdist.include = ["thirdparty/JUCE"]`** (review L10). The sdist ships the whole JUCE tree (24 MB compressed, 4377 files, verified self-contained). That is deliberate and structural -- a source install builds without fetching JUCE -- but if the directory is absent at build time the sdist silently ships without it, which is the worse failure. Either document the intent or make its absence an error.
 
 - [ ] **`mh_check_buses_layout` has a tautological guard** (review L12). `(input_channels && i < num_input_buses)` -- the second conjunct is the loop condition. Harmless, but it obscures intent.
 
@@ -203,12 +203,7 @@ Intentionally omitted for headless / server use:
 
 - Preset browser UI
 
-- MIDI learn -- still a non-goal, and `minihost touch` is not it. A generated
-  surface computes its mapping from the plugin's parameter list and writes it
-  to a file that can be read, edited and version-controlled; MIDI learn means
-  watching for the next incoming controller and binding it interactively, which
-  needs UI state this library has nowhere to put. `--map`, `--map14` and
-  `--map-file` cover the same ground declaratively.
+- MIDI learn -- still a non-goal, and `minihost touch` is not it. A generated surface computes its mapping from the plugin's parameter list and writes it to a file that can be read, edited and version-controlled; MIDI learn means watching for the next incoming controller and binding it interactively, which needs UI state this library has nowhere to put. `--map`, `--map14` and `--map-file` cover the same ground declaratively.
 
 - Plugin shell / multi-instrument handling
 

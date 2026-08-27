@@ -81,13 +81,7 @@ Plugin(
 | `tail_seconds` | `float` | No | Reverb/delay tail length in seconds |
 | `sidechain_channels` | `int` | No | Configured sidechain channel count |
 
-!!! note "Channel counts are per-bus"
-    `num_input_channels` is the **main** input bus only -- it is the width of
-    the `input` / `main_in` array the process methods expect. A sidechain bus
-    is reported separately by `sidechain_channels` and is fed through
-    `process_sidechain(main_in, main_out, sidechain_in)`. Before 0.6.0
-    `num_input_channels` returned the sum of every input bus, so callers had to
-    over-provision the main buffer.
+!!! note "Channel counts are per-bus" `num_input_channels` is the **main** input bus only -- it is the width of the `input` / `main_in` array the process methods expect. A sidechain bus is reported separately by `sidechain_channels` and is fed through `process_sidechain(main_in, main_out, sidechain_in)`. Before 0.6.0 `num_input_channels` returned the sum of every input bus, so callers had to over-provision the main buffer.
 | `num_input_buses` | `int` | No | Number of input buses |
 | `num_output_buses` | `int` | No | Number of output buses |
 | `num_programs` | `int` | No | Number of factory presets |
@@ -358,19 +352,11 @@ When `capture=True`, the audio device opens in duplex mode: system audio input i
 
 Prefer `send_param` to `Plugin.set_param` while a device is running.
 
-`set_param` takes the plugin's state mutex and writes the parameter underneath
-a running `processBlock`, which by contract takes no lock -- so nothing orders
-the two and the change lands at an undefined point inside the block. It also
-means a control thread can block behind an offline caller holding that mutex.
+`set_param` takes the plugin's state mutex and writes the parameter underneath a running `processBlock`, which by contract takes no lock -- so nothing orders the two and the change lands at an undefined point inside the block. It also means a control thread can block behind an offline caller holding that mutex.
 
-`send_param` puts the change on a lock-free queue that the audio thread drains
-at the top of the next block and applies through the sample-accurate process
-entry point. Two queues exist for the same single-producer reason the MIDI
-ones do: `send_param` is for application code, `send_param_control` for a
-control surface's own thread. Call each from one thread.
+`send_param` puts the change on a lock-free queue that the audio thread drains at the top of the next block and applies through the sample-accurate process entry point. Two queues exist for the same single-producer reason the MIDI ones do: `send_param` is for application code, `send_param_control` for a control surface's own thread. Call each from one thread.
 
-Changes coalesce per parameter per block, so a fader drag emitting hundreds of
-values costs one parameter write rather than hundreds of sub-block splits.
+Changes coalesce per parameter per block, so a fader drag emitting hundreds of values costs one parameter write rather than hundreds of sub-block splits.
 
 ```python
 with minihost.AudioDevice(plugin) as audio:
@@ -381,9 +367,7 @@ with minihost.AudioDevice(plugin) as audio:
 
 ### Host playhead
 
-Off by default, in which case the plugin is told there is no transport -- which
-is what the live device did before this existed, so a tempo-synced delay or
-arpeggiator ran at its own default with the playhead pinned at sample 0.
+Off by default, in which case the plugin is told there is no transport -- which is what the live device did before this existed, so a tempo-synced delay or arpeggiator ran at its own default with the playhead pinned at sample 0.
 
 ```python
 with minihost.AudioDevice(plugin) as audio:
@@ -396,16 +380,11 @@ with minihost.AudioDevice(plugin) as audio:
     print(audio.transport["position_beats"])
 ```
 
-The audio thread owns the transport; setters post to a lock-free command queue
-it drains each block, so a setter never blocks and its effect is visible one
-block later. `transport` returns a dict with `bpm`, `time_sig_numerator`,
-`time_sig_denominator`, `position_samples`, `position_beats`, `is_playing`,
-`is_recording`, `is_looping`, `loop_start_samples`, `loop_end_samples`.
+The audio thread owns the transport; setters post to a lock-free command queue it drains each block, so a setter never blocks and its effect is visible one block later. `transport` returns a dict with `bpm`, `time_sig_numerator`, `time_sig_denominator`, `position_samples`, `position_beats`, `is_playing`, `is_recording`, `is_looping`, `loop_start_samples`, `loop_end_samples`.
 
 ### Native OSC input
 
-`connect_osc` parses addresses in C and pushes straight to the parameter queue,
-taking neither a lock nor the GIL:
+`connect_osc` parses addresses in C and pushes straight to the parameter queue, taking neither a lock nor the GIL:
 
 | Address | Argument | Effect |
 |---------|----------|--------|
@@ -419,15 +398,9 @@ taking neither a lock nor the GIL:
 | `/mh/transport/loop` | float | Non-zero enables looping |
 | `/mh/transport/record` | float | Non-zero arms recording |
 
-Anything else is ignored. Parameters are addressed only by index: resolving a
-parameter *name* means a table of every parameter and the plugin's own lock,
-and the socket thread must have neither.
+Anything else is ignored. Parameters are addressed only by index: resolving a parameter *name* means a table of every parameter and the plugin's own lock, and the socket thread must have neither.
 
-Chain slots are the exception. `/mh/<slot>/param/<index>` addresses a slot by
-its **position**, which is only stable while the chain is built the same way --
-and a generated layout outlives the script that builds it. Save a surface for
-`[synth, reverb, limiter]`, edit the script to put the limiter second, and
-every address silently points at a different plugin. Name the slots instead:
+Chain slots are the exception. `/mh/<slot>/param/<index>` addresses a slot by its **position**, which is only stable while the chain is built the same way -- and a generated layout outlives the script that builds it. Save a surface for `[synth, reverb, limiter]`, edit the script to put the limiter second, and every address silently points at a different plugin. Name the slots instead:
 
 ```python
 audio.set_slot_name(1, "reverb")   # before connect_osc
@@ -435,16 +408,7 @@ audio.connect_osc(9000)
 # /mh/reverb/param/7 now reaches that plugin wherever it sits
 ```
 
-Names are alphanumeric and start with a letter, which is what keeps them
-distinct from the numeric form; they must be unique, since two slots sharing
-one would make the second unreachable. `set_slot_name` must be called before
-`connect_osc` and is refused afterwards: the table is read by the OSC socket
-thread and is never written while that thread exists, which is what makes it
-lock-free rather than merely usually fine. For
-names, curves, ranges or callbacks use `OscMapper`, which resolves once at bind
-time. A zero argument on a transport button is ignored rather than acted on --
-a surface sends 1.0 on press and 0.0 on release, and acting on the release
-would make every press a press-and-undo.
+Names are alphanumeric and start with a letter, which is what keeps them distinct from the numeric form; they must be unique, since two slots sharing one would make the second unreachable. `set_slot_name` must be called before `connect_osc` and is refused afterwards: the table is read by the OSC socket thread and is never written while that thread exists, which is what makes it lock-free rather than merely usually fine. For names, curves, ranges or callbacks use `OscMapper`, which resolves once at bind time. A zero argument on a transport button is ignored rather than acted on -- a surface sends 1.0 on press and 0.0 on release, and acting on the release would make every press a press-and-undo.
 
 ---
 
@@ -527,12 +491,9 @@ Supports context manager: `with MidiIn.open(0, cb) as m: ...`
 
 ## MidiMapper
 
-Translates incoming MIDI from a control surface into plugin parameter writes
-or callbacks. Callable, so it is passed straight to `MidiIn.open`.
+Translates incoming MIDI from a control surface into plugin parameter writes or callbacks. Callable, so it is passed straight to `MidiIn.open`.
 
-Most USB MIDI control surfaces (Novation Launch Control, Akai MIDIMix, Korg
-nanoKONTROL, Behringer X-Touch, MIDI Fighter Twister, Arturia BeatStep) emit
-standard CC messages and appear as ordinary MIDI input ports.
+Most USB MIDI control surfaces (Novation Launch Control, Akai MIDIMix, Korg nanoKONTROL, Behringer X-Touch, MIDI Fighter Twister, Arturia BeatStep) emit standard CC messages and appear as ordinary MIDI input ports.
 
 ### Constructor
 
@@ -565,27 +526,19 @@ MidiMapper(
 | `cc14_mappings` | `dict[(int,int), str]` | `{(channel, msb_cc): param_name}` |
 | `note_mappings` | `set[(int,int)]` | Mapped `(channel, note)` pairs |
 
-Curves: `"linear"`, `"exp"` (more resolution low down, useful for filter
-cutoffs), `"log"` (more resolution high up).
+Curves: `"linear"`, `"exp"` (more resolution low down, useful for filter cutoffs), `"log"` (more resolution high up).
 
 ### 14-bit CC
 
-A plain CC carries 7 bits: 128 steps across a parameter's whole range, which is
-audibly stepped on a filter cutoff. `map_cc14` pairs controller `n` (0-31,
-high 7 bits) with `n + 32` (low 7 bits) for 16384 steps.
+A plain CC carries 7 bits: 128 steps across a parameter's whole range, which is audibly stepped on a filter cutoff. `map_cc14` pairs controller `n` (0-31, high 7 bits) with `n + 32` (low 7 bits) for 16384 steps.
 
 ```python
 mapper.map_cc14(channel=0, cc=1, param="Cutoff", curve="exp")
 ```
 
-Overlap is rejected at map time in both directions: `map_cc14` refuses a pair
-whose MSB or LSB is already a plain CC, and `map_cc` refuses either half of an
-existing pair. Without that check a stray `map_cc` on `n + 32` silently shadows
-the LSB, and the symptom is a fader moving in coarse steps with nothing to say
-why.
+Overlap is rejected at map time in both directions: `map_cc14` refuses a pair whose MSB or LSB is already a plain CC, and `map_cc` refuses either half of an existing pair. Without that check a stray `map_cc` on `n + 32` silently shadows the LSB, and the symptom is a fader moving in coarse steps with nothing to say why.
 
-An LSB arriving before any MSB is held rather than applied -- alone it reads as
-`msb = 0` and would slam the parameter to the bottom of its range.
+An LSB arriving before any MSB is held rather than applied -- alone it reads as `msb = 0` and would slam the parameter to the bottom of its range.
 
 ---
 
@@ -603,25 +556,15 @@ with minihost.OscClient("192.168.1.40", 9001) as client:
     client.send("/mh/xy", [0.1, 0.9])          # several floats
 ```
 
-`OscServer.open(port, callback)` calls `callback(address, args)` for each
-message, where `args` is a list of floats. Pass `port=0` to let the OS choose
-and read it back from `.port`.
+`OscServer.open(port, callback)` calls `callback(address, args)` for each message, where `args` is a list of floats. Pass `port=0` to let the OS choose and read it back from `.port`.
 
-The callback runs on the OSC socket thread, which is the only reader, so it
-must return quickly or incoming messages are lost. To drive parameters, call
-`AudioDevice.send_param_control` from it -- lock-free, applied at the next
-block boundary.
+The callback runs on the OSC socket thread, which is the only reader, so it must return quickly or incoming messages are lost. To drive parameters, call `AudioDevice.send_param_control` from it -- lock-free, applied at the next block boundary.
 
-`OscClient.send(address, value)` accepts a float, an int, a bool (sent as int),
-a str, a sequence of floats, or `None` for a message with no arguments.
+`OscClient.send(address, value)` accepts a float, an int, a bool (sent as int), a str, a sequence of floats, or `None` for a message with no arguments.
 
-Argument types on receive: float32 arrives as itself and int32 is converted;
-any other OSC type (string, blob) is reported as `0.0` rather than dropped, so
-argument positions stay aligned with what the sender wrote.
+Argument types on receive: float32 arrives as itself and int32 is converted; any other OSC type (string, blob) is reported as `0.0` rather than dropped, so argument positions stay aligned with what the sender wrote.
 
-Two limits, stated rather than discovered: UDP only (no TCP, no SLIP), and
-bundle time tags are parsed but not scheduled -- bundle contents are delivered
-immediately.
+Two limits, stated rather than discovered: UDP only (no TCP, no SLIP), and bundle time tags are parsed but not scheduled -- bundle contents are delivered immediately.
 
 ### Helpers
 
@@ -635,11 +578,9 @@ immediately.
 
 ## OscMapper
 
-Maps OSC addresses to parameter writes. Callable, so it is passed straight to
-`OscServer.open`.
+Maps OSC addresses to parameter writes. Callable, so it is passed straight to `OscServer.open`.
 
-The difference from `MidiMapper` that matters is resolution: a CC carries 7
-bits, where OSC carries float32 and is not quantized at all.
+The difference from `MidiMapper` that matters is resolution: a CC carries 7 bits, where OSC carries float32 and is not quantized at all.
 
 ```python
 with minihost.AudioDevice(plugin) as audio:
@@ -662,27 +603,17 @@ with minihost.AudioDevice(plugin) as audio:
 | `set_on_unmapped(callback)` | Fallback receiving `(address, args)` |
 | `addresses` | Snapshot as `{address: param_name}` |
 
-`bind_all` also binds `/mh/param/<index>` by default, so one port accepts the
-same numeric addressing `connect_osc` parses natively. Duplicate parameter
-names are numbered (`bypass`, `bypass2`), because plugins really do expose
-three parameters called "Bypass" and two sharing one address would make the
-second unreachable.
+`bind_all` also binds `/mh/param/<index>` by default, so one port accepts the same numeric addressing `connect_osc` parses natively. Duplicate parameter names are numbered (`bypass`, `bypass2`), because plugins really do expose three parameters called "Bypass" and two sharing one address would make the second unreachable.
 
-Wildcards are supported and a pattern writes every parameter it matches --
-addressing a whole page at once is what a pattern is for.
+Wildcards are supported and a pattern writes every parameter it matches -- addressing a whole page at once is what a pattern is for.
 
-Note that for plain parameter automation `AudioDevice.connect_osc` is the
-better tool: it parses in C and takes neither a lock nor the GIL, where every
-message through `OscMapper` costs a GIL acquisition. Use `OscMapper` when you
-want names, curves, ranges or callbacks.
+Note that for plain parameter automation `AudioDevice.connect_osc` is the better tool: it parses in C and takes neither a lock nor the GIL, where every message through `OscMapper` costs a GIL acquisition. Use `OscMapper` when you want names, curves, ranges or callbacks.
 
 ---
 
 ## OscFeedback
 
-Sends changed parameter values back to a surface, so its faders track preset
-loads and anything else that moves a parameter. Without it a generated surface
-is write-only: load a preset and every fader lies.
+Sends changed parameter values back to a surface, so its faders track preset loads and anything else that moves a parameter. Without it a generated surface is write-only: load a preset and every fader lies.
 
 ```python
 with minihost.OscClient("192.168.1.40", 9001) as out:
@@ -713,15 +644,9 @@ OscFeedback(
 | `poll_once()` | Send whatever changed now. Returns messages sent |
 | `sent_count` / `is_running` | Diagnostics |
 
-Passing `mapper` suppresses the echo of that mapper's own writes for
-`suppress` seconds. The hazard is a loop with a human in it: the surface sends
-0.5, the poller sends 0.5 back a frame later, and during a drag that fights the
-finger. Suppression delays rather than drops, so the surface still converges.
+Passing `mapper` suppresses the echo of that mapper's own writes for `suppress` seconds. The hazard is a loop with a human in it: the surface sends 0.5, the poller sends 0.5 back a frame later, and during a drag that fights the finger. Suppression delays rather than drops, so the surface still converges.
 
-Polling rather than hooking the parameter-value callback is deliberate: that
-callback is a single slot the `Plugin` binding already occupies, it fires on
-whatever thread changed the parameter (including the audio thread), and a
-surface cannot use more than about 30 updates a second anyway.
+Polling rather than hooking the parameter-value callback is deliberate: that callback is a single slot the `Plugin` binding already occupies, it fires on whatever thread changed the parameter (including the audio thread), and a surface cannot use more than about 30 updates a second anyway.
 
 ---
 
@@ -1049,9 +974,7 @@ plugin = future.result()  # blocks until ready
 
 ## Session
 
-One shared JUCE plugin-format manager reused across loads, probes and scans. The
-non-session entry points register the formats on every call, which is wasted work as soon
-as you are loading or probing more than one plugin.
+One shared JUCE plugin-format manager reused across loads, probes and scans. The non-session entry points register the formats on every call, which is wasted work as soon as you are loading or probing more than one plugin.
 
 ```python
 session = minihost.Session()
@@ -1069,13 +992,9 @@ session.close()          # plugins loaded from it keep working
 | `scan_directory(path)` | Scan a directory; same list shape as `scan_directory()` |
 | `close()` | Release the format manager |
 
-A plugin does not depend on the session after construction, so closing the session while
-plugins remain in use is safe.
+A plugin does not depend on the session after construction, so closing the session while plugins remain in use is safe.
 
-`open_desc` (added in 0.7.0) is the AudioUnit route: AUs are identified by an id rather
-than a file path, so a descriptor is the only way to load one, and going through a session
-avoids re-registering the formats for each. The descriptor is the same string
-`Plugin.from_descriptor` accepts.
+`open_desc` (added in 0.7.0) is the AudioUnit route: AUs are identified by an id rather than a file path, so a descriptor is the only way to load one, and going through a session avoids re-registering the formats for each. The descriptor is the same string `Plugin.from_descriptor` accepts.
 
 ```python
 session = minihost.Session()
@@ -1098,9 +1017,7 @@ Get plugin metadata without full instantiation. Returns dict with plugin info.
 scan_directory(directory_path: str) -> list[dict]
 ```
 
-Recursively scan a directory for plugins (VST3, AudioUnit). Returns list of plugin info dicts.
-Probing happens in this process, so a plugin that hangs or crashes on load takes the
-interpreter with it -- use `plugincache.scan` for anything you did not pick by hand.
+Recursively scan a directory for plugins (VST3, AudioUnit). Returns list of plugin info dicts. Probing happens in this process, so a plugin that hangs or crashes on load takes the interpreter with it -- use `plugincache.scan` for anything you did not pick by hand.
 
 ### The scan cache
 
@@ -1112,20 +1029,11 @@ plugincache.scan(directory, supervised=False)               # probe in this proc
 plugincache.scan(directory, timeout=10.0, refresh=True)     # per-plugin deadline
 ```
 
-`scan` probes each plugin in a child process it is willing to lose, because probing means
-loading and a real collection contains plugins that never come back -- five of the ~350 on
-the development machine hang, segfault or abort. Results are cached by path with an
-mtime + size fingerprint, so a repeat scan probes only what changed, and the file is shared
-with the CLI binaries' cache.
+`scan` probes each plugin in a child process it is willing to lose, because probing means loading and a real collection contains plugins that never come back -- five of the ~350 on the development machine hang, segfault or abort. Results are cached by path with an mtime + size fingerprint, so a repeat scan probes only what changed, and the file is shared with the CLI binaries' cache.
 
-Each entry carries a status: `ok`, `error` (probed and declined -- not a plugin), `timeout`
-(deadline exceeded, default 60 s or `MINIHOST_SCAN_TIMEOUT_MS`), or `crash` (the child died
-first). All four are fingerprinted, so a re-scan skips the bad ones rather than paying for
-them again. The cache is written as the scan proceeds, so interrupting it keeps the work.
+Each entry carries a status: `ok`, `error` (probed and declined -- not a plugin), `timeout` (deadline exceeded, default 60 s or `MINIHOST_SCAN_TIMEOUT_MS`), or `crash` (the child died first). All four are fingerprinted, so a re-scan skips the bad ones rather than paying for them again. The cache is written as the scan proceeds, so interrupting it keeps the work.
 
-`info(path)` probes in this process instead: one named plugin is your own choice, so a hang
-there is visible and interruptible, unlike the same hang buried in a scan of several
-hundred.
+`info(path)` probes in this process instead: one named plugin is your own choice, so a hang there is visible and interruptible, unlike the same hang buried in a scan of several hundred.
 
 ---
 

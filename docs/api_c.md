@@ -109,12 +109,7 @@ mh_morph(p, a, b, n, 0.5f);         // apply the 50% blend
 | `mh_check_buses_layout` | Check if a bus layout is supported |
 | `mh_get_sidechain_channels` | Get configured sidechain channel count |
 
-`MH_Info.num_input_ch` is the **main** input bus only -- the width of the
-`inputs` array the `mh_process*` functions expect. Sidechain channels are
-reported by `mh_get_sidechain_channels` and supplied separately to
-`mh_process_sidechain`. Before C ABI 2.4.0 `num_input_ch` summed every input
-bus, which made callers over-provision the main buffer and pushed the
-sidechain past the channels the plugin reads.
+`MH_Info.num_input_ch` is the **main** input bus only -- the width of the `inputs` array the `mh_process*` functions expect. Sidechain channels are reported by `mh_get_sidechain_channels` and supplied separately to `mh_process_sidechain`. Before C ABI 2.4.0 `num_input_ch` summed every input bus, which made callers over-provision the main buffer and pushed the sidechain past the channels the plugin reads.
 
 ### Change Notifications
 
@@ -202,21 +197,11 @@ for (int i = 0; i < count; i++) {
 | `mh_audio_send_param` | Queue a parameter change from application code |
 | `mh_audio_send_param_control` | Queue one from a control-surface thread (its own ring) |
 
-Both take `(dev, plugin_index, param_index, value)`, where `plugin_index`
-selects the chain slot on a device opened with `mh_audio_open_chain` and is 0
-otherwise. `value` is normalized 0..1 and clamped when applied.
+Both take `(dev, plugin_index, param_index, value)`, where `plugin_index` selects the chain slot on a device opened with `mh_audio_open_chain` and is 0 otherwise. `value` is normalized 0..1 and clamped when applied.
 
-Prefer these to `mh_set_param` while a device is running. `mh_set_param` takes
-the plugin's state mutex and writes the parameter underneath a running
-`processBlock`, which by contract takes no lock -- so nothing orders the two
-and the change lands at an undefined point in the block. These queue the change
-lock-free; the audio thread drains at the top of the next block and applies it
-through the `_auto` process entry point.
+Prefer these to `mh_set_param` while a device is running. `mh_set_param` takes the plugin's state mutex and writes the parameter underneath a running `processBlock`, which by contract takes no lock -- so nothing orders the two and the change lands at an undefined point in the block. These queue the change lock-free; the audio thread drains at the top of the next block and applies it through the `_auto` process entry point.
 
-Call each from a single thread. There are two rings for the same
-single-producer reason the MIDI pair has: sharing one between two producers
-corrupts its indices. The drain coalesces per parameter per block, so a fader
-drag emitting hundreds of values costs one parameter write.
+Call each from a single thread. There are two rings for the same single-producer reason the MIDI pair has: sharing one between two producers corrupts its indices. The drain coalesces per parameter per block, so a fader drag emitting hundreds of values costs one parameter write.
 
 ### Host Playhead
 
@@ -232,17 +217,11 @@ drag emitting hundreds of values costs one parameter write.
 | `mh_audio_transport_set_recording` | Set the recording flag passed to the plugin |
 | `mh_audio_get_transport` | Read the current playhead into an `MH_TransportInfo` |
 
-Off by default, in which case the plugin is told there is no transport. The
-audio thread owns the transport and is its only writer; setters post to a
-lock-free command ring it drains each block, so a setter never blocks and its
-effect is visible one block later. Call the setters from a single thread.
+Off by default, in which case the plugin is told there is no transport. The audio thread owns the transport and is its only writer; setters post to a lock-free command ring it drains each block, so a setter never blocks and its effect is visible one block later. Call the setters from a single thread.
 
-A device opened on a chain hands the playhead to every plugin in it, resolved
-once at open.
+A device opened on a chain hands the playhead to every plugin in it, resolved once at open.
 
-`mh_audio_get_transport` copies the most recently published snapshot. Rotating
-buffers make a torn read require the reader to be descheduled across several
-audio callbacks mid-copy; that is a bound, not a proof of atomicity.
+`mh_audio_get_transport` copies the most recently published snapshot. Rotating buffers make a torn read require the reader to be descheduled across several audio callbacks mid-copy; that is a bound, not a proof of atomicity.
 
 ### OSC Input
 
@@ -254,34 +233,17 @@ audio callbacks mid-copy; that is a bound, not a proof of atomicity.
 | `mh_audio_set_slot_name` | Give a chain slot a stable name for addressing |
 | `mh_audio_get_slot_name` | The name given to a slot, or NULL |
 
-Recognised addresses, each taking one float in 0..1 unless noted:
-`/mh/param/<index>`, `/mh/<slot>/param/<index>`, `/mh/<name>/param/<index>`,
-`/mh/transport/play`, `/stop`, `/bpm`, `/position` (beats), `/loop`,
-`/record`. Anything else is ignored.
+Recognised addresses, each taking one float in 0..1 unless noted: `/mh/param/<index>`, `/mh/<slot>/param/<index>`, `/mh/<name>/param/<index>`, `/mh/transport/play`, `/stop`, `/bpm`, `/position` (beats), `/loop`, `/record`. Anything else is ignored.
 
-Parameters are addressed only by index: resolving a parameter *name* means a
-table of every parameter and the plugin's own lock, and the socket thread must
-have neither. The value goes straight onto the control parameter ring, so the
-socket thread never blocks and never takes a lock.
+Parameters are addressed only by index: resolving a parameter *name* means a table of every parameter and the plugin's own lock, and the socket thread must have neither. The value goes straight onto the control parameter ring, so the socket thread never blocks and never takes a lock.
 
-Chain slots are the exception, and are worth the small table.
-`/mh/<slot>/param/<index>` addresses a slot by position, which is stable only
-while the chain is built the same way -- and a generated layout outlives the
-code that builds the chain. `mh_audio_set_slot_name` attaches a name to the
-plugin rather than to a position, so the address survives the chain being
-rebuilt in a different order. Names are alphanumeric, start with a letter (which
-keeps them distinct from the numeric form), must be unique, and must be set
-before `mh_audio_connect_osc` -- the table is read by the socket thread and is
-never written while that thread exists.
+Chain slots are the exception, and are worth the small table. `/mh/<slot>/param/<index>` addresses a slot by position, which is stable only while the chain is built the same way -- and a generated layout outlives the code that builds the chain. `mh_audio_set_slot_name` attaches a name to the plugin rather than to a position, so the address survives the chain being rebuilt in a different order. Names are alphanumeric, start with a letter (which keeps them distinct from the numeric form), must be unique, and must be set before `mh_audio_connect_osc` -- the table is read by the socket thread and is never written while that thread exists.
 
 ---
 
 ## OSC Functions (minihost_osc.h)
 
-OSC input and output, built on JUCE's `juce_osc` module rather than a vendored
-OSC library -- JUCE is already a dependency, `juce_osc` needs only
-`juce_events`, and it carries the same licence as every other JUCE module
-minihost links.
+OSC input and output, built on JUCE's `juce_osc` module rather than a vendored OSC library -- JUCE is already a dependency, `juce_osc` needs only `juce_events`, and it carries the same licence as every other JUCE module minihost links.
 
 | Function | Description |
 |----------|-------------|
@@ -301,21 +263,15 @@ typedef void (*MH_OscCallback)(const char* address, const float* args,
                                int num_args, void* user_data);
 ```
 
-The callback runs on the OSC socket thread, not the audio thread and not a JUCE
-message thread. It must not block: that thread is the only reader, so a slow
-callback costs incoming messages. The intended shape is a push onto a lock-free
-ring that some other thread drains.
+The callback runs on the OSC socket thread, not the audio thread and not a JUCE message thread. It must not block: that thread is the only reader, so a slow callback costs incoming messages. The intended shape is a push onto a lock-free ring that some other thread drains.
 
-Argument types: float32 arrives as itself and int32 is converted; any other
-type (string, blob, time tag) is reported as `0.0f` rather than skipped, so
-argument positions stay aligned with what the sender wrote.
+Argument types: float32 arrives as itself and int32 is converted; any other type (string, blob, time tag) is reported as `0.0f` rather than skipped, so argument positions stay aligned with what the sender wrote.
 
 Scope, stated rather than discovered later:
 
-- UDP only. No TCP, no SLIP. This is what tablet surfaces use; a serial OSC
-  device is not served.
-- Bundle time tags are parsed but not scheduled. Bundle contents are delivered
-  immediately, which is right for control and wrong for sequencing.
+- UDP only. No TCP, no SLIP. This is what tablet surfaces use; a serial OSC device is not served.
+
+- Bundle time tags are parsed but not scheduled. Bundle contents are delivered immediately, which is right for control and wrong for sequencing.
 
 ---
 
@@ -417,11 +373,9 @@ The general DAG executor (Python `PluginGraph`) lives in `minihost_graph_v2.h` a
 | `mh_plugin_cache_lookup` | Resolve a plugin name to a path, ignoring case |
 | `mh_plugin_cache_match` | Nth match for a name, for reporting an ambiguity |
 
-Both take a `format` preference (`"vst3"`, `"au"`/`"audiounit"`, or `NULL`) and an
-`allow_substring` flag.
+Both take a `format` preference (`"vst3"`, `"au"`/`"audiounit"`, or `NULL`) and an `allow_substring` flag.
 
-`mh_get_default_plugin_dir` enumerates until it returns 0, and skips
-directories that do not exist, so a caller sees what is actually installed:
+`mh_get_default_plugin_dir` enumerates until it returns 0, and skips directories that do not exist, so a caller sees what is actually installed:
 
 ```c
 char dir[1024];
@@ -435,19 +389,11 @@ for (int i = 0; mh_get_default_plugin_dir(i, dir, sizeof(dir)); i++)
 | Windows | `C:\Program Files\Common Files\VST3`, and the x86 equivalent |
 | Linux | `/usr/lib/vst3`, `/usr/local/lib/vst3`, `~/.vst3` |
 
-Scanning probes each plugin, which means loading it, so a first full scan of
-a large collection takes minutes. The result is cached and keyed by path with
-an mtime + size fingerprint, so a repeat scan re-probes only what changed;
-pass `refresh = 1` to force. A plugin that fails to probe is remembered as an
-error rather than retried on every scan. The cache is written as the scan
-proceeds, so a scan that is interrupted keeps what it had and a re-run resumes.
+Scanning probes each plugin, which means loading it, so a first full scan of a large collection takes minutes. The result is cached and keyed by path with an mtime + size fingerprint, so a repeat scan re-probes only what changed; pass `refresh = 1` to force. A plugin that fails to probe is remembered as an error rather than retried on every scan. The cache is written as the scan proceeds, so a scan that is interrupted keeps what it had and a re-run resumes.
 
-Probing is dispatched to the message thread, since instantiating an AudioUnit
-is thread-affine on macOS; callers need do nothing.
+Probing is dispatched to the message thread, since instantiating an AudioUnit is thread-affine on macOS; callers need do nothing.
 
-`mh_plugin_cache_scan` probes in the calling process, so a plugin that hangs
-or crashes on load ends the scan. `mh_plugin_cache_scan_supervised` gives each
-plugin its own child process and a deadline instead:
+`mh_plugin_cache_scan` probes in the calling process, so a plugin that hangs or crashes on load ends the scan. `mh_plugin_cache_scan_supervised` gives each plugin its own child process and a deadline instead:
 
 ```c
 char err[512] = {0};
@@ -457,8 +403,7 @@ int n = mh_plugin_cache_scan_supervised(NULL, 0, /*refresh=*/0,
                                         NULL, NULL, err, sizeof(err));
 ```
 
-Passing `NULL` for the worker spawns this process's own executable, which
-works when the program answers the worker flag first thing in `main`:
+Passing `NULL` for the worker spawns this process's own executable, which works when the program answers the worker flag first thing in `main`:
 
 ```c
 int main(int argc, char** argv) {
@@ -467,17 +412,9 @@ int main(int argc, char** argv) {
 }
 ```
 
-An embedder whose executable is not ours -- a DAW, or Python -- passes its own
-worker command instead (`{"python3", "-m", "yourpkg.worker"}`), implementing
-the protocol documented in the header: one JSON object on stdout between
-`MH_SCAN_WORKER_BEGIN` and `MH_SCAN_WORKER_END`. The markers exist because
-plugins print to stdout while loading, so the answer has to be findable inside
-that noise. `MINIHOST_SCAN_WORKER` overrides the command, and
-`MINIHOST_SCAN_TIMEOUT_MS` the deadline.
+An embedder whose executable is not ours -- a DAW, or Python -- passes its own worker command instead (`{"python3", "-m", "yourpkg.worker"}`), implementing the protocol documented in the header: one JSON object on stdout between `MH_SCAN_WORKER_BEGIN` and `MH_SCAN_WORKER_END`. The markers exist because plugins print to stdout while loading, so the answer has to be findable inside that noise. `MINIHOST_SCAN_WORKER` overrides the command, and `MINIHOST_SCAN_TIMEOUT_MS` the deadline.
 
-Cache entries gain two outcomes only the supervised path can report --
-`timeout` and `crash` -- both fingerprinted like any other entry, so a re-scan
-skips those plugins rather than paying for them again.
+Cache entries gain two outcomes only the supervised path can report -- `timeout` and `crash` -- both fingerprinted like any other entry, so a re-scan skips those plugins rather than paying for them again.
 
 ```c
 char err[512] = {0};
@@ -486,12 +423,7 @@ int cached = mh_plugin_cache_scan(NULL, 0, /*refresh=*/0, NULL, NULL,
 if (cached < 0) fprintf(stderr, "%s\n", err);
 ```
 
-Name lookup ignores case and matches the whole name; pass `allow_substring = 1`
-to match part of one, which on a real collection is usually ambiguous. Entries
-that failed to probe are never offered. When every match is the same name in
-more than one format -- a common way to install a plugin -- one is chosen
-instead of reporting an ambiguity: the requested `format` if given, else VST3.
-The return value distinguishes the three outcomes:
+Name lookup ignores case and matches the whole name; pass `allow_substring = 1` to match part of one, which on a real collection is usually ambiguous. Entries that failed to probe are never offered. When every match is the same name in more than one format -- a common way to install a plugin -- one is chosen instead of reporting an ambiguity: the requested `format` if given, else VST3. The return value distinguishes the three outcomes:
 
 ```c
 char path[1024];
@@ -510,9 +442,7 @@ if (n == 1) {
 }
 ```
 
-The cache file and its JSON schema are shared with the Python CLI
-(`minihost.plugincache`), so a scan from either front-end serves the other.
-Location, honouring `MINIHOST_CACHE_DIR`:
+The cache file and its JSON schema are shared with the Python CLI (`minihost.plugincache`), so a scan from either front-end serves the other. Location, honouring `MINIHOST_CACHE_DIR`:
 
 | Platform | Cache file |
 |----------|------------|
@@ -531,10 +461,7 @@ Added in C ABI 2.7.0.
 | `mh_midi_file_load` | Read a standard MIDI file into one time-ordered `MH_MidiEvent` array |
 | `mh_midi_file_free` | Release an array returned by `mh_midi_file_load` |
 
-Tracks are merged, the file's tempo map is applied, and meta events are
-dropped (they have no `MH_MidiEvent` form). `sample_offset` is absolute --
-measured in samples from the start of the file at the rate you pass in --
-so rebase it per block before handing events to a plugin:
+Tracks are merged, the file's tempo map is applied, and meta events are dropped (they have no `MH_MidiEvent` form). `sample_offset` is absolute -- measured in samples from the start of the file at the rate you pass in -- so rebase it per block before handing events to a plugin:
 
 ```c
 MH_MidiEvent* events = NULL;
@@ -565,8 +492,7 @@ for (int start = 0; start < total_frames; start += block) {
 mh_midi_file_free(events);
 ```
 
-An empty file succeeds with `count == 0` and a NULL array. Added in C ABI
-2.6.0; before that, reading a MIDI file was possible only from Python.
+An empty file succeeds with `count == 0` and a NULL array. Added in C ABI 2.6.0; before that, reading a MIDI file was possible only from Python.
 
 ---
 
