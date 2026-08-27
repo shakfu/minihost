@@ -281,7 +281,7 @@ def test_the_map_omits_parameters_with_no_controller_left():
     assert len(touch.build_map(params)["mappings"]) == 128
 
 
-def test_the_generated_map_loads_back_into_a_mapper():
+def test_the_generated_map_loads_back_into_a_mapper(tmp_path):
     """Round trip: what the generator wrote, --map-file can read."""
     from minihost.cli import _load_map_file
 
@@ -294,12 +294,9 @@ def test_the_generated_map_loads_back_into_a_mapper():
     )
     mapper = minihost.MidiMapper(mapper_plugin)
 
-    path = Path(os.environ.get("TMPDIR", "/tmp")) / "minihost_touch_map.json"
+    path = tmp_path / "minihost_touch_map.json"
     path.write_text(json.dumps(touch.build_map(params)))
-    try:
-        assert _load_map_file(str(path), mapper) == 2
-    finally:
-        path.unlink()
+    assert _load_map_file(str(path), mapper) == 2
 
     assert mapper.cc_mappings == {(0, 0): "Cutoff", (0, 1): "Resonance"}
 

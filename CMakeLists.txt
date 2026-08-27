@@ -139,6 +139,13 @@ if(DEFINED SKBUILD)
     # for the AudioBuffer wrapper (juce::AudioBuffer<float> exposed to Python).
     target_link_libraries(_core PRIVATE minihost_audio midifile
                                         juce::juce_core juce::juce_audio_basics)
+    # Linking juce_core compiles it into this target, so libminihost's flags
+    # do not apply. Nothing in the bindings uses juce::URL, and leaving curl
+    # on would make the wheel depend on a system libcurl.
+    target_compile_definitions(_core PRIVATE
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+    )
     target_include_directories(_core PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/projects/libminihost
         ${CMAKE_CURRENT_SOURCE_DIR}/projects/libminihost_audio

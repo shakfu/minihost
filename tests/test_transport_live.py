@@ -43,6 +43,24 @@ def _device(plugin):
     return minihost.AudioDevice(plugin, sample_rate=SR, buffer_frames=BLOCK)
 
 
+def _started(audio):
+    """Start the device and wait for the audio thread's first published
+    snapshot.
+
+    `transport` reads the last snapshot the audio callback published, so it is
+    None until a callback has run. A fixed sleep after start() raced the device
+    opening on a loaded machine: the first callback arrived after SETTLE and
+    every subsequent read subscripted None. Waiting on the snapshot also
+    subsumes the command drain, since a command posted before start() is
+    drained by that same first callback.
+    """
+    audio.start()
+    deadline = time.monotonic() + 5.0
+    while audio.transport is None and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert audio.transport is not None, "no playhead published after start()"
+
+
 # -- default off --------------------------------------------------------------
 
 
@@ -58,7 +76,7 @@ def test_transport_is_off_by_default():
 def test_enabling_publishes_a_playhead():
     with _device(_plugin()) as audio:
         audio.set_transport_enabled(True)
-        audio.start()
+        _started(audio)
         time.sleep(SETTLE)
         audio.stop()
 
@@ -71,7 +89,7 @@ def test_the_defaults_are_musically_sane():
     """Enabling must not first hand the plugin a tempo of zero."""
     with _device(_plugin()) as audio:
         audio.set_transport_enabled(True)
-        audio.start()
+        _started(audio)
         time.sleep(SETTLE)
         audio.stop()
 
@@ -89,7 +107,7 @@ def test_the_defaults_are_musically_sane():
 def test_the_playhead_advances_only_while_playing():
     with _device(_plugin()) as audio:
         audio.set_transport_enabled(True)
-        audio.start()
+        _started(audio)
         time.sleep(SETTLE)
 
         stopped_a = audio.transport["position_samples"]
@@ -118,7 +136,7 @@ def test_it_advances_at_roughly_the_sample_rate():
     with _device(_plugin()) as audio:
         audio.set_transport_enabled(True)
         audio.transport_play()
-        audio.start()
+        _started(audio)
         time.sleep(SETTLE)
 
         first = audio.transport["position_samples"]
@@ -141,7 +159,7 @@ def test_position_beats_follows_position_and_tempo():
         audio.set_transport_enabled(True)
         audio.transport_set_bpm(120.0)
         audio.transport_set_position(SR * 2)  # two seconds in
-        audio.start()
+        _started(audio)
         time.sleep(SETTLE)
         audio.stop()
 
@@ -154,7 +172,7 @@ def test_position_beats_follows_position_and_tempo():
 def test_setting_the_position_moves_the_playhead():
     with _device(_plugin()) as audio:
         audio.set_transport_enabled(True)
-        audio.start()
+        _started(audio)
         audio.transport_set_position(12345)
         time.sleep(SETTLE)
         audio.stop()
@@ -171,7 +189,7 @@ def test_tempo_and_time_signature_are_applied():
         audio.set_transport_enabled(True)
         audio.transport_set_bpm(93.5)
         audio.transport_set_time_sig(7, 8)
-        audio.start()
+        _started(audio)
         time.sleep(SETTLE)
         audio.stop()
 
@@ -186,7 +204,7 @@ def test_the_recording_flag_round_trips():
     with _device(_plugin()) as audio:
         audio.set_transport_enabled(True)
         audio.transport_set_recording(True)
-        audio.start()
+        _started(audio)
         time.sleep(SETTLE)
         audio.stop()
 
@@ -221,7 +239,7 @@ def test_the_playhead_wraps_at_the_loop_end():
         audio.set_transport_enabled(True)
         audio.transport_set_loop(True, loop_start, loop_end)
         audio.transport_play()
-        audio.start()
+        _started(audio)
         time.sleep(1.0)  # several loop lengths
         positions = [audio.transport["position_samples"] for _ in range(5)]
         audio.stop()
@@ -236,7 +254,7 @@ def test_a_loop_shorter_than_a_block_still_wraps_into_range():
         audio.set_transport_enabled(True)
         audio.transport_set_loop(True, 1000, 1000 + 32)  # 32 samples
         audio.transport_play()
-        audio.start()
+        _started(audio)
         time.sleep(0.3)
         positions = [audio.transport["position_samples"] for _ in range(5)]
         audio.stop()
@@ -270,7 +288,7 @@ def test_a_chain_device_also_gets_a_playhead():
     with minihost.AudioDevice(chain, sample_rate=SR, buffer_frames=BLOCK) as audio:
         audio.set_transport_enabled(True)
         audio.transport_play()
-        audio.start()
+        _started(audio)
         time.sleep(0.3)
         position = audio.transport["position_samples"]
         audio.stop()
@@ -286,7 +304,7 @@ def test_osc_drives_the_transport():
     with _device(_plugin()) as audio:
         audio.set_transport_enabled(True)
         audio.connect_osc(0)
-        audio.start()
+        _started(audio)
 
         with minihost.OscClient("127.0.0.1", audio.osc_port) as client:
             client.send("/mh/transport/bpm", 150.0)
@@ -312,7 +330,7 @@ def test_a_button_release_does_not_undo_its_press():
     with _device(_plugin()) as audio:
         audio.set_transport_enabled(True)
         audio.connect_osc(0)
-        audio.start()
+        _started(audio)
 
         with minihost.OscClient("127.0.0.1", audio.osc_port) as client:
             client.send("/mh/transport/play", 1.0)
@@ -333,7 +351,7 @@ def test_osc_position_is_in_beats():
         audio.set_transport_enabled(True)
         audio.transport_set_bpm(120.0)
         audio.connect_osc(0)
-        audio.start()
+        _started(audio)
 
         with minihost.OscClient("127.0.0.1", audio.osc_port) as client:
             client.send("/mh/transport/position", 4.0)  # 4 beats = 2 s at 120
@@ -355,7 +373,7 @@ def test_transport_addresses_do_not_collide_with_parameters():
     with _device(plugin) as audio:
         audio.set_transport_enabled(True)
         audio.connect_osc(0)
-        audio.start()
+        _started(audio)
         plugin.set_param(0, 0.5)
         before = [plugin.get_param(i) for i in range(min(8, plugin.num_params))]
 

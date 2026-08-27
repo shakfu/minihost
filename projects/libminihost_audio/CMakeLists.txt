@@ -65,6 +65,15 @@ function(_minihost_audio_configure_common target)
         LIBREMIDI_HEADER_ONLY=1
     )
 
+    # juce_osc pulls juce_core into this target's own compilation, so the
+    # JUCE feature flags libminihost sets do not reach it. Without
+    # JUCE_USE_CURL=0 juce_core compiles its curl-backed URL implementation
+    # on Linux and the link fails on -lcurl, which nothing here needs.
+    target_compile_definitions(${target} PRIVATE
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+    )
+
     if(APPLE)
         target_compile_definitions(${target} PRIVATE LIBREMIDI_COREMIDI)
         target_link_libraries(${target} PRIVATE

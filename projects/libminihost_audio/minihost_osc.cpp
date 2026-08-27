@@ -140,6 +140,12 @@ MH_OscServer* mh_osc_server_open(int port, MH_OscCallback callback, void* user_d
     // the JUCE message loop, which the Python wheel does not run.
     server->receiver.addListener(server->listener.get());
 
+    // JUCE sets SO_REUSEADDR on every DatagramSocket at construction. On Linux
+    // and Windows that implies port re-use, so a second bind to a port already
+    // in use succeeds and the two servers split incoming messages between them.
+    // Cleared before binding so an occupied port is an error on every platform.
+    server->socket.setEnablePortReuse(false);
+
     if (!server->socket.bindToPort(port)) {
         char msg[128];
         std::snprintf(msg, sizeof(msg),
