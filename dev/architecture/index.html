@@ -364,6 +364,87 @@
   
   
     <li class="md-nav__item">
+      <a href="../../composition/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Composition Pipelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../midi_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MIDI Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../control_surfaces/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Control Surfaces
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../api_c/" class="md-nav__link">
         
   
@@ -563,6 +644,34 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#version-identity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Version identity
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Version identity">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#bumping-a-release" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bumping a release
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#where-changes-propagate" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -627,14 +736,8 @@
 
 
 <h1 id="architecture-what-shares-what">Architecture — what shares what<a class="headerlink" href="#architecture-what-shares-what" title="Permanent link">&para;</a></h1>
-<p>Status: descriptive. Captures the current layering between the C
-library, the Python wheel, and the <code>minihost_desktop</code> binary so future
-refactors don't accidentally couple them in surprising ways.</p>
-<p>The TL;DR: <strong>three artifacts, one C core.</strong> The wheel and the desktop
-binary are largely independent codebases that both consume the same
-<code>libminihost</code> C ABI. The only meaningful coupling outside the C ABI
-is the JSON project schema, which has two independent parsers (one
-Python, one C++) kept in sync by a parity test.</p>
+<p>Status: descriptive. Captures the current layering between the C library, the Python wheel, and the <code>minihost_desktop</code> binary so future refactors don't accidentally couple them in surprising ways.</p>
+<p>The TL;DR: <strong>three artifacts, one C core.</strong> The wheel and the desktop binary are largely independent codebases that both consume the same <code>libminihost</code> C ABI. The only meaningful coupling outside the C ABI is the JSON project schema, which has two independent parsers (one Python, one C++) kept in sync by a parity test.</p>
 <h2 id="layer-diagram">Layer diagram<a class="headerlink" href="#layer-diagram" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>                ┌───────────────────────────────────────────────────────┐
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>                │  libminihost  (C ABI: mh_open, mh_process,            │
@@ -669,57 +772,36 @@ Python, one C++) kept in sync by a parity test.</p>
 <h2 id="what-is-shared-deepest-to-thinnest">What is shared (deepest to thinnest)<a class="headerlink" href="#what-is-shared-deepest-to-thinnest" title="Permanent link">&para;</a></h2>
 <ol>
 <li>
-<p><strong>The C ABI in <code>libminihost</code>.</strong> Every type and function -- <code>MH_Plugin</code>,
-   <code>MH_PluginGraph</code>, <code>MH_PluginChain</code>, <code>MH_PluginBus</code>, <code>mh_open</code>,
-   <code>mh_process*</code>, <code>mh_graph_*</code>, the Phase-2 additions
-   (<code>mh_graph_set_node_midi</code>, <code>mh_graph_set_node_automation</code>),
-   <code>mh_get_juce_processor</code> -- is the single source of truth. Both
-   consumers call into this. The header is valid C; only consumers
-   that link JUCE cast the <code>void*</code> returned by <code>mh_get_juce_processor</code>.</p>
+<p><strong>The C ABI in <code>libminihost</code>.</strong> Every type and function -- <code>MH_Plugin</code>, <code>MH_PluginGraph</code>, <code>MH_PluginChain</code>, <code>MH_PluginBus</code>, <code>mh_open</code>, <code>mh_process*</code>, <code>mh_graph_*</code>, the Phase-2 additions (<code>mh_graph_set_node_midi</code>, <code>mh_graph_set_node_automation</code>), <code>mh_get_juce_processor</code> -- is the single source of truth. Both consumers call into this. The header is valid C; only consumers that link JUCE cast the <code>void*</code> returned by <code>mh_get_juce_processor</code>.</p>
 </li>
 <li>
-<p><strong><code>libminihost_audio</code> (and <code>_gui</code> sibling).</strong> Audio file I/O and MIDI
-   ringbuffers. Consumed by both the wheel and the desktop. The two
-   variants exist only so the wheel-side build stays headless while the
-   desktop links the GUI flavour of <code>libminihost</code> -- both compile the
-   same C source files.</p>
+<p><strong><code>libminihost_audio</code> (and <code>_gui</code> sibling).</strong> Audio file I/O and MIDI ringbuffers. Consumed by both the wheel and the desktop. The two variants exist only so the wheel-side build stays headless while the desktop links the GUI flavour of <code>libminihost</code> -- both compile the same C source files.</p>
 </li>
 <li>
-<p><strong>JSON project schema.</strong> The <em>spec</em> is shared, but the <strong>parsers are
-   not the same code</strong>. See <a href="#the-schema-duplication-pinch">The schema-duplication
-   pinch</a> below.</p>
+<p><strong>JSON project schema.</strong> The <em>spec</em> is shared, but the <strong>parsers are not the same code</strong>. See <a href="#the-schema-duplication-pinch">The schema-duplication pinch</a> below.</p>
 </li>
 </ol>
 <h2 id="what-is-not-shared">What is NOT shared<a class="headerlink" href="#what-is-not-shared" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>The Python wheel doesn't use <code>libminihost_gui</code> or any GUI code.</strong>
-  It links <code>libminihost.a</code> (headless), which substitutes
-  <code>juce_audio_processors_headless</code> for <code>juce_audio_processors</code>. The
-  wheel has no <code>juce::Component</code>, no editor windows, no
-  <code>AudioDeviceManager</code>. (See the build / link layer in
-  <a href="../desktop_app/">docs/dev/desktop_app.md</a>.)</li>
-<li><strong>The desktop binary doesn't embed Python.</strong> It calls
-  <code>mh_graph_*</code> natively from C++. No Python interpreter, no
-  <code>nanobind</code>, no IPC seam.</li>
-<li><strong><code>minihost::PluginGraph</code></strong> -- the header-only RAII wrapper in
-  <code>projects/libminihost/minihost_graph_v2.hpp</code> -- is used only by
-  the desktop's <code>LiveEngine</code> and project loader. The Python
-  binding talks straight to the C ABI through <code>nanobind</code>; the C++
-  wrapper is not on its path.</li>
-<li><strong>App-level code</strong> -- <code>main.cpp</code>, <code>canvas.{h,cpp}</code>,
-  <code>live.{h,cpp}</code>, the C++ <code>project.{h,cpp}</code>, <code>rt_param_queue.h</code> --
-  is desktop-only.</li>
-<li><strong>Python-level code</strong> -- <code>process.py</code>, <code>chain.py</code>, <code>render.py</code>,
-  <code>audio_io.py</code>, <code>cli.py</code>, <code>project.py</code>, <code>automation.py</code>,
-  <code>vstpreset.py</code> -- is wheel-only.</li>
+<li>
+<p><strong>The Python wheel doesn't use <code>libminihost_gui</code> or any GUI code.</strong> It links <code>libminihost.a</code> (headless), which substitutes <code>juce_audio_processors_headless</code> for <code>juce_audio_processors</code>. The wheel has no <code>juce::Component</code>, no editor windows, no <code>AudioDeviceManager</code>. (See the build / link layer in <a href="../desktop_app/">docs/dev/desktop_app.md</a>.)</p>
+</li>
+<li>
+<p><strong>The desktop binary doesn't embed Python.</strong> It calls <code>mh_graph_*</code> natively from C++. No Python interpreter, no <code>nanobind</code>, no IPC seam.</p>
+</li>
+<li>
+<p><strong><code>minihost::PluginGraph</code></strong> -- the header-only RAII wrapper in <code>projects/libminihost/minihost_graph_v2.hpp</code> -- is used only by the desktop's <code>LiveEngine</code> and project loader. The Python binding talks straight to the C ABI through <code>nanobind</code>; the C++ wrapper is not on its path.</p>
+</li>
+<li>
+<p><strong>App-level code</strong> -- <code>main.cpp</code>, <code>canvas.{h,cpp}</code>, <code>live.{h,cpp}</code>, the C++ <code>project.{h,cpp}</code>, <code>rt_param_queue.h</code> -- is desktop-only.</p>
+</li>
+<li>
+<p><strong>Python-level code</strong> -- <code>process.py</code>, <code>chain.py</code>, <code>render.py</code>, <code>audio_io.py</code>, <code>cli.py</code>, <code>project.py</code>, <code>automation.py</code>, <code>vstpreset.py</code> -- is wheel-only.</p>
+</li>
 </ul>
 <h2 id="the-schema-duplication-pinch">The schema-duplication pinch<a class="headerlink" href="#the-schema-duplication-pinch" title="Permanent link">&para;</a></h2>
-<p>The JSON project file format (schema v1, declared in
-<code>src/minihost/project.py</code> and re-declared in
-<code>projects/minihost_desktop/src/project.{h,cpp}</code>) is the <strong>one
-load-bearing coupling outside the C ABI</strong>.</p>
-<p>Both parsers must accept the same documents and produce equivalent
-in-memory shapes. A schema change requires editing both:</p>
+<p>The JSON project file format (schema v1, declared in <code>src/minihost/project.py</code> and re-declared in <code>projects/minihost_desktop/src/project.{h,cpp}</code>) is the <strong>one load-bearing coupling outside the C ABI</strong>.</p>
+<p>Both parsers must accept the same documents and produce equivalent in-memory shapes. A schema change requires editing both:</p>
 <table>
 <thead>
 <tr>
@@ -740,19 +822,68 @@ in-memory shapes. A schema change requires editing both:</p>
 </table>
 <p>The contract is enforced by parity tests, not by code generation:</p>
 <ul>
-<li><strong>Python load + render parity:</strong> <code>tests/test_project.py</code> (13 tests)
-  covers validation, round-trip, and render-vs-<code>process_audio_to_file</code>.</li>
-<li><strong>C++ vs Python parity:</strong> <code>tests/test_desktop_render_parity.py</code>
-  (2 tests) drives <code>minihost_desktop --render-project=...</code> headlessly
-  and asserts the output is bit-identical to <code>minihost.render_project()</code>
-  over the same project. Also asserts <code>--save-roundtrip=...</code> (C++
-  load + save) preserves layout for the Python loader.</li>
+<li>
+<p><strong>Python load + render parity:</strong> <code>tests/test_project.py</code> (13 tests) covers validation, round-trip, and render-vs-<code>process_audio_to_file</code>.</p>
+</li>
+<li>
+<p><strong>C++ vs Python parity:</strong> <code>tests/test_desktop_render_parity.py</code> (2 tests) drives <code>minihost_desktop --render-project=...</code> headlessly and asserts the output is bit-identical to <code>minihost.render_project()</code> over the same project. Also asserts <code>--save-roundtrip=...</code> (C++ load + save) preserves layout for the Python loader.</p>
+</li>
 </ul>
 <p>If you change the schema and forget one parser, those tests fail.</p>
-<p>Generating one parser from the other (e.g. via a JSON-schema codegen)
-would close the gap structurally; the current hand-maintained mirror
-is acceptable because the schema is small (4 node kinds, 1 edge kind,
-optional layout) and changes infrequently.</p>
+<p>Generating one parser from the other (e.g. via a JSON-schema codegen) would close the gap structurally; the current hand-maintained mirror is acceptable because the schema is small (4 node kinds, 1 edge kind, optional layout) and changes infrequently.</p>
+<h2 id="version-identity">Version identity<a class="headerlink" href="#version-identity" title="Permanent link">&para;</a></h2>
+<p>Two versions run on independent schedules and should not be confused.</p>
+<p><strong>The release version</strong> is what a user means by "which minihost is this". It has exactly one source of truth: the <code>version</code> field in <code>pyproject.toml</code>. Everything else derives from it, so bumping a release is a one-line edit plus a mirror:</p>
+<table>
+<thead>
+<tr>
+<th>Consumer</th>
+<th>How it gets the version</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Python package</td>
+<td><code>__version__</code> in <code>src/minihost/__init__.py</code> -- the one hand-maintained copy, kept a literal so <code>import minihost</code> costs no metadata lookup</td>
+</tr>
+<tr>
+<td>Wheel build</td>
+<td><code>SKBUILD_PROJECT_VERSION</code>, handed to CMake by scikit-build-core</td>
+</tr>
+<tr>
+<td>Standalone CMake build</td>
+<td>the top-level <code>CMakeLists.txt</code> parses the same <code>version = "..."</code> line</td>
+</tr>
+<tr>
+<td><code>minihost_c</code>, <code>minihost_cpp</code>, <code>minihost_desktop</code></td>
+<td><code>MINIHOST_VERSION</code> from the generated <code>minihost_version.h</code></td>
+</tr>
+<tr>
+<td>macOS app bundle</td>
+<td><code>MACOSX_BUNDLE_SHORT_VERSION_STRING</code> / <code>..._BUNDLE_VERSION</code>, set from <code>MINIHOST_VERSION</code></td>
+</tr>
+<tr>
+<td>CI artifact and archive names</td>
+<td>the tag on <code>refs/tags/v*</code> builds, otherwise the same <code>pyproject.toml</code> line</td>
+</tr>
+</tbody>
+</table>
+<p><code>cmake/minihost_version.h.in</code> is configured into <code>${CMAKE_BINARY_DIR}/generated/minihost_version.h</code> and exposed by the <code>minihost_version</code> INTERFACE target; a target that wants to report its version links that target and includes the header. <code>pyproject.toml</code> is in <code>CMAKE_CONFIGURE_DEPENDS</code>, so editing it re-runs configure on the next build.</p>
+<p>All three CLIs answer <code>--version</code> with the release version and the linked library's ABI version. The long form is used everywhere because <code>-V</code> is already <code>--verbose</code> in <code>minihost_c</code>.</p>
+<p><strong>The C ABI version</strong> is <code>MH_API_VERSION_{MAJOR,MINOR,PATCH}</code> in <code>projects/libminihost/minihost.h</code>, currently 2.8.0 against a 0.7.1 release. It moves when struct layouts or entry points change, which is what lets a wheel detect a mismatched separately-installed library. Tying it to the release version would force an ABI bump on every release and a release on every ABI bump, so the two are kept apart.</p>
+<h3 id="bumping-a-release">Bumping a release<a class="headerlink" href="#bumping-a-release" title="Permanent link">&para;</a></h3>
+<ol>
+<li>
+<p>Edit <code>version</code> in <code>pyproject.toml</code>.</p>
+</li>
+<li>
+<p>Mirror it into <code>__version__</code> in <code>src/minihost/__init__.py</code>.</p>
+</li>
+<li>
+<p>Add the matching <code>## [X.Y.Z]</code> section to <code>CHANGELOG.md</code>.</p>
+</li>
+</ol>
+<p><code>tests/test_release_version.py</code> fails if any of these disagree, or if a CLI binary in the build tree reports something else. Nothing else needs editing -- the generated header picks the new value up on the next configure.</p>
 <h2 id="where-changes-propagate">Where changes propagate<a class="headerlink" href="#where-changes-propagate" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -799,6 +930,11 @@ optional layout) and changes infrequently.</p>
 <td>No</td>
 </tr>
 <tr>
+<td><code>version</code> in <code>pyproject.toml</code></td>
+<td>Yes</td>
+<td>Yes (via <code>minihost_version.h</code>)</td>
+</tr>
+<tr>
 <td><code>projects/minihost_desktop/src/canvas.{h,cpp}</code> etc.</td>
 <td>No</td>
 <td>Yes</td>
@@ -806,48 +942,44 @@ optional layout) and changes infrequently.</p>
 </tbody>
 </table>
 <h2 id="build-target-topology">Build target topology<a class="headerlink" href="#build-target-topology" title="Permanent link">&para;</a></h2>
-<p><code>CMakeLists.txt</code> produces two sibling static libraries for each C
-library that has a GUI vs headless distinction:</p>
+<p><code>CMakeLists.txt</code> produces two sibling static libraries for each C library that has a GUI vs headless distinction:</p>
 <ul>
-<li><code>libminihost.a</code> -- always built. Used by the Python wheel and the
-  CLI tools.</li>
-<li><code>libminihost_gui.a</code> -- built when <code>MINIHOST_BUILD_DESKTOP=ON</code> (or
-  <code>MINIHOST_BUILD_GUI_LIB=ON</code>). Same <code>.cpp</code> sources, links
-  <code>juce_audio_processors</code> and <code>juce_gui_basics</code> instead of the
-  <code>_headless</code> variant.</li>
-<li><code>libminihost_audio.a</code> / <code>libminihost_audio_gui.a</code> -- the same
-  pattern, gated on the same option.</li>
+<li>
+<p><code>libminihost.a</code> -- always built. Used by the Python wheel and the CLI tools.</p>
+</li>
+<li>
+<p><code>libminihost_gui.a</code> -- built when <code>MINIHOST_BUILD_DESKTOP=ON</code> (or <code>MINIHOST_BUILD_GUI_LIB=ON</code>). Same <code>.cpp</code> sources, links <code>juce_audio_processors</code> and <code>juce_gui_basics</code> instead of the <code>_headless</code> variant.</p>
+</li>
+<li>
+<p><code>libminihost_audio.a</code> / <code>libminihost_audio_gui.a</code> -- the same pattern, gated on the same option.</p>
+</li>
 </ul>
-<p>The Python wheel's <code>setup</code> only sees <code>libminihost.a</code> /
-<code>libminihost_audio.a</code>. The desktop sees the <code>_gui</code> variants. They
-coexist in one <code>build/</code> tree; flipping between them is a configure-
-time toggle, not a clean-rebuild event.</p>
+<p>The Python wheel's <code>setup</code> only sees <code>libminihost.a</code> / <code>libminihost_audio.a</code>. The desktop sees the <code>_gui</code> variants. They coexist in one <code>build/</code> tree; flipping between them is a configure- time toggle, not a clean-rebuild event.</p>
 <h2 id="runtime-independence">Runtime independence<a class="headerlink" href="#runtime-independence" title="Permanent link">&para;</a></h2>
 <p>A user can:</p>
 <ul>
-<li>Install the wheel (<code>uv pip install minihost</code>) and never touch the
-  desktop binary. They get the C ABI exposed as <code>minihost.Plugin</code>,
-  <code>minihost.PluginGraph</code>, <code>minihost.process_audio_to_file</code>, the CLI tools,
-  etc.</li>
-<li>Build the desktop binary and never use Python. The Python wheel is
-  not a runtime dependency of <code>minihost_desktop</code>. The binary is
-  self-contained except for the OS and the user's plugin files.</li>
-<li>Use both, independently. Projects produced by one are consumed by
-  the other byte-identically; that's what the schema parity tests
-  enforce.</li>
+<li>
+<p>Install the wheel (<code>uv pip install minihost</code>) and never touch the desktop binary. They get the C ABI exposed as <code>minihost.Plugin</code>, <code>minihost.PluginGraph</code>, <code>minihost.process_audio_to_file</code>, the CLI tools, etc.</p>
+</li>
+<li>
+<p>Build the desktop binary and never use Python. The Python wheel is not a runtime dependency of <code>minihost_desktop</code>. The binary is self-contained except for the OS and the user's plugin files.</p>
+</li>
+<li>
+<p>Use both, independently. Projects produced by one are consumed by the other byte-identically; that's what the schema parity tests enforce.</p>
+</li>
 </ul>
-<p>The two artifacts share lineage but not lifetime. Releasing a new
-Python wheel doesn't require a desktop rebuild and vice versa, as
-long as the C ABI in <code>libminihost</code> stays stable.</p>
+<p>The two artifacts share lineage but not lifetime. Releasing a new Python wheel doesn't require a desktop rebuild and vice versa, as long as the C ABI in <code>libminihost</code> stays stable.</p>
 <h2 id="related-design-docs">Related design docs<a class="headerlink" href="#related-design-docs" title="Permanent link">&para;</a></h2>
 <ul>
-<li><a href="../desktop_app/">desktop_app.md</a> -- desktop application design
-  (phases, build configuration, project file format).</li>
-<li><a href="../desktop_app_todo/">desktop_app_todo.md</a> -- per-phase task list
-  with current state.</li>
-<li><a href="../graph/">graph.md</a> -- the original v1 graph-executor sketch
-  (predates <code>mh_graph_*</code> and the C++ wrapper; preserved as a
-  historical note).</li>
+<li>
+<p><a href="../desktop_app/">desktop_app.md</a> -- desktop application design (phases, build configuration, project file format).</p>
+</li>
+<li>
+<p><a href="../desktop_app_todo/">desktop_app_todo.md</a> -- per-phase task list with current state.</p>
+</li>
+<li>
+<p><a href="../graph/">graph.md</a> -- the original v1 graph-executor sketch (predates <code>mh_graph_*</code> and the C++ wrapper; preserved as a historical note).</p>
+</li>
 </ul>
 
 

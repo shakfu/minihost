@@ -13,7 +13,7 @@
         <link rel="canonical" href="https://shakfu.github.io/minihost/api_c/">
       
       
-        <link rel="prev" href="../api_python/">
+        <link rel="prev" href="../control_surfaces/">
       
       
         <link rel="next" href="../hosting_guide/">
@@ -365,6 +365,87 @@
       
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../composition/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Composition Pipelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../midi_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MIDI Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../control_surfaces/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Control Surfaces
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
     
   
   
@@ -455,6 +536,17 @@
     <span class="md-ellipsis">
       
         Parameters
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#parameter-morphing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parameter Morphing
       
     </span>
   </a>
@@ -577,8 +669,52 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#parameter-changes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parameter Changes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#host-playhead" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Host Playhead
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#osc-input" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OSC Input
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#osc-functions-minihost_osch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OSC Functions (minihost_osc.h)
+      
+    </span>
+  </a>
   
 </li>
       
@@ -637,6 +773,28 @@
     <span class="md-ellipsis">
       
         Plugin Bus Functions (minihost_graph.h)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#plugin-discovery-and-the-scan-cache-minihosth" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plugin Discovery and the Scan Cache (minihost.h)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#midi-file-reading-minihosth" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MIDI File Reading (minihost.h)
       
     </span>
   </a>
@@ -898,6 +1056,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#parameter-morphing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parameter Morphing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#state-management" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1013,8 +1182,52 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#parameter-changes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parameter Changes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#host-playhead" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Host Playhead
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#osc-input" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OSC Input
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#osc-functions-minihost_osch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OSC Functions (minihost_osc.h)
+      
+    </span>
+  </a>
   
 </li>
       
@@ -1073,6 +1286,28 @@
     <span class="md-ellipsis">
       
         Plugin Bus Functions (minihost_graph.h)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#plugin-discovery-and-the-scan-cache-minihosth" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plugin Discovery and the Scan Cache (minihost.h)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#midi-file-reading-minihosth" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MIDI File Reading (minihost.h)
       
     </span>
   </a>
@@ -1303,6 +1538,44 @@
 </tr>
 </tbody>
 </table>
+<h3 id="parameter-morphing">Parameter Morphing<a class="headerlink" href="#parameter-morphing" title="Permanent link">&para;</a></h3>
+<p>A/B interpolation over the normalized parameter values (a "snapshot" is one value per parameter). Operates on parameters, not opaque state blobs, since only parameters interpolate. Only continuous parameters glide; stepped/boolean parameters are quantized by the plugin.</p>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mh_morph_capture</code></td>
+<td>Capture every parameter's current normalized value into an array (returns the count)</td>
+</tr>
+<tr>
+<td><code>mh_morph_apply</code></td>
+<td>Set every parameter from a snapshot array (values clamped to 0..1)</td>
+</tr>
+<tr>
+<td><code>mh_morph_lerp</code></td>
+<td>Interpolate two snapshots with one blend amount <code>t</code>: <code>out = clamp01(a + (b - a) * t)</code> (pure math)</td>
+</tr>
+<tr>
+<td><code>mh_morph_lerp_per_param</code></td>
+<td>Interpolate two snapshots with a per-parameter <code>t</code> array</td>
+</tr>
+<tr>
+<td><code>mh_morph</code></td>
+<td>Interpolate two snapshots at scalar <code>t</code> and apply to the plugin in one call</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kt">int</span><span class="w"> </span><span class="n">n</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mh_get_num_params</span><span class="p">(</span><span class="n">p</span><span class="p">);</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kt">float</span><span class="w"> </span><span class="n">a</span><span class="p">[</span><span class="mi">512</span><span class="p">],</span><span class="w"> </span><span class="n">b</span><span class="p">[</span><span class="mi">512</span><span class="p">];</span><span class="w">               </span><span class="c1">// n &lt;= 512 for this example</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">mh_set_program</span><span class="p">(</span><span class="n">p</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">);</span><span class="w"> </span><span class="n">mh_morph_capture</span><span class="p">(</span><span class="n">p</span><span class="p">,</span><span class="w"> </span><span class="n">a</span><span class="p">,</span><span class="w"> </span><span class="n">n</span><span class="p">);</span><span class="w">   </span><span class="c1">// snapshot A</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">mh_set_program</span><span class="p">(</span><span class="n">p</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">);</span><span class="w"> </span><span class="n">mh_morph_capture</span><span class="p">(</span><span class="n">p</span><span class="p">,</span><span class="w"> </span><span class="n">b</span><span class="p">,</span><span class="w"> </span><span class="n">n</span><span class="p">);</span><span class="w">   </span><span class="c1">// snapshot B</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">mh_morph</span><span class="p">(</span><span class="n">p</span><span class="p">,</span><span class="w"> </span><span class="n">a</span><span class="p">,</span><span class="w"> </span><span class="n">b</span><span class="p">,</span><span class="w"> </span><span class="n">n</span><span class="p">,</span><span class="w"> </span><span class="mf">0.5f</span><span class="p">);</span><span class="w">         </span><span class="c1">// apply the 50% blend</span>
+</code></pre></div>
 <h3 id="state-management">State Management<a class="headerlink" href="#state-management" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
@@ -1462,6 +1735,12 @@
 </tr>
 </tbody>
 </table>
+<p><code>MH_Info.num_input_ch</code> is the <strong>main</strong> input bus only -- the width of the
+<code>inputs</code> array the <code>mh_process*</code> functions expect. Sidechain channels are
+reported by <code>mh_get_sidechain_channels</code> and supplied separately to
+<code>mh_process_sidechain</code>. Before C ABI 2.4.0 <code>num_input_ch</code> summed every input
+bus, which made callers over-provision the main buffer and pushed the
+sidechain past the channels the plugin reads.</p>
 <h3 id="change-notifications">Change Notifications<a class="headerlink" href="#change-notifications" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
@@ -1561,15 +1840,19 @@
 </table>
 <p><strong><code>MH_AudioDeviceInfo</code></strong> struct:</p>
 <ul>
-<li><code>char name[256]</code> -- device name (null-terminated)</li>
-<li><code>int is_default</code> -- <code>1</code> if this is the system default, else <code>0</code></li>
+<li>
+<p><code>char name[256]</code> -- device name (null-terminated)</p>
+</li>
+<li>
+<p><code>int is_default</code> -- <code>1</code> if this is the system default, else <code>0</code></p>
+</li>
 </ul>
 <p>Typical usage:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">MH_AudioDeviceInfo</span><span class="w"> </span><span class="n">devices</span><span class="p">[</span><span class="mi">32</span><span class="p">];</span>
-<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kt">int</span><span class="w"> </span><span class="n">count</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mh_audio_enumerate_playback_devices</span><span class="p">(</span><span class="n">devices</span><span class="p">,</span><span class="w"> </span><span class="mi">32</span><span class="p">);</span>
-<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kt">int</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">count</span><span class="p">;</span><span class="w"> </span><span class="n">i</span><span class="o">++</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span><span class="n">printf</span><span class="p">(</span><span class="s">&quot;[%d]%s %s</span><span class="se">\n</span><span class="s">&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">i</span><span class="p">,</span><span class="w"> </span><span class="n">devices</span><span class="p">[</span><span class="n">i</span><span class="p">].</span><span class="n">is_default</span><span class="w"> </span><span class="o">?</span><span class="w"> </span><span class="s">&quot;*&quot;</span><span class="w"> </span><span class="o">:</span><span class="w"> </span><span class="s">&quot; &quot;</span><span class="p">,</span><span class="w"> </span><span class="n">devices</span><span class="p">[</span><span class="n">i</span><span class="p">].</span><span class="n">name</span><span class="p">);</span>
-<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="p">}</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">MH_AudioDeviceInfo</span><span class="w"> </span><span class="n">devices</span><span class="p">[</span><span class="mi">32</span><span class="p">];</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="kt">int</span><span class="w"> </span><span class="n">count</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mh_audio_enumerate_playback_devices</span><span class="p">(</span><span class="n">devices</span><span class="p">,</span><span class="w"> </span><span class="mi">32</span><span class="p">);</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kt">int</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">count</span><span class="p">;</span><span class="w"> </span><span class="n">i</span><span class="o">++</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="n">printf</span><span class="p">(</span><span class="s">&quot;[%d]%s %s</span><span class="se">\n</span><span class="s">&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">i</span><span class="p">,</span><span class="w"> </span><span class="n">devices</span><span class="p">[</span><span class="n">i</span><span class="p">].</span><span class="n">is_default</span><span class="w"> </span><span class="o">?</span><span class="w"> </span><span class="s">&quot;*&quot;</span><span class="w"> </span><span class="o">:</span><span class="w"> </span><span class="s">&quot; &quot;</span><span class="p">,</span><span class="w"> </span><span class="n">devices</span><span class="p">[</span><span class="n">i</span><span class="p">].</span><span class="n">name</span><span class="p">);</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="p">}</span>
 </code></pre></div>
 <h3 id="audio-input-ring-buffer">Audio Input (Ring Buffer)<a class="headerlink" href="#audio-input-ring-buffer" title="Permanent link">&para;</a></h3>
 <table>
@@ -1653,6 +1936,215 @@
 </tr>
 </tbody>
 </table>
+<h3 id="parameter-changes">Parameter Changes<a class="headerlink" href="#parameter-changes" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mh_audio_send_param</code></td>
+<td>Queue a parameter change from application code</td>
+</tr>
+<tr>
+<td><code>mh_audio_send_param_control</code></td>
+<td>Queue one from a control-surface thread (its own ring)</td>
+</tr>
+</tbody>
+</table>
+<p>Both take <code>(dev, plugin_index, param_index, value)</code>, where <code>plugin_index</code>
+selects the chain slot on a device opened with <code>mh_audio_open_chain</code> and is 0
+otherwise. <code>value</code> is normalized 0..1 and clamped when applied.</p>
+<p>Prefer these to <code>mh_set_param</code> while a device is running. <code>mh_set_param</code> takes
+the plugin's state mutex and writes the parameter underneath a running
+<code>processBlock</code>, which by contract takes no lock -- so nothing orders the two
+and the change lands at an undefined point in the block. These queue the change
+lock-free; the audio thread drains at the top of the next block and applies it
+through the <code>_auto</code> process entry point.</p>
+<p>Call each from a single thread. There are two rings for the same
+single-producer reason the MIDI pair has: sharing one between two producers
+corrupts its indices. The drain coalesces per parameter per block, so a fader
+drag emitting hundreds of values costs one parameter write.</p>
+<h3 id="host-playhead">Host Playhead<a class="headerlink" href="#host-playhead" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mh_audio_set_transport_enabled</code></td>
+<td>Enable the host playhead (off by default)</td>
+</tr>
+<tr>
+<td><code>mh_audio_get_transport_enabled</code></td>
+<td>Is it enabled?</td>
+</tr>
+<tr>
+<td><code>mh_audio_transport_play</code> / <code>_stop</code></td>
+<td>Start / stop the playhead</td>
+</tr>
+<tr>
+<td><code>mh_audio_transport_set_bpm</code></td>
+<td>Set tempo</td>
+</tr>
+<tr>
+<td><code>mh_audio_transport_set_time_sig</code></td>
+<td>Set time signature</td>
+</tr>
+<tr>
+<td><code>mh_audio_transport_set_position</code></td>
+<td>Move the playhead, in samples</td>
+</tr>
+<tr>
+<td><code>mh_audio_transport_set_loop</code></td>
+<td>Set loop points, in samples</td>
+</tr>
+<tr>
+<td><code>mh_audio_transport_set_recording</code></td>
+<td>Set the recording flag passed to the plugin</td>
+</tr>
+<tr>
+<td><code>mh_audio_get_transport</code></td>
+<td>Read the current playhead into an <code>MH_TransportInfo</code></td>
+</tr>
+</tbody>
+</table>
+<p>Off by default, in which case the plugin is told there is no transport. The
+audio thread owns the transport and is its only writer; setters post to a
+lock-free command ring it drains each block, so a setter never blocks and its
+effect is visible one block later. Call the setters from a single thread.</p>
+<p>A device opened on a chain hands the playhead to every plugin in it, resolved
+once at open.</p>
+<p><code>mh_audio_get_transport</code> copies the most recently published snapshot. Rotating
+buffers make a torn read require the reader to be descheduled across several
+audio callbacks mid-copy; that is a bound, not a proof of atomicity.</p>
+<h3 id="osc-input">OSC Input<a class="headerlink" href="#osc-input" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mh_audio_connect_osc</code></td>
+<td>Listen for OSC on a UDP port and drive parameters directly</td>
+</tr>
+<tr>
+<td><code>mh_audio_disconnect_osc</code></td>
+<td>Stop listening</td>
+</tr>
+<tr>
+<td><code>mh_audio_get_osc_port</code></td>
+<td>Bound port, or -1</td>
+</tr>
+<tr>
+<td><code>mh_audio_set_slot_name</code></td>
+<td>Give a chain slot a stable name for addressing</td>
+</tr>
+<tr>
+<td><code>mh_audio_get_slot_name</code></td>
+<td>The name given to a slot, or NULL</td>
+</tr>
+</tbody>
+</table>
+<p>Recognised addresses, each taking one float in 0..1 unless noted:
+<code>/mh/param/&lt;index&gt;</code>, <code>/mh/&lt;slot&gt;/param/&lt;index&gt;</code>, <code>/mh/&lt;name&gt;/param/&lt;index&gt;</code>,
+<code>/mh/transport/play</code>, <code>/stop</code>, <code>/bpm</code>, <code>/position</code> (beats), <code>/loop</code>,
+<code>/record</code>. Anything else is ignored.</p>
+<p>Parameters are addressed only by index: resolving a parameter <em>name</em> means a
+table of every parameter and the plugin's own lock, and the socket thread must
+have neither. The value goes straight onto the control parameter ring, so the
+socket thread never blocks and never takes a lock.</p>
+<p>Chain slots are the exception, and are worth the small table.
+<code>/mh/&lt;slot&gt;/param/&lt;index&gt;</code> addresses a slot by position, which is stable only
+while the chain is built the same way -- and a generated layout outlives the
+code that builds the chain. <code>mh_audio_set_slot_name</code> attaches a name to the
+plugin rather than to a position, so the address survives the chain being
+rebuilt in a different order. Names are alphanumeric, start with a letter (which
+keeps them distinct from the numeric form), must be unique, and must be set
+before <code>mh_audio_connect_osc</code> -- the table is read by the socket thread and is
+never written while that thread exists.</p>
+<hr />
+<h2 id="osc-functions-minihost_osch">OSC Functions (minihost_osc.h)<a class="headerlink" href="#osc-functions-minihost_osch" title="Permanent link">&para;</a></h2>
+<p>OSC input and output, built on JUCE's <code>juce_osc</code> module rather than a vendored
+OSC library -- JUCE is already a dependency, <code>juce_osc</code> needs only
+<code>juce_events</code>, and it carries the same licence as every other JUCE module
+minihost links.</p>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mh_osc_server_open</code></td>
+<td>Bind a UDP port and start listening. Port 0 lets the OS choose</td>
+</tr>
+<tr>
+<td><code>mh_osc_server_close</code></td>
+<td>Stop listening. Blocks until the socket thread has stopped</td>
+</tr>
+<tr>
+<td><code>mh_osc_server_get_port</code></td>
+<td>The port actually bound</td>
+</tr>
+<tr>
+<td><code>mh_osc_client_open</code></td>
+<td>Open a sender aimed at host:port</td>
+</tr>
+<tr>
+<td><code>mh_osc_client_close</code></td>
+<td>Close the sender</td>
+</tr>
+<tr>
+<td><code>mh_osc_send_float</code> / <code>_int</code> / <code>_string</code></td>
+<td>Send a message with one argument</td>
+</tr>
+<tr>
+<td><code>mh_osc_send_bang</code></td>
+<td>Send a message with no arguments (a trigger)</td>
+</tr>
+<tr>
+<td><code>mh_osc_send_floats</code></td>
+<td>Send a message with an array of floats</td>
+</tr>
+<tr>
+<td><code>mh_osc_address_matches</code></td>
+<td>Does a pattern match a concrete address?</td>
+</tr>
+<tr>
+<td><code>mh_osc_is_valid_address</code></td>
+<td>Is this a valid OSC address pattern?</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">typedef</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">MH_OscCallback</span><span class="p">)(</span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">address</span><span class="p">,</span><span class="w"> </span><span class="k">const</span><span class="w"> </span><span class="kt">float</span><span class="o">*</span><span class="w"> </span><span class="n">args</span><span class="p">,</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">                               </span><span class="kt">int</span><span class="w"> </span><span class="n">num_args</span><span class="p">,</span><span class="w"> </span><span class="kt">void</span><span class="o">*</span><span class="w"> </span><span class="n">user_data</span><span class="p">);</span>
+</code></pre></div>
+<p>The callback runs on the OSC socket thread, not the audio thread and not a JUCE
+message thread. It must not block: that thread is the only reader, so a slow
+callback costs incoming messages. The intended shape is a push onto a lock-free
+ring that some other thread drains.</p>
+<p>Argument types: float32 arrives as itself and int32 is converted; any other
+type (string, blob, time tag) is reported as <code>0.0f</code> rather than skipped, so
+argument positions stay aligned with what the sender wrote.</p>
+<p>Scope, stated rather than discovered later:</p>
+<ul>
+<li>UDP only. No TCP, no SLIP. This is what tablet surfaces use; a serial OSC
+  device is not served.</li>
+<li>Bundle time tags are parsed but not scheduled. Bundle contents are delivered
+  immediately, which is right for control and wrong for sequencing.</li>
+</ul>
 <hr />
 <h2 id="audio-file-io-functions-minihost_audiofileh">Audio File I/O Functions (minihost_audiofile.h)<a class="headerlink" href="#audio-file-io-functions-minihost_audiofileh" title="Permanent link">&para;</a></h2>
 <table>
@@ -1720,17 +2212,33 @@
 <h3 id="structs">Structs<a class="headerlink" href="#structs" title="Permanent link">&para;</a></h3>
 <p><strong><code>MH_AudioData</code></strong> -- returned by <code>mh_audio_read()</code>:</p>
 <ul>
-<li><code>float* data</code> -- interleaved float32 samples</li>
-<li><code>unsigned int channels</code></li>
-<li><code>unsigned int frames</code></li>
-<li><code>unsigned int sample_rate</code></li>
+<li>
+<p><code>float* data</code> -- interleaved float32 samples</p>
+</li>
+<li>
+<p><code>unsigned int channels</code></p>
+</li>
+<li>
+<p><code>unsigned int frames</code></p>
+</li>
+<li>
+<p><code>unsigned int sample_rate</code></p>
+</li>
 </ul>
 <p><strong><code>MH_AudioFileInfo</code></strong> -- populated by <code>mh_audio_get_file_info()</code>:</p>
 <ul>
-<li><code>unsigned int channels</code></li>
-<li><code>unsigned int sample_rate</code></li>
-<li><code>unsigned long long frames</code></li>
-<li><code>double duration</code></li>
+<li>
+<p><code>unsigned int channels</code></p>
+</li>
+<li>
+<p><code>unsigned int sample_rate</code></p>
+</li>
+<li>
+<p><code>unsigned long long frames</code></p>
+</li>
+<li>
+<p><code>double duration</code></p>
+</li>
 </ul>
 <hr />
 <h2 id="plugin-chain-functions-minihost_chainh">Plugin Chain Functions (minihost_chain.h)<a class="headerlink" href="#plugin-chain-functions-minihost_chainh" title="Permanent link">&para;</a></h2>
@@ -1756,7 +2264,7 @@
 </tr>
 <tr>
 <td><code>mh_chain_process_midi_io</code></td>
-<td>Process with MIDI I/O (MIDI goes to first plugin)</td>
+<td>Process with MIDI I/O. MIDI enters the first plugin that accepts it and is carried onward by any plugin reporting <code>produces_midi</code>, so a MIDI effect can drive an instrument behind it; <code>midi_out</code> is what leaves the last plugin</td>
 </tr>
 <tr>
 <td><code>mh_chain_process_auto</code></td>
@@ -1806,9 +2314,7 @@
 </table>
 <hr />
 <h2 id="plugin-bus-functions-minihost_graphh">Plugin Bus Functions (minihost_graph.h)<a class="headerlink" href="#plugin-bus-functions-minihost_graphh" title="Permanent link">&para;</a></h2>
-<p>Parallel-branches-summed routing: fan one input to N <code>MH_PluginChain</code> branches
-and sum their outputs with per-branch gain. Python: <code>PluginBus</code>.
-(File name retained from before the 0.2.0 rename; symbols are <code>mh_bus_*</code>.)</p>
+<p>Parallel-branches-summed routing: fan one input to N <code>MH_PluginChain</code> branches and sum their outputs with per-branch gain. Python: <code>PluginBus</code>. (File name retained from before the 0.2.0 rename; symbols are <code>mh_bus_*</code>.)</p>
 <table>
 <thead>
 <tr>
@@ -1859,11 +2365,216 @@ and sum their outputs with per-branch gain. Python: <code>PluginBus</code>.
 </tr>
 </tbody>
 </table>
-<p>The general DAG executor (Python <code>PluginGraph</code>) lives in <code>minihost_graph_v2.h</code>
-as the <code>mh_graph_*</code> / <code>MH_PluginGraph</code> family, with a C++ RAII wrapper
-<code>minihost::PluginGraph</code> in <code>minihost_graph_v2.hpp</code>. Its surface is large
-(node add/connect, MIDI routing, automation, <code>mh_graph_compile</code>,
-<code>mh_graph_render_block</code>); see the header for the full API.</p>
+<p>The general DAG executor (Python <code>PluginGraph</code>) lives in <code>minihost_graph_v2.h</code> as the <code>mh_graph_*</code> / <code>MH_PluginGraph</code> family, with a C++ RAII wrapper <code>minihost::PluginGraph</code> in <code>minihost_graph_v2.hpp</code>. Its surface is large (node add/connect, MIDI routing, automation, <code>mh_graph_compile</code>, <code>mh_graph_render_block</code>); see the header for the full API.</p>
+<hr />
+<h2 id="plugin-discovery-and-the-scan-cache-minihosth">Plugin Discovery and the Scan Cache (minihost.h)<a class="headerlink" href="#plugin-discovery-and-the-scan-cache-minihosth" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mh_get_default_plugin_dir</code></td>
+<td>Canonical plugin directory for this platform, by index</td>
+</tr>
+<tr>
+<td><code>mh_plugin_cache_path</code></td>
+<td>Absolute path of the shared scan cache</td>
+</tr>
+<tr>
+<td><code>mh_plugin_cache_scan</code></td>
+<td>Scan directories (or the canonical ones) and write the cache</td>
+</tr>
+<tr>
+<td><code>mh_plugin_cache_scan_supervised</code></td>
+<td>The same, probing each plugin in a disposable child process</td>
+</tr>
+<tr>
+<td><code>mh_plugin_scan_worker_main</code></td>
+<td>Answer the worker flag; call first thing in <code>main</code></td>
+</tr>
+<tr>
+<td><code>mh_plugin_cache_lookup</code></td>
+<td>Resolve a plugin name to a path, ignoring case</td>
+</tr>
+<tr>
+<td><code>mh_plugin_cache_match</code></td>
+<td>Nth match for a name, for reporting an ambiguity</td>
+</tr>
+</tbody>
+</table>
+<p>Both take a <code>format</code> preference (<code>"vst3"</code>, <code>"au"</code>/<code>"audiounit"</code>, or <code>NULL</code>) and an
+<code>allow_substring</code> flag.</p>
+<p><code>mh_get_default_plugin_dir</code> enumerates until it returns 0, and skips
+directories that do not exist, so a caller sees what is actually installed:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kt">char</span><span class="w"> </span><span class="n">dir</span><span class="p">[</span><span class="mi">1024</span><span class="p">];</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kt">int</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span><span class="w"> </span><span class="n">mh_get_default_plugin_dir</span><span class="p">(</span><span class="n">i</span><span class="p">,</span><span class="w"> </span><span class="n">dir</span><span class="p">,</span><span class="w"> </span><span class="k">sizeof</span><span class="p">(</span><span class="n">dir</span><span class="p">));</span><span class="w"> </span><span class="n">i</span><span class="o">++</span><span class="p">)</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="n">printf</span><span class="p">(</span><span class="s">&quot;%s</span><span class="se">\n</span><span class="s">&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">dir</span><span class="p">);</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Platform</th>
+<th>Directories</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>macOS</td>
+<td><code>/Library/Audio/Plug-Ins/{VST3,Components}</code> and the same two under <code>~/Library</code></td>
+</tr>
+<tr>
+<td>Windows</td>
+<td><code>C:\Program Files\Common Files\VST3</code>, and the x86 equivalent</td>
+</tr>
+<tr>
+<td>Linux</td>
+<td><code>/usr/lib/vst3</code>, <code>/usr/local/lib/vst3</code>, <code>~/.vst3</code></td>
+</tr>
+</tbody>
+</table>
+<p>Scanning probes each plugin, which means loading it, so a first full scan of
+a large collection takes minutes. The result is cached and keyed by path with
+an mtime + size fingerprint, so a repeat scan re-probes only what changed;
+pass <code>refresh = 1</code> to force. A plugin that fails to probe is remembered as an
+error rather than retried on every scan. The cache is written as the scan
+proceeds, so a scan that is interrupted keeps what it had and a re-run resumes.</p>
+<p>Probing is dispatched to the message thread, since instantiating an AudioUnit
+is thread-affine on macOS; callers need do nothing.</p>
+<p><code>mh_plugin_cache_scan</code> probes in the calling process, so a plugin that hangs
+or crashes on load ends the scan. <code>mh_plugin_cache_scan_supervised</code> gives each
+plugin its own child process and a deadline instead:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kt">char</span><span class="w"> </span><span class="n">err</span><span class="p">[</span><span class="mi">512</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="mi">0</span><span class="p">};</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="kt">int</span><span class="w"> </span><span class="n">n</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mh_plugin_cache_scan_supervised</span><span class="p">(</span><span class="nb">NULL</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="cm">/*refresh=*/</span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">                                        </span><span class="nb">NULL</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w">      </span><span class="cm">/* worker: this binary */</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">                                        </span><span class="cm">/*timeout_ms=*/</span><span class="mi">0</span><span class="p">,</span><span class="w">   </span><span class="cm">/* 0 -&gt; 60000 */</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">                                        </span><span class="nb">NULL</span><span class="p">,</span><span class="w"> </span><span class="nb">NULL</span><span class="p">,</span><span class="w"> </span><span class="n">err</span><span class="p">,</span><span class="w"> </span><span class="k">sizeof</span><span class="p">(</span><span class="n">err</span><span class="p">));</span>
+</code></pre></div>
+<p>Passing <code>NULL</code> for the worker spawns this process's own executable, which
+works when the program answers the worker flag first thing in <code>main</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kt">int</span><span class="w"> </span><span class="nf">main</span><span class="p">(</span><span class="kt">int</span><span class="w"> </span><span class="n">argc</span><span class="p">,</span><span class="w"> </span><span class="kt">char</span><span class="o">**</span><span class="w"> </span><span class="n">argv</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">mh_plugin_scan_worker_main</span><span class="p">(</span><span class="n">argc</span><span class="p">,</span><span class="w"> </span><span class="n">argv</span><span class="p">))</span><span class="w"> </span><span class="k">return</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span><span class="w">   </span><span class="cm">/* was a worker */</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span><span class="p">...</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="p">}</span>
+</code></pre></div>
+<p>An embedder whose executable is not ours -- a DAW, or Python -- passes its own
+worker command instead (<code>{"python3", "-m", "yourpkg.worker"}</code>), implementing
+the protocol documented in the header: one JSON object on stdout between
+<code>MH_SCAN_WORKER_BEGIN</code> and <code>MH_SCAN_WORKER_END</code>. The markers exist because
+plugins print to stdout while loading, so the answer has to be findable inside
+that noise. <code>MINIHOST_SCAN_WORKER</code> overrides the command, and
+<code>MINIHOST_SCAN_TIMEOUT_MS</code> the deadline.</p>
+<p>Cache entries gain two outcomes only the supervised path can report --
+<code>timeout</code> and <code>crash</code> -- both fingerprinted like any other entry, so a re-scan
+skips those plugins rather than paying for them again.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kt">char</span><span class="w"> </span><span class="n">err</span><span class="p">[</span><span class="mi">512</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="mi">0</span><span class="p">};</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="kt">int</span><span class="w"> </span><span class="n">cached</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mh_plugin_cache_scan</span><span class="p">(</span><span class="nb">NULL</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="cm">/*refresh=*/</span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="nb">NULL</span><span class="p">,</span><span class="w"> </span><span class="nb">NULL</span><span class="p">,</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">                                  </span><span class="n">err</span><span class="p">,</span><span class="w"> </span><span class="k">sizeof</span><span class="p">(</span><span class="n">err</span><span class="p">));</span><span class="w">   </span><span class="cm">/* NULL: canonical dirs */</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">cached</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mi">0</span><span class="p">)</span><span class="w"> </span><span class="n">fprintf</span><span class="p">(</span><span class="n">stderr</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;%s</span><span class="se">\n</span><span class="s">&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">err</span><span class="p">);</span>
+</code></pre></div>
+<p>Name lookup ignores case and matches the whole name; pass <code>allow_substring = 1</code>
+to match part of one, which on a real collection is usually ambiguous. Entries
+that failed to probe are never offered. When every match is the same name in
+more than one format -- a common way to install a plugin -- one is chosen
+instead of reporting an ambiguity: the requested <code>format</code> if given, else VST3.
+The return value distinguishes the three outcomes:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="kt">char</span><span class="w"> </span><span class="n">path</span><span class="p">[</span><span class="mi">1024</span><span class="p">];</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="kt">int</span><span class="w"> </span><span class="n">n</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mh_plugin_cache_lookup</span><span class="p">(</span><span class="s">&quot;dexed&quot;</span><span class="p">,</span><span class="w"> </span><span class="nb">NULL</span><span class="p">,</span><span class="w"> </span><span class="cm">/*allow_substring=*/</span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">                               </span><span class="n">path</span><span class="p">,</span><span class="w"> </span><span class="k">sizeof</span><span class="p">(</span><span class="n">path</span><span class="p">));</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">n</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="mi">1</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">    </span><span class="cm">/* unique match: path is filled in */</span>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">n</span><span class="w"> </span><span class="o">==</span><span class="w"> </span><span class="mi">0</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">    </span><span class="cm">/* nothing matched -- scan first, or use a path */</span>
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="w">    </span><span class="cm">/* ambiguous: n candidates, path holds the first */</span>
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="w">    </span><span class="kt">char</span><span class="w"> </span><span class="n">one</span><span class="p">[</span><span class="mi">1024</span><span class="p">];</span>
+<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kt">int</span><span class="w"> </span><span class="n">i</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span><span class="w"> </span><span class="n">mh_plugin_cache_match</span><span class="p">(</span><span class="s">&quot;dexed&quot;</span><span class="p">,</span><span class="w"> </span><span class="nb">NULL</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="n">i</span><span class="p">,</span>
+<a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="w">                                          </span><span class="n">one</span><span class="p">,</span><span class="w"> </span><span class="k">sizeof</span><span class="p">(</span><span class="n">one</span><span class="p">));</span><span class="w"> </span><span class="n">i</span><span class="o">++</span><span class="p">)</span>
+<a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="w">        </span><span class="n">fprintf</span><span class="p">(</span><span class="n">stderr</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;  %s</span><span class="se">\n</span><span class="s">&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">one</span><span class="p">);</span>
+<a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a><span class="p">}</span>
+</code></pre></div>
+<p>The cache file and its JSON schema are shared with the Python CLI
+(<code>minihost.plugincache</code>), so a scan from either front-end serves the other.
+Location, honouring <code>MINIHOST_CACHE_DIR</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Platform</th>
+<th>Cache file</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>macOS</td>
+<td><code>~/Library/Caches/minihost/plugins.json</code></td>
+</tr>
+<tr>
+<td>Windows</td>
+<td><code>%LOCALAPPDATA%/minihost/Cache/plugins.json</code></td>
+</tr>
+<tr>
+<td>other</td>
+<td><code>$XDG_CACHE_HOME/minihost/plugins.json</code> (or <code>~/.cache/...</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>Added in C ABI 2.7.0.</p>
+<hr />
+<h2 id="midi-file-reading-minihosth">MIDI File Reading (minihost.h)<a class="headerlink" href="#midi-file-reading-minihosth" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mh_midi_file_load</code></td>
+<td>Read a standard MIDI file into one time-ordered <code>MH_MidiEvent</code> array</td>
+</tr>
+<tr>
+<td><code>mh_midi_file_free</code></td>
+<td>Release an array returned by <code>mh_midi_file_load</code></td>
+</tr>
+</tbody>
+</table>
+<p>Tracks are merged, the file's tempo map is applied, and meta events are
+dropped (they have no <code>MH_MidiEvent</code> form). <code>sample_offset</code> is absolute --
+measured in samples from the start of the file at the rate you pass in --
+so rebase it per block before handing events to a plugin:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="n">MH_MidiEvent</span><span class="o">*</span><span class="w"> </span><span class="n">events</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">NULL</span><span class="p">;</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="kt">int</span><span class="w"> </span><span class="n">count</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="kt">double</span><span class="w"> </span><span class="n">duration</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.0</span><span class="p">;</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="kt">char</span><span class="w"> </span><span class="n">err</span><span class="p">[</span><span class="mi">512</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="mi">0</span><span class="p">};</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="n">mh_midi_file_load</span><span class="p">(</span><span class="s">&quot;song.mid&quot;</span><span class="p">,</span><span class="w"> </span><span class="mf">48000.0</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">events</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">count</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">duration</span><span class="p">,</span>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="w">                       </span><span class="n">err</span><span class="p">,</span><span class="w"> </span><span class="k">sizeof</span><span class="p">(</span><span class="n">err</span><span class="p">)))</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="w">    </span><span class="n">fprintf</span><span class="p">(</span><span class="n">stderr</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;%s</span><span class="se">\n</span><span class="s">&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">err</span><span class="p">);</span>
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span>
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a><span class="p">}</span>
+<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>
+<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="kt">int</span><span class="w"> </span><span class="n">cursor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+<a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kt">int</span><span class="w"> </span><span class="n">start</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span><span class="w"> </span><span class="n">start</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">total_frames</span><span class="p">;</span><span class="w"> </span><span class="n">start</span><span class="w"> </span><span class="o">+=</span><span class="w"> </span><span class="n">block</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a><span class="w">    </span><span class="kt">int</span><span class="w"> </span><span class="n">end</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">start</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">block</span><span class="p">;</span>
+<a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a><span class="w">    </span><span class="n">MH_MidiEvent</span><span class="w"> </span><span class="n">block_midi</span><span class="p">[</span><span class="mi">256</span><span class="p">];</span>
+<a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a><span class="w">    </span><span class="kt">int</span><span class="w"> </span><span class="n">n</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span><span class="p">;</span>
+<a id="__codelineno-8-17" name="__codelineno-8-17" href="#__codelineno-8-17"></a><span class="w">    </span><span class="k">while</span><span class="w"> </span><span class="p">(</span><span class="n">cursor</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">count</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="n">events</span><span class="p">[</span><span class="n">cursor</span><span class="p">].</span><span class="n">sample_offset</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="n">end</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="n">n</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mi">256</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-8-18" name="__codelineno-8-18" href="#__codelineno-8-18"></a><span class="w">        </span><span class="n">block_midi</span><span class="p">[</span><span class="n">n</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">events</span><span class="p">[</span><span class="n">cursor</span><span class="p">];</span>
+<a id="__codelineno-8-19" name="__codelineno-8-19" href="#__codelineno-8-19"></a><span class="w">        </span><span class="n">block_midi</span><span class="p">[</span><span class="n">n</span><span class="p">].</span><span class="n">sample_offset</span><span class="w"> </span><span class="o">-=</span><span class="w"> </span><span class="n">start</span><span class="p">;</span><span class="w">   </span><span class="cm">/* rebase to this block */</span>
+<a id="__codelineno-8-20" name="__codelineno-8-20" href="#__codelineno-8-20"></a><span class="w">        </span><span class="n">n</span><span class="o">++</span><span class="p">;</span>
+<a id="__codelineno-8-21" name="__codelineno-8-21" href="#__codelineno-8-21"></a><span class="w">        </span><span class="n">cursor</span><span class="o">++</span><span class="p">;</span>
+<a id="__codelineno-8-22" name="__codelineno-8-22" href="#__codelineno-8-22"></a><span class="w">    </span><span class="p">}</span>
+<a id="__codelineno-8-23" name="__codelineno-8-23" href="#__codelineno-8-23"></a><span class="w">    </span><span class="n">mh_process_midi</span><span class="p">(</span><span class="n">p</span><span class="p">,</span><span class="w"> </span><span class="n">inputs</span><span class="p">,</span><span class="w"> </span><span class="n">outputs</span><span class="p">,</span><span class="w"> </span><span class="n">block</span><span class="p">,</span><span class="w"> </span><span class="n">block_midi</span><span class="p">,</span><span class="w"> </span><span class="n">n</span><span class="p">);</span>
+<a id="__codelineno-8-24" name="__codelineno-8-24" href="#__codelineno-8-24"></a><span class="p">}</span>
+<a id="__codelineno-8-25" name="__codelineno-8-25" href="#__codelineno-8-25"></a>
+<a id="__codelineno-8-26" name="__codelineno-8-26" href="#__codelineno-8-26"></a><span class="n">mh_midi_file_free</span><span class="p">(</span><span class="n">events</span><span class="p">);</span>
+</code></pre></div>
+<p>An empty file succeeds with <code>count == 0</code> and a NULL array. Added in C ABI
+2.6.0; before that, reading a MIDI file was possible only from Python.</p>
 <hr />
 <h2 id="midi-functions-minihost_midih">MIDI Functions (minihost_midi.h)<a class="headerlink" href="#midi-functions-minihost_midih" title="Permanent link">&para;</a></h2>
 <h3 id="port-enumeration">Port Enumeration<a class="headerlink" href="#port-enumeration" title="Permanent link">&para;</a></h3>
@@ -1972,52 +2683,72 @@ as the <code>mh_graph_*</code> / <code>MH_PluginGraph</code> family, with a C++ 
 <h3 id="structs_1">Structs<a class="headerlink" href="#structs_1" title="Permanent link">&para;</a></h3>
 <p><strong><code>MH_VstPreset</code></strong> -- populated by <code>mh_vstpreset_read()</code>:</p>
 <ul>
-<li><code>char class_id[33]</code> -- 32-char FUID plus null terminator (<code>MH_VSTPRESET_CLASS_ID_LEN</code> = 32)</li>
-<li><code>void* component_state</code> -- processor (<code>Comp</code>) chunk, heap-allocated</li>
-<li><code>int component_size</code></li>
-<li><code>void* controller_state</code> -- controller (<code>Cont</code>) chunk, heap-allocated (may be <code>NULL</code>)</li>
-<li><code>int controller_size</code></li>
+<li>
+<p><code>char class_id[33]</code> -- 32-char FUID plus null terminator (<code>MH_VSTPRESET_CLASS_ID_LEN</code> = 32)</p>
+</li>
+<li>
+<p><code>void* component_state</code> -- processor (<code>Comp</code>) chunk, heap-allocated</p>
+</li>
+<li>
+<p><code>int component_size</code></p>
+</li>
+<li>
+<p><code>void* controller_state</code> -- controller (<code>Cont</code>) chunk, heap-allocated (may be <code>NULL</code>)</p>
+</li>
+<li>
+<p><code>int controller_size</code></p>
+</li>
 </ul>
 <p>Typical usage:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="cp">#include</span><span class="w"> </span><span class="cpf">&quot;minihost_vstpreset.h&quot;</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="c1">// Read</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="n">MH_VstPreset</span><span class="w"> </span><span class="n">preset</span><span class="p">;</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="kt">char</span><span class="w"> </span><span class="n">err</span><span class="p">[</span><span class="mi">256</span><span class="p">];</span>
-<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">mh_vstpreset_read</span><span class="p">(</span><span class="s">&quot;in.vstpreset&quot;</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">preset</span><span class="p">,</span><span class="w"> </span><span class="n">err</span><span class="p">,</span><span class="w"> </span><span class="k">sizeof</span><span class="p">(</span><span class="n">err</span><span class="p">)))</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="c1">// apply preset.component_state to plugin via mh_set_state(), etc.</span>
-<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="n">mh_vstpreset_free</span><span class="p">(</span><span class="o">&amp;</span><span class="n">preset</span><span class="p">);</span>
-<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="p">}</span>
-<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>
-<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="c1">// Auto-detect the processor FUID from the plugin bundle (no plugin</span>
-<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="c1">// instantiation required). Works for any VST3 plugin built against</span>
-<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="c1">// SDK 3.7.5 or newer (which ships moduleinfo.json in the bundle).</span>
-<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="kt">char</span><span class="w"> </span><span class="n">class_id</span><span class="p">[</span><span class="n">MH_VSTPRESET_CLASS_ID_LEN</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mi">1</span><span class="p">];</span>
-<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="n">mh_vstpreset_read_class_id_from_bundle</span><span class="p">(</span>
-<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">        </span><span class="s">&quot;/path/to/synth.vst3&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">class_id</span><span class="p">,</span><span class="w"> </span><span class="n">err</span><span class="p">,</span><span class="w"> </span><span class="k">sizeof</span><span class="p">(</span><span class="n">err</span><span class="p">)))</span><span class="w"> </span><span class="p">{</span>
-<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">    </span><span class="n">fprintf</span><span class="p">(</span><span class="n">stderr</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;%s</span><span class="se">\n</span><span class="s">&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">err</span><span class="p">);</span>
-<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">    </span><span class="c1">// Legacy plugin: caller must supply class_id another way</span>
-<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">    </span><span class="c1">// (e.g., copy from an existing .vstpreset).</span>
-<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="p">}</span>
-<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a>
-<a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a><span class="c1">// Write</span>
-<a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a><span class="kt">int</span><span class="w"> </span><span class="n">state_size</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mh_get_state_size</span><span class="p">(</span><span class="n">plugin</span><span class="p">);</span>
-<a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a><span class="kt">void</span><span class="o">*</span><span class="w"> </span><span class="n">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">malloc</span><span class="p">(</span><span class="n">state_size</span><span class="p">);</span>
-<a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a><span class="n">mh_get_state</span><span class="p">(</span><span class="n">plugin</span><span class="p">,</span><span class="w"> </span><span class="n">state</span><span class="p">,</span><span class="w"> </span><span class="n">state_size</span><span class="p">);</span>
-<a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a><span class="n">mh_vstpreset_write</span><span class="p">(</span><span class="s">&quot;out.vstpreset&quot;</span><span class="p">,</span>
-<a id="__codelineno-1-27" name="__codelineno-1-27" href="#__codelineno-1-27"></a><span class="w">                   </span><span class="n">class_id</span><span class="p">,</span>
-<a id="__codelineno-1-28" name="__codelineno-1-28" href="#__codelineno-1-28"></a><span class="w">                   </span><span class="n">state</span><span class="p">,</span><span class="w"> </span><span class="n">state_size</span><span class="p">,</span>
-<a id="__codelineno-1-29" name="__codelineno-1-29" href="#__codelineno-1-29"></a><span class="w">                   </span><span class="nb">NULL</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w">  </span><span class="c1">// no separate controller state</span>
-<a id="__codelineno-1-30" name="__codelineno-1-30" href="#__codelineno-1-30"></a><span class="w">                   </span><span class="n">err</span><span class="p">,</span><span class="w"> </span><span class="k">sizeof</span><span class="p">(</span><span class="n">err</span><span class="p">));</span>
-<a id="__codelineno-1-31" name="__codelineno-1-31" href="#__codelineno-1-31"></a><span class="n">free</span><span class="p">(</span><span class="n">state</span><span class="p">);</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="cp">#include</span><span class="w"> </span><span class="cpf">&quot;minihost_vstpreset.h&quot;</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="c1">// Read</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="n">MH_VstPreset</span><span class="w"> </span><span class="n">preset</span><span class="p">;</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="kt">char</span><span class="w"> </span><span class="n">err</span><span class="p">[</span><span class="mi">256</span><span class="p">];</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">mh_vstpreset_read</span><span class="p">(</span><span class="s">&quot;in.vstpreset&quot;</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">preset</span><span class="p">,</span><span class="w"> </span><span class="n">err</span><span class="p">,</span><span class="w"> </span><span class="k">sizeof</span><span class="p">(</span><span class="n">err</span><span class="p">)))</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">    </span><span class="c1">// apply preset.component_state to plugin via mh_set_state(), etc.</span>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="w">    </span><span class="n">mh_vstpreset_free</span><span class="p">(</span><span class="o">&amp;</span><span class="n">preset</span><span class="p">);</span>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="p">}</span>
+<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a>
+<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a><span class="c1">// Auto-detect the processor FUID from the plugin bundle (no plugin</span>
+<a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a><span class="c1">// instantiation required). Works for any VST3 plugin built against</span>
+<a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a><span class="c1">// SDK 3.7.5 or newer (which ships moduleinfo.json in the bundle).</span>
+<a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a><span class="kt">char</span><span class="w"> </span><span class="n">class_id</span><span class="p">[</span><span class="n">MH_VSTPRESET_CLASS_ID_LEN</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mi">1</span><span class="p">];</span>
+<a id="__codelineno-9-15" name="__codelineno-9-15" href="#__codelineno-9-15"></a><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="n">mh_vstpreset_read_class_id_from_bundle</span><span class="p">(</span>
+<a id="__codelineno-9-16" name="__codelineno-9-16" href="#__codelineno-9-16"></a><span class="w">        </span><span class="s">&quot;/path/to/synth.vst3&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">class_id</span><span class="p">,</span><span class="w"> </span><span class="n">err</span><span class="p">,</span><span class="w"> </span><span class="k">sizeof</span><span class="p">(</span><span class="n">err</span><span class="p">)))</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-9-17" name="__codelineno-9-17" href="#__codelineno-9-17"></a><span class="w">    </span><span class="n">fprintf</span><span class="p">(</span><span class="n">stderr</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;%s</span><span class="se">\n</span><span class="s">&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">err</span><span class="p">);</span>
+<a id="__codelineno-9-18" name="__codelineno-9-18" href="#__codelineno-9-18"></a><span class="w">    </span><span class="c1">// Legacy plugin: caller must supply class_id another way</span>
+<a id="__codelineno-9-19" name="__codelineno-9-19" href="#__codelineno-9-19"></a><span class="w">    </span><span class="c1">// (e.g., copy from an existing .vstpreset).</span>
+<a id="__codelineno-9-20" name="__codelineno-9-20" href="#__codelineno-9-20"></a><span class="p">}</span>
+<a id="__codelineno-9-21" name="__codelineno-9-21" href="#__codelineno-9-21"></a>
+<a id="__codelineno-9-22" name="__codelineno-9-22" href="#__codelineno-9-22"></a><span class="c1">// Write</span>
+<a id="__codelineno-9-23" name="__codelineno-9-23" href="#__codelineno-9-23"></a><span class="kt">int</span><span class="w"> </span><span class="n">state_size</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">mh_get_state_size</span><span class="p">(</span><span class="n">plugin</span><span class="p">);</span>
+<a id="__codelineno-9-24" name="__codelineno-9-24" href="#__codelineno-9-24"></a><span class="kt">void</span><span class="o">*</span><span class="w"> </span><span class="n">state</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">malloc</span><span class="p">(</span><span class="n">state_size</span><span class="p">);</span>
+<a id="__codelineno-9-25" name="__codelineno-9-25" href="#__codelineno-9-25"></a><span class="n">mh_get_state</span><span class="p">(</span><span class="n">plugin</span><span class="p">,</span><span class="w"> </span><span class="n">state</span><span class="p">,</span><span class="w"> </span><span class="n">state_size</span><span class="p">);</span>
+<a id="__codelineno-9-26" name="__codelineno-9-26" href="#__codelineno-9-26"></a><span class="n">mh_vstpreset_write</span><span class="p">(</span><span class="s">&quot;out.vstpreset&quot;</span><span class="p">,</span>
+<a id="__codelineno-9-27" name="__codelineno-9-27" href="#__codelineno-9-27"></a><span class="w">                   </span><span class="n">class_id</span><span class="p">,</span>
+<a id="__codelineno-9-28" name="__codelineno-9-28" href="#__codelineno-9-28"></a><span class="w">                   </span><span class="n">state</span><span class="p">,</span><span class="w"> </span><span class="n">state_size</span><span class="p">,</span>
+<a id="__codelineno-9-29" name="__codelineno-9-29" href="#__codelineno-9-29"></a><span class="w">                   </span><span class="nb">NULL</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w">  </span><span class="c1">// no separate controller state</span>
+<a id="__codelineno-9-30" name="__codelineno-9-30" href="#__codelineno-9-30"></a><span class="w">                   </span><span class="n">err</span><span class="p">,</span><span class="w"> </span><span class="k">sizeof</span><span class="p">(</span><span class="n">err</span><span class="p">));</span>
+<a id="__codelineno-9-31" name="__codelineno-9-31" href="#__codelineno-9-31"></a><span class="n">free</span><span class="p">(</span><span class="n">state</span><span class="p">);</span>
 </code></pre></div>
 <h3 id="notes-on-mh_vstpreset_read_class_id_from_bundle">Notes on <code>mh_vstpreset_read_class_id_from_bundle</code><a class="headerlink" href="#notes-on-mh_vstpreset_read_class_id_from_bundle" title="Permanent link">&para;</a></h3>
 <ul>
-<li>Returns 1 on success and writes a 32-character uppercase hex FUID into <code>out_class_id</code> (which must be at least <code>MH_VSTPRESET_CLASS_ID_LEN + 1</code> bytes).</li>
-<li>Selects the first entry in the bundle's <code>Classes</code> array whose <code>Category</code> is <code>"Audio Module Class"</code> (the processor component, not the controller).</li>
-<li>Tolerates JSON5-style trailing commas, which appear in real-world bundles (e.g., Dexed, Strokes).</li>
-<li>Returns 0 with a descriptive error in <code>err_buf</code> for: missing <code>moduleinfo.json</code> (plugin predates VST3 SDK 3.7.5), file unreadable, file &gt; 1 MB, JSON malformed, no Audio Module Class entry, or CID not exactly 32 hex characters.</li>
-<li>VST3 only -- AudioUnit and LV2 plugins do not have <code>.vstpreset</code> files or moduleinfo.json.</li>
+<li>
+<p>Returns 1 on success and writes a 32-character uppercase hex FUID into <code>out_class_id</code> (which must be at least <code>MH_VSTPRESET_CLASS_ID_LEN + 1</code> bytes).</p>
+</li>
+<li>
+<p>Selects the first entry in the bundle's <code>Classes</code> array whose <code>Category</code> is <code>"Audio Module Class"</code> (the processor component, not the controller).</p>
+</li>
+<li>
+<p>Tolerates JSON5-style trailing commas, which appear in real-world bundles (e.g., Dexed, Strokes).</p>
+</li>
+<li>
+<p>Returns 0 with a descriptive error in <code>err_buf</code> for: missing <code>moduleinfo.json</code> (plugin predates VST3 SDK 3.7.5), file unreadable, file &gt; 1 MB, JSON malformed, no Audio Module Class entry, or CID not exactly 32 hex characters.</p>
+</li>
+<li>
+<p>VST3 only -- AudioUnit and LV2 plugins do not have <code>.vstpreset</code> files or moduleinfo.json.</p>
+</li>
 </ul>
 
 

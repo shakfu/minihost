@@ -364,6 +364,87 @@
   
   
     <li class="md-nav__item">
+      <a href="../../composition/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Composition Pipelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../midi_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MIDI Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../control_surfaces/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Control Surfaces
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../api_c/" class="md-nav__link">
         
   
@@ -635,6 +716,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#crash-resilience" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Crash resilience
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#phase-25-deferred" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -677,356 +769,271 @@
 
 
 <h1 id="desktop-app-todo">Desktop App TODO<a class="headerlink" href="#desktop-app-todo" title="Permanent link">&para;</a></h1>
-<p>Tracks work for the <code>minihost-desktop</code> binary described in
-<a href="../desktop_app/">desktop_app.md</a>. Library-level work (CLI, Python
-bindings, C ABI improvements not specifically driven by the desktop
-app) lives in the root <a href="../../TODO.md">TODO.md</a>.</p>
-<p>Ordered roughly by dependency: items lower in a tier generally depend
-on items above them.</p>
+<p>Tracks work for the <code>minihost-desktop</code> binary described in <a href="../desktop_app/">desktop_app.md</a>. Library-level work (CLI, Python bindings, C ABI improvements not specifically driven by the desktop app) lives in the root <a href="../../TODO.md">TODO.md</a>.</p>
+<p>Ordered roughly by dependency: items lower in a tier generally depend on items above them.</p>
 <h2 id="phase-0-prove-the-stack">Phase 0 - Prove the stack<a class="headerlink" href="#phase-0-prove-the-stack" title="Permanent link">&para;</a></h2>
-<p>Throwaway prototype work. If any item here can't be done in ~a day,
-the stack choice or the scope is wrong and the design doc needs
-revisiting before further investment.</p>
+<p>Throwaway prototype work. If any item here can't be done in ~a day, the stack choice or the scope is wrong and the design doc needs revisiting before further investment.</p>
 <ul>
-<li>[x] <strong>Build a GUI-mode <code>libminihost</code>.</strong> Sibling <code>minihost_gui</code>
-  static library defined in <code>projects/libminihost/CMakeLists.txt</code>
-  alongside the headless <code>minihost</code>. Built when
-  <code>MINIHOST_BUILD_DESKTOP=ON</code> or <code>MINIHOST_BUILD_GUI_LIB=ON</code>. Both
-  archives coexist in a single build tree.</li>
-<li>[x] <strong><code>mh_get_juce_processor</code> C ABI shim.</strong> <code>void*</code> accessor in
-  <code>minihost.{h,cpp}</code> returning the underlying <code>juce::AudioProcessor*</code>.
-  Header stays valid C; only consumers that link JUCE cast.</li>
-<li>[x] <strong>Editor-window smoke prototype.</strong> <code>projects/minihost_desktop/
-  src/main.cpp</code>: loads a plugin via <code>mh_open</code>, opens its editor in a
-  <code>DocumentWindow</code>, renders 5 s to a WAV via <code>mh_process_midi</code>.
-  <code>--auto-render</code> flag runs the render-and-quit path non-interactively.
-  Validated with Dexed (5.0 s of 48 kHz / 2 ch / 24-bit PCM, clean
-  exit, editor visible throughout the render).</li>
-<li>[x] <strong>Editor lifetime / locking probe.</strong> <code>--probe [--iterations=N]</code>
-  mode in <code>main.cpp</code>. Opens the editor, runs N consecutive 5 s renders
-  on a worker, simultaneously drives parameter writes from (a) the
-  message thread via a <code>juce::Timer</code> and (b) a dedicated worker
-  thread at high rate. Watchdog-bounded. Validated:</li>
-<li>Dexed (VST3, synth, 2238 params): 10 iters / 50 s of render,
-    1715 worker-thread param writes, exit 0.</li>
-<li>gigaverb (VST3, effect, 8 params): 5 iters, 701 worker writes,
-    exit 0.</li>
+<li>
+<p>[x] <strong>Build a GUI-mode <code>libminihost</code>.</strong> Sibling <code>minihost_gui</code> static library defined in <code>projects/libminihost/CMakeLists.txt</code> alongside the headless <code>minihost</code>. Built when <code>MINIHOST_BUILD_DESKTOP=ON</code> or <code>MINIHOST_BUILD_GUI_LIB=ON</code>. Both archives coexist in a single build tree.</p>
+</li>
+<li>
+<p>[x] <strong><code>mh_get_juce_processor</code> C ABI shim.</strong> <code>void*</code> accessor in <code>minihost.{h,cpp}</code> returning the underlying <code>juce::AudioProcessor*</code>. Header stays valid C; only consumers that link JUCE cast.</p>
+</li>
+<li>
+<p>[x] <strong>Editor-window smoke prototype.</strong> <code>projects/minihost_desktop/ src/main.cpp</code>: loads a plugin via <code>mh_open</code>, opens its editor in a <code>DocumentWindow</code>, renders 5 s to a WAV via <code>mh_process_midi</code>. <code>--auto-render</code> flag runs the render-and-quit path non-interactively. Validated with Dexed (5.0 s of 48 kHz / 2 ch / 24-bit PCM, clean exit, editor visible throughout the render).</p>
+</li>
+<li>
+<p>[x] <strong>Editor lifetime / locking probe.</strong> <code>--probe [--iterations=N]</code> mode in <code>main.cpp</code>. Opens the editor, runs N consecutive 5 s renders on a worker, simultaneously drives parameter writes from (a) the message thread via a <code>juce::Timer</code> and (b) a dedicated worker thread at high rate. Watchdog-bounded. Validated:</p>
+</li>
+<li>
+<p>Dexed (VST3, synth, 2238 params): 10 iters / 50 s of render, 1715 worker-thread param writes, exit 0.</p>
+</li>
+<li>
+<p>gigaverb (VST3, effect, 8 params): 5 iters, 701 worker writes, exit 0.</p>
+</li>
 </ul>
-<p>No deadlock, no crash, clean <code>mh_close</code> on shutdown with both
-  writers active until just before the close. Editor-thread Timer
-  writes are starved (~0.5 Hz effective) under render load -- not
-  a correctness problem but documents that high-rate UI feedback
-  during heavy DSP may lag.</p>
+<p>No deadlock, no crash, clean <code>mh_close</code> on shutdown with both writers active until just before the close. Editor-thread Timer writes are starved (~0.5 Hz effective) under render load -- not a correctness problem but documents that high-rate UI feedback during heavy DSP may lag.</p>
 <p>Follow-ups (not blocking v1, captured for honesty):
-  - [ ] Re-run the probe under ThreadSanitizer. <strong>Explicitly
-    deferred:</strong> needs a TSan build configuration + CI plumbing
-    that's out of scope for in-session work. Schedule when CI
-    machinery exists.
-  - [x] <strong>Editor open/close mid-render stress.</strong> <code>--probe</code> now
-    toggles the <code>AudioProcessorEditor</code> (full ctor/dtor cycle)
-    every 250 ms across the render iterations. Validated on Dexed:
-    3 iters x ~5 s + ~60 editor cycles, 338 worker-thread param
-    writes, exit 0. No crash, no deadlock against the render
-    thread.
-  - [ ] Broaden plugin coverage (AU, LV2; commercial plugins).
-    <strong>Deferred:</strong> test-fixture procurement; the v1 probe runs cleanly
-    on every VST3 we've tried (Dexed, gigaverb).</p>
+  - [ ] Re-run the probe under ThreadSanitizer. <strong>Explicitly deferred:</strong> needs a TSan build configuration + CI plumbing that's out of scope for in-session work. Schedule when CI machinery exists.</p>
+<ul>
+<li>
+<p>[x] <strong>Editor open/close mid-render stress.</strong> <code>--probe</code> now toggles the <code>AudioProcessorEditor</code> (full ctor/dtor cycle) every 250 ms across the render iterations. Validated on Dexed: 3 iters x ~5 s + ~60 editor cycles, 338 worker-thread param writes, exit 0. No crash, no deadlock against the render thread.</p>
+</li>
+<li>
+<p>[ ] Broaden plugin coverage (AU, LV2; commercial plugins). <strong>Deferred:</strong> test-fixture procurement; the v1 probe runs cleanly on every VST3 we've tried (Dexed, gigaverb).</p>
+</li>
+</ul>
 <h2 id="phase-1-offline-graph-renderer-with-editor-windows">Phase 1 - Offline graph renderer with editor windows<a class="headerlink" href="#phase-1-offline-graph-renderer-with-editor-windows" title="Permanent link">&para;</a></h2>
 <h3 id="graph-executor-in-c">Graph executor in C<a class="headerlink" href="#graph-executor-in-c" title="Permanent link">&para;</a></h3>
 <ul>
-<li>[x] <strong><code>mh_graph_v2_*</code> C API</strong> in <code>projects/libminihost/</code>
-  (<code>minihost_graph_v2.{h,cpp}</code>). Kahn topological sort, channel-count
-  validation, per-node output buffer pool. Built-in node kinds:
-  <code>input</code>, <code>output</code>, <code>mix</code> (gain skipped -- redundant with mix
-  weights). C++ wrapper <code>minihost::GraphV2</code> in
-  <code>minihost_graph_v2.hpp</code> (header-only, RAII).</li>
-<li>[x] <strong>Render-block entry point</strong> <code>mh_graph_v2_render_block</code> driving
-  <code>mh_process</code> per plugin node. v1 uses block-level scheduling
-  (sample-accurate automation handled inside each node by
-  <code>mh_process_auto</code> if/when the graph plumbs automation through;
-  topology and buffer pool prove out without it).</li>
-<li>[x] <strong>Python binding <code>minihost.GraphV2</code></strong> in <code>src/minihost/_core.cpp</code>.
-  Existing <code>PluginGraph</code> unchanged. Plugin refs kept alive via
-  <code>nb::keep_alive</code> on <code>add_plugin</code>.</li>
-<li>[x] <strong>Parity tests</strong> in <code>tests/test_graph_v2.py</code> (15 tests):
-  topology / validation (9), non-plugin numerical parity (4),
-  plugin parity against <code>Plugin.process_audio</code> (2). Full suite
-  576 -&gt; 591 passed, 71 skipped, no regressions.</li>
-<li>[x] <strong>Automation passthrough.</strong> New C ABI
-  <code>mh_graph_v2_set_node_automation</code> stages <code>MH_ParamChange</code> lists
-  for a plugin node on the next render_block. Plugin nodes with
-  automation set dispatch via <code>mh_process_auto</code> (combined with MIDI
-  if both are set; cleared after each render_block). Python binding
-  <code>GraphV2.set_node_automation(node_id, [(sample_offset, param_index,
-  value), ...])</code> with per-node scratch storage that outlives Python
-  call boundaries. Parity test
-  <code>test_graph_automation_matches_plugin_process_auto</code> asserts the
-  graph path matches <code>Plugin.process_auto</code> to within 1e-5.</li>
-<li>[ ] <strong>MIDI routing</strong> -- second scheduling lane for MIDI events
-  between nodes. Defer until a concrete use case appears.</li>
+<li>
+<p>[x] <strong><code>mh_graph_v2_*</code> C API</strong> in <code>projects/libminihost/</code> (<code>minihost_graph_v2.{h,cpp}</code>). Kahn topological sort, channel-count validation, per-node output buffer pool. Built-in node kinds: <code>input</code>, <code>output</code>, <code>mix</code> (gain skipped -- redundant with mix weights). C++ wrapper <code>minihost::GraphV2</code> in <code>minihost_graph_v2.hpp</code> (header-only, RAII).</p>
+</li>
+<li>
+<p>[x] <strong>Render-block entry point</strong> <code>mh_graph_v2_render_block</code> driving <code>mh_process</code> per plugin node. v1 uses block-level scheduling (sample-accurate automation handled inside each node by <code>mh_process_auto</code> if/when the graph plumbs automation through; topology and buffer pool prove out without it).</p>
+</li>
+<li>
+<p>[x] <strong>Python binding <code>minihost.GraphV2</code></strong> in <code>src/minihost/_core.cpp</code>. Existing <code>PluginGraph</code> unchanged. Plugin refs kept alive via <code>nb::keep_alive</code> on <code>add_plugin</code>.</p>
+</li>
+<li>
+<p>[x] <strong>Parity tests</strong> in <code>tests/test_graph_v2.py</code> (15 tests): topology / validation (9), non-plugin numerical parity (4), plugin parity against <code>Plugin.process_audio</code> (2). Full suite 576 -&gt; 591 passed, 71 skipped, no regressions.</p>
+</li>
+<li>
+<p>[x] <strong>Automation passthrough.</strong> New C ABI <code>mh_graph_v2_set_node_automation</code> stages <code>MH_ParamChange</code> lists for a plugin node on the next render_block. Plugin nodes with automation set dispatch via <code>mh_process_auto</code> (combined with MIDI if both are set; cleared after each render_block). Python binding <code>GraphV2.set_node_automation(node_id, [(sample_offset, param_index, value), ...])</code> with per-node scratch storage that outlives Python call boundaries. Parity test <code>test_graph_automation_matches_plugin_process_auto</code> asserts the graph path matches <code>Plugin.process_auto</code> to within 1e-5.</p>
+</li>
+<li>
+<p>[ ] <strong>MIDI routing</strong> -- second scheduling lane for MIDI events between nodes. Defer until a concrete use case appears.</p>
+</li>
 </ul>
 <h3 id="application-shell">Application shell<a class="headerlink" href="#application-shell" title="Permanent link">&para;</a></h3>
 <ul>
-<li>[x] <strong><code>projects/minihost_desktop/</code> sub-project.</strong> Scaffolded with
-  stub <code>main.cpp</code> (exits immediately) and CMakeLists linking
-  <code>minihost_gui</code>. Top-level <code>CMakeLists.txt</code> adds it via
-  <code>add_subdirectory</code> guarded by <code>MINIHOST_BUILD_DESKTOP</code> (default OFF).</li>
-<li>[x] <strong>Split <code>libminihost_audio</code></strong> into sibling <code>minihost_audio</code>
-  (PUBLIC-links headless <code>minihost</code>) and <code>minihost_audio_gui</code> (PUBLIC-
-  links <code>minihost_gui</code>). Desktop links <code>minihost_audio_gui</code>. Python
-  wheel and CLI tools continue to link <code>minihost_audio</code> unchanged
-  (576 tests pass).</li>
-<li>[x] <strong>MainWindow + menu bar.</strong> <code>MainWindow</code> is a JUCE
-  <code>DocumentWindow</code> + <code>MenuBarModel</code> with a system menu bar
-  (macOS main menu on Mac, native menu bar elsewhere). File menu:
-  Open Plugin... (async <code>juce::FileChooser</code> -&gt; loads the plugin and
-  opens an <code>EditorWindow</code>), Quit. Help menu: About. The shell
-  launches with no command-line args and waits for the user.
-  Edit / View / Render menus deferred until ProjectModel /
-  GraphCanvas / RenderDialog exist (no useful commands without them).</li>
-<li>[x] <strong>Multi-window plugin lifetime.</strong> <code>DesktopApplication</code> owns an
-  <code>OwnedArray&lt;EditorWindow&gt;</code>; each <code>EditorWindow</code> owns its
-  <code>MH_Plugin*</code> and <code>mh_close</code>s in its destructor.
-  <code>closeButtonPressed</code> invokes a callback that removes the window
-  from the array. Single-plugin shortcut mode (positional plugin
-  arg, no MainWindow) quits when the last EditorWindow closes.
-  Phase 0 validation modes (<code>--auto-render</code>, <code>--probe</code>) still
-  reachable behind explicit flags.</li>
-<li>[ ] <strong><code>ProjectModel</code> observable refactor.</strong> <strong>Explicitly deferred:</strong>
-  the current <code>ProjectDocument</code> + canvas direct-mutation pattern
-  works. An observable refactor only buys value once undo/redo is
-  on the roadmap; revisit then.</li>
-<li>[ ] <strong>Plugin browser dialog.</strong> <strong>Explicitly deferred:</strong> <code>File &gt;
-  Open Plugin...</code> and the canvas's <code>Add Plugin...</code> already do file-
-  chooser-driven plugin opening. A persistent scan-paths dialog is
-  quality-of-life polish, not a v1 blocker.</li>
+<li>
+<p>[x] <strong><code>projects/minihost_desktop/</code> sub-project.</strong> Scaffolded with stub <code>main.cpp</code> (exits immediately) and CMakeLists linking <code>minihost_gui</code>. Top-level <code>CMakeLists.txt</code> adds it via <code>add_subdirectory</code> guarded by <code>MINIHOST_BUILD_DESKTOP</code> (default OFF).</p>
+</li>
+<li>
+<p>[x] <strong>Split <code>libminihost_audio</code></strong> into sibling <code>minihost_audio</code> (PUBLIC-links headless <code>minihost</code>) and <code>minihost_audio_gui</code> (PUBLIC- links <code>minihost_gui</code>). Desktop links <code>minihost_audio_gui</code>. Python wheel and CLI tools continue to link <code>minihost_audio</code> unchanged (576 tests pass).</p>
+</li>
+<li>
+<p>[x] <strong>MainWindow + menu bar.</strong> <code>MainWindow</code> is a JUCE <code>DocumentWindow</code> + <code>MenuBarModel</code> with a system menu bar (macOS main menu on Mac, native menu bar elsewhere). File menu: Open Plugin... (async <code>juce::FileChooser</code> -&gt; loads the plugin and opens an <code>EditorWindow</code>), Quit. Help menu: About. The shell launches with no command-line args and waits for the user. Edit / View / Render menus deferred until ProjectModel / GraphCanvas / RenderDialog exist (no useful commands without them).</p>
+</li>
+<li>
+<p>[x] <strong>Multi-window plugin lifetime.</strong> <code>DesktopApplication</code> owns an <code>OwnedArray&lt;EditorWindow&gt;</code>; each <code>EditorWindow</code> owns its <code>MH_Plugin*</code> and <code>mh_close</code>s in its destructor. <code>closeButtonPressed</code> invokes a callback that removes the window from the array. Single-plugin shortcut mode (positional plugin arg, no MainWindow) quits when the last EditorWindow closes. Phase 0 validation modes (<code>--auto-render</code>, <code>--probe</code>) still reachable behind explicit flags.</p>
+</li>
+<li>
+<p>[ ] <strong><code>ProjectModel</code> observable refactor.</strong> <strong>Explicitly deferred:</strong> the current <code>ProjectDocument</code> + canvas direct-mutation pattern works. An observable refactor only buys value once undo/redo is on the roadmap; revisit then.</p>
+</li>
+<li>
+<p>[x] <strong>Plugin browser dialog.</strong> <code>Plugins &gt; Plugin Browser / Scan...</code> opens a <code>juce::PluginListComponent</code> over an app-owned <code>AudioPluginFormatManager</code> (registered via <code>juce::addDefaultFormatsToManager</code> -- JUCE 8.0.11 moved <code>AudioPluginFormatManager</code> to the headless module and deleted its <code>addDefaultFormats()</code>) + <code>KnownPluginList</code>. The scanned list persists to <code>known_plugins.xml</code> next to the device settings (saved on shutdown, restored at launch). <code>Plugins &gt; Add Plugin from Library...</code> builds a menu off <code>KnownPluginList</code> (static <code>addToMenu</code>/<code>getIndexChosenByMenu</code>) and adds the chosen plugin to the canvas via the shared <code>CanvasComponent::addPluginFromFile</code> path (same probe as <code>Add Plugin...</code>). Two known limitations: scanning is <strong>in-process</strong> (a plugin that crashes on instantiation-during-scan takes down the app -- the out-of-process scan mitigation is tracked under <a href="../desktop_app/#crash-resilience-decided">Crash resilience</a>); and plugins identified by an AU id rather than a file path add an unprobed node (mh_open takes a path), which defers channel validation to load time. Verified by compile only -- the scan/list UI needs a display and real plugins, neither available in the headless test environment.</p>
+</li>
+<li>
+<p>[x] <strong>Scanner proven headless + testable.</strong> Added a <code>minihost_desktop --scan-plugins[=&lt;dir1;dir2&gt;] [--scan-out=&lt;file.xml&gt;] [--scan-format=&lt;VST3|AudioUnit|LV2&gt;]</code> mode (<code>main.cpp</code> <code>runPluginScan</code>) that registers the host formats and drives a <code>juce::PluginDirectoryScanner</code> per format to completion, writing the <code>KnownPluginList</code> to XML. This is the headless seam the compile-only note above was missing: <code>tests/test_desktop_pluginscan.py</code> scans an empty dir (always-on; proves the VST3 format registers, the scan terminates, and valid XML is written) and, when <code>MINIHOST_TEST_PLUGIN</code> points at a <code>.vst3</code>, scans a copy of that one plugin and asserts the library records it. Confirmed live: a hermetic single-VST3 scan finds the plugin; a full default scan on a real machine exercises (and demonstrates) the in-process fragility -- a commercial AU calling <code>exit()</code> during instantiation-during-scan ends the process, so <code>--scan-format=VST3</code> is required for a hermetic single-dir scan (AudioUnit scanning ignores the directory list and enumerates every system component). The CLI also seeds <code>known_plugins.xml</code> for the GUI.</p>
+</li>
+<li>
+<p>[x] <strong>AudioUnit support (open-by-descriptor).</strong> minihost was a path-only host: <code>mh_open</code> requires a file that <code>exists()</code>, so AudioUnits -- identified by an AU id, not a path -- could not load at all (the picker surfaced ~391 AUs that all failed "Plugin file does not exist"). Added a <code>PluginDescription</code>-based load path across the whole stack. <strong>C ABI:</strong> <code>mh_open_desc(pd_xml, ...)</code> + <code>mh_session_open_desc</code> (<code>minihost.{h,cpp}</code>) deserialize a <code>juce::PluginDescription</code> (its <code>createXml()</code> form) and reuse the shared <code>finishPluginFromDesc</code> instantiation tail; AU was already registered in <code>initFormatManager</code>, and the descriptor wrapper always brings up the message thread (AU needs it). <strong>Desktop:</strong> plugin nodes gained an optional base64 <code>descriptor</code> field (+ <code>display_name</code>); the picker now carries the full <code>PluginDescription</code> (not a collapsed <code>File</code>); <code>CanvasComponent::addPluginFromDescription</code> and a shared <code>probeAndAddPlugin</code> route AU picks through <code>mh_open_desc</code> while VST3/LV2/browsed files keep the path route; the project loader, standalone editor (<code>loadPlugin</code>/<code>EditorOptions.descriptor_xml</code>), and canvas double-click editor all branch on the descriptor. <strong>Python/CLI parity:</strong> <code>Plugin.from_descriptor(pd_xml, ...)</code> binding + <code>.pyi</code>, and <code>project.py</code> persists/reads <code>descriptor</code> and opens AU nodes via it -- so a project made in the desktop app also renders from the CLI. <strong>Verified:</strong> <code>tests/test_au_descriptor.py</code> (4 tests, stock Apple AU) -- <code>from_descriptor</code> opens + processes a block, bad XML/nonexistent AU raise, <code>render_project</code> with an AU node produces audio, and the <code>descriptor</code> field round-trips through project JSON. Also confirmed live end-to-end: AUBandpass loads via descriptor and renders through the desktop <code>--render-project</code> graph. Out of scope: Python-side <em>authoring</em> of AU projects (scanning to descriptors in Python) -- projects are authored in the desktop app for now. Two pre-existing bugs surfaced (not AU-specific). <strong>Fixed:</strong> the legacy <code>receives_midi</code> default-true migration crashed when wiring MIDI to a plugin that doesn't accept it -- <code>loadProject</code> (<code>project.cpp</code>) now checks each opened instance's <code>mh_get_info().accepts_midi</code> and only wires MIDI-accepting plugins, so effect-only graphs load instead of aborting (<code>tests/test_desktop_render_parity.py::test_desktop_effect_only_no_midi_migration_crash</code>, using a stock Apple AU effect). <strong>Fixed:</strong> the desktop <code>--render-project</code> aborted on process exit after a plugin load (VST3 too; output was written correctly first). Cause: the desktop app is a JUCE app that already owns the process MessageManager, but libminihost spins up its <em>own</em> message thread on the first <code>mh_open</code> (for headless Python/CLI callers). In this process that second thread never becomes the real message thread and is left joinable at exit -&gt; <code>std::terminate</code>. Fix: <code>DesktopApplication::initialise()</code> sets <code>MINIHOST_MESSAGE_THREAD=0</code> (respecting an explicit override) before any <code>mh_open</code>, so construction runs inline on the app's own threads and teardown is clean. Plugin renders now exit 0 (asserted in <code>test_desktop_effect_only_no_midi_migration_crash</code>).</p>
+</li>
+<li>
+<p>[x] <strong>Plugin list picker everywhere.</strong> <code>File &gt; Open Plugin...</code> and the canvas right-click <code>Add Plugin...</code> no longer open a raw filesystem chooser -- both route through one shared <code>DesktopApplication::showPluginPicker</code> popup that lists the scanned library first (<code>KnownPluginList::addToMenu</code>), then a <code>Browse to file...</code> fallback and a <code>Scan for plugins...</code> shortcut. Open Plugin hosts the pick in a standalone editor window; Add Plugin adds a graph node via <code>CanvasComponent::addPluginFromFile</code>. The canvas gained <code>setOnAddPluginRequested</code> (falls back to its own file chooser when used standalone, so the component stays self-contained); <code>MainWindow</code> gained <code>setOnRequestOpenPlugin</code> + <code>setOnAddPluginRequested</code>. Empty library shows a disabled <code>(no plugins scanned)</code> header plus the Scan shortcut, so the next step is self-evident. Fixes the discoverability trap where the list flow was buried under a separate <code>Plugins</code> menu and gated on a scan the user never found. Menu/popup UI verified by compile + the headless scan test; the popup itself needs a display to click.</p>
+</li>
 </ul>
 <h3 id="node-graph-canvas">Node-graph canvas<a class="headerlink" href="#node-graph-canvas" title="Permanent link">&para;</a></h3>
 <ul>
-<li>[x] <strong>Canvas widget (read-only view + drag).</strong> Lives in
-  <code>projects/minihost_desktop/src/canvas.{h,cpp}</code>. Renders a
-  <code>project::ProjectDocument</code> as rounded-rectangle nodes with port
-  circles and bezier-curve edges. Auto-layout by topological column
-  (column = max predecessor column + 1) and row (sequence within
-  column). Per-kind colour coding (input = blue, output = rust,
-  mix = olive, plugin = slate). Click to select, drag to reposition.
-  Wired into <code>MainWindow</code> via <code>File &gt; Open Project...</code>.</li>
-<li>[x] <strong>Connect / disconnect / delete</strong> edit ops. Drag from a node's
-  output port to an input port creates an edge; click an edge near
-  its midpoint to select it; Delete / Backspace removes the selected
-  node (cascading any edges that reference it) or the selected edge.
-  In-progress connect drag draws a dashed bezier preview.</li>
-<li>[x] <strong>Add nodes</strong> (Mix presets, Plugin file chooser, Input via
-  audio-file chooser, Output via save-file chooser). Right-click
-  context menu wires all four kinds. Input takes channel count
-  from the chosen file's actual channel count (via
-  <code>mh_audio_get_file_info</code>); sample-rate mismatches surface as an
-  alert. Output defaults to 2-channel / 24-bit; further property
-  editing of existing nodes is deferred to a property-panel slice.</li>
-<li>[x] <strong>Edit existing node properties.</strong> Right-click a node -&gt;
-  Properties... dialog tailored to the kind: input (id, channels,
-  source path), output (id, channels, sink path, bit depth), mix
-  (id, num_inputs, channels, gains), plugin (id; path/state_b64
-  read-only). For mix nodes, shrinking <code>num_inputs</code> cascades:
-  edges with <code>dst_port &gt;= new_num_inputs</code> are dropped automatically.
-  ID renames rewrite all referencing edges and the layout map.</li>
-<li>[x] <strong>Channel-count validation at connect time.</strong> Adding a plugin
-  via the canvas now probes it eagerly (<code>mh_open</code> + <code>mh_get_info</code> +
-  <code>mh_close</code>) and caches <code>probed_in_channels</code> / <code>probed_out_channels</code>
-  on the <code>PluginNodeSpec</code>. <code>addEdgeToDoc</code> rejects mismatched edges
-  with an alert before they hit the doc. Plugins loaded from disk
-  (no fresh probe) skip canvas-side validation; render-time still
-  catches mismatches via <code>mh_graph_v2_compile</code>.</li>
-<li>[ ] <strong>Undo / redo.</strong> <strong>Explicitly deferred:</strong> whole-subsystem
-  scope (command stack, snapshots, coalescing of editor edits).
-  Out of scope for polish; track separately if it becomes load-
-  bearing.</li>
-<li>[x] <strong>Save canvas positions back to disk.</strong> Schema extended with
-  optional <code>layout: {node_id: {x, y}}</code>. Loader populates
-  <code>ProjectDocument.layout</code>; canvas applies saved positions for
-  known nodes (falls back to auto-layout for any node missing from
-  the map). Drag end (<code>mouseUp</code>) writes the new position back to
-  the document; <code>File &gt; Save Project</code> serializes it via
-  <code>project::saveProjectFile</code> (atomic tmp + rename). Verified:
-  Python load-&gt;save round-trip preserves layout; C++ save -&gt; Python
-  load preserves layout byte-for-byte. Three new Python tests pass
-  (<code>test_load_project_without_layout</code>, <code>test_layout_round_trip</code>,
-  <code>test_layout_drops_unknown_ids</code>); full suite 604 -&gt; 607 passed.
-  <code>minihost_desktop --save-roundtrip=&lt;path&gt;</code> is the headless
-  parity-test entry point.</li>
+<li>
+<p>[x] <strong>Canvas widget (read-only view + drag).</strong> Lives in <code>projects/minihost_desktop/src/canvas.{h,cpp}</code>. Renders a <code>project::ProjectDocument</code> as rounded-rectangle nodes with port circles and bezier-curve edges. Auto-layout by topological column (column = max predecessor column + 1) and row (sequence within column). Per-kind colour coding (input = blue, output = rust, mix = olive, plugin = slate). Click to select, drag to reposition. Wired into <code>MainWindow</code> via <code>File &gt; Open Project...</code>.</p>
+</li>
+<li>
+<p>[x] <strong>Connect / disconnect / delete</strong> edit ops. Drag from a node's output port to an input port creates an edge; click an edge near its midpoint to select it; Delete / Backspace removes the selected node (cascading any edges that reference it) or the selected edge. In-progress connect drag draws a dashed bezier preview.</p>
+</li>
+<li>
+<p>[x] <strong>Add nodes</strong> (Mix presets, Plugin file chooser, Input via audio-file chooser, Output via save-file chooser). Right-click context menu wires all four kinds. Input takes channel count from the chosen file's actual channel count (via <code>mh_audio_get_file_info</code>); sample-rate mismatches surface as an alert. Output defaults to 2-channel / 24-bit; further property editing of existing nodes is deferred to a property-panel slice.</p>
+</li>
+<li>
+<p>[x] <strong>Edit existing node properties.</strong> Right-click a node -&gt; Properties... dialog tailored to the kind: input (id, channels, source path), output (id, channels, sink path, bit depth), mix (id, num_inputs, channels, gains), plugin (id; path/state_b64 read-only). For mix nodes, shrinking <code>num_inputs</code> cascades: edges with <code>dst_port &gt;= new_num_inputs</code> are dropped automatically. ID renames rewrite all referencing edges and the layout map.</p>
+</li>
+<li>
+<p>[x] <strong>Channel-count validation at connect time.</strong> Adding a plugin via the canvas now probes it eagerly (<code>mh_open</code> + <code>mh_get_info</code> + <code>mh_close</code>) and caches <code>probed_in_channels</code> / <code>probed_out_channels</code> on the <code>PluginNodeSpec</code>. <code>addEdgeToDoc</code> rejects mismatched edges with an alert before they hit the doc. Plugins loaded from disk (no fresh probe) skip canvas-side validation; render-time still catches mismatches via <code>mh_graph_v2_compile</code>.</p>
+</li>
+<li>
+<p>[x] <strong>Undo / redo.</strong> Snapshot-based: each canvas edit records the whole <code>ProjectDocument</code> (which round-trips losslessly, so a copy is a correct restore point) into an <code>UndoHistory</code> (<code>src/undo_history.h</code>, GUI-free, depth-capped) before mutating; undo/redo swap the document in place under the stable <code>doc_</code> pointer. Wired at every mutation site (add/delete/connect/move/properties); plain node clicks and rejected edges do not record no-op steps. Exposed via <code>Edit &gt; Undo / Redo</code> (enabled state refreshed on each edit) and Cmd/Ctrl+Z / Cmd/Ctrl+Shift+Z. The core is exercised end-to-end through the binary's <code>--undo-selftest</code> mode (<code>tests/test_desktop_undo.py</code>): a mutation changes the serialization, undo restores the pre-edit bytes exactly, redo re-applies, and a fresh edit clears the redo stack. Editor-window edits are not yet coalesced into a single step (see below).</p>
+</li>
+<li>
+<p>[x] <strong>Save canvas positions back to disk.</strong> Schema extended with optional <code>layout: {node_id: {x, y}}</code>. Loader populates <code>ProjectDocument.layout</code>; canvas applies saved positions for known nodes (falls back to auto-layout for any node missing from the map). Drag end (<code>mouseUp</code>) writes the new position back to the document; <code>File &gt; Save Project</code> serializes it via <code>project::saveProjectFile</code> (atomic tmp + rename). Verified: Python load-&gt;save round-trip preserves layout; C++ save -&gt; Python load preserves layout byte-for-byte. Three new Python tests pass (<code>test_load_project_without_layout</code>, <code>test_layout_round_trip</code>, <code>test_layout_drops_unknown_ids</code>); full suite 604 -&gt; 607 passed. <code>minihost_desktop --save-roundtrip=&lt;path&gt;</code> is the headless parity-test entry point.</p>
+</li>
 </ul>
 <h3 id="editor-windows">Editor windows<a class="headerlink" href="#editor-windows" title="Permanent link">&para;</a></h3>
 <ul>
-<li>[x] <strong><code>EditorWindow</code></strong> <code>DocumentWindow</code> subclass owning a transient
-  <code>MH_Plugin*</code> + JUCE <code>AudioProcessorEditor*</code>. Configurable toolbar
-  via <code>EditorOptions::toolbar_label</code> / <code>toolbar_action</code>. Used in
-  three call sites: Phase 0 single-plugin shortcut ("Render 5s"
-  button), MainWindow <code>File &gt; Open Plugin...</code>, and canvas
-  double-click (new this slice: "Capture State" button).</li>
-<li>[x] <strong>Canvas double-click -&gt; editor.</strong> Double-clicking a plugin
-  node opens a transient editor against a freshly-loaded plugin
-  instance with state restored from <code>state_b64</code> if present. The
-  "Capture State" button reads <code>mh_get_state</code>, base64-encodes it,
-  and writes back to <code>doc.plugins[i].state_b64</code>. <code>File &gt; Save
-  Project</code> then persists the new state. Multiple editors can be
-  open simultaneously (each owns its own <code>MH_Plugin*</code>).</li>
-<li>[ ] <strong>Parameter mirror.</strong> <strong>Explicitly deferred:</strong> JUCE's editor
-  already shows live values; a host-side mirror only matters for
-  automation-overlay UIs and MIDI-learn workflows, neither of which
-  exist yet.</li>
-<li>[ ] <strong>Editor session as a single undo entry.</strong> <strong>Explicitly
-  deferred</strong> together with the undo/redo subsystem above.</li>
+<li>
+<p>[x] <strong><code>EditorWindow</code></strong> <code>DocumentWindow</code> subclass owning a transient <code>MH_Plugin*</code> + JUCE <code>AudioProcessorEditor*</code>. Configurable toolbar via <code>EditorOptions::toolbar_label</code> / <code>toolbar_action</code>. Used in three call sites: Phase 0 single-plugin shortcut ("Render 5s" button), MainWindow <code>File &gt; Open Plugin...</code>, and canvas double-click (new this slice: "Capture State" button).</p>
+</li>
+<li>
+<p>[x] <strong>Canvas double-click -&gt; editor.</strong> Double-clicking a plugin node opens a transient editor against a freshly-loaded plugin instance with state restored from <code>state_b64</code> if present. The "Capture State" button reads <code>mh_get_state</code>, base64-encodes it, and writes back to <code>doc.plugins[i].state_b64</code>. <code>File &gt; Save Project</code> then persists the new state. Multiple editors can be open simultaneously (each owns its own <code>MH_Plugin*</code>).</p>
+</li>
+<li>
+<p>[ ] <strong>Parameter mirror.</strong> <strong>Explicitly deferred:</strong> JUCE's editor already shows live values; a host-side mirror only matters for automation-overlay UIs and MIDI-learn workflows, neither of which exist yet.</p>
+</li>
+<li>
+<p>[ ] <strong>Editor session as a single undo entry.</strong> <strong>Explicitly deferred</strong> together with the undo/redo subsystem above.</p>
+</li>
 </ul>
 <h3 id="project-file-io">Project file I/O<a class="headerlink" href="#project-file-io" title="Permanent link">&para;</a></h3>
 <ul>
-<li>[x] <strong>JSON schema v1</strong> (<code>minihost_project_version: 1</code>). Defined
-  once in <code>src/minihost/project.py</code> (Python loader, canonical
-  reference) and re-implemented in C++ at
-  <code>projects/minihost_desktop/src/project.{h,cpp}</code> for the desktop
-  binary. Same schema, same semantics.</li>
-<li>[x] <strong>Load / save</strong> (Python): <code>minihost.load_project</code>,
-  <code>minihost.save_project</code> (atomic via tmp + rename).
-  <strong>Load</strong> (C++): <code>minihost_desktop::project::loadProject</code> and
-  <code>parseProjectFile</code>. Save in C++ deferred until the desktop UI
-  needs to write back (no save-from-canvas yet).</li>
-<li>[x] <strong>Plugin state blob</strong> -- persisted via <code>mh_get_state</code> /
-  <code>mh_set_state</code>, base64-encoded. Decode supported in both loaders.</li>
-<li>[x] <strong>Round-trip + render parity tests.</strong> Python:
-  <code>tests/test_project.py</code> (13 tests). C++ vs Python parity:
-  end-to-end demo renders the same project through both pipelines
-  and observes 0.000e+00 max sample diff -- bit-identical output.</li>
-<li>[x] <strong><code>minihost render &lt;project.json&gt;</code> CLI</strong> (Python entry point).
-  <strong><code>minihost_desktop --render-project=&lt;project.json&gt;</code></strong> (C++
-  headless mode; same code path as the GUI menu).</li>
-<li>[x] <strong>File &gt; Render Project... menu</strong> in the desktop shell.
-  Async via <code>juce::ThreadWithProgressWindow</code> (modal progress bar
-  with Cancel). Result alert on completion.</li>
-<li>[x] <strong>File &gt; New Project</strong> -- creates an empty <code>ProjectDocument</code>
-  (<code>sample_rate=48000</code>, <code>block_size=512</code>, no nodes/edges) and shows
-  it on the canvas with the title bar reading "(untitled)". Drives
-  the same edit surface (right-click to add nodes, drag ports to
-  connect) as projects opened from disk. <strong>File &gt; Save Project As...</strong>
-  prompts for a path; <strong>Save Project</strong> on an untitled document
-  falls through to Save As automatically and retitles the window
-  on success.</li>
+<li>
+<p>[x] <strong>JSON schema v1</strong> (<code>minihost_project_version: 1</code>). Defined once in <code>src/minihost/project.py</code> (Python loader, canonical reference) and re-implemented in C++ at <code>projects/minihost_desktop/src/project.{h,cpp}</code> for the desktop binary. Same schema, same semantics.</p>
+</li>
+<li>
+<p>[x] <strong>Load / save</strong> (Python): <code>minihost.load_project</code>, <code>minihost.save_project</code> (atomic via tmp + rename). <strong>Load</strong> (C++): <code>minihost_desktop::project::loadProject</code> and <code>parseProjectFile</code>. Save in C++ deferred until the desktop UI needs to write back (no save-from-canvas yet).</p>
+</li>
+<li>
+<p>[x] <strong>Plugin state blob</strong> -- persisted via <code>mh_get_state</code> / <code>mh_set_state</code>, base64-encoded. Decode supported in both loaders.</p>
+</li>
+<li>
+<p>[x] <strong>Round-trip + render parity tests.</strong> Python: <code>tests/test_project.py</code> (13 tests). C++ vs Python parity: end-to-end demo renders the same project through both pipelines and observes 0.000e+00 max sample diff -- bit-identical output.</p>
+</li>
+<li>
+<p>[x] <strong><code>minihost render &lt;project.json&gt;</code> CLI</strong> (Python entry point). <strong><code>minihost_desktop --render-project=&lt;project.json&gt;</code></strong> (C++ headless mode; same code path as the GUI menu).</p>
+</li>
+<li>
+<p>[x] <strong>Offline MIDI-file rendering (desktop/Python parity).</strong> A <code>midi_input</code> node gained an optional <code>source</code> (<code>.mid</code>) field. Previously the desktop <code>midi_input</code> was <strong>live-only</strong> (port_name), so an offline render of a MIDI-driven instrument produced <strong>silence</strong> with no error, while the Python renderer (whose <code>_MidiInputNode</code> has a <code>source</code>) rendered it correctly. Fixed: <code>MidiInputNodeSpec.source</code>; <code>readMidiFileEvents</code> (<code>project.cpp</code>, via the vendored <code>smf::MidiFile</code>) flattens a <code>.mid</code> to sorted absolute sample-offset events (channel-voice only, truncating <code>int(seconds*sr)</code> to match Python's <code>midi_file_to_events</code>); <code>renderProject</code> streams them into the graph per block with forward cursors (<code>mh_graph_set_midi_input_events</code>), mirroring the Python <code>_render_loaded</code> loop. <strong>Verified bit-identical:</strong> <code>tests/test_desktop_render_parity.py::test_desktop_midi_chain_matches_python</code> renders a MIDI chord -&gt; instrument through both the desktop binary and Python and asserts non-silence + max sample diff == 0. The desktop links the <code>midifile</code> static lib.</p>
+</li>
+<li>
+<p>[x] <strong>File &gt; Render Project... menu</strong> in the desktop shell. Async via <code>juce::ThreadWithProgressWindow</code> (modal progress bar with Cancel). Result alert on completion.</p>
+</li>
+<li>
+<p>[x] <strong>File &gt; New Project</strong> -- creates an empty <code>ProjectDocument</code> (<code>sample_rate=48000</code>, <code>block_size=512</code>, no nodes/edges) and shows it on the canvas with the title bar reading "(untitled)". Drives the same edit surface (right-click to add nodes, drag ports to connect) as projects opened from disk. <strong>File &gt; Save Project As...</strong> prompts for a path; <strong>Save Project</strong> on an untitled document falls through to Save As automatically and retitles the window on success.</p>
+</li>
 </ul>
 <h3 id="render">Render<a class="headerlink" href="#render" title="Permanent link">&para;</a></h3>
 <ul>
-<li>[x] <strong>Render dialog.</strong> Async <code>juce::AlertWindow</code> shown before
-  <code>ProjectRenderJob::launch</code>: bit-depth selector (16/24/32) and
-  normalize-to-dBFS field (0 = off, e.g. -1.0). Picks are
-  threaded through <code>project::RenderOptions</code> to <code>renderProject</code>.</li>
-<li>[x] <strong>Render thread.</strong> <code>ProjectRenderJob</code> is a
-  <code>juce::ThreadWithProgressWindow</code>. <code>run()</code> calls <code>loadProject</code> +
-  <code>renderProject</code> block-by-block.</li>
-<li>[x] <strong>Progress + cancel.</strong> Progress wired via
-  <code>setProgress(done/total)</code> per block; the progress window's
-  Cancel button flips <code>threadShouldExit()</code> which the render loop's
-  progress callback forwards to the <code>cancel_flag</code> atomic.</li>
-<li>[x] <strong>Render parity test.</strong> <code>tests/test_desktop_render_parity.py</code>
-  (2 tests): C++ desktop <code>--render-project=...</code> vs Python
-  <code>render_project</code> produces bit-identical WAVs (max sample diff
-  == 0.0). C++ <code>--save-roundtrip=...</code> vs Python load preserves
-  layout / edges / channels.</li>
+<li>
+<p>[x] <strong>Render dialog.</strong> Async <code>juce::AlertWindow</code> shown before <code>ProjectRenderJob::launch</code>: bit-depth selector (16/24/32) and normalize-to-dBFS field (0 = off, e.g. -1.0). Picks are threaded through <code>project::RenderOptions</code> to <code>renderProject</code>.</p>
+</li>
+<li>
+<p>[x] <strong>Render thread.</strong> <code>ProjectRenderJob</code> is a <code>juce::ThreadWithProgressWindow</code>. <code>run()</code> calls <code>loadProject</code> + <code>renderProject</code> block-by-block.</p>
+</li>
+<li>
+<p>[x] <strong>Progress + cancel.</strong> Progress wired via <code>setProgress(done/total)</code> per block; the progress window's Cancel button flips <code>threadShouldExit()</code> which the render loop's progress callback forwards to the <code>cancel_flag</code> atomic.</p>
+</li>
+<li>
+<p>[x] <strong>Render parity test.</strong> <code>tests/test_desktop_render_parity.py</code> (2 tests): C++ desktop <code>--render-project=...</code> vs Python <code>render_project</code> produces bit-identical WAVs (max sample diff == 0.0). C++ <code>--save-roundtrip=...</code> vs Python load preserves layout / edges / channels.</p>
+</li>
 </ul>
 <h3 id="packaging">Packaging<a class="headerlink" href="#packaging" title="Permanent link">&para;</a></h3>
-<p><strong>Explicitly deferred</strong> -- all three need CI machinery + dev
-certificates that aren't available in-session. The build already
-produces a runnable <code>.app</code> bundle locally (via the CMake APPLE
-block in <code>projects/minihost_desktop/CMakeLists.txt</code>); signing /
-notarization / installers are CI-time concerns.</p>
+<p><strong>Explicitly deferred</strong> -- all three need CI machinery + dev certificates that aren't available in-session. The build already produces a runnable <code>.app</code> bundle locally (via the CMake APPLE block in <code>projects/minihost_desktop/CMakeLists.txt</code>); signing / notarization / installers are CI-time concerns.</p>
 <ul>
-<li>[ ] <strong>macOS <code>.app</code> bundle</strong> with code signing + notarization.</li>
-<li>[ ] <strong>Windows portable <code>.exe</code>.</strong></li>
-<li>[ ] <strong>Linux AppImage.</strong></li>
+<li>
+<p>[ ] <strong>macOS <code>.app</code> bundle</strong> with code signing + notarization.</p>
+</li>
+<li>
+<p>[ ] <strong>Windows portable <code>.exe</code>.</strong></p>
+</li>
+<li>
+<p>[ ] <strong>Linux AppImage.</strong></p>
+</li>
 </ul>
 <h2 id="phase-2-realtime-mode">Phase 2 - Realtime mode<a class="headerlink" href="#phase-2-realtime-mode" title="Permanent link">&para;</a></h2>
-<p>Adds the audio device callback driver and live MIDI input. Same
-graph, stricter realtime constraints.</p>
+<p>Adds the audio device callback driver and live MIDI input. Same graph, stricter realtime constraints.</p>
 <ul>
-<li>[x] <strong>Audio device picker.</strong> <code>LiveEngine</code> owns a
-  <code>juce::AudioDeviceManager</code>. <code>Audio &gt; Audio Device Settings...</code>
-  opens a <code>juce::AudioDeviceSelectorComponent</code> in a dialog.
-  <strong>Persisted across launches:</strong> settings file at
-  <code>~/Library/Application Support/minihost/desktop_settings.xml</code>
-  (or the platform equivalent). Saved on <code>shutdown()</code> and applied
-  on <code>initialise()</code>. Audio device + MIDI input identifier both
-  round-trip.</li>
-<li>[x] <strong><code>AudioIODeviceCallback</code> driving the graph.</strong>
-  <code>LiveEngine::audioDeviceIOCallbackWithContext</code> drains pending GUI
-  commands + transport + MIDI, then calls
-  <code>compiled_-&gt;graph-&gt;renderBlock</code> and copies output node 0 to the
-  device output channels. <code>Audio &gt; Start Live</code> / <code>Stop Live</code> /
-  <code>Restart Live</code> menu items.</li>
-<li>[x] <strong>Allocation-free <code>mh_graph_v2_render_block</code>.</strong> The render
-  path uses pre-allocated pool storage from <code>compile()</code>; allocation-
-  free for the steady-state caller pattern (planar buffer pointers
-  passed each call don't grow the pool). <code>tests/test_graph_v2_rt.py</code>
-  (5 tests): repeated-calls stability, varying nframes, input
-  immutability, output-reuse safety, gain-change-without-recompile.</li>
-<li>[x] <strong>SPSC command queue.</strong> <code>RtParamQueue&lt;1024&gt;</code> in
-  <code>projects/minihost_desktop/src/rt_param_queue.h</code> (header-only,
-  power-of-two capacity, drop-newest-on-overflow). Producer = GUI
-  thread, consumer = audio callback. Audio thread drains up to 64
-  commands per block and applies them via
-  <code>juce::AudioProcessorParameter::setValue</code> (RT-safe; does not
-  acquire <code>mh_set_param</code>'s mutex).</li>
-<li>[x] <strong>Topology swap under mute.</strong> <code>LiveEngine::start</code> always calls
-  <code>stop()</code> first, which detaches the audio callback before mutating
-  <code>compiled_</code>. Switching project files in the canvas (<code>File &gt; Open
-  Project</code>) also calls <code>stop()</code> on the engine before parsing.
-  Audible click is acceptable per the design.</li>
-<li>[x] <strong>Transport bar (BPM + loop region).</strong>
-  <code>LiveEngine::setTransportPlaying</code>, <code>setBpm</code>, <code>setLoop(start, end,
-  is_looping)</code>. Audio thread builds an <code>MH_TransportInfo</code> from
-  atomic bpm/playing/loop state + audio-thread-owned sample/beat
-  counters and pushes it to every plugin via <code>mh_set_transport</code>
-  before each block. Position wraps inside <code>[loop_start, loop_end)</code>
-  when looping is enabled. Menu items: <code>Audio &gt; Transport: Play</code>,
-  <code>Stop</code>, <code>Set BPM...</code>, <code>Set Loop Region...</code>.</li>
-<li>[x] <strong>Live MIDI input.</strong> <code>juce::MidiInputCallback</code> on
-  <code>LiveEngine</code>; lock-free ring buffer (<code>midi_ring_</code>, capacity 1024)
-  bridges OS MIDI thread -&gt; audio thread. Audio callback drains up
-  to 256 events per block and fans them out to plugin nodes via
-  <code>mh_graph_v2_set_node_midi</code>. <code>Audio &gt; MIDI Input...</code> shows a
-  PopupMenu listing <code>juce::MidiInput::getAvailableDevices()</code>.
-  <strong>Per-plugin destination routing:</strong> new <code>receives_midi</code> field on
-  <code>PluginNodeSpec</code> (default true). LiveEngine skips plugins with
-  <code>receives_midi = false</code> during fan-out. Toggle exposed in the
-  per-node Properties... dialog.</li>
-<li>[x] <strong><code>mh_graph_v2_set_node_midi</code> C ABI extension.</strong> Stages MIDI
-  events to deliver to a plugin node on the next render_block. Plugin
-  nodes with pending MIDI dispatch via <code>mh_process_midi</code>; nodes
-  without dispatch via <code>mh_process</code> as before. Pending events are
-  cleared after every render_block (caller must re-stage every
-  block). Caller-owned pointer; serializes with render_block via the
-  audio thread's single-callback contract.</li>
+<li>
+<p>[x] <strong>Audio device picker.</strong> <code>LiveEngine</code> owns a <code>juce::AudioDeviceManager</code>. <code>Audio &gt; Audio Device Settings...</code> opens a <code>juce::AudioDeviceSelectorComponent</code> in a dialog. <strong>Persisted across launches:</strong> settings file at <code>~/Library/Application Support/minihost/desktop_settings.xml</code> (or the platform equivalent). Saved on <code>shutdown()</code> and applied on <code>initialise()</code>. Audio device + MIDI input identifier both round-trip.</p>
+</li>
+<li>
+<p>[x] <strong><code>AudioIODeviceCallback</code> driving the graph.</strong> <code>LiveEngine::audioDeviceIOCallbackWithContext</code> drains pending GUI commands + transport + MIDI, then calls <code>compiled_-&gt;graph-&gt;renderBlock</code> and copies output node 0 to the device output channels. <code>Audio &gt; Start Live</code> / <code>Stop Live</code> / <code>Restart Live</code> menu items.</p>
+</li>
+<li>
+<p>[x] <strong>Allocation-free <code>mh_graph_v2_render_block</code>.</strong> The render path uses pre-allocated pool storage from <code>compile()</code>; allocation- free for the steady-state caller pattern (planar buffer pointers passed each call don't grow the pool). <code>tests/test_graph_v2_rt.py</code> (5 tests): repeated-calls stability, varying nframes, input immutability, output-reuse safety, gain-change-without-recompile.</p>
+</li>
+<li>
+<p>[x] <strong>SPSC command queue.</strong> <code>RtParamQueue&lt;1024&gt;</code> in <code>projects/minihost_desktop/src/rt_param_queue.h</code> (header-only, power-of-two capacity, drop-newest-on-overflow). Producer = GUI thread, consumer = audio callback. Audio thread drains up to 64 commands per block and applies them via <code>juce::AudioProcessorParameter::setValue</code> (RT-safe; does not acquire <code>mh_set_param</code>'s mutex).</p>
+</li>
+<li>
+<p>[x] <strong>Topology swap under mute.</strong> <code>LiveEngine::start</code> always calls <code>stop()</code> first, which detaches the audio callback before mutating <code>compiled_</code>. Switching project files in the canvas (<code>File &gt; Open Project</code>) also calls <code>stop()</code> on the engine before parsing. Audible click is acceptable per the design.</p>
+</li>
+<li>
+<p>[x] <strong>Transport bar (BPM + loop region).</strong> <code>LiveEngine::setTransportPlaying</code>, <code>setBpm</code>, <code>setLoop(start, end, is_looping)</code>. Audio thread builds an <code>MH_TransportInfo</code> from atomic bpm/playing/loop state + audio-thread-owned sample/beat counters and pushes it to every plugin via <code>mh_set_transport</code> before each block. Position wraps inside <code>[loop_start, loop_end)</code> when looping is enabled. Menu items: <code>Audio &gt; Transport: Play</code>, <code>Stop</code>, <code>Set BPM...</code>, <code>Set Loop Region...</code>.</p>
+</li>
+<li>
+<p>[x] <strong>Live MIDI input.</strong> <code>juce::MidiInputCallback</code> on <code>LiveEngine</code>; lock-free ring buffer (<code>midi_ring_</code>, capacity 1024) bridges OS MIDI thread -&gt; audio thread. Audio callback drains up to 256 events per block and fans them out to plugin nodes via <code>mh_graph_v2_set_node_midi</code>. <code>Audio &gt; MIDI Input...</code> shows a PopupMenu listing <code>juce::MidiInput::getAvailableDevices()</code>. <strong>Per-plugin destination routing:</strong> new <code>receives_midi</code> field on <code>PluginNodeSpec</code> (default true). LiveEngine skips plugins with <code>receives_midi = false</code> during fan-out. Toggle exposed in the per-node Properties... dialog.</p>
+</li>
+<li>
+<p>[x] <strong><code>mh_graph_v2_set_node_midi</code> C ABI extension.</strong> Stages MIDI events to deliver to a plugin node on the next render_block. Plugin nodes with pending MIDI dispatch via <code>mh_process_midi</code>; nodes without dispatch via <code>mh_process</code> as before. Pending events are cleared after every render_block (caller must re-stage every block). Caller-owned pointer; serializes with render_block via the audio thread's single-callback contract.</p>
+</li>
+</ul>
+<h2 id="crash-resilience">Crash resilience<a class="headerlink" href="#crash-resilience" title="Permanent link">&para;</a></h2>
+<p>Decision recorded in <a href="../desktop_app/#crash-resilience-decided">desktop_app.md</a>: <strong>ship in-process</strong>, document the limitation, add cheap recovery, and gate out-of-process hosting on evidence. The two mitigations below are the pre-release work that decision implies; out-of-process hosting itself stays in Phase 2.5+ below.</p>
+<ul>
+<li>
+<p>[x] <strong>Autosave / crash recovery.</strong> The desktop app (<code>main.cpp</code>, GUI shell only) snapshots the working <code>ProjectDocument</code> to a sidecar next to the desktop settings (<code>autosave.json</code> + <code>autosave.meta</code>, the latter recording the origin path) on a <code>kAutosaveIntervalMs</code> (5 s) heartbeat timer whenever the document is dirty. Canvas edits/undo/redo raise the dirty flag via a new <code>MainWindow::setOnDocumentEditedExternal</code> callback; state capture raises it directly; a successful autosave, an explicit Save, and a clean <code>shutdown()</code> lower it and delete the sidecar. A sidecar surviving to the next launch means the previous session did not reach <code>shutdown()</code> (plugin crash / kill / power loss), so <code>maybeOfferCrashRecovery()</code> prompts Recover / Discard; Recover loads the snapshot and re-associates the origin path so Save writes back correctly, then marks it dirty (newer than disk). The lifecycle is guarded to the GUI shell (<code>autosave_enabled_</code>) so headless modes sharing the settings dir never clear a crashed session's sidecar. All schema paths are absolute, so the sidecar's location is irrelevant to reload. Sidecar write/parse/clear mechanics verified headlessly via <code>minihost_desktop --autosave-selftest=&lt;project.json&gt;</code> (<code>tests/test_desktop_autosave.py</code>, 2 tests); the timer + recovery dialog are GUI-thread orchestration and stay manual (same limitation noted for undo/redo).</p>
+</li>
+<li>
+<p>[x] <strong>Save-before-quit prompt.</strong> <code>DesktopApplication::systemRequestedQuit()</code> (GUI shell only) intercepts every quit path (window close, File &gt; Quit, Cmd+Q, OS logout) and, when there are unsaved changes, shows Save / Don't Save / Cancel instead of discarding silently. Save persists first and quits only on success (deferring <code>quit()</code> into the async save callback, which for an untitled project routes through the Save As chooser); Don't Save quits (clean <code>shutdown()</code> drops the sidecar); Cancel aborts. Tracks a dedicated <code>unsaved_changes_</code> flag (change since last <em>explicit</em> Save) distinct from the autosave <code>doc_dirty_</code> flag (change since last <em>heartbeat</em>), reset by Save / Save As / New / Open. The two save methods gained an optional success continuation. Single-plugin and headless modes never arm it (<code>autosave_enabled_</code>), so their direct <code>quit()</code> paths are unchanged (verified by the desktop render/undo/scan tests). The dialog itself needs a display and stays manual.</p>
+</li>
+<li>
+<p>[x] <strong>Document the in-process limitation.</strong> README's Desktop section and the in-app <code>Help &gt; About</code> dialog now state that plugins run in-process (a misbehaving plugin can crash the app and lose unsaved edits), and point at the two mitigations shipped for it: out-of-process scanning and autosave/crash recovery. CHANGELOG records the autosave feature under <code>[Unreleased]</code>.</p>
+</li>
+<li>
+<p>[x] <strong>Out-of-process plugin scanning.</strong> <code>projects/minihost_desktop/src/plugin_scanner.{h,cpp}</code> implements JUCE's child-process scan pattern (<code>KnownPluginList::CustomScanner</code> + <code>ChildProcessCoordinator</code>/<code>ChildProcessWorker</code>, adapted from <code>extras/AudioPluginHost</code>): each plugin is instantiated in a disposable child process (a relaunch of this binary carrying <code>kScannerProcessUID</code>), so a plugin that crashes or calls <code>exit()</code> during instantiation-during-scan takes down only the child. The parent detects the dead/hung child (bounded ~40 s per-plugin timeout), blacklists that plugin, respawns, and continues. <code>known_plugins_.setCustomScanner(...)</code> routes <strong>both</strong> the interactive <code>PluginListComponent</code> scan and the headless <code>--scan-plugins --scan-oop</code> path (single integration point: <code>KnownPluginList::scanAndAddFile</code> invokes the custom scanner and blacklists on failure). Worker detection is the first thing in <code>initialise()</code>. <strong>Evidence that justified it (the "gate on evidence" trigger):</strong> a full in-process scan on a real machine died when the commercial AU u-he Bazille called <code>exit()</code> mid-instantiation. <strong>Verified live:</strong> the same full AudioUnit scan run <code>--scan-oop</code> completes cleanly (exit 0, 391 AUs recorded) instead of dying; a hermetic single-VST3 OOP scan proves the handshake in <code>tests/test_desktop_pluginscan.py</code> (<code>test_scan_oop_finds_real_plugin</code>). One gap: no deliberately-crashing plugin fixture exists for a hermetic containment assertion, so the crash-survival check is a documented manual run, not CI.</p>
+</li>
 </ul>
 <h2 id="phase-25-deferred">Phase 2.5+ - Deferred<a class="headerlink" href="#phase-25-deferred" title="Permanent link">&para;</a></h2>
-<p>Items the design doc lists as deferred. Surfaced here so they're not
-forgotten, but not scheduled.</p>
+<p>Items the design doc lists as deferred. Surfaced here so they're not forgotten, but not scheduled.</p>
 <ul>
-<li>[ ] <strong>Latency compensation across fan-in paths.</strong> Insert per-path
-  delay at fan-in points using <code>mh_get_latency</code>.</li>
-<li>[ ] <strong>Feedback loops</strong> with a one-block delay node on the back-edge.</li>
-<li>[ ] <strong>Sidechain input buses.</strong> Blocked on a C ABI gap (see
-  <code>docs/dev/graph.md</code> open questions).</li>
-<li>[ ] <strong>Out-of-process plugin hosting</strong> for crash containment. Decide
-  only if v1/v2 testing shows in-process crashes are routine.</li>
-<li>[ ] <strong>Opt-in crash reporting.</strong> No usage telemetry either way.</li>
+<li>
+<p>[ ] <strong>Latency compensation across fan-in paths.</strong> Insert per-path delay at fan-in points using <code>mh_get_latency</code>.</p>
+</li>
+<li>
+<p>[ ] <strong>Feedback loops</strong> with a one-block delay node on the back-edge.</p>
+</li>
+<li>
+<p>[ ] <strong>Sidechain input buses.</strong> Blocked on a C ABI gap (see <code>docs/dev/graph.md</code> open questions).</p>
+</li>
+<li>
+<p>[ ] <strong>Out-of-process plugin hosting</strong> for crash containment. Decide only if v1/v2 testing shows in-process crashes are routine; see the <a href="../desktop_app/#crash-resilience-decided">crash-resilience decision</a>.</p>
+</li>
+<li>
+<p>[ ] <strong>Opt-in crash reporting.</strong> No usage telemetry either way. This is the evidence that would justify (or not) out-of-process hosting.</p>
+</li>
 </ul>
 <h2 id="non-goals">Non-goals<a class="headerlink" href="#non-goals" title="Permanent link">&para;</a></h2>
-<p>Mirrors the design doc; restated here so PRs that drift toward these
-get a one-link rejection:</p>
+<p>Mirrors the design doc; restated here so PRs that drift toward these get a one-link rejection:</p>
 <ul>
-<li>DAW features (timeline, clip editing, mixer automation curves drawn
-  in-app, time-stretching, take comping).</li>
-<li>Preset browser UI beyond what <code>read_vstpreset</code> / <code>set_state</code> give us.</li>
-<li>MIDI learn / parameter mapping UI.</li>
-<li>Plugin shell disambiguation.</li>
-<li>Cross-graph routing (every project is exactly one graph).</li>
-<li>App Store distribution (incompatible with hosting arbitrary plugin
-  code).</li>
+<li>
+<p>DAW features (timeline, clip editing, mixer automation curves drawn in-app, time-stretching, take comping).</p>
+</li>
+<li>
+<p>Preset browser UI beyond what <code>read_vstpreset</code> / <code>set_state</code> give us.</p>
+</li>
+<li>
+<p>MIDI learn / parameter mapping UI.</p>
+</li>
+<li>
+<p>Plugin shell disambiguation.</p>
+</li>
+<li>
+<p>Cross-graph routing (every project is exactly one graph).</p>
+</li>
+<li>
+<p>App Store distribution (incompatible with hosting arbitrary plugin code).</p>
+</li>
 </ul>
 
 

@@ -368,6 +368,87 @@
   
   
     <li class="md-nav__item">
+      <a href="../composition/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Composition Pipelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../midi_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MIDI Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../control_surfaces/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Control Surfaces
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../api_c/" class="md-nav__link">
         
   
@@ -922,17 +1003,18 @@
 
 
 <h1 id="migration-guide">Migration guide<a class="headerlink" href="#migration-guide" title="Permanent link">&para;</a></h1>
-<p>This guide covers the breaking changes shipping in <strong>0.2.0</strong> (see CHANGELOG
-<code>[Unreleased]</code>): the <code>AudioBuffer</code> / numpy-optional migration, and the routing
-type rename (<code>PluginGraph</code> -&gt; <code>PluginBus</code>, <code>GraphV2</code> -&gt; <code>PluginGraph</code>).</p>
-<p>The <code>AudioBuffer</code> changes each have a one-keyword fix to keep existing code
-working; the recommended patterns shown below are improvements, not
-requirements. The routing rename (section 5) is the exception -- it is a hard
-rename with no compatibility shim, because minihost is still alpha (0.x).</p>
+<p>This guide covers the breaking changes shipping in <strong>0.2.0</strong> (see CHANGELOG <code>[Unreleased]</code>): the <code>AudioBuffer</code> / numpy-optional migration, and the routing type rename (<code>PluginGraph</code> -&gt; <code>PluginBus</code>, <code>GraphV2</code> -&gt; <code>PluginGraph</code>).</p>
+<p>The <code>AudioBuffer</code> changes each have a one-keyword fix to keep existing code working; the recommended patterns shown below are improvements, not requirements. The routing rename (section 5) is the exception -- it is a hard rename with no compatibility shim, because minihost is still alpha (0.x).</p>
 <h2 id="tldr">TL;DR<a class="headerlink" href="#tldr" title="Permanent link">&para;</a></h2>
-<p><strong>Install:</strong>
-- Was: <code>pip install minihost</code> (numpy was a hard dependency, installed transparently)
-- Now: <code>pip install minihost</code> (no numpy) <strong>or</strong> <code>pip install minihost[numpy]</code> (with numpy interop)</p>
+<p><strong>Install:</strong></p>
+<ul>
+<li>
+<p>Was: <code>pip install minihost</code> (numpy was a hard dependency, installed transparently)</p>
+</li>
+<li>
+<p>Now: <code>pip install minihost</code> (no numpy) <strong>or</strong> <code>pip install minihost[numpy]</code> (with numpy interop)</p>
+</li>
+</ul>
 <p><strong>Smallest possible code change:</strong> add <code>as_=np.ndarray</code> to your <code>read_audio</code> / <code>render_midi*</code> calls and you're done.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">data</span><span class="p">,</span> <span class="n">sr</span> <span class="o">=</span> <span class="n">minihost</span><span class="o">.</span><span class="n">read_audio</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">as_</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">)</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">audio</span> <span class="o">=</span> <span class="n">minihost</span><span class="o">.</span><span class="n">render_midi</span><span class="p">(</span><span class="n">plugin</span><span class="p">,</span> <span class="s2">&quot;song.mid&quot;</span><span class="p">,</span> <span class="n">as_</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">)</span>
@@ -951,19 +1033,39 @@ rename with no compatibility shim, because minihost is still alpha (0.x).</p>
 </code></pre></div>
 <p>What requires the <code>[numpy]</code> extra:</p>
 <ul>
-<li><code>read_audio(path, as_=np.ndarray)</code> (and the equivalent on <code>render_midi*</code>)</li>
-<li><code>AudioBuffer.as_ndarray()</code></li>
-<li>Passing a <code>np.ndarray</code> as input to <code>write_audio</code>, <code>resample</code>, <code>process_audio*</code>, <code>Plugin.process*</code>, <code>PluginChain.process*</code></li>
+<li>
+<p><code>read_audio(path, as_=np.ndarray)</code> (and the equivalent on <code>render_midi*</code>)</p>
+</li>
+<li>
+<p><code>AudioBuffer.as_ndarray()</code></p>
+</li>
+<li>
+<p>Passing a <code>np.ndarray</code> as input to <code>write_audio</code>, <code>resample</code>, <code>process_audio*</code>, <code>Plugin.process*</code>, <code>PluginChain.process*</code></p>
+</li>
 </ul>
 <p>What does <strong>not</strong> require numpy:</p>
 <ul>
-<li>All <code>Plugin</code> / <code>PluginChain</code> plugin loading and processing (when fed <code>AudioBuffer</code> inputs)</li>
-<li><code>read_audio(path)</code> (returns <code>AudioBuffer</code>)</li>
-<li><code>write_audio(path, audio_buffer, sr)</code></li>
-<li><code>resample(audio_buffer, sr_in, sr_out)</code></li>
-<li><code>process_audio</code> / <code>process_audio_to_file</code></li>
-<li><code>render_midi*</code> / <code>MidiRenderer</code> (with default <code>as_=AudioBuffer</code>)</li>
-<li><code>MidiMapper</code>, <code>AudioDevice</code>, <code>MidiIn</code>, <code>MidiFile</code>, all CLI commands</li>
+<li>
+<p>All <code>Plugin</code> / <code>PluginChain</code> plugin loading and processing (when fed <code>AudioBuffer</code> inputs)</p>
+</li>
+<li>
+<p><code>read_audio(path)</code> (returns <code>AudioBuffer</code>)</p>
+</li>
+<li>
+<p><code>write_audio(path, audio_buffer, sr)</code></p>
+</li>
+<li>
+<p><code>resample(audio_buffer, sr_in, sr_out)</code></p>
+</li>
+<li>
+<p><code>process_audio</code> / <code>process_audio_to_file</code></p>
+</li>
+<li>
+<p><code>render_midi*</code> / <code>MidiRenderer</code> (with default <code>as_=AudioBuffer</code>)</p>
+</li>
+<li>
+<p><code>MidiMapper</code>, <code>AudioDevice</code>, <code>MidiIn</code>, <code>MidiFile</code>, all CLI commands</p>
+</li>
 </ul>
 <p><strong>Symptom if you forget the extra:</strong> the package imports fine, but the first call into a numpy-typed code path raises:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>ImportError: AudioBuffer.as_ndarray() requires numpy. Install minihost
@@ -1013,9 +1115,7 @@ rename with no compatibility shim, because minihost is still alpha (0.x).</p>
 </code></pre></div>
 <p><code>MidiRenderer.render_all()</code> accepts <code>as_=numpy.ndarray</code> for the whole-buffer return.</p>
 <h3 id="5-routing-types-renamed-plugingraph-pluginbus-graphv2-plugingraph">5. Routing types renamed (<code>PluginGraph</code> -&gt; <code>PluginBus</code>, <code>GraphV2</code> -&gt; <code>PluginGraph</code>)<a class="headerlink" href="#5-routing-types-renamed-plugingraph-pluginbus-graphv2-plugingraph" title="Permanent link">&para;</a></h3>
-<p>0.2.0 gives the routing types a clean three-tier model. Unlike the
-<code>AudioBuffer</code> changes above, <strong>this is a hard rename with no compatibility
-shim</strong> -- the old names are gone in both Python and the C/C++ ABI.</p>
+<p>0.2.0 gives the routing types a clean three-tier model. Unlike the <code>AudioBuffer</code> changes above, <strong>this is a hard rename with no compatibility shim</strong> -- the old names are gone in both Python and the C/C++ ABI.</p>
 <table>
 <thead>
 <tr>
@@ -1042,9 +1142,7 @@ shim</strong> -- the old names are gone in both Python and the C/C++ ABI.</p>
 </tr>
 </tbody>
 </table>
-<p>Watch the swap: <strong><code>PluginGraph</code> now means the DAG executor</strong>, not the parallel
-bus. Code that used the old <code>PluginGraph</code> (the bus) must move to <code>PluginBus</code>;
-code that used <code>GraphV2</code> must move to <code>PluginGraph</code>.</p>
+<p>Watch the swap: <strong><code>PluginGraph</code> now means the DAG executor</strong>, not the parallel bus. Code that used the old <code>PluginGraph</code> (the bus) must move to <code>PluginBus</code>; code that used <code>GraphV2</code> must move to <code>PluginGraph</code>.</p>
 <p><strong>Python:</strong></p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Old: parallel-branches-summed</span>
 <a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">bus</span> <span class="o">=</span> <span class="n">minihost</span><span class="o">.</span><span class="n">PluginGraph</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="n">max_block_size</span><span class="o">=</span><span class="mi">512</span><span class="p">,</span> <span class="n">sample_rate</span><span class="o">=</span><span class="mf">48000.0</span><span class="p">)</span>
@@ -1056,11 +1154,8 @@ code that used <code>GraphV2</code> must move to <code>PluginGraph</code>.</p>
 <a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="c1"># New:</span>
 <a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="n">g</span> <span class="o">=</span> <span class="n">minihost</span><span class="o">.</span><span class="n">PluginGraph</span><span class="p">(</span><span class="mi">512</span><span class="p">,</span> <span class="mf">48000.0</span><span class="p">)</span>
 </code></pre></div>
-<p>Project files (<code>load_project</code> / <code>render_project</code>) are <strong>unaffected</strong>: the JSON
-schema is identical; only the Python class backing it was renamed.</p>
-<p>New in the same release: <code>PluginBus.process_midi(input, output, midi_in)</code> fans
-the same MIDI to every branch, so one part can layer across parallel
-instruments. See the README "Parallel routing (PluginBus)" section.</p>
+<p>Project files (<code>load_project</code> / <code>render_project</code>) are <strong>unaffected</strong>: the JSON schema is identical; only the Python class backing it was renamed.</p>
+<p>New in the same release: <code>PluginBus.process_midi(input, output, midi_in)</code> fans the same MIDI to every branch, so one part can layer across parallel instruments. See the README "Parallel routing (PluginBus)" section.</p>
 <p><strong>C / C++ ABI</strong> (<code>MH_API_VERSION</code> bumped to <strong>2.0.0</strong>):</p>
 <table>
 <thead>
@@ -1098,13 +1193,8 @@ instruments. See the README "Parallel routing (PluginBus)" section.</p>
 </tr>
 </tbody>
 </table>
-<p>Source file names are retained for git history (<code>minihost_graph.{h,cpp}</code> is the
-bus; <code>minihost_graph_v2.{h,cpp,hpp}</code> is the DAG); a header note in each maps the
-file to its symbol family. Binaries linked against minihost should validate the
-ABI at startup: <code>if (mh_api_version() &lt; MH_API_VERSION_NUMBER) { /* mismatch */ }</code>.</p>
-<p>To migrate a C/C++ codebase, apply the substitutions in this order -- the
-ordering matters because <code>mh_graph_</code> is a prefix of <code>mh_graph_v2_</code>, so a naive
-pass would corrupt the DAG symbols:</p>
+<p>Source file names are retained for git history (<code>minihost_graph.{h,cpp}</code> is the bus; <code>minihost_graph_v2.{h,cpp,hpp}</code> is the DAG); a header note in each maps the file to its symbol family. Binaries linked against minihost should validate the ABI at startup: <code>if (mh_api_version() &lt; MH_API_VERSION_NUMBER) { /* mismatch */ }</code>.</p>
+<p>To migrate a C/C++ codebase, apply the substitutions in this order -- the ordering matters because <code>mh_graph_</code> is a prefix of <code>mh_graph_v2_</code>, so a naive pass would corrupt the DAG symbols:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># function symbols (placeholder avoids the prefix collision)</span>
 <a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>perl<span class="w"> </span>-pi<span class="w"> </span>-e<span class="w"> </span><span class="s1">&#39;s/mh_graph_v2_/MHTMP_/g; s/mh_graph_/mh_bus_/g; s/MHTMP_/mh_graph_/g&#39;</span><span class="w"> </span>FILES...
 <a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="c1"># types and the C++ wrapper class</span>
@@ -1197,20 +1287,39 @@ pass would corrupt the DAG symbols:</p>
 <h2 id="audiobuffer-differences-worth-knowing">AudioBuffer differences worth knowing<a class="headerlink" href="#audiobuffer-differences-worth-knowing" title="Permanent link">&para;</a></h2>
 <p>If you migrate to <code>AudioBuffer</code>, a few semantic differences from <code>np.ndarray</code>:</p>
 <ul>
-<li><strong>Slicing returns copies, not views.</strong> <code>buf[:, 100:200]</code> allocates a new buffer. To mutate the parent through a slice, write to it via <code>__setitem__</code>: <code>buf[:, 100:200] = source</code>.</li>
-<li><strong>2-axis indexing only.</strong> <code>buf[0]</code> raises <code>TypeError</code>; use <code>buf[0, :]</code>. The reasoning: a 2D buffer's single-axis indexing is ambiguous (channel? frame? a 1D array?), and the explicit form is unambiguous.</li>
-<li><strong>No strided slicing, fancy indexing, boolean indexing, or <code>Ellipsis</code>.</strong> Each raises a clear <code>TypeError</code> directing you to <code>.as_ndarray()</code>.</li>
-<li><strong><code>.shape</code> is a tuple <code>(channels, frames)</code>.</strong> Same as numpy. <code>len(buf)</code> returns <code>channels</code> (matches numpy's <code>len()</code> on 2D arrays).</li>
-<li><strong><code>np.asarray(buf)</code> and <code>buf.as_ndarray()</code> both work</strong> (zero-copy via DLPack / <code>__array__</code>). Use them at the boundary where you actually need numpy semantics.</li>
+<li>
+<p><strong>Slicing returns copies, not views.</strong> <code>buf[:, 100:200]</code> allocates a new buffer. To mutate the parent through a slice, write to it via <code>__setitem__</code>: <code>buf[:, 100:200] = source</code>.</p>
+</li>
+<li>
+<p><strong>2-axis indexing only.</strong> <code>buf[0]</code> raises <code>TypeError</code>; use <code>buf[0, :]</code>. The reasoning: a 2D buffer's single-axis indexing is ambiguous (channel? frame? a 1D array?), and the explicit form is unambiguous.</p>
+</li>
+<li>
+<p><strong>No strided slicing, fancy indexing, boolean indexing, or <code>Ellipsis</code>.</strong> Each raises a clear <code>TypeError</code> directing you to <code>.as_ndarray()</code>.</p>
+</li>
+<li>
+<p><strong><code>.shape</code> is a tuple <code>(channels, frames)</code>.</strong> Same as numpy. <code>len(buf)</code> returns <code>channels</code> (matches numpy's <code>len()</code> on 2D arrays).</p>
+</li>
+<li>
+<p><strong><code>np.asarray(buf)</code> and <code>buf.as_ndarray()</code> both work</strong> (zero-copy via DLPack / <code>__array__</code>). Use them at the boundary where you actually need numpy semantics.</p>
+</li>
 </ul>
 <p>JUCE-backed DSP ops are exposed for the common cases so you rarely need numpy:</p>
 <ul>
-<li><code>buf.clear()</code>, <code>buf.apply_gain(g)</code>, <code>buf.apply_gain_ramp(start, count, lo, hi)</code>,
-  <code>buf.apply_gain_per_channel([g0, g1, ...])</code></li>
-<li><code>buf.magnitude()</code>, <code>buf.get_rms_level(channel)</code></li>
-<li><code>buf.add_from(...)</code>, <code>buf.add_from_with_ramp(...)</code></li>
-<li><code>buf.reverse()</code>, <code>buf.reverse_channel(ch)</code></li>
-<li><code>buf.copy()</code></li>
+<li>
+<p><code>buf.clear()</code>, <code>buf.apply_gain(g)</code>, <code>buf.apply_gain_ramp(start, count, lo, hi)</code>, <code>buf.apply_gain_per_channel([g0, g1, ...])</code></p>
+</li>
+<li>
+<p><code>buf.magnitude()</code>, <code>buf.get_rms_level(channel)</code></p>
+</li>
+<li>
+<p><code>buf.add_from(...)</code>, <code>buf.add_from_with_ramp(...)</code></p>
+</li>
+<li>
+<p><code>buf.reverse()</code>, <code>buf.reverse_channel(ch)</code></p>
+</li>
+<li>
+<p><code>buf.copy()</code></p>
+</li>
 </ul>
 <hr />
 <h2 id="whats-new-that-you-should-consider-adopting">What's new that you should consider adopting<a class="headerlink" href="#whats-new-that-you-should-consider-adopting" title="Permanent link">&para;</a></h2>

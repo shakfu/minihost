@@ -368,6 +368,87 @@
   
   
     <li class="md-nav__item">
+      <a href="../composition/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Composition Pipelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../midi_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MIDI Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../control_surfaces/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Control Surfaces
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../api_c/" class="md-nav__link">
         
   
@@ -634,10 +715,7 @@
 
 
 <h1 id="vendored-dependencies">Vendored Dependencies<a class="headerlink" href="#vendored-dependencies" title="Permanent link">&para;</a></h1>
-<p>This file tracks the vendored C/C++ libraries included in <code>projects/</code>.
-JUCE is not vendored in the repository. It is downloaded on first build by
-<code>scripts/download_juce.py</code> (invoked automatically by <code>make</code>) and extracted
-into the <code>JUCE/</code> directory at the project root.</p>
+<p>This file tracks the vendored C/C++ libraries included in <code>projects/</code>. JUCE is not vendored in the repository. It is downloaded on first build by <code>scripts/download_juce.py</code> (invoked automatically by <code>make</code>) and extracted into the <code>JUCE/</code> directory at the project root.</p>
 <h2 id="libraries">Libraries<a class="headerlink" href="#libraries" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -654,39 +732,62 @@ into the <code>JUCE/</code> directory at the project root.</p>
 <td>miniaudio</td>
 <td>0.11.24</td>
 <td><code>projects/miniaudio/</code></td>
-<td>https://github.com/mackron/miniaudio</td>
+<td><a href="https://github.com/mackron/miniaudio">https://github.com/mackron/miniaudio</a></td>
 <td>MIT-0</td>
 </tr>
 <tr>
 <td>tflac</td>
 <td>unversioned (2024)</td>
 <td><code>projects/tflac/</code></td>
-<td>https://github.com/jprjr/tflac</td>
+<td><a href="https://github.com/jprjr/tflac">https://github.com/jprjr/tflac</a></td>
 <td>BSD-0</td>
 </tr>
 <tr>
 <td>libremidi</td>
 <td>5.3.1</td>
 <td><code>projects/libremidi/</code></td>
-<td>https://github.com/jcelerier/libremidi</td>
+<td><a href="https://github.com/jcelerier/libremidi">https://github.com/jcelerier/libremidi</a></td>
 <td>BSD-2-Clause</td>
 </tr>
 <tr>
 <td>midifile</td>
 <td>unversioned (2021)</td>
 <td><code>projects/midifile/</code></td>
-<td>https://github.com/craigsapp/midifile</td>
+<td><a href="https://github.com/craigsapp/midifile">https://github.com/craigsapp/midifile</a></td>
 <td>BSD-2-Clause</td>
+</tr>
+<tr>
+<td>py2tosc <code>check_json.py</code></td>
+<td>0.6.0</td>
+<td><code>tests/check_json.py</code></td>
+<td><a href="https://github.com/shakfu/py2tosc">https://github.com/shakfu/py2tosc</a></td>
+<td>MIT</td>
 </tr>
 </tbody>
 </table>
 <h2 id="update-process">Update Process<a class="headerlink" href="#update-process" title="Permanent link">&para;</a></h2>
 <ol>
-<li>Download the new release from the upstream repository.</li>
-<li>Replace the contents of the corresponding <code>projects/&lt;name&gt;/</code> directory.</li>
-<li>Build and run tests: <code>make clean &amp;&amp; make build &amp;&amp; make test</code>.</li>
-<li>Check for API changes in headers consumed by minihost (<code>minihost_audiofile.c</code>, <code>minihost_audio.c</code>, <code>minihost_midi.cpp</code>, <code>_core.cpp</code>).</li>
-<li>Update the version in this file.</li>
+<li>
+<p>Download the new release from the upstream repository.</p>
+</li>
+<li>
+<p>Replace the contents of the corresponding <code>projects/&lt;name&gt;/</code> directory.</p>
+</li>
+<li>
+<p>Build and run tests: <code>make clean &amp;&amp; make build &amp;&amp; make test</code>.</p>
+</li>
+</ol>
+<p>Note that <code>tests/check_json.py</code> is a test-only vendoring, not a build
+dependency: a single stdlib-only file that py2tosc publishes for projects
+which <em>generate</em> <code>.ui.json</code> descriptions and want to validate them without
+depending on the compiler. It is re-copied on a py2tosc schema bump.</p>
+<ol>
+<li>
+<p>Check for API changes in headers consumed by minihost (<code>minihost_audiofile.c</code>, <code>minihost_audio.c</code>, <code>minihost_midi.cpp</code>, <code>_core.cpp</code>).</p>
+</li>
+<li>
+<p>Update the version in this file.</p>
+</li>
 </ol>
 
 

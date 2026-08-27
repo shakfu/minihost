@@ -1,0 +1,1699 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Minimal headless audio plugin host for VST3, AudioUnit, and LV2">
+      
+      
+      
+        <link rel="canonical" href="https://shakfu.github.io/minihost/dev/osc_and_touch/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>OSC support and generated touch surfaces - minihost</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#osc-support-and-generated-touch-surfaces" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="minihost" class="md-header__button md-logo" aria-label="minihost" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            minihost
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              OSC support and generated touch surfaces
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/shakfu/minihost" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    shakfu/minihost
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="minihost" class="md-nav__button md-logo" aria-label="minihost" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    minihost
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/shakfu/minihost" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    shakfu/minihost
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting_started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api_python/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../composition/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Composition Pipelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../midi_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MIDI Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../control_surfaces/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Control Surfaces
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api_c/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    C API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../hosting_guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hosting Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../migration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Migration Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../vendored/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Vendored Dependencies
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-what-already-works" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. What already works
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-decision-juce_osc-not-liblo" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Decision: juce_osc, not liblo
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-the-real-cost-centre-parameter-delivery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. The real cost centre: parameter delivery
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-phases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Phases
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Phases">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#phase-0-parameter-ring-and-_auto-in-the-live-path-done" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 0 -- parameter ring and _auto in the live path -- DONE
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-1-osc-transport-layer-done" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 1 -- OSC transport layer -- DONE
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-2-osc-mapping-unified-with-midi-mapping-done" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 2 -- OSC mapping, unified with MIDI mapping -- DONE
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-3-14-bit-cc-pairs-done" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 3 -- 14-bit CC pairs -- DONE
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-4-feedback-host-to-surface-done" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 4 -- feedback, host to surface -- DONE
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-5-transport-done" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 5 -- transport -- DONE
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-6-surface-generation-done" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 6 -- surface generation -- DONE
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phase 6 -- surface generation -- DONE">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#target-the-py2toscui-json-dialect-not-the-flat-surface-list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Target the py2tosc.ui JSON dialect, not the flat surface list
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-this-buys-concretely" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What this buys, concretely
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#heterogeneous-tables-each-with-a-branch-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Heterogeneous tables: each with a branch table
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#work-in-minihost" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Work in minihost
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dependency-handling-and-schema-tracking" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dependency handling and schema tracking
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-testing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Testing
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-upstream-py2tosc-052-and-schema-3-coming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Upstream: py2tosc 0.5.2, and schema 3 coming
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="6. Upstream: py2tosc 0.5.2, and schema 3 coming">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#schema-3-coming-and-it-undoes-phase-6s-workaround" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Schema 3: coming, and it undoes Phase 6's workaround
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-surface-transports-why-not-a-web-page-over-web-midi" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Surface transports: why not a web page over Web MIDI
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="7. Surface transports: why not a web page over Web MIDI">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-constraint-everything-follows-from" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The constraint everything follows from
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#web-midi-does-not-reach-an-ipad" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Web MIDI does not reach an iPad
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#where-it-does-win-and-it-is-free-to-try" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where it does win, and it is free to try
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#if-a-browser-ui-is-what-is-actually-wanted-websocket-is-the-one" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        If a browser UI is what is actually wanted, WebSocket is the one
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-this-means-for-phase-2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What this means for Phase 2
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-open-questions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Open questions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Non-goals
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="osc-support-and-generated-touch-surfaces">OSC support and generated touch surfaces<a class="headerlink" href="#osc-support-and-generated-touch-surfaces" title="Permanent link">&para;</a></h1>
+<p>Status: all six phases implemented. See CHANGELOG.md for what each
+landed as, and the per-phase notes below for where the code and this plan
+diverged. See the per-phase notes in section 4, and CHANGELOG.md for what each landed as. Companion to <a href="../desktop_app/">desktop_app.md</a> in intent: a design that gets committed before the code, so the ordering decisions are arguable in review rather than discovered halfway through.</p>
+<p>Goal: minihost speaks OSC natively, MIDI CC gains 14-bit resolution, and a script turns any plugin into a tablet control surface bound to one or both.</p>
+<h2 id="1-what-already-works">1. What already works<a class="headerlink" href="#1-what-already-works" title="Permanent link">&para;</a></h2>
+<p>Worth establishing first, because the gap is smaller than it looks and two of the pieces are already shipping.</p>
+<p><code>minihost params &lt;plugin&gt; --json</code> (<code>src/minihost/cli.py:266</code>) emits a list of objects carrying <code>name</code>, <code>index</code>, <code>label</code>, <code>default_value</code>, <code>num_steps</code>, <code>is_boolean</code>, <code>is_automatable</code>, <code>category</code>.</p>
+<p>The sibling project <code>py2tosc</code> has a <code>surface</code> module -- a <code>Parameter</code> dataclass, a <code>read()</code> that accepts exactly that JSON shape, and a <code>build()</code> that lays parameters out across paged TouchOSC controls bound to MIDI CC, to OSC, or to both. It is already exposed as <code>py2tosc build params.json</code>. <code>py2tosc/src/py2tosc/surface.py:111</code> even documents the seam: "A plugin host exports an <code>index</code> alongside each name."</p>
+<p>So this pipes together today:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="gp">$ </span>minihost<span class="w"> </span>params<span class="w"> </span>~/Library/Audio/Plug-Ins/VST3/Synth.vst3<span class="w"> </span>--json<span class="w"> </span>&gt;<span class="w"> </span>params.json
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="gp">$ </span>py2tosc<span class="w"> </span>build<span class="w"> </span>params.json<span class="w"> </span>--output<span class="w"> </span>synth.tosc
+</code></pre></div>
+<p>That is the flat path, and it stays useful as the zero-configuration one. py2tosc also has a second, richer entry point that Phase 6 targets instead: <code>py2tosc.ui_json</code>, a JSON dialect over the <code>ui</code> combinators, with <code>each</code> for walking a table of rows. Section 4, Phase 6 makes the case for generating that rather than the flat list.</p>
+<p>What the flat path does not give you:</p>
+<ul>
+<li>
+<p>Every control is a fader. The <code>is_boolean</code> / <code>num_steps</code> / <code>label</code> metadata minihost already exports is discarded, so a bypass toggle and a 16-position waveform selector both render as continuous faders.</p>
+</li>
+<li>
+<p>No matching <code>--map-file</code>, so the generated CC assignments and the host's mapping are two hand-maintained lists that silently drift.</p>
+</li>
+<li>
+<p>MIDI CC only. <code>surface.build(osc=True)</code> writes OSC addresses into the layout, but nothing in minihost listens on a UDP port, so those addresses go nowhere.</p>
+</li>
+<li>
+<p>7-bit resolution on the path that does work.</p>
+</li>
+<li>
+<p>Nothing for transport.</p>
+</li>
+</ul>
+<p>The plan below closes those five gaps. Framing the work as "add OSC" alone would miss that most of the remaining cost is in the parameter delivery path and in transport, not in the OSC codec.</p>
+<h2 id="2-decision-juce_osc-not-liblo">2. Decision: juce_osc, not liblo<a class="headerlink" href="#2-decision-juce_osc-not-liblo" title="Permanent link">&para;</a></h2>
+<p>The proposal was to embed liblo. Recommend against, and the reason is not a close call: OSC is already in the tree.</p>
+<p><code>thirdparty/JUCE/modules/juce_osc/</code> ships with the JUCE 8.0.12 that <code>scripts/download_juce.py</code> already downloads. Its module declaration reads:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>license:            AGPLv3/Commercial
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>minimumCppStandard: 17
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>dependencies:       juce_events
+</code></pre></div>
+<p>Every point of comparison favours it:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>juce_osc</th>
+<th>liblo</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>New vendored code</td>
+<td>none</td>
+<td>~10k lines into <code>projects/</code></td>
+</tr>
+<tr>
+<td><code>docs/vendored.md</code></td>
+<td>untouched</td>
+<td>new row</td>
+</tr>
+<tr>
+<td>License posture</td>
+<td>identical to <code>juce_core</code>, <code>juce_events</code>, <code>juce_audio_processors_headless</code>, all already linked</td>
+<td>LGPL-2.1+, the first non-permissive entry among MIT-0 / BSD-0 / BSD-2</td>
+</tr>
+<tr>
+<td>Build</td>
+<td>one <code>target_link_libraries</code> line</td>
+<td>autotools-generated <code>config.h</code>, or its less-exercised CMake path</td>
+</tr>
+<tr>
+<td>Windows</td>
+<td>JUCE's own tested socket layer</td>
+<td>winsock path, historically the weak platform; minihost ships Windows wheels</td>
+</tr>
+<tr>
+<td>C++ standard</td>
+<td>17, matches <code>libminihost</code></td>
+<td>C89 + pthreads</td>
+</tr>
+<tr>
+<td>New transitive deps</td>
+<td>none -- <code>juce_audio_processors_headless</code> already depends on <code>juce_events</code></td>
+<td>pthreads shim on Windows</td>
+</tr>
+</tbody>
+</table>
+<p>The "no dependencies" rule is satisfied more literally by juce_osc than by any vendoring option, since it adds no dependency at all.</p>
+<p>Two properties of <code>juce_osc</code> matter to the design and were verified by reading the source rather than assumed:</p>
+<ul>
+<li>
+<p><code>OSCReceiver::Pimpl</code> is its own <code>juce::Thread</code> (<code>juce_OSCReceiver.cpp:325</code>). Listeners registered with the <code>RealtimeCallback</code> template parameter are invoked directly on that socket thread; only <code>MessageLoopCallback</code> listeners go through <code>postMessage</code> (<code>juce_OSCReceiver.cpp:438-448</code>). The hot path therefore needs no JUCE message thread, which matters for the Python wheel.</p>
+</li>
+<li>
+<p><code>OSCAddressPattern::matches</code> (<code>juce_OSCAddress.h:138</code>) gives wildcard address matching, so <code>/mh/param/*</code> dispatch is free.</p>
+</li>
+</ul>
+<p>And one limitation to state honestly: bundle time tags are parsed (<code>juce_OSCReceiver.cpp:141</code>) but not used for scheduled dispatch -- bundle contents are delivered immediately. Irrelevant for control surfaces, disqualifying if minihost ever wants OSC-scheduled events. Also UDP only: no TCP, no SLIP, so a serial OSC device is not served.</p>
+<p>Rejected alternatives, for the record:</p>
+<ul>
+<li>
+<p><strong>liblo</strong>, per the table.</p>
+</li>
+<li>
+<p><strong>tinyosc</strong> (MIT, single file). Fits the vendoring aesthetic but is codec only -- we would still write the UDP layer and receive thread, which is the part juce_osc already has.</p>
+</li>
+<li>
+<p><strong>Hand-rolled codec.</strong> OSC 1.0 encoding is genuinely simple, maybe 400 lines with tests. Worth keeping as the escape hatch if a pure-C consumer ever needs OSC without linking JUCE, but it reinvents working code sitting in the tree.</p>
+</li>
+</ul>
+<h2 id="3-the-real-cost-centre-parameter-delivery">3. The real cost centre: parameter delivery<a class="headerlink" href="#3-the-real-cost-centre-parameter-delivery" title="Permanent link">&para;</a></h2>
+<p>This is the part that is not about OSC at all, and it should be built first.</p>
+<p>Today <code>MidiMapper.__call__</code> (<code>src/minihost/control.py:259</code>) reaches a plugin parameter by calling <code>plugin.set_param</code>, which lands in <code>mh_set_param</code> (<code>projects/libminihost/minihost.cpp:717</code>):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">std</span><span class="o">::</span><span class="n">lock_guard</span><span class="o">&lt;</span><span class="n">std</span><span class="o">::</span><span class="n">mutex</span><span class="o">&gt;</span><span class="w"> </span><span class="n">lock</span><span class="p">(</span><span class="n">p</span><span class="o">-&gt;</span><span class="n">stateMutex</span><span class="p">);</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">params</span><span class="p">.</span><span class="n">getUnchecked</span><span class="p">(</span><span class="n">index</span><span class="p">)</span><span class="o">-&gt;</span><span class="n">setValueNotifyingHost</span><span class="p">(</span><span class="n">normalized_0_1</span><span class="p">);</span>
+</code></pre></div>
+<p>Meanwhile the live audio callback (<code>projects/libminihost_audio/minihost_audio.c:326</code>) calls <code>mh_process_midi_io</code> / <code>mh_chain_process_midi_io</code>, which per the header contract take no lock at all. So a control-thread parameter write runs concurrently with <code>processBlock</code>, ordered by nothing, applied at whatever moment the plugin next reads the value. Three consequences:</p>
+<ol>
+<li>
+<p>Not sample-accurate. Every write is effectively block-quantised, with jitter.</p>
+</li>
+<li>
+<p>The mapper thread takes a mutex that offline callers also take, so <code>set_param</code> from a control surface can block behind a <code>morph</code> or a preset load.</p>
+</li>
+<li>
+<p>It scales badly with rate, which is exactly what OSC and 14-bit CC introduce. A fader drag at 14-bit resolution emits far more messages than a 7-bit one.</p>
+</li>
+</ol>
+<p><code>mh_process_auto</code> (<code>projects/libminihost/minihost.h:428</code>) and <code>mh_chain_process_auto</code> already exist and already split a block at each <code>MH_ParamChange</code> offset. The live path simply never uses them.</p>
+<p><strong>Phase 0</strong> is therefore: give <code>MH_AudioDevice</code> a parameter ring, drain it in the audio callback, and switch the callback to the <code>_auto</code> entry points.</p>
+<ul>
+<li>
+<p>New <code>projects/libminihost_audio/param_ringbuffer.{h,cpp}</code>, an SPSC ring over <code>MH_ParamChange</code>, modelled directly on <code>midi_ringbuffer.{h,cpp}</code>.</p>
+</li>
+<li>
+<p><strong>Two</strong> rings on the device, not one: one fed by the control-input thread (OSC socket thread or MIDI callback), one fed by programmatic <code>mh_audio_send_param</code>. This mirrors the <code>midi_in_buffer</code> / <code>midi_send_buffer</code> split, and the reason is recorded in the header comment at <code>minihost_audio.h:161</code>: sharing one SPSC ring between two producers corrupted its indices and lost events. Do not relearn that.</p>
+</li>
+<li>
+<p><strong>Coalesce on drain, last-wins per parameter index.</strong> This is not an optimisation, it is a correctness requirement. <code>mh_process_auto</code> splits the block at every distinct offset; 200 messages for one fader inside one block would become 200 sub-blocks and blow the audio deadline. Collapse to one change per parameter per block, and cap the total distinct split points per block (start at 32) with the overflow folded into the last offset.</p>
+</li>
+<li>
+<p>Sample offset: v1 assigns 0, i.e. block start. Time-stamping arrival and placing the change inside the block is a later refinement -- it buys sub-block accuracy at the cost of jitter and a one-block safety delay, and should not gate the rest of the work.</p>
+</li>
+<li>
+<p>New C API <code>int mh_audio_send_param(MH_AudioDevice*, int param_index, float value)</code>, Python <code>AudioDevice.send_param(index, value)</code>.</p>
+</li>
+<li>
+<p>Redirect <code>MidiMapper</code> at the ring when an <code>AudioDevice</code> is attached, falling back to <code>set_param</code> when it is not (offline use).</p>
+</li>
+</ul>
+<p>Scope boundary: the device opens a plugin or a chain, never a graph (<code>mh_audio_open</code> / <code>mh_audio_open_chain</code>), so <code>graph_v2</code> needs nothing here. It already has <code>mh_graph_set_node_automation</code>.</p>
+<p>Tests: extend <code>tests/tsan/ringbuffer_stress.cpp</code> and the <code>make tsan</code> target to cover the new ring; a Python test asserting coalescing (N writes to one param inside one block produce one change) and that the <code>_auto</code> path is reached.</p>
+<h2 id="4-phases">4. Phases<a class="headerlink" href="#4-phases" title="Permanent link">&para;</a></h2>
+<p>Phase 0 is a prerequisite for 1, 3 and 5. The rest are independent enough to reorder.</p>
+<h3 id="phase-0-parameter-ring-and-_auto-in-the-live-path-done">Phase 0 -- parameter ring and <code>_auto</code> in the live path -- DONE<a class="headerlink" href="#phase-0-parameter-ring-and-_auto-in-the-live-path-done" title="Permanent link">&para;</a></h3>
+<p>As above. No user-visible feature; everything after it is cheaper and correct. Also fixes the existing 7-bit MIDI mapping path.</p>
+<h3 id="phase-1-osc-transport-layer-done">Phase 1 -- OSC transport layer -- DONE<a class="headerlink" href="#phase-1-osc-transport-layer-done" title="Permanent link">&para;</a></h3>
+<p>Landed as planned, with the device integration limited to numeric addressing (<code>/mh/param/&lt;index&gt;</code>, <code>/mh/&lt;slot&gt;/param/&lt;index&gt;</code>); name resolution moves to Phase 2, which can resolve at bind time and send numerically. Feedback (<code>mh_audio_set_osc_feedback</code>) stayed in Phase 4 where the plan puts it.</p>
+<p><code>projects/libminihost_audio/minihost_osc.{h,cpp}</code>, sitting beside <code>minihost_midi.{h,cpp}</code> because it is the same kind of thing: an I/O back-end for the audio layer.</p>
+<p>C API, deliberately shaped like the MIDI one:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">MH_OscServer</span><span class="w"> </span><span class="n">MH_OscServer</span><span class="p">;</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="k">typedef</span><span class="w"> </span><span class="k">struct</span><span class="w"> </span><span class="nc">MH_OscClient</span><span class="w"> </span><span class="n">MH_OscClient</span><span class="p">;</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1">// Called on the OSC socket thread. Must not block.</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="k">typedef</span><span class="w"> </span><span class="kt">void</span><span class="w"> </span><span class="p">(</span><span class="o">*</span><span class="n">MH_OscCallback</span><span class="p">)(</span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">address</span><span class="p">,</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">                               </span><span class="k">const</span><span class="w"> </span><span class="kt">float</span><span class="o">*</span><span class="w"> </span><span class="n">args</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">num_args</span><span class="p">,</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">                               </span><span class="kt">void</span><span class="o">*</span><span class="w"> </span><span class="n">user_data</span><span class="p">);</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="n">MH_OscServer</span><span class="o">*</span><span class="w"> </span><span class="nf">mh_osc_server_open</span><span class="p">(</span><span class="kt">int</span><span class="w"> </span><span class="n">port</span><span class="p">,</span><span class="w"> </span><span class="n">MH_OscCallback</span><span class="w"> </span><span class="n">cb</span><span class="p">,</span><span class="w"> </span><span class="kt">void</span><span class="o">*</span><span class="w"> </span><span class="n">user_data</span><span class="p">,</span>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="w">                                 </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">err_buf</span><span class="p">,</span><span class="w"> </span><span class="kt">size_t</span><span class="w"> </span><span class="n">err_buf_size</span><span class="p">);</span>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="kt">void</span><span class="w">          </span><span class="nf">mh_osc_server_close</span><span class="p">(</span><span class="n">MH_OscServer</span><span class="o">*</span><span class="w"> </span><span class="n">s</span><span class="p">);</span>
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>
+<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="n">MH_OscClient</span><span class="o">*</span><span class="w"> </span><span class="nf">mh_osc_client_open</span><span class="p">(</span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">host</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">port</span><span class="p">,</span>
+<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="w">                                 </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">err_buf</span><span class="p">,</span><span class="w"> </span><span class="kt">size_t</span><span class="w"> </span><span class="n">err_buf_size</span><span class="p">);</span>
+<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="kt">void</span><span class="w">          </span><span class="nf">mh_osc_client_close</span><span class="p">(</span><span class="n">MH_OscClient</span><span class="o">*</span><span class="w"> </span><span class="n">c</span><span class="p">);</span>
+<a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="kt">int</span><span class="w">           </span><span class="nf">mh_osc_send_float</span><span class="p">(</span><span class="n">MH_OscClient</span><span class="o">*</span><span class="w"> </span><span class="n">c</span><span class="p">,</span><span class="w"> </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">address</span><span class="p">,</span><span class="w"> </span><span class="kt">float</span><span class="w"> </span><span class="n">value</span><span class="p">);</span>
+<a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a><span class="kt">int</span><span class="w">           </span><span class="nf">mh_osc_send_int</span><span class="p">(</span><span class="n">MH_OscClient</span><span class="o">*</span><span class="w"> </span><span class="n">c</span><span class="p">,</span><span class="w"> </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">address</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">value</span><span class="p">);</span>
+<a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="kt">int</span><span class="w">           </span><span class="nf">mh_osc_send_string</span><span class="p">(</span><span class="n">MH_OscClient</span><span class="o">*</span><span class="w"> </span><span class="n">c</span><span class="p">,</span><span class="w"> </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">address</span><span class="p">,</span><span class="w"> </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">value</span><span class="p">);</span>
+</code></pre></div>
+<p>Implementation is a thin <code>OSCReceiver</code> / <code>OSCSender</code> wrapper registering a <code>Listener&lt;RealtimeCallback&gt;</code>. CMake: add <code>juce::juce_osc</code> to both flavours in <code>_minihost_audio_configure_common</code>.</p>
+<p>Device integration, mirroring <code>mh_audio_connect_midi_input</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kt">int</span><span class="w"> </span><span class="nf">mh_audio_connect_osc</span><span class="p">(</span><span class="n">MH_AudioDevice</span><span class="o">*</span><span class="w"> </span><span class="n">dev</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">port</span><span class="p">);</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="kt">int</span><span class="w"> </span><span class="nf">mh_audio_disconnect_osc</span><span class="p">(</span><span class="n">MH_AudioDevice</span><span class="o">*</span><span class="w"> </span><span class="n">dev</span><span class="p">);</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="kt">int</span><span class="w"> </span><span class="nf">mh_audio_set_osc_feedback</span><span class="p">(</span><span class="n">MH_AudioDevice</span><span class="o">*</span><span class="w"> </span><span class="n">dev</span><span class="p">,</span><span class="w"> </span><span class="k">const</span><span class="w"> </span><span class="kt">char</span><span class="o">*</span><span class="w"> </span><span class="n">host</span><span class="p">,</span><span class="w"> </span><span class="kt">int</span><span class="w"> </span><span class="n">port</span><span class="p">);</span>
+</code></pre></div>
+<p>Address scheme. Needs to answer "which plugin" for chains:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>/mh/param/&lt;slug&gt;            f    single plugin, by name slug
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>/mh/param/&lt;index&gt;           f    single plugin, by index
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>/mh/&lt;slot&gt;/param/&lt;slug&gt;     f    chain slot
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>/mh/transport/...                see Phase 5
+</code></pre></div>
+<p><code>py2tosc.surface.slug</code> (<code>surface.py:76</code>) already produces OSC-safe names with the same rules, so both ends agree on the spelling by construction -- which is the argument for using it rather than inventing a second slugger.</p>
+<p>Python: <code>minihost.OscServer</code> / <code>minihost.OscClient</code> in <code>_core.cpp</code>, context-manager shaped like <code>MidiIn</code>.</p>
+<h3 id="phase-2-osc-mapping-unified-with-midi-mapping-done">Phase 2 -- OSC mapping, unified with MIDI mapping -- DONE<a class="headerlink" href="#phase-2-osc-mapping-unified-with-midi-mapping-done" title="Permanent link">&para;</a></h3>
+<p>Landed with the shared core keyed on a normalized float plus a source
+identity, per section 7. <code>--osc-feedback</code> moved to Phase 4, where the
+feedback machinery it would drive actually lives.</p>
+<p><code>src/minihost/control.py</code> grows an <code>OscMapper</code> alongside <code>MidiMapper</code>, and both should share a resolution/curve/range core rather than duplicating <code>_CCMapping.normalize</code>.</p>
+<p><code>OscMapper</code> differences from <code>MidiMapper</code>:</p>
+<ul>
+<li>
+<p>Input is float32 already normalised 0..1, so no 7-bit quantisation. This is the whole point: <code>_CCMapping.normalize</code> divides by 127.0, giving 128 steps. A filter cutoff on 128 steps is audibly stepped; OSC float is not.</p>
+</li>
+<li>
+<p>Address-to-parameter resolution, with wildcard support delegated to <code>OSCAddressPattern</code>.</p>
+</li>
+<li>
+<p>Auto-binding: <code>OscMapper.bind_all(prefix="/mh/param")</code> maps every automatable parameter by slug in one call, which is what a generated surface wants.</p>
+</li>
+</ul>
+<p><code>minihost play</code> grows <code>--osc-port N</code>, <code>--osc-feedback host:port</code>, and the <code>--map-file</code> schema grows an <code>"osc"</code> address key next to <code>"cc"</code>.</p>
+<h3 id="phase-3-14-bit-cc-pairs-done">Phase 3 -- 14-bit CC pairs -- DONE<a class="headerlink" href="#phase-3-14-bit-cc-pairs-done" title="Permanent link">&para;</a></h3>
+<p><strong>One rule below changed during implementation, and the plan was wrong.</strong>
+This section originally specified: "On MSB receipt: store it, reset the
+cached LSB to 0, emit <code>msb &lt;&lt; 7</code>." That produces a sawtooth. A controller
+re-sending an unchanged <code>(MSB, LSB)</code> pair -- which is what a controller
+sending full pairs does on every message -- would emit <code>msb &lt;&lt; 7</code> and then
+<code>(msb &lt;&lt; 7) | lsb</code> forever, oscillating by up to 1/128 of the range at
+message rate. The plan justified the transient by saying Phase 0 coalescing
+hides it, which is true only when both halves land in the same audio block:
+a pair takes about 2 ms on the wire against a 5.3 ms block at 48 kHz/256, so
+they usually do, but not reliably.</p>
+<p>The implemented rule keeps the last LSB instead. An unchanged pair therefore
+emits an unchanged value, and the worst case is a stale fine position for the
+microseconds until the LSB arrives -- an error of at most one coarse step,
+never a periodic wobble. <code>tests/test_midi_14bit.py::test_a_repeated_pair_emits_a_stable_value</code>
+is the test that decides it.</p>
+<p>One case the plan did not cover: an LSB arriving before any MSB has been
+seen. Emitting it alone reads as <code>msb = 0</code> and slams the parameter to the
+bottom of its range, so it is held until an MSB gives it a coarse position to
+refine.</p>
+<p>The CLI spelling is <code>--map14</code> with the same grammar as <code>--map</code>, rather than
+the <code>channel:cc14:param:...</code> form sketched below -- a separate flag keeps the
+existing spec parser untouched and leaves no ambiguity about which field is
+the controller number.</p>
+<p>Per the MIDI spec, CC 0-31 carry the MSB and CC 32-63 carry the LSB for controller n, i.e. the pair is <code>(n, n + 32)</code> for n in 0..31.</p>
+<p>API: <code>MidiMapper.map_cc14(channel, cc, param, value_range=..., curve=...)</code> where <code>cc</code> is the MSB number and must be 0..31.</p>
+<p>Dispatch rule, chosen to work with both kinds of controller in the wild -- those that always send the full pair, and those that send LSB alone for a fine adjustment:</p>
+<ul>
+<li>
+<p>On MSB receipt: store it, reset the cached LSB to 0, emit <code>msb &lt;&lt; 7</code>.</p>
+</li>
+<li>
+<p>On LSB receipt: emit <code>(cached_msb &lt;&lt; 7) | lsb</code>.</p>
+</li>
+<li>
+<p>Divide by 16383.0 before the curve, not 127.0.</p>
+</li>
+</ul>
+<p>That produces a brief transient when a full pair arrives -- the value lands at <code>msb &lt;&lt; 7</code> and is corrected microseconds later by the LSB. Phase 0 makes this invisible: both writes land in the same audio block and coalesce to the second one. This is a concrete reason to keep the phase ordering.</p>
+<p>Explicitly rejected: the ~50ms pairing window some implementations use. It needs a timer thread and buys nothing once coalescing exists.</p>
+<p>Validation that must not be forgotten:</p>
+<ul>
+<li>
+<p><code>map_cc14(ch, n)</code> must reject if <code>map_cc(ch, n + 32)</code> is already mapped, and <code>map_cc(ch, m)</code> for m in 32..63 must reject if <code>map_cc14(ch, m - 32)</code> exists. Silent shadowing here would be near-undebuggable.</p>
+</li>
+<li>
+<p><code>cc</code> outside 0..31 is an error with a message that says why.</p>
+</li>
+</ul>
+<p>Map file: add <code>"cc14": 7</code> as an alternative key to <code>"cc": 7</code> rather than a <code>"bits": 14</code> modifier -- one key, unambiguous parse, no invalid combination to validate. <code>--map</code> spec gains a parallel <code>channel:cc14:param:...</code> form.</p>
+<p>Non-goal for this phase: RPN/NRPN (CC 98/99/6/38). It is a different mechanism, TouchOSC cannot emit it natively, and no touch surface needs it.</p>
+<h3 id="phase-4-feedback-host-to-surface-done">Phase 4 -- feedback, host to surface -- DONE<a class="headerlink" href="#phase-4-feedback-host-to-surface-done" title="Permanent link">&para;</a></h3>
+<p>Implemented by polling rather than by hooking the parameter-value callback
+the plan proposed. The callback is a single slot the Python <code>Plugin</code> binding
+already occupies, it fires on whatever thread changed the parameter
+(including the audio thread), and a surface cannot use more than ~30 updates
+a second anyway -- so its precision would have to be rate-limited back down
+to what polling produces directly. The echo hazard the plan identified is
+handled with the source identity Phase 2 put in the shared core.</p>
+<p>Without this a generated surface is write-only: load a preset and every fader lies.</p>
+<p>The mechanism already exists. <code>mh_set_param_value_callback</code> (<code>projects/libminihost/minihost.h:562</code>) fires <code>MH_ParamValueCallback</code> on plugin-initiated parameter changes, wired through <code>MH_Listener</code> at <code>minihost.cpp:328</code>. Hook it, push into a ring, have a sender thread emit OSC. No polling.</p>
+<p>Two hazards to design around:</p>
+<ul>
+<li>
+<p><strong>The callback thread is not ours.</strong> <code>audioProcessorParameterChanged</code> fires on whatever thread changed the parameter, possibly the audio thread. The path from callback to socket must be lock-free and allocation-free: ring, then a sender thread drains it.</p>
+</li>
+<li>
+<p><strong>Echo.</strong> <code>mh_set_param</code> calls <code>setValueNotifyingHost</code>, which fires the same callback -- so our own writes echo back to the surface that made them. Harmless when idle, but during a drag the echo fights the finger. Mitigation: tag the origin endpoint and suppress echo back to it for a short window, or drop echoes whose delta is below an epsilon. Pick one and write down which.</p>
+</li>
+</ul>
+<p>Rate-limit the feedback stream (30 Hz per parameter is plenty for a moving fader) so a modulating parameter cannot saturate the link.</p>
+<h3 id="phase-5-transport-done">Phase 5 -- transport -- DONE<a class="headerlink" href="#phase-5-transport-done" title="Permanent link">&para;</a></h3>
+<p>Both halves landed together: the live playhead the plan called out as
+missing, and the OSC addresses on top of it. A command ring rather than
+atomics, because this project avoids C11 <code>&lt;stdatomic.h&gt;</code> on purpose.</p>
+<p>Larger than it looks, and worth calling out before anyone commits to it.</p>
+<p><code>mh_set_transport</code> (<code>projects/libminihost/minihost.h:407</code>) exists and offline renders now use it -- that was the fix documented in <code>tests/test_transport_advance.py</code>. But <code>grep -n transport projects/libminihost_audio/minihost_audio.c</code> returns nothing: <strong>the live audio device has no playhead at all.</strong> It never calls <code>mh_set_transport</code>, so a tempo-synced delay running under <code>minihost play</code> sees no host tempo and a playhead pinned at zero.</p>
+<p>So "a transport touch surface" decomposes into two jobs, and only the second is OSC:</p>
+<ol>
+<li>
+<p>Give <code>MH_AudioDevice</code> a host playhead: a sample counter advanced per callback, a settable BPM and time signature, play/stop state, optional loop points, pushed via <code>mh_set_transport</code> before each process call. This is worth doing on its own merits regardless of OSC -- it is a real gap in the live path.</p>
+</li>
+<li>
+<p>Expose it over OSC:</p>
+</li>
+</ol>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>/mh/transport/play      -&gt; start
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>/mh/transport/stop      -&gt; stop
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>/mh/transport/bpm       f
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>/mh/transport/position  f   (beats)
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>/mh/transport/loop      i
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>/mh/panic               -&gt; all-notes-off on every channel
+</code></pre></div>
+<p>with feedback on <code>/mh/transport/position</code> so the surface can show a playhead.</p>
+<p>Recommend splitting job 1 into its own TODO entry under Tier 1 or 2 independent of this plan, and letting Phase 5 depend on it.</p>
+<h3 id="phase-6-surface-generation-done">Phase 6 -- surface generation -- DONE<a class="headerlink" href="#phase-6-surface-generation-done" title="Permanent link">&para;</a></h3>
+<p>Landed as designed, on <code>ui_json</code> schema 2 with a <code>case</code>/<code>when</code> branch table.
+One detail the plan did not anticipate: two branches per widget kind rather
+than three total, because a parameter past the CC limit has no controller
+number and <code>each</code> cannot conditionally include a message.</p>
+<p>The user-facing deliverable: <code>minihost touch &lt;plugin&gt;</code> writes a layout and the matching map file, and they agree by construction.</p>
+<h4 id="target-the-py2toscui-json-dialect-not-the-flat-surface-list">Target the <code>py2tosc.ui</code> JSON dialect, not the flat <code>surface</code> list<a class="headerlink" href="#target-the-py2toscui-json-dialect-not-the-flat-surface-list" title="Permanent link">&para;</a></h4>
+<p><code>py2tosc.surface.read</code> accepts a flat list of names -- one control per entry, laid out four across and three down, every control a fader. It is the zero-configuration path and it stays useful as one, but it is the wrong generation target for anything richer, because the layout it produces is not described anywhere the generator or the user can reach.</p>
+<p><code>py2tosc.ui_json</code> (<code>src/py2tosc/ui_json.py</code>) is the better target. It is a JSON dialect over the <code>py2tosc.ui</code> combinators -- <code>row</code>, <code>column</code>, <code>tiles</code>, <code>stack</code>, <code>grid</code>, <code>pager</code>, <code>labelled</code>, <code>inset</code> -- with <code>sizes</code>, <code>gap</code>, <code>pad</code> and <code>frame</code> as arguments, so nesting and space division are described rather than baked in. From <code>py2tosc/tests/data/mixer.ui.json</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="p">{</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="nt">&quot;format&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;py2tosc.ui&quot;</span><span class="p">,</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span><span class="nt">&quot;//&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;eight channels over a bank of mutes, in a canvas divided three to one&quot;</span><span class="p">,</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span><span class="nt">&quot;root&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">    </span><span class="nt">&quot;column&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">      </span><span class="p">{</span><span class="nt">&quot;row&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">        </span><span class="p">{</span><span class="nt">&quot;fader&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ch$i&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="w">          </span><span class="p">{</span><span class="nt">&quot;osc&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/mixer/{name}&quot;</span><span class="p">},</span>
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="w">          </span><span class="p">{</span><span class="nt">&quot;midi_cc&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;$i0&quot;</span><span class="p">}</span>
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="w">        </span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;repeat&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">8</span><span class="p">}</span>
+<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="w">      </span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;gap&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">},</span>
+<a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="w">      </span><span class="p">{</span><span class="nt">&quot;grid&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;BUTTON&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;columns&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">8</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;rows&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;mutes&quot;</span><span class="p">}</span>
+<a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="w">    </span><span class="p">],</span>
+<a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a><span class="w">    </span><span class="nt">&quot;sizes&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="mi">1</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;gap&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">8</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;pad&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">8</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;mixer&quot;</span><span class="p">,</span>
+<a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a><span class="w">    </span><span class="nt">&quot;frame&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">1024</span><span class="p">,</span><span class="w"> </span><span class="mi">768</span><span class="p">]</span>
+<a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a><span class="w">  </span><span class="p">}</span>
+<a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a><span class="p">}</span>
+</code></pre></div>
+<p>Four properties of the dialect earn it the job:</p>
+<ul>
+<li>
+<p><strong><code>each</code> is a parameter table.</strong> <code>repeat</code> counts; <code>each</code> walks a list of records, binding every field of a row as <code>$field</code> the way <code>repeat</code> binds <code>$i</code>. Its docstring names the case exactly -- a layout "whose names and numbers follow no sequence" -- and permits an empty list, "since a list of nothing is what a generator with nothing to emit produces". A plugin's parameter list is precisely that.</p>
+</li>
+<li>
+<p><strong>A whole-string placeholder keeps its type</strong> (<code>ui_json.py:321</code>): <code>"$cc"</code> substitutes the <em>number</em> 74, while <code>"cutoff $unit"</code> substitutes a string. So <code>{"midi_cc": "$cc"}</code> binds a real controller number from a row, with no string-to-int coercion anywhere in the format.</p>
+</li>
+<li>
+<p><strong><code>//</code> keys are comments</strong>, ignored wherever a key may appear. A generated layout can explain itself: which parameter index a control came from, why a CC number was skipped, what the plugin called it before slugging.</p>
+</li>
+<li>
+<p><strong>It is read but never written</strong> -- there is no <code>to_ui_json</code>, because a resolved layout has frames and no memory of the <code>row</code> that placed them. That is exactly the right shape here: minihost is a producer, py2tosc is the compiler, and the direction never needs to reverse.</p>
+</li>
+</ul>
+<p><code>py2tosc.load()</code> dispatches on the envelope's <code>format</code> field (<code>document.py:294</code>), so a <code>.ui.json</code> is loadable and convertible with what already exists:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="gp">$ </span>py2tosc<span class="w"> </span>convert<span class="w"> </span>synth.ui.json<span class="w"> </span>-o<span class="w"> </span>synth.tosc
+</code></pre></div>
+<h4 id="what-this-buys-concretely">What this buys, concretely<a class="headerlink" href="#what-this-buys-concretely" title="Permanent link">&para;</a></h4>
+<p><strong>The generation step loses its dependency.</strong> minihost writes JSON text; it imports nothing from py2tosc to do so. py2tosc is needed only to compile the result into a <code>.tosc</code>. If it is not installed, <code>minihost touch</code> still produces a complete, valid <code>.ui.json</code> and says how to compile it -- rather than failing with an ImportError and producing nothing.</p>
+<p><strong>The output is a source file, not an artefact.</strong> A <code>.tosc</code> is a zipped XML blob; nobody hand-edits one, so a generator that emits one directly owns every layout decision forever. A <code>.ui.json</code> is reviewable, diffable, and editable -- move a control, change a gap, add a page, then recompile. The generator stops having to anticipate what anyone might want.</p>
+<p><strong>Templates become user-supplied.</strong> <code>minihost touch --template mine.ui.json</code> takes a layout containing an <code>each</code> node with a marker, and injects the parameter rows into it. The user owns the visual design; minihost owns only the parameter table and the bindings. This is the feature that makes the command worth having, and it falls out of the dialect rather than needing to be built.</p>
+<p><strong>The widget-metadata extension to <code>surface.Parameter</code> is no longer needed.</strong> The earlier draft of this plan proposed pushing <code>kind</code>, <code>steps</code>, <code>unit</code> and <code>group</code> into py2tosc's <code>Parameter</code> dataclass so <code>surface.build</code> could choose widgets. With ui-json, minihost chooses the widget itself by emitting <code>{"button": ...}</code> or <code>{"radio": ...}</code> instead of <code>{"fader": ...}</code>. No py2tosc change is required at all. Drop that work.</p>
+<h4 id="heterogeneous-tables-each-with-a-branch-table">Heterogeneous tables: <code>each</code> with a branch table<a class="headerlink" href="#heterogeneous-tables-each-with-a-branch-table" title="Permanent link">&para;</a></h4>
+<p>Substitution reaches values, never keys, so the tag stays fixed in the template and one <code>each</code> builds one kind of control. That is a design invariant, not a limitation: keys carry the meaning (which tag, which property) and values carry the data, and a node whose type came from a row could not be checked against the tag table before expansion.</p>
+<p>Plugin parameters are mixed, though -- a bypass wants <code>button</code>, a waveform selector <code>radio</code>, a cutoff <code>fader</code> -- so an earlier draft of this plan routed around it by emitting explicit per-parameter nodes and filed a feature request upstream.</p>
+<p><strong>py2tosc 0.5.2 shipped it.</strong> An <code>of</code> may now hold a branch table instead of a node, and a row says which branch:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="p">{</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span><span class="nt">&quot;each&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;kind&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;cont&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;cutoff&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;cc&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">74</span><span class="p">},</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;kind&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sw&quot;</span><span class="p">,</span><span class="w">   </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;bypass&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;cc&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">75</span><span class="p">}</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">  </span><span class="p">],</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">  </span><span class="nt">&quot;of&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;case&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;$kind&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;when&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">    </span><span class="nt">&quot;cont&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;fader&quot;</span><span class="p">:</span><span class="w">  </span><span class="s2">&quot;$name&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">&quot;midi_cc&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;$cc&quot;</span><span class="p">}]},</span>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="w">    </span><span class="nt">&quot;sw&quot;</span><span class="p">:</span><span class="w">   </span><span class="p">{</span><span class="nt">&quot;button&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;$name&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">&quot;midi_cc&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;$cc&quot;</span><span class="p">}]}</span>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="w">  </span><span class="p">}}</span>
+<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="p">}</span>
+</code></pre></div>
+<p>Every key stays literal, so every branch is validated against the tag table before any row is read -- a branch naming two tags or none is refused whether or not a row selects it. This is <code>ui_json</code> <strong>schema 2</strong>.</p>
+<p><strong>py2tosc 0.6.0 extended it to bindings.</strong> A choice may also stand where a list of children or of bindings is accepted, and a branch may hold a list, including an empty one. That answers the second question a generated table asks: there are 128 controller numbers and plugins routinely have more parameters, so a row past the last has no CC to bind.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nt">&quot;of&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;fader&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;$name&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="p">{</span><span class="nt">&quot;osc&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;$address&quot;</span><span class="p">},</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">  </span><span class="p">{</span><span class="nt">&quot;case&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;$hasCc&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;when&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;true&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">&quot;midi_cc&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;$cc&quot;</span><span class="p">}],</span><span class="w"> </span><span class="nt">&quot;false&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[]}}</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="p">]}</span>
+</code></pre></div>
+<p>This is <code>ui_json</code> <strong>schema 3</strong>, and it is what keeps the table additive. Asking the two questions separately -- widget kind, then CC -- is three arms plus two branches; asking them together in one flat table is six arms, and twelve once a third question appears.</p>
+<p>Two behaviours worth knowing before writing the generator, both from the 0.5.2 notes:</p>
+<ul>
+<li>
+<p><strong>Only the selected branch is substituted into.</strong> A branch reads the fields its own rows carry and no others, so a <code>sw</code> row needs no <code>steps</code> for a <code>radio</code> branch that mentions one. Rows can therefore be exactly as wide as their kind requires; no padding the table to a union of fields.</p>
+</li>
+<li>
+<p><strong>A branch nothing selects is not an error.</strong> A template carrying a <code>radio</code> branch for a plugin with no stepped parameters is fine. A row selecting a branch nobody wrote <em>is</em> an error, and names the value it read. So minihost can emit one full-width template covering every widget kind and let the parameter table decide what appears.</p>
+</li>
+</ul>
+<p><strong>So the recommendation flips.</strong> Use <code>each</code> with a <code>case</code>/<code>when</code> branch table as the default, not explicit per-parameter nodes, and nest a second choice in the bindings rather than doubling the arms. It keeps parameter order (rows expand in list order, each selecting its own branch), which was the objection that ruled out grouping by widget kind, and it keeps the compactness that made <code>each</code> worth targeting in the first place. The parameter table lands in the file as a table -- which is what it is, and what makes the output legible and hand-editable.</p>
+<p>Explicit nodes remain the fallback for anything the branch table cannot express, and the generator should be structured so that choice is one function, not a shape assumption spread through the emitter.</p>
+<h4 id="work-in-minihost">Work in minihost<a class="headerlink" href="#work-in-minihost" title="Permanent link">&para;</a></h4>
+<p><code>src/minihost/touch.py</code> plus a <code>cmd_touch</code> in <code>cli.py</code>:</p>
+<ul>
+<li>
+<p>Build one parameter table from <code>MH_ParamInfo</code>: <code>is_boolean</code> to a <code>button</code>, <code>num_steps &gt; 0</code> to a <code>radio</code> with that many positions, otherwise a <code>fader</code>; <code>label</code> to the caption unit; <code>category</code> to the page grouping; skip <code>is_automatable == 0</code> unless <code>--all</code>.</p>
+</li>
+<li>
+<p>Slug names with the same rules <code>py2tosc.surface.slug</code> uses (<code>surface.py:76</code>) so both ends spell an address identically. Reuse it when py2tosc is importable, mirror it when not, and test that the two agree -- a divergence here is a silently dead address.</p>
+</li>
+<li>
+<p>Assign CC numbers and OSC addresses <strong>once</strong>, then render both the <code>.ui.json</code> and the map file from that single table. This is the whole reason to do it in minihost rather than piping two CLIs: the layout and the host mapping cannot disagree because they come from the same rows.</p>
+</li>
+<li>
+<p>Emit the rows as one <code>each</code> over a <code>case</code>/<code>when</code> branch table -- one branch per widget kind, rows in plugin parameter order. A branch no row selects is legal, so the template can carry all three unconditionally.</p>
+</li>
+<li>
+<p>Stamp the envelope with <code>required_schema(document)</code> rather than a constant, since <code>--template</code> means the layout is not wholly minihost's. See the schema notes below.</p>
+</li>
+<li>
+<p>Annotate with <code>//</code> comments: parameter index per control, and a header noting the plugin, its version, and the minihost version that generated the file.</p>
+</li>
+<li>
+<p>Warn on CC exhaustion. There are 128 controller numbers and plugins routinely have more parameters; those spill to OSC-only. <code>surface.py:53</code> already does this silently, which for a 300-parameter plugin is a surprise rather than a decision.</p>
+</li>
+<li>
+<p>Optionally append a transport page (Phase 5) behind <code>--transport</code>.</p>
+</li>
+</ul>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="gp">$ </span>minihost<span class="w"> </span>touch<span class="w"> </span>Synth.vst3<span class="w"> </span>--out<span class="w"> </span>synth<span class="w"> </span>--osc-port<span class="w"> </span><span class="m">9000</span><span class="w"> </span>--feedback-port<span class="w"> </span><span class="m">9001</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="go">wrote synth.ui.json, synth.map.json</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="go">  128 parameters bound to MIDI CC and OSC</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="go">   47 parameters bound to OSC only (CC numbers exhausted)</span>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="go">   12 non-automatable parameters skipped (--all to include)</span>
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="go">compiled synth.tosc</span>
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a>
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="gp">$ </span>minihost<span class="w"> </span>play<span class="w"> </span>Synth.vst3<span class="w"> </span>--map-file<span class="w"> </span>synth.map.json<span class="w"> </span>--osc-port<span class="w"> </span><span class="m">9000</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a><span class="w">      </span>--osc-feedback<span class="w"> </span><span class="m">192</span>.168.1.40:9001
+</code></pre></div>
+<p>Flags: <code>--template FILE</code>, <code>--midi-only</code> / <code>--osc-only</code>, <code>--size WxH</code>, <code>--columns</code> / <code>--rows</code>, <code>--params</code> to select a subset by name or index range, <code>--no-compile</code> to stop at the <code>.ui.json</code>.</p>
+<h4 id="dependency-handling-and-schema-tracking">Dependency handling and schema tracking<a class="headerlink" href="#dependency-handling-and-schema-tracking" title="Permanent link">&para;</a></h4>
+<p><code>py2tosc</code> has <code>dependencies = []</code> itself, so it enters as an optional extra and <code>pyproject.toml</code>'s core <code>dependencies = []</code> is untouched:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="k">[project.optional-dependencies]</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="n">touch</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;py2tosc &gt;= 0.6.0&quot;</span><span class="p">]</span>
+</code></pre></div>
+<p>A floor, not a minor pin. Both JSON dialects version themselves: the envelope carries a <code>schema</code> number, and a reader rejects only what is above its range, so a newer py2tosc still builds an older description -- files are durable, readers advance. As of 0.5.2:</p>
+<table>
+<thead>
+<tr>
+<th>dialect</th>
+<th><code>SCHEMA</code></th>
+<th><code>SCHEMAS</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ui_json</code></td>
+<td>2</td>
+<td><code>range(1, 3)</code></td>
+</tr>
+<tr>
+<td><code>json_codec</code></td>
+<td>1</td>
+<td><code>range(1, 2)</code></td>
+</tr>
+</tbody>
+</table>
+<p>0.6.0 is the floor because a choice among bindings is schema 3 and arrived in it.</p>
+<p><strong>Stamp the schema, and compute it rather than remember it.</strong> <code>ui_json</code> is read and never written, so the producer stamps -- and minihost is the producer. A description carrying no <code>schema</code> key means "whatever the reader is", which is the ambiguity a version number exists to remove.</p>
+<p>Hardcoding <code>2</code> is the wrong fix, because with <code>--template</code> the layout is partly the user's and may use less (or later, more) than minihost's own emitter does. Ask instead:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="n">schema</span> <span class="o">=</span> <span class="n">py2tosc</span><span class="o">.</span><span class="n">ui_json</span><span class="o">.</span><span class="n">required_schema</span><span class="p">(</span><span class="n">document</span><span class="p">)</span>   <span class="c1"># lowest schema that builds it</span>
+</code></pre></div>
+<p>Understating the stamp is the mistake nothing catches by building -- the reader that would catch it is by definition new enough not to care. It surfaces on someone else's older release as a <code>FormatError</code> about a node that is perfectly fine. <code>py2tosc validate</code> warns on it, and so does the vendored checker described in section 5.</p>
+<p>Check compatibility before writing, not after:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="k">if</span> <span class="ow">not</span> <span class="n">py2tosc</span><span class="o">.</span><span class="n">ui_json</span><span class="o">.</span><span class="n">supports</span><span class="p">(</span><span class="n">schema</span><span class="p">):</span>
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>    <span class="c1"># &quot;this py2tosc reads ui_json schemas 1-2, this layout needs 3; upgrade py2tosc&quot;</span>
+</code></pre></div>
+<p><code>SchemaError</code> (a <code>FormatError</code> subclass, new in 0.5.2) is the catch-first equivalent for the too-new case.</p>
+<p>The table minihost keeps:</p>
+<table>
+<thead>
+<tr>
+<th>minihost</th>
+<th>emits ui_json schema</th>
+<th>py2tosc known to build it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0.8.x (planned)</td>
+<td>3</td>
+<td>0.6.0+</td>
+</tr>
+</tbody>
+</table>
+<p>What the schema does not cover is a provisional change that alters <em>output</em> without stopping a file from building -- different default sizing, say -- nor, per the <code>required_schema</code> docstring, a future schema that changed what an existing spelling <em>does</em>, since the description would be textually identical. Golden files are the guard for both, and they catch it on a deliberate extra bump rather than at a user's machine. That is the right place for the cost, and it is why the floor is a floor.</p>
+<p>Import lazily inside <code>cmd_touch</code>, the same shape as the lazy <code>import json</code> already used through <code>cli.py</code>, and fail with an install hint rather than a traceback -- while still having written the <code>.ui.json</code>.</p>
+<h2 id="5-testing">5. Testing<a class="headerlink" href="#5-testing" title="Permanent link">&para;</a></h2>
+<p>Nothing here justifies weakening the existing standard. Per phase:</p>
+<ul>
+<li>
+<p><strong>Phase 0</strong>: extend <code>tests/tsan/ringbuffer_stress.cpp</code> and <code>make tsan</code>. Python tests for coalescing and for <code>_auto</code> reachability. Add to <code>tests/test_rt_allocations.py</code> -- the drain path must not allocate.</p>
+</li>
+<li>
+<p><strong>Phase 1</strong>: loopback test, server and client in one process, no network dependency and no fixed port (bind 0, read back the assigned port). Malformed-packet handling: a truncated datagram must not crash the socket thread.</p>
+</li>
+<li>
+<p><strong>Phase 2</strong>: extend <code>tests/test_midi_mapper.py</code>, or add <code>tests/test_osc_mapper.py</code> alongside it.</p>
+</li>
+<li>
+<p><strong>Phase 3</strong>: table-driven over the MSB/LSB orderings -- pair in order, LSB alone, MSB alone, LSB before MSB, plus both conflict-rejection cases. Assert full 0..16383 range coverage, which is the thing that would regress silently.</p>
+</li>
+<li>
+<p><strong>Phase 4</strong>: assert the echo suppression actually suppresses; a test that a <code>set_param</code> originating from endpoint A does not send back to A.</p>
+</li>
+<li>
+<p><strong>Phase 5</strong>: assert the live device advances <code>position_samples</code> at the expected rate, recording <code>set_transport</code> calls the way <code>test_transport_advance.py</code> already does for the offline path.</p>
+</li>
+<li>
+<p><strong>Phase 6</strong>: golden-file tests on the generated <code>.ui.json</code> and map JSON. Nearly all of this needs no py2tosc, since generation is pure JSON emission -- assert the envelope, the stamped schema, the branch a parameter kind selects, the CC assignment, and that the map file and the layout name the same addresses.</p>
+</li>
+</ul>
+<p>Vendor <code>scripts/check_json.py</code> from py2tosc into the test tree and run every generated file through its <code>check(data)</code>. It is one stdlib-only file written to be copied by projects that produce these descriptions, so it costs no dependency and catches the class of fault a golden file cannot: a key nothing reads, silently dropping a subtree while the output still looks correct. Record its py2tosc version in <code>docs/vendored.md</code> alongside the C libraries, and re-copy on a schema bump.</p>
+<p>Assert the stamp specifically: that minihost stamps what <code>required_schema</code> computes, not a constant. Since <code>required_schema</code> detects spellings rather than meanings, pair it with a golden file -- that is the documented guard for the case it cannot see.</p>
+<p>Behind the optional extra, the tests that need the real compiler: that <code>py2tosc.load</code> builds the generated file, that it resolves (a <code>sizes</code> that does not divide and a row too narrow for its children are invisible to the standalone checker), and that every address in the resolved document maps back to a real parameter index.</p>
+<p>Plus a test that minihost's slugger and <code>py2tosc.surface.slug</code> agree on a corpus of awkward parameter names, since a divergence there is a silently dead address.</p>
+<p><code>make test</code> after each phase, per the project rule. <code>make qa</code> before declaring a phase done.</p>
+<h2 id="6-upstream-py2tosc-052-and-schema-3-coming">6. Upstream: py2tosc 0.5.2, and schema 3 coming<a class="headerlink" href="#6-upstream-py2tosc-052-and-schema-3-coming" title="Permanent link">&para;</a></h2>
+<p>Both feature requests this plan raised shipped in py2tosc 0.5.2, in the shape proposed, plus two things nobody asked for that change how Phase 6 is tested. The changelog credits minihost by name as the caller that found the gaps -- a generator rather than a hand-author.</p>
+<p>Recorded here so the plan does not have to be re-derived, and so the reasoning survives if any of it needs revisiting.</p>
+<p><strong>1. <code>case</code>/<code>when</code> branch tables -- <code>ui_json</code> schema 2.</strong> Covered in Phase
+6. The consequence for this plan is that the generator's default output shape flipped from explicit per-parameter nodes back to <code>each</code>.</p>
+<p><strong>2. <code>SCHEMAS</code>, <code>supports()</code>, <code>SchemaError</code>, on both dialects.</strong> <code>SCHEMA</code> names only the newest and says nothing about the floor; <code>SCHEMAS</code> is the range a release builds and <code>supports(n)</code> asks about one, so a generator checks before writing rather than catching after. A schema above the range is now <code>SchemaError</code> (subclass of <code>FormatError</code>); a <code>schema</code> key that is not a number stays a plain <code>FormatError</code>, since that is an envelope fault rather than a version fault. 0.5.2 also started refusing a schema <em>below</em> the range -- there has never been a schema 0.</p>
+<p><strong>3. <code>required_schema()</code> and a <code>py2tosc validate</code> warning.</strong> Not requested, and the more useful of the two additions for minihost. <code>SCHEMAS</code> answers what a release reads; <code>required_schema(data)</code> answers what a description needs -- the lowest schema that builds it, which is the number to stamp.</p>
+<p>This closes a failure that is otherwise structurally uncatchable by the producer: understating the stamp cannot fail on the machine that wrote it, because the reader that would catch it is new enough to build the file anyway. It fails later, on someone else's older release, as an error about a node that is fine. <code>py2tosc validate</code> now warns:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="gp">$ </span>py2tosc<span class="w"> </span>validate<span class="w"> </span>synth.ui.json
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="go">warning: &lt;envelope&gt;: the description declares schema 1 and uses schema 2; a</span>
+<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="go">release reading only schema 1 will refuse it with a message about a node</span>
+</code></pre></div>
+<p>A warning, not a refusal -- a refusal would only ever fire on files the refusing reader can build. Exit codes unchanged.</p>
+<p>One stated limit still carries over into how minihost should test: <code>required_schema</code> detects spellings, not meanings, so a future schema that changed what an existing spelling <em>does</em> would leave a description textually identical and the warning quiet. Golden files are the guard for that.</p>
+<p>The other limit recorded here has since been closed upstream and this note was wrong to leave standing: <code>_needs</code>, the hand-written record of which schema each spelling arrived in, is now guarded by a per-schema description corpus (<code>tests/data/schemas/</code>, <code>tests/test_schema_corpus.py</code>). A schema with no fixture fails, and a fixture whose declared schema disagrees with <code>required_schema</code> fails, so a bump that forgets to extend the table is a failing test rather than a silently clean bill of health. The corpus also runs every description through <code>scripts/check_json.py</code>, which carries its own copy of that table -- the one drift nothing else compared.</p>
+<p><strong>4. <code>scripts/check_json.py</code> -- a standalone, stdlib-only checker.</strong> One file, no py2tosc import, explicitly meant to be copied into a project that <em>writes</em> these files. That is minihost's case exactly, and it is why section 5's Phase 6 tests mostly do not need the optional extra.</p>
+<p>It reads both dialects (told apart by <code>format</code>, as <code>py2tosc.load</code> does), exposes <code>check(data)</code> returning findings, and catches the failure class this format has to close: a key nothing reads, silently ignored, so a <code>childs</code> typo drops a subtree and the output looks like a file that read correctly. Also <code>$name</code> no repeat binds, a binding a control cannot carry, and a schema stamped below the spellings used.</p>
+<p>Conservative by construction -- everything it calls an error, py2tosc refuses too -- and the reverse is explicitly not promised: it resolves nothing, so a <code>sizes</code> that does not divide, a row too narrow for its children, and a property that will not coerce are invisible to it. Those need the real compiler, which is the one place Phase 6's tests want the extra installed.</p>
+<p>Its tables are generated off the live modules by <code>scripts/make_check_json.py</code> (with a <code>--check</code> mode for CI) rather than retyped, so the copy cannot drift silently.</p>
+<h3 id="schema-3-coming-and-it-undoes-phase-6s-workaround">Schema 3: coming, and it undoes Phase 6's workaround<a class="headerlink" href="#schema-3-coming-and-it-undoes-phase-6s-workaround" title="Permanent link">&para;</a></h3>
+<p><strong>Unreleased at the time of writing.</strong> py2tosc's working tree has <code>SCHEMA = 3</code> and <code>SCHEMAS = range(1, 4)</code>, but <code>__version__</code> is still <code>0.5.2</code> and that is the newest tag, so no <em>released</em> py2tosc reads it. minihost therefore keeps emitting schema 2 -- see the adoption conditions below.</p>
+<p>What it adds: a choice may now stand wherever a list of children <strong>or bindings</strong> is accepted, and a branch may hold a <em>list</em> -- several nodes, or none. Schema 2 let a row choose which control it built, but <code>messages</code> stayed written in the template, so one <code>each</code> still built one fixed <em>set of bindings</em>.</p>
+<p>That is exactly the wall Phase 6 hit. There are 128 controller numbers and plugins routinely have more parameters, so a row past the last one has no CC to bind at all, and <code>each</code> could not conditionally omit a message. The workaround was to double the arms -- <code>continuous</code> / <code>continuousNoCc</code>, and the same for the other two kinds -- six complete templates for what is really two independent questions. The upstream changelog names minihost as the caller that prompted the change, and its own schema-3 fixture is this case verbatim.</p>
+<p>Schema 3 nests the second question inside the first instead:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="p">{</span><span class="nt">&quot;case&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;$kind&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;when&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="w">  </span><span class="nt">&quot;cont&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;fader&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;$n&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;messages&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;osc&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/mh/param/$n&quot;</span><span class="p">},</span>
+<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;case&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;$cc&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;when&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;true&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">&quot;midi_cc&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;$num&quot;</span><span class="p">}],</span><span class="w"> </span><span class="nt">&quot;false&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[]}}</span>
+<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a><span class="w">  </span><span class="p">]}</span>
+<a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a><span class="p">}}</span>
+</code></pre></div>
+<p>A branch of <code>[]</code> is how a row says nothing goes here; a branch holding several nodes splices them all in -- the same "expands in place" rule <code>repeat</code> already had, which is what makes this a generalisation rather than a second mechanism.</p>
+<p>The saving is in how it grows, not in the count today: one choice per question makes three kinds and two CC states <strong>five</strong> branches against the flat table's <strong>six</strong>, but a third question makes that <strong>seven</strong> against <strong>twelve</strong>. Phase 6's generator would shed <code>_branch_table</code>'s doubling entirely.</p>
+<p>Two rules to respect when adopting it. A branch under a repeat's <code>of</code> is one node, because a repeat builds one node per pass; a list there is refused. A branch among children or bindings is one node <em>or</em> a list of them. And only the branch a row takes is substituted into, at any depth, which is what lets rows be ragged -- the <code>true</code> branch reads <code>$num</code> and the row that does not take it need not carry a <code>num</code> field at all. That would let <code>Parameter</code> rows drop the <code>cc</code> key rather than carrying a sentinel.</p>
+<p><strong>Conditions for adopting it, none of which hold yet:</strong></p>
+<ol>
+<li>A released py2tosc carries schema 3. Emitting it now would produce descriptions that <code>pip install 'minihost[touch]'</code> -- which resolves to 0.5.2 -- refuses with a <code>SchemaError</code>.</li>
+<li><code>pyproject.toml</code>'s <code>touch</code> extra floor moves from <code>&gt;=0.5.2</code> to that release, and <code>CIBW_TEST_REQUIRES</code> with it.</li>
+<li><code>tests/check_json.py</code> is re-copied. The vendored one is from 0.5.2 and does not know schema 3, so it would report a schema newer than its tables know -- which is the vendoring banner's stated re-copy trigger working as intended.</li>
+<li><code>build_layout</code> stamps what <code>required_schema</code> computes, which it already does not hardcode.</li>
+</ol>
+<p>Until then the generator emits schema 2, which every release from 0.5.2 onward keeps building -- files are durable and readers advance.</p>
+<p>One upstream fix worth knowing even though it does not reach minihost: <code>case</code> ignored the counters an inner repeat had yet to bind, so a choice nested inside another repeat was selected by the outer pass. minihost nests no repeats, so nothing generated here could have hit it.</p>
+<p><strong>Still outstanding upstream:</strong> nothing this plan needs. <code>json_codec</code> remains at schema 1, which is fine -- Phase 6 does not target it, and the lower-level escape hatch noted earlier stays hypothetical.</p>
+<p>One observation from the design discussion, kept because it explains the shape of item 1 and is worth not relitigating: <strong>value-only substitution is a design invariant, not a limitation worked around.</strong> The 0.5.2 notes make the same argument -- every key stays literal, so every branch is checked before any row is looked at, which is a check a node whose type came from a row could not have.</p>
+<h2 id="7-surface-transports-why-not-a-web-page-over-web-midi">7. Surface transports: why not a web page over Web MIDI<a class="headerlink" href="#7-surface-transports-why-not-a-web-page-over-web-midi" title="Permanent link">&para;</a></h2>
+<p>Asked before Phase 2, because if a browser UI were the better target then the
+mapping layer should be built facing it. It is not, but the reasoning is worth
+keeping so it does not get re-litigated.</p>
+<h3 id="the-constraint-everything-follows-from">The constraint everything follows from<a class="headerlink" href="#the-constraint-everything-follows-from" title="Permanent link">&para;</a></h3>
+<p><strong>A browser cannot send UDP.</strong> No page will ever speak OSC to minihost
+directly. That leaves exactly three transports from a surface to this process,
+and they reach different devices:</p>
+<table>
+<thead>
+<tr>
+<th>transport</th>
+<th>reaches</th>
+<th>new minihost code</th>
+<th>resolution</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.tosc</code> + OSC</td>
+<td>iPad, iPhone, Android, desktop</td>
+<td>none (Phase 1)</td>
+<td>float32</td>
+</tr>
+<tr>
+<td>web page + Web MIDI</td>
+<td>desktop Chrome / Firefox / Edge, Android</td>
+<td>none</td>
+<td>7-bit, 14-bit after Phase 3</td>
+</tr>
+<tr>
+<td>web page + WebSocket</td>
+<td>everything, iPad included</td>
+<td>HTTP/WS server</td>
+<td>float32</td>
+</tr>
+</tbody>
+</table>
+<h3 id="web-midi-does-not-reach-an-ipad">Web MIDI does not reach an iPad<a class="headerlink" href="#web-midi-does-not-reach-an-ipad" title="Permanent link">&para;</a></h3>
+<p>Safari on iOS/iPadOS does not support the Web MIDI API -- not in any version
+through 26.6 -- and Safari on macOS does not either, through 27 and Technology
+Preview. WebKit has declined to ship it for years on fingerprinting grounds,
+since MIDI devices report unique identifying IDs, and there is no published
+roadmap. Support is Chrome 43+, Edge 79+, Firefox 108+ and Chrome on Android.</p>
+<p>Reaching for Chrome on the iPad does not help: every iPadOS browser is WebKit
+underneath, outside the EU alternative-engine carve-out.</p>
+<p>So for the case that motivates a touch surface at all -- a tablet on a stand
+driving a plugin -- Web MIDI is unavailable on the dominant tablet. That is
+the whole answer to "should this replace <code>.tosc</code>": it cannot, because it does
+not run where <code>.tosc</code> runs.</p>
+<p>Sources: <a href="https://caniuse.com/midi">https://caniuse.com/midi</a>,
+<a href="https://developer.mozilla.org/en-US/docs/Web/API/Navigator/requestMIDIAccess">https://developer.mozilla.org/en-US/docs/Web/API/Navigator/requestMIDIAccess</a></p>
+<h3 id="where-it-does-win-and-it-is-free-to-try">Where it does win, and it is free to try<a class="headerlink" href="#where-it-does-win-and-it-is-free-to-try" title="Permanent link">&para;</a></h3>
+<p><code>mh_audio_create_virtual_midi_input</code> already exists, so a page calling
+<code>requestMIDIAccess()</code> and sending CC reaches <code>MidiMapper</code> today with <strong>no new
+minihost code at all</strong>. Against <code>.tosc</code> it also wins on:</p>
+<ul>
+<li>Generation. Emitting HTML is trivial next to generating a zip of XML.</li>
+<li>Iteration. Reload the page; no transfer to a device, no paid app.</li>
+<li>Display. Parameter names with units, value curves, meters -- things a
+  TouchOSC layout does poorly or not at all.</li>
+</ul>
+<p>Two costs to know before starting. <code>requestMIDIAccess()</code> requires a secure
+context, so <code>https://</code> or <code>http://localhost</code> rather than <code>file://</code> in
+practice, which means serving the page from somewhere. And virtual MIDI ports
+do not exist natively on Windows -- libremidi's WinMM backend cannot create
+one -- so Windows users need loopMIDI or an equivalent driver.</p>
+<p>Worth a short prototype on those terms: a virtual MIDI input, eight
+<code>&lt;input type="range"&gt;</code>, <code>output.send([0xB0, cc, value])</code>. If it is pleasant on
+a laptop second screen it is a free win. It is simply not the iPad answer and
+should not be planned as one.</p>
+<h3 id="if-a-browser-ui-is-what-is-actually-wanted-websocket-is-the-one">If a browser UI is what is actually wanted, WebSocket is the one<a class="headerlink" href="#if-a-browser-ui-is-what-is-actually-wanted-websocket-is-the-one" title="Permanent link">&para;</a></h3>
+<p>It beats Web MIDI on every axis except the dependency: it runs on iPad,
+carries float32 so the 7-bit problem never arises, needs no virtual MIDI
+driver on Windows, satisfies the secure-context rule automatically when served
+from localhost, and makes Phase 4's feedback direction fall out of the same
+connection instead of needing a second channel.</p>
+<p>The cost is an HTTP/WebSocket server, which is a real new dependency and the
+reason this is not being adopted now. One licensing trap if it ever is:
+<strong>Mongoose is dual GPLv2/commercial, and GPLv2-only is incompatible with this
+project's GPL-3.0-or-later.</strong> civetweb (MIT) is the clean choice.</p>
+<p>The honest counterweight is touch UX. A web page handles continuous controls
+worse than a native touch app: multitouch fader ergonomics have to be built by
+hand, browser chrome eats screen, pull-to-refresh fights vertical drags, and
+the screen sleeps. TouchOSC solved all of that years ago, and for performance
+use the gap is not small.</p>
+<h3 id="what-this-means-for-phase-2">What this means for Phase 2<a class="headerlink" href="#what-this-means-for-phase-2" title="Permanent link">&para;</a></h3>
+<p>Nothing gets decided now, and nothing needs to be. All three transports are
+the same parameter table with different back ends, which section 4's Phase 6
+already separates.</p>
+<p>The one constraint worth adopting immediately, because it is free today and
+expensive later: <strong>the shared resolution/curve/range core should key on a
+normalized float plus a source identity, not on CC numbers or OSC addresses.</strong>
+Then a Web MIDI or WebSocket back end is a new adapter rather than a refactor.
+Phase 1's numeric <code>/mh/param/&lt;index&gt;</code> addressing already has that shape.</p>
+<h2 id="8-open-questions">8. Open questions<a class="headerlink" href="#8-open-questions" title="Permanent link">&para;</a></h2>
+<p>Kept as a record of what was decided, not only what is undecided. Four of the
+five are now closed.</p>
+<ul>
+<li>
+<p>~~<strong>Chain addressing binds to slot position.</strong>~~ <strong>Closed before 0.8.0.</strong> The framing in this plan was wrong about <em>why</em> it mattered: chains cannot be reordered at runtime, so it looked like a hazard waiting on a feature that does not exist. The real exposure is that the generated layout is the durable artefact and outlives the script that builds the chain -- edit the construction order and every saved address repoints in silence. Fixed by caller-assigned slot names (<code>mh_audio_set_slot_name</code>), addressed as <code>/mh/&lt;name&gt;/param/&lt;index&gt;</code>, with the numeric form kept unchanged. Deriving the name from the plugin was considered and rejected: <code>MH_Plugin</code> exposes no name, and duplicates in one chain would have to be numbered, which is positional again.</p>
+</li>
+<li>
+<p>~~<strong>Sample-offset placement.</strong>~~ <strong>Closed: not doing it.</strong> Phase 0 ships offset 0 and that is where it stays. Sub-block placement buys accuracy no human finger can produce, and costs jitter plus a one-block safety delay to get it. Coalescing was the part that actually mattered, and it is in. If a sequenced source ever wants sample-accurate live automation, that is a different feature with a real timestamp behind it rather than a refinement of this one.</p>
+</li>
+<li>
+<p>~~<strong><code>MidiMapper</code> reuse.</strong>~~ <strong>Closed.</strong> Both mappers now sit on <code>_ParamWriter</code> and <code>_Binding</code>, keyed on a normalized float plus a source identity. No public signature changed, and the existing <code>MidiMapper</code> tests passed unmodified through the refactor -- which is what makes that claim checkable rather than asserted.</p>
+</li>
+<li>
+<p><strong>Discovery.</strong> Should minihost advertise itself over Bonjour/mDNS so TouchOSC finds it without typing an IP? Real usability gain, but a platform-specific dependency JUCE does not provide. <strong>Still leaning no</strong>, and nothing since has changed the balance.</p>
+</li>
+<li>
+<p>~~<strong>"MIDI learn" is a listed non-goal.</strong>~~ <strong>Closed.</strong> The boundary is stated in <code>TODO.md</code> beside the non-goal itself: a generated surface computes its mapping and writes it to a file that can be read, edited and version-controlled, where MIDI learn watches for the next incoming controller and binds it interactively. Different feature, still not wanted.</p>
+</li>
+</ul>
+<h2 id="9-non-goals">9. Non-goals<a class="headerlink" href="#9-non-goals" title="Permanent link">&para;</a></h2>
+<ul>
+<li>
+<p>Timetag-scheduled OSC bundles. <code>juce_osc</code> delivers bundle contents immediately; matching that is fine for control surfaces.</p>
+</li>
+<li>
+<p>OSC over TCP or SLIP. UDP only, which is what TouchOSC uses.</p>
+</li>
+<li>
+<p>RPN/NRPN.</p>
+</li>
+<li>
+<p>Hosting a web UI, or any surface format other than <code>.tosc</code>. The generator should keep the parameter table separable so a second back-end is possible later, but only one gets written.</p>
+</li>
+<li>
+<p>OSC query protocol.</p>
+</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.expand", "navigation.top", "content.code.copy", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

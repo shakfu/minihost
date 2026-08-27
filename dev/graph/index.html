@@ -364,6 +364,87 @@
   
   
     <li class="md-nav__item">
+      <a href="../../composition/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Composition Pipelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../midi_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MIDI Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../control_surfaces/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Control Surfaces
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../api_c/" class="md-nav__link">
         
   
@@ -727,10 +808,18 @@
 <h3 id="compilation">Compilation<a class="headerlink" href="#compilation" title="Permanent link">&para;</a></h3>
 <p><code>Graph.compile()</code> produces an immutable <code>CompiledGraph</code>:</p>
 <ol>
-<li>Validate: no cycles (Kahn's algorithm), all edges have matching channel counts, every plugin node has been <code>prepare</code>d.</li>
-<li>Topological sort -&gt; linear <code>schedule: list[NodeId]</code>.</li>
-<li>Allocate buffer pool: one <code>np.ndarray(shape=(channels, block_size), dtype=f32)</code> per edge. Reuse via liveness analysis (an edge's buffer is free after its last consumer runs in the schedule) — this matters once graphs get wide; v1 can skip and allocate per-edge.</li>
-<li>Resolve each node's input/output buffer views into the pool.</li>
+<li>
+<p>Validate: no cycles (Kahn's algorithm), all edges have matching channel counts, every plugin node has been <code>prepare</code>d.</p>
+</li>
+<li>
+<p>Topological sort -&gt; linear <code>schedule: list[NodeId]</code>.</p>
+</li>
+<li>
+<p>Allocate buffer pool: one <code>np.ndarray(shape=(channels, block_size), dtype=f32)</code> per edge. Reuse via liveness analysis (an edge's buffer is free after its last consumer runs in the schedule) — this matters once graphs get wide; v1 can skip and allocate per-edge.</p>
+</li>
+<li>
+<p>Resolve each node's input/output buffer views into the pool.</p>
+</li>
 </ol>
 <p>Recompilation is required on any topology change. Parameter and automation changes do not recompile.</p>
 <h3 id="per-block-step">Per-block step<a class="headerlink" href="#per-block-step" title="Permanent link">&para;</a></h3>
@@ -776,18 +865,34 @@
 </code></pre></div>
 <h2 id="open-questions">Open questions<a class="headerlink" href="#open-questions" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Latency compensation (PDC).</strong> Plugins report latency via <code>mh_get_latency</code>; correct PDC requires per-path delay insertion at fan-in points. Defer to v2; document that mixed wet/dry paths will phase until then.</li>
-<li><strong>Feedback loops.</strong> Require a one-block delay node on the back-edge to break the cycle. v2.</li>
-<li><strong>Sidechain inputs.</strong> Plugins with multiple input buses need port metadata from JUCE we don't currently expose. Track as a C ABI gap, not a graph problem.</li>
-<li><strong>MIDI routing.</strong> Same model as audio edges, separate buffer type. Straightforward but adds a second scheduling lane; defer to v1.5.</li>
-<li><strong>Realtime mode.</strong> Same scheduler driven from an <code>AudioDevice</code> callback. The Python GIL is the obvious risk; if it bites, the scheduler is the right thing to port to C++.</li>
+<li>
+<p><strong>Latency compensation (PDC).</strong> Plugins report latency via <code>mh_get_latency</code>; correct PDC requires per-path delay insertion at fan-in points. Defer to v2; document that mixed wet/dry paths will phase until then.</p>
+</li>
+<li>
+<p><strong>Feedback loops.</strong> Require a one-block delay node on the back-edge to break the cycle. v2.</p>
+</li>
+<li>
+<p><strong>Sidechain inputs.</strong> Plugins with multiple input buses need port metadata from JUCE we don't currently expose. Track as a C ABI gap, not a graph problem.</p>
+</li>
+<li>
+<p><strong>MIDI routing.</strong> Same model as audio edges, separate buffer type. Straightforward but adds a second scheduling lane; defer to v1.5.</p>
+</li>
+<li>
+<p><strong>Realtime mode.</strong> Same scheduler driven from an <code>AudioDevice</code> callback. The Python GIL is the obvious risk; if it bites, the scheduler is the right thing to port to C++.</p>
+</li>
 </ul>
 <h2 id="validation-plan">Validation plan<a class="headerlink" href="#validation-plan" title="Permanent link">&para;</a></h2>
 <p>Before committing to the design, prove out:</p>
 <ol>
-<li>Linear chain through the graph executor matches <code>PluginChain.process_auto</code> sample-for-sample on a fixed input.</li>
-<li>Fan-out + <code>mix</code> produces bit-identical output to manually summing two <code>PluginChain</code> renders.</li>
-<li>Automation slicing across block boundaries matches single-node <code>process_auto</code> behavior.</li>
+<li>
+<p>Linear chain through the graph executor matches <code>PluginChain.process_auto</code> sample-for-sample on a fixed input.</p>
+</li>
+<li>
+<p>Fan-out + <code>mix</code> produces bit-identical output to manually summing two <code>PluginChain</code> renders.</p>
+</li>
+<li>
+<p>Automation slicing across block boundaries matches single-node <code>process_auto</code> behavior.</p>
+</li>
 </ol>
 <p>If those three hold, the scheduler is correct enough to build a UI against.</p>
 

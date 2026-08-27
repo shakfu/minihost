@@ -446,6 +446,87 @@
   
   
     <li class="md-nav__item">
+      <a href="composition/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Composition Pipelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="midi_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MIDI Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="control_surfaces/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Control Surfaces
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="api_c/" class="md-nav__link">
         
   
@@ -658,24 +739,63 @@
 <p>minihost provides a C API built on JUCE with Python bindings via nanobind. It builds in headless mode by default (no GUI dependencies), making it suitable for servers, batch processing, and embedded applications.</p>
 <h2 id="key-features">Key Features<a class="headerlink" href="#key-features" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Plugin formats</strong>: VST3 (all platforms), AudioUnit (macOS), LV2 (all platforms)</li>
-<li><strong>Headless mode</strong>: no GUI dependencies, uses JUCE's <code>juce_audio_processors_headless</code></li>
-<li><strong><code>AudioBuffer</code></strong>: planar float32 audio container, JUCE-backed, stdlib-only. DLPack-exported so it's accepted by any 2D float32 buffer-protocol consumer (<code>Plugin.process</code>, <code>numpy.asarray</code>, PyTorch, etc.) without explicit conversion.</li>
-<li><strong>numpy is optional</strong>: <code>pip install minihost</code> installs no Python runtime dependencies. <code>pip install minihost[numpy]</code> enables numpy-typed return values and numpy-array inputs.</li>
-<li><strong>High-level offline processing</strong>: <code>process_audio_to_file(chain, "in.wav", "out.wav")</code> collapses block iteration, latency compensation, sample-rate matching, and tail rendering into one call.</li>
-<li><strong>Plugin chaining</strong>: connect multiple plugins in series</li>
-<li><strong>Real-time audio</strong>: playback and capture via miniaudio, with duplex mode for effect processing</li>
-<li><strong>Audio device selection</strong>: enumerate and target specific playback/capture devices</li>
-<li><strong>Real-time MIDI</strong>: input/output via libremidi, virtual ports on macOS/Linux</li>
-<li><strong>Audio file I/O</strong>: read WAV/FLAC/MP3/Vorbis, write WAV and FLAC</li>
-<li><strong>Sample rate conversion</strong>: built-in resampling via miniaudio</li>
-<li><strong>Batch processing</strong>: glob patterns and directory output for processing multiple files</li>
-<li><strong>Auto-tail detection</strong>: automatic reverb/delay tail detection in offline rendering</li>
-<li><strong>Sample-accurate automation</strong>: parameter changes at sample resolution</li>
-<li><strong>Parameter access by name</strong>: case-insensitive <code>find_param()</code>, <code>get_param_by_name()</code>, <code>set_param_by_name()</code> on <code>Plugin</code></li>
-<li><strong>Async plugin loading</strong>: <code>open_async()</code> returns a <code>Future</code> for background loading</li>
-<li><strong>VST3 preset I/O</strong>: read and write <code>.vstpreset</code> files from C, C++, and Python</li>
-<li><strong>CLI tool</strong>: 9 subcommands for plugin inspection, device listing, preset export, playback, processing, and resampling</li>
+<li>
+<p><strong>Plugin formats</strong>: VST3 (all platforms), AudioUnit (macOS), LV2 (all platforms)</p>
+</li>
+<li>
+<p><strong>Headless mode</strong>: no GUI dependencies, uses JUCE's <code>juce_audio_processors_headless</code></p>
+</li>
+<li>
+<p><strong><code>AudioBuffer</code></strong>: planar float32 audio container, JUCE-backed, stdlib-only. DLPack-exported so it's accepted by any 2D float32 buffer-protocol consumer (<code>Plugin.process</code>, <code>numpy.asarray</code>, PyTorch, etc.) without explicit conversion.</p>
+</li>
+<li>
+<p><strong>numpy is optional</strong>: <code>pip install minihost</code> installs no Python runtime dependencies. <code>pip install minihost[numpy]</code> enables numpy-typed return values and numpy-array inputs.</p>
+</li>
+<li>
+<p><strong>High-level offline processing</strong>: <code>process_audio_to_file(chain, "in.wav", "out.wav")</code> collapses block iteration, latency compensation, sample-rate matching, and tail rendering into one call.</p>
+</li>
+<li>
+<p><strong>Plugin chaining</strong>: connect multiple plugins in series</p>
+</li>
+<li>
+<p><strong>Real-time audio</strong>: playback and capture via miniaudio, with duplex mode for effect processing</p>
+</li>
+<li>
+<p><strong>Audio device selection</strong>: enumerate and target specific playback/capture devices</p>
+</li>
+<li>
+<p><strong>Real-time MIDI</strong>: input/output via libremidi, virtual ports on macOS/Linux</p>
+</li>
+<li>
+<p><strong>Control surfaces</strong>: MIDI CC mapping (7-bit and 14-bit), OSC in and out, generated TouchOSC layouts (<code>minihost touch</code>), and a host playhead for live tempo. See <a href="control_surfaces/">Control Surfaces</a>.</p>
+</li>
+<li>
+<p><strong>Audio file I/O</strong>: read WAV/FLAC/MP3/Vorbis, write WAV and FLAC</p>
+</li>
+<li>
+<p><strong>Sample rate conversion</strong>: built-in resampling via miniaudio</p>
+</li>
+<li>
+<p><strong>Batch processing</strong>: glob patterns and directory output for processing multiple files</p>
+</li>
+<li>
+<p><strong>Auto-tail detection</strong>: automatic reverb/delay tail detection in offline rendering</p>
+</li>
+<li>
+<p><strong>Sample-accurate automation</strong>: parameter changes at sample resolution</p>
+</li>
+<li>
+<p><strong>Parameter access by name</strong>: case-insensitive <code>find_param()</code>, <code>get_param_by_name()</code>, <code>set_param_by_name()</code> on <code>Plugin</code></p>
+</li>
+<li>
+<p><strong>Async plugin loading</strong>: <code>open_async()</code> returns a <code>Future</code> for background loading</p>
+</li>
+<li>
+<p><strong>VST3 preset I/O</strong>: read and write <code>.vstpreset</code> files from C, C++, and Python</p>
+</li>
+<li>
+<p><strong>CLI tool</strong>: 9 subcommands for plugin inspection, device listing, preset export, playback, processing, and resampling</p>
+</li>
 </ul>
 <h2 id="quick-start">Quick Start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Install</span>
@@ -718,17 +838,24 @@
 </code></pre></div>
 <h2 id="requirements">Requirements<a class="headerlink" href="#requirements" title="Permanent link">&para;</a></h2>
 <ul>
-<li>CMake 3.20+, C++17 compiler</li>
-<li>JUCE 8.0.11+ (auto-downloaded)</li>
-<li>Vendored C libraries: miniaudio, tflac, libremidi, midifile (<a href="vendored/">details</a>)</li>
-<li>Python bindings: nanobind, scikit-build-core, uv</li>
-<li>Runtime: no required Python dependencies. Install <code>minihost[numpy]</code> for numpy interop.</li>
+<li>
+<p>CMake 3.20+, C++17 compiler</p>
+</li>
+<li>
+<p>JUCE 8.0.11+ (auto-downloaded)</p>
+</li>
+<li>
+<p>Vendored C libraries: miniaudio, tflac, libremidi, midifile (<a href="vendored/">details</a>)</p>
+</li>
+<li>
+<p>Python bindings: nanobind, scikit-build-core, uv</p>
+</li>
+<li>
+<p>Runtime: no required Python dependencies. Install <code>minihost[numpy]</code> for numpy interop.</p>
+</li>
 </ul>
 <p>See <a href="getting_started/">Getting Started</a> for full build instructions.</p>
-<p>If you're upgrading from a previous version, see the
-<a href="migration/">Migration Guide</a> for the breaking changes (default
-return type of <code>read_audio</code> / <code>render_midi*</code>, numpy moved to an optional
-extra) and the one-keyword fixes to keep existing code working.</p>
+<p>If you're upgrading from a previous version, see the <a href="migration/">Migration Guide</a> for the breaking changes (default return type of <code>read_audio</code> / <code>render_midi*</code>, numpy moved to an optional extra) and the one-keyword fixes to keep existing code working.</p>
 
 
 

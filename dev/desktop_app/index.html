@@ -364,6 +364,87 @@
   
   
     <li class="md-nav__item">
+      <a href="../../composition/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Composition Pipelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../midi_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MIDI Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../control_surfaces/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Control Surfaces
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../api_c/" class="md-nav__link">
         
   
@@ -735,6 +816,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#crash-resilience-decided" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Crash resilience (decided)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#open-questions" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -777,78 +869,94 @@
 
 
 <h1 id="desktop-application-design-document">Desktop Application — Design Document<a class="headerlink" href="#desktop-application-design-document" title="Permanent link">&para;</a></h1>
-<p>Status: design proposal, not implemented. Single binary, phased: v1 ships
-an offline graph renderer with plugin editor windows; v2 adds a realtime
-audio device callback driver and live MIDI input on top of the same
-codebase.</p>
-<p>Working name: <code>minihost-desktop</code> (binary), <code>minihost.app</code> on macOS.
-Source lives in <code>projects/minihost_desktop/</code> alongside the other
-sub-projects (<code>projects/libminihost/</code>, <code>projects/libminihost_audio/</code>,
-<code>projects/libminihost_graph/</code>). The top-level <code>CMakeLists.txt</code> adds it
-behind <code>MINIHOST_BUILD_DESKTOP</code> (default OFF).</p>
+<p>Status: implemented, pre-release. Single binary, phased: Phase 1 (offline graph renderer with plugin editor windows) and Phase 2 (realtime audio device callback driver and live MIDI input) are both built and exercised; see <a href="../desktop_app_todo/">desktop_app_todo.md</a> for per-feature status. What remains before a public release is packaging (code signing, notarization, installers), broader automated test coverage, and the deferred UX polish (undo/redo, plugin browser). The sections below are the original design and are kept as the reference for intended behaviour; where the prose still reads as future tense ("v1 will..."), that work now exists unless the TODO marks it deferred.</p>
+<p>Working name: <code>minihost-desktop</code> (binary), <code>minihost.app</code> on macOS. Source lives in <code>projects/minihost_desktop/</code> alongside the other sub-projects (<code>projects/libminihost/</code>, <code>projects/libminihost_audio/</code>, <code>projects/libminihost_graph/</code>). The top-level <code>CMakeLists.txt</code> adds it behind <code>MINIHOST_BUILD_DESKTOP</code> (default OFF).</p>
 <h2 id="goal">Goal<a class="headerlink" href="#goal" title="Permanent link">&para;</a></h2>
-<p>A developer-facing host app that loads VST3/AU/LV2 plugins, wires them
-into a node graph, exposes plugin editor windows, and renders to disk
-offline. v2 extends the same graph executor to drive a realtime audio
-device callback.</p>
+<p>A developer-facing host app that loads VST3/AU/LV2 plugins, wires them into a node graph, exposes plugin editor windows, and renders to disk offline. v2 extends the same graph executor to drive a realtime audio device callback.</p>
 <p>Non-goals (both phases):</p>
 <ul>
-<li>DAW features: arrangement timeline, clip editing, mixer automation
-  curves drawn in-app, time-stretching, take comping.</li>
-<li>Preset browser UI beyond <code>read_vstpreset</code> / <code>set_state</code>.</li>
-<li>MIDI learn / parameter mapping UI.</li>
-<li>Plugin shell / multi-instrument disambiguation.</li>
-<li>Cross-graph routing (every project is one graph).</li>
+<li>
+<p>DAW features: arrangement timeline, clip editing, mixer automation curves drawn in-app, time-stretching, take comping.</p>
+</li>
+<li>
+<p>Preset browser UI beyond <code>read_vstpreset</code> / <code>set_state</code>.</p>
+</li>
+<li>
+<p>MIDI learn / parameter mapping UI.</p>
+</li>
+<li>
+<p>Plugin shell / multi-instrument disambiguation.</p>
+</li>
+<li>
+<p>Cross-graph routing (every project is one graph).</p>
+</li>
 </ul>
-<p>The app is a thin GUI on top of <code>libminihost</code>, <code>libminihost_graph</code>, and
-JUCE's plugin / device modules. Where v1 needs functionality the C
-library doesn't have, the design favours extending the C ABI over
-duplicating logic in the GUI process.</p>
+<p>The app is a thin GUI on top of <code>libminihost</code>, <code>libminihost_graph</code>, and JUCE's plugin / device modules. Where v1 needs functionality the C library doesn't have, the design favours extending the C ABI over duplicating logic in the GUI process.</p>
 <h2 id="stack">Stack<a class="headerlink" href="#stack" title="Permanent link">&para;</a></h2>
 <p>JUCE C++, single binary, statically linked.</p>
 <ul>
-<li>UI: <code>juce_gui_basics</code>, <code>juce_gui_extra</code>. Native widgets, no web view.</li>
-<li>Audio engine v1: existing <code>libminihost</code> + <code>libminihost_graph</code>,
-  driven from a non-realtime render thread.</li>
-<li>Audio engine v2: <code>juce_audio_devices</code> <code>AudioIODeviceCallback</code> driving
-  the same graph executor.</li>
-<li>Plugin editor windows: JUCE's <code>AudioProcessorEditor</code>, hosted in a
-  <code>DocumentWindow</code> per plugin instance. Requires
-  <code>MINIHOST_HEADLESS=OFF</code> for the GUI build; the headless build of
-  <code>libminihost</code> is unaffected (separate CMake target).</li>
-<li>Project file: JSON, schema-versioned. See <a href="#project-file">Project file</a>.</li>
+<li>
+<p>UI: <code>juce_gui_basics</code>, <code>juce_gui_extra</code>. Native widgets, no web view.</p>
+</li>
+<li>
+<p>Audio engine v1: existing <code>libminihost</code> + <code>libminihost_graph</code>, driven from a non-realtime render thread.</p>
+</li>
+<li>
+<p>Audio engine v2: <code>juce_audio_devices</code> <code>AudioIODeviceCallback</code> driving the same graph executor.</p>
+</li>
+<li>
+<p>Plugin editor windows: JUCE's <code>AudioProcessorEditor</code>, hosted in a <code>DocumentWindow</code> per plugin instance. Requires the non-headless <code>minihost_gui</code> archive, which <code>MINIHOST_BUILD_DESKTOP=ON</code> builds; the headless <code>minihost</code> archive is a separate CMake target and is unaffected.</p>
+</li>
+<li>
+<p>Project file: JSON, schema-versioned. See <a href="#project-file">Project file</a>.</p>
+</li>
 </ul>
 <p>Rationale for JUCE C++ over Python+Qt or Tauri+web:</p>
 <ol>
-<li>Plugin editor windows require a native window handle that composes
-   with JUCE's <code>AudioProcessorEditor</code>. Other shells force either window
-   embedding or an out-of-process editor daemon — both add a permanent
-   IPC seam between UI and audio that JUCE-native avoids.</li>
-<li><code>libminihost</code> is already JUCE. The GUI build flips
-   <code>MINIHOST_HEADLESS=OFF</code> and adds <code>juce_gui_basics</code> to the same CMake
-   project; nothing is reimplemented.</li>
-<li>The Python bindings remain the supported scripting surface. The
-   desktop app is not a Python application.</li>
+<li>
+<p>Plugin editor windows require a native window handle that composes with JUCE's <code>AudioProcessorEditor</code>. Other shells force either window embedding or an out-of-process editor daemon — both add a permanent IPC seam between UI and audio that JUCE-native avoids.</p>
+</li>
+<li>
+<p><code>libminihost</code> is already JUCE. The GUI build compiles the same sources a second time against the full <code>juce_audio_processors</code> (the <code>minihost_gui</code> target) and adds <code>juce_gui_basics</code> to the same CMake project; nothing is reimplemented.</p>
+</li>
+<li>
+<p>The Python bindings remain the supported scripting surface. The desktop app is not a Python application.</p>
+</li>
 </ol>
-<p>Cost accepted: JUCE's UI toolkit is older than web/Qt. Acceptable for a
-developer-facing host where fidelity and packaging beat visual polish.</p>
+<p>Cost accepted: JUCE's UI toolkit is older than web/Qt. Acceptable for a developer-facing host where fidelity and packaging beat visual polish.</p>
 <h2 id="phase-1-offline-graph-renderer-with-editor-windows">Phase 1 — Offline graph renderer with editor windows<a class="headerlink" href="#phase-1-offline-graph-renderer-with-editor-windows" title="Permanent link">&para;</a></h2>
 <h3 id="scope">Scope<a class="headerlink" href="#scope" title="Permanent link">&para;</a></h3>
 <ul>
-<li>Load / save project files.</li>
-<li>Add, remove, connect plugin nodes via a node-graph canvas.</li>
-<li>Open plugin editor windows; parameter changes propagate to the
-  underlying <code>MH_Plugin</code> immediately and are persisted on save.</li>
-<li>Render the graph to a WAV/FLAC file via the offline executor.</li>
-<li>Progress reporting on long renders; cancellation.</li>
+<li>
+<p>Load / save project files.</p>
+</li>
+<li>
+<p>Add, remove, connect plugin nodes via a node-graph canvas.</p>
+</li>
+<li>
+<p>Open plugin editor windows; parameter changes propagate to the underlying <code>MH_Plugin</code> immediately and are persisted on save.</p>
+</li>
+<li>
+<p>Render the graph to a WAV/FLAC file via the offline executor.</p>
+</li>
+<li>
+<p>Progress reporting on long renders; cancellation.</p>
+</li>
 </ul>
 <p>Out of scope for v1:</p>
 <ul>
-<li>Realtime playback through an audio device.</li>
-<li>Live MIDI input.</li>
-<li>Latency compensation across fan-in paths (matches <code>graph.md</code>'s v1
-  scope).</li>
-<li>Feedback loops.</li>
+<li>
+<p>Realtime playback through an audio device.</p>
+</li>
+<li>
+<p>Live MIDI input.</p>
+</li>
+<li>
+<p>Latency compensation across fan-in paths (matches <code>graph.md</code>'s v1 scope).</p>
+</li>
+<li>
+<p>Feedback loops.</p>
+</li>
 </ul>
 <h3 id="architecture">Architecture<a class="headerlink" href="#architecture" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>+--------------------------------------------------+
@@ -865,50 +973,42 @@ developer-facing host where fidelity and packaging beat visual polish.</p>
 <a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>|  - Writes to AudioFileWriter (libminihost_audio) |
 <a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>+--------------------------------------------------+
 </code></pre></div>
-<p>In v1 there is no audio device. The render thread is started by the
-"Render" action, runs to completion (or cancellation), and exits. Editor
-window parameter writes call <code>mh_set_param</code> directly on the GUI thread;
-<code>libminihost</code> already serializes these against the audio thread via its
-internal mutex, and no audio thread exists during editor-only use.</p>
+<p>In v1 there is no audio device. The render thread is started by the "Render" action, runs to completion (or cancellation), and exits. Editor window parameter writes call <code>mh_set_param</code> directly on the GUI thread; <code>libminihost</code> already serializes these against the audio thread via its internal mutex, and no audio thread exists during editor-only use.</p>
 <h3 id="graph-executor">Graph executor<a class="headerlink" href="#graph-executor" title="Permanent link">&para;</a></h3>
-<p>The C-level executor lives in <code>libminihost</code> (the parallel bus is already
-present as <code>PluginBus</code>, parallel-branches-summed). v1 extends it from
-"parallel branches summed" to a general DAG:</p>
+<p>The C-level executor lives in <code>libminihost</code> (the parallel bus is already present as <code>PluginBus</code>, parallel-branches-summed). v1 extends it from "parallel branches summed" to a general DAG:</p>
 <ol>
-<li>New C API in <code>projects/libminihost_graph/</code>:</li>
-<li><code>mh_graph_create</code>, <code>mh_graph_add_node</code>,
-     <code>mh_graph_connect</code>, <code>mh_graph_compile</code>,
-     <code>mh_graph_render_block</code>.</li>
-<li>Built-in non-plugin node kinds: <code>input</code> (file or buffer source),
-     <code>output</code> (file or buffer sink), <code>gain</code>, <code>mix</code>.</li>
-<li>Compilation does Kahn topological sort, channel-count validation,
-   and edge-buffer pool allocation with liveness reuse.</li>
-<li>Per-block step matches <code>docs/dev/graph.md</code> §Execution.</li>
+<li>
+<p>New C API in <code>projects/libminihost_graph/</code>:</p>
+</li>
+<li>
+<p><code>mh_graph_create</code>, <code>mh_graph_add_node</code>, <code>mh_graph_connect</code>, <code>mh_graph_compile</code>, <code>mh_graph_render_block</code>.</p>
+</li>
+<li>
+<p>Built-in non-plugin node kinds: <code>input</code> (file or buffer source), <code>output</code> (file or buffer sink), <code>gain</code>, <code>mix</code>.</p>
+</li>
+<li>
+<p>Compilation does Kahn topological sort, channel-count validation, and edge-buffer pool allocation with liveness reuse.</p>
+</li>
+<li>
+<p>Per-block step matches <code>docs/dev/graph.md</code> §Execution.</p>
+</li>
 </ol>
-<p>The parallel bus is preserved as <code>PluginBus</code> (<code>mh_bus_*</code>), the
-parallel-branches-summed shortcut; <code>mh_graph_*</code> is the general DAG case.
-The Python <code>PluginBus</code> binding is the shortcut; the <code>minihost.PluginGraph</code>
-binding wraps the DAG ABI and is what the desktop app's project loader
-emits.</p>
-<p>Justification for keeping the executor in C rather than the Python
-sketch from <code>graph.md</code>: the desktop app's render thread runs in-process
-with no GIL, and we want the same executor to drive the v2 realtime
-callback. Python isn't on the realtime path in either phase.</p>
+<p>The parallel bus is preserved as <code>PluginBus</code> (<code>mh_bus_*</code>), the parallel-branches-summed shortcut; <code>mh_graph_*</code> is the general DAG case. The Python <code>PluginBus</code> binding is the shortcut; the <code>minihost.PluginGraph</code> binding wraps the DAG ABI and is what the desktop app's project loader emits.</p>
+<p>Justification for keeping the executor in C rather than the Python sketch from <code>graph.md</code>: the desktop app's render thread runs in-process with no GIL, and we want the same executor to drive the v2 realtime callback. Python isn't on the realtime path in either phase.</p>
 <h3 id="editor-window-hosting">Editor window hosting<a class="headerlink" href="#editor-window-hosting" title="Permanent link">&para;</a></h3>
 <p>One <code>DocumentWindow</code> per opened plugin editor. The window owns:</p>
 <ul>
-<li>A <code>juce::AudioProcessorEditor*</code> obtained from the plugin instance
-  underlying the <code>MH_Plugin</code> handle. This requires a new C ABI call:
-  <code>mh_get_juce_processor(MH_Plugin*) -&gt; juce::AudioProcessor*</code> (opaque
-  pointer; only the desktop binary, which links JUCE, dereferences it).</li>
-<li>A resize listener that calls the editor's <code>setSize</code>.</li>
-<li>A close handler that destroys the editor but leaves the plugin
-  instance alive.</li>
+<li>
+<p>A <code>juce::AudioProcessorEditor*</code> obtained from the plugin instance underlying the <code>MH_Plugin</code> handle. This requires a new C ABI call: <code>mh_get_juce_processor(MH_Plugin*) -&gt; juce::AudioProcessor*</code> (opaque pointer; only the desktop binary, which links JUCE, dereferences it).</p>
+</li>
+<li>
+<p>A resize listener that calls the editor's <code>setSize</code>.</p>
+</li>
+<li>
+<p>A close handler that destroys the editor but leaves the plugin instance alive.</p>
+</li>
 </ul>
-<p>Parameter changes from the editor reach <code>MH_Plugin</code> through JUCE's
-existing <code>AudioProcessorParameter::Listener</code> mechanism, which
-<code>libminihost</code> already wires to <code>mh_register_param_listener</code>. The GUI
-mirrors parameter state from listener callbacks, not by polling.</p>
+<p>Parameter changes from the editor reach <code>MH_Plugin</code> through JUCE's existing <code>AudioProcessorParameter::Listener</code> mechanism, which <code>libminihost</code> already wires to <code>mh_register_param_listener</code>. The GUI mirrors parameter state from listener callbacks, not by polling.</p>
 <h3 id="project-file">Project file<a class="headerlink" href="#project-file" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">&quot;minihost_project_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
@@ -930,32 +1030,39 @@ mirrors parameter state from listener callbacks, not by polling.</p>
 <a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">  </span><span class="p">]</span>
 <a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="p">}</span>
 </code></pre></div>
-<p>Plugin state is the opaque blob returned by <code>mh_get_state</code>,
-base64-encoded. Project files are not portable across plugin versions
-that change state format; that's the plugin's contract, not ours.</p>
+<p>Plugin state is the opaque blob returned by <code>mh_get_state</code>, base64-encoded. Project files are not portable across plugin versions that change state format; that's the plugin's contract, not ours.</p>
 <h3 id="render-path">Render path<a class="headerlink" href="#render-path" title="Permanent link">&para;</a></h3>
 <p>"Render" action:</p>
 <ol>
-<li>Snapshot the <code>ProjectModel</code> to a <code>CompiledGraph</code> on the GUI thread.</li>
-<li>Spawn the render thread. The thread loops <code>mh_graph_render_block</code>
-   advancing <code>t0</code> by <code>block_size</code>, writing each output node's buffer to
-   its sink via <code>mh_audio_write</code> (streaming, not all-at-once).</li>
-<li>Progress is reported by frames written; the GUI polls at 30 Hz.</li>
-<li>Cancellation flips an atomic flag checked at the top of each block.</li>
+<li>
+<p>Snapshot the <code>ProjectModel</code> to a <code>CompiledGraph</code> on the GUI thread.</p>
+</li>
+<li>
+<p>Spawn the render thread. The thread loops <code>mh_graph_render_block</code> advancing <code>t0</code> by <code>block_size</code>, writing each output node's buffer to its sink via <code>mh_audio_write</code> (streaming, not all-at-once).</p>
+</li>
+<li>
+<p>Progress is reported by frames written; the GUI polls at 30 Hz.</p>
+</li>
+<li>
+<p>Cancellation flips an atomic flag checked at the top of each block.</p>
+</li>
 </ol>
-<p>The render path reuses <code>process_audio_to_file</code> semantics where
-possible — peak normalization, latency-comp trim — but operates over
-the graph executor's output node(s) rather than a single plugin.</p>
+<p>The render path reuses <code>process_audio_to_file</code> semantics where possible — peak normalization, latency-comp trim — but operates over the graph executor's output node(s) rather than a single plugin.</p>
 <h2 id="phase-2-realtime-mode">Phase 2 — Realtime mode<a class="headerlink" href="#phase-2-realtime-mode" title="Permanent link">&para;</a></h2>
 <h3 id="scope-additions">Scope additions<a class="headerlink" href="#scope-additions" title="Permanent link">&para;</a></h3>
 <ul>
-<li>Audio device selection (input / output device, sample rate, block
-  size) via <code>juce::AudioDeviceManager</code>.</li>
-<li>Transport bar: play / stop / loop region / BPM. Drives
-  <code>MH_TransportInfo</code> for each block.</li>
-<li>Live MIDI input routed to designated plugin nodes.</li>
-<li>The same graph executor compiled in "realtime" mode (allocation-free
-  block step; pre-allocated buffer pool sized at <code>prepare</code>).</li>
+<li>
+<p>Audio device selection (input / output device, sample rate, block size) via <code>juce::AudioDeviceManager</code>.</p>
+</li>
+<li>
+<p>Transport bar: play / stop / loop region / BPM. Drives <code>MH_TransportInfo</code> for each block.</p>
+</li>
+<li>
+<p>Live MIDI input routed to designated plugin nodes.</p>
+</li>
+<li>
+<p>The same graph executor compiled in "realtime" mode (allocation-free block step; pre-allocated buffer pool sized at <code>prepare</code>).</p>
+</li>
 </ul>
 <h3 id="architecture-delta">Architecture delta<a class="headerlink" href="#architecture-delta" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>+---------------------------+   +------------------------------+
@@ -970,117 +1077,130 @@ the graph executor's output node(s) rather than a single plugin.</p>
 </code></pre></div>
 <p>Constraints the executor must satisfy in v2:</p>
 <ul>
-<li>Allocation-free <code>render_block</code> (already true for <code>mh_chain_process_*</code>;
-  must extend to <code>mh_graph_render_block</code>). Tracked by an
-  RT-allocation test analogous to the existing
-  <code>tests/test_rt_allocations.py</code>.</li>
-<li>Parameter writes from the GUI thread reach the audio thread via a
-  bounded SPSC queue with drop-newest-on-overflow. The existing
-  <code>mh_set_param</code> mutex is fine for offline; v2 introduces an explicit
-  lock-free path for live editing.</li>
-<li>Editor window parameter writes go through the same lock-free path.</li>
+<li>
+<p>Allocation-free <code>render_block</code> (already true for <code>mh_chain_process_*</code>; must extend to <code>mh_graph_render_block</code>). Tracked by an RT-allocation test analogous to the existing <code>tests/test_rt_allocations.py</code>.</p>
+</li>
+<li>
+<p>Parameter writes from the GUI thread reach the audio thread via a bounded SPSC queue with drop-newest-on-overflow. The existing <code>mh_set_param</code> mutex is fine for offline; v2 introduces an explicit lock-free path for live editing.</p>
+</li>
+<li>
+<p>Editor window parameter writes go through the same lock-free path.</p>
+</li>
 </ul>
-<p>Recompilation of the graph (topology change) requires stopping the
-device callback, swapping the <code>CompiledGraph</code> under a brief mute, and
-restarting. Parameter and automation changes do not recompile.</p>
+<p>Recompilation of the graph (topology change) requires stopping the device callback, swapping the <code>CompiledGraph</code> under a brief mute, and restarting. Parameter and automation changes do not recompile.</p>
 <h3 id="items-deferred-to-v25">Items deferred to v2.5+<a class="headerlink" href="#items-deferred-to-v25" title="Permanent link">&para;</a></h3>
 <ul>
-<li>Latency compensation across fan-in paths. Plugin latency is known
-  (<code>mh_get_latency</code>); inserting per-path delay at fan-in points is a
-  scheduler change, not a UI change.</li>
-<li>Feedback loops with a one-block delay node.</li>
-<li>Sidechain input buses on plugins (blocked on a C ABI gap noted in
-  <code>graph.md</code>).</li>
-<li>Plugin process isolation (out-of-process plugin hosting for crash
-  containment). Significant scope; deferred unless crashes become a
-  routine support burden.</li>
+<li>
+<p>Latency compensation across fan-in paths. Plugin latency is known (<code>mh_get_latency</code>); inserting per-path delay at fan-in points is a scheduler change, not a UI change.</p>
+</li>
+<li>
+<p>Feedback loops with a one-block delay node.</p>
+</li>
+<li>
+<p>Sidechain input buses on plugins (blocked on a C ABI gap noted in <code>graph.md</code>).</p>
+</li>
+<li>
+<p>Plugin process isolation (out-of-process plugin hosting for crash containment). Significant scope; deferred unless crashes become a routine support burden. See <a href="#crash-resilience-decided">Crash resilience</a> for the shipping decision and the cheaper mitigations adopted instead.</p>
+</li>
 </ul>
 <h2 id="cross-cutting-concerns">Cross-cutting concerns<a class="headerlink" href="#cross-cutting-concerns" title="Permanent link">&para;</a></h2>
 <h3 id="build-configuration">Build configuration<a class="headerlink" href="#build-configuration" title="Permanent link">&para;</a></h3>
 <ul>
-<li>New sub-project at <code>projects/minihost_desktop/</code> with its own
-  <code>CMakeLists.txt</code> defining the <code>minihost_desktop</code> executable target.
-  Depends on <code>minihost_gui</code> (sibling static library produced by
-  <code>projects/libminihost/CMakeLists.txt</code> alongside the headless
-  <code>minihost</code>), and the JUCE GUI modules. The top-level
-  <code>CMakeLists.txt</code> includes the sub-project via <code>add_subdirectory</code>
-  guarded by <code>MINIHOST_BUILD_DESKTOP</code>. Both archives coexist in the
-  same build tree; enabling the desktop does not invalidate the
-  headless library or the Python wheel.</li>
-<li><code>libminihost_audio</code> will need an equivalent split (<code>minihost_audio</code> +
-  <code>minihost_audio_gui</code>) once the desktop needs audio file or device
-  I/O, since its current PUBLIC link on the headless <code>minihost</code> would
-  conflict with <code>minihost_gui</code> symbols. Tracked in the TODO.</li>
-<li>The headless <code>libminihost</code> static / shared library and the Python
-  wheel build are unaffected; they continue to use the headless JUCE
-  module set.</li>
-<li><code>MINIHOST_BUILD_DESKTOP=OFF</code> by default; opt-in to keep CI matrix
-  cheap.</li>
+<li>
+<p>New sub-project at <code>projects/minihost_desktop/</code> with its own <code>CMakeLists.txt</code> defining the <code>minihost_desktop</code> executable target. Depends on <code>minihost_gui</code> (sibling static library produced by <code>projects/libminihost/CMakeLists.txt</code> alongside the headless <code>minihost</code>), and the JUCE GUI modules. The top-level <code>CMakeLists.txt</code> includes the sub-project via <code>add_subdirectory</code> guarded by <code>MINIHOST_BUILD_DESKTOP</code>. Both archives coexist in the same build tree; enabling the desktop does not invalidate the headless library or the Python wheel.</p>
+</li>
+<li>
+<p><code>libminihost_audio</code> will need an equivalent split (<code>minihost_audio</code> + <code>minihost_audio_gui</code>) once the desktop needs audio file or device I/O, since its current PUBLIC link on the headless <code>minihost</code> would conflict with <code>minihost_gui</code> symbols. Tracked in the TODO.</p>
+</li>
+<li>
+<p>The headless <code>libminihost</code> static / shared library and the Python wheel build are unaffected; they continue to use the headless JUCE module set.</p>
+</li>
+<li>
+<p><code>MINIHOST_BUILD_DESKTOP=OFF</code> by default; opt-in to keep CI matrix cheap.</p>
+</li>
 </ul>
 <h3 id="testing">Testing<a class="headerlink" href="#testing" title="Permanent link">&para;</a></h3>
 <ul>
-<li>Project file round-trip: load → save → byte-identical (after
-  canonicalization).</li>
-<li>Render parity: a project containing one input → one plugin → one
-  output renders bit-identically to a CLI invocation of
-  <code>process_audio_to_file</code> over the same plugin and parameters.</li>
-<li>Graph render parity vs manual <code>PluginChain</code> for linear graphs;
-  vs the parallel-branches <code>PluginBus</code> for the fan-out + mix case.
-  These mirror the validation plan in <code>docs/dev/graph.md</code>.</li>
-<li>Editor window smoke test: open / close 50× on a known plugin under
-  ASan; assert no leaks.</li>
-<li>v2: RT-allocation test for <code>mh_graph_render_block</code> analogous to
-  <code>test_rt_allocations.py</code>.</li>
+<li>
+<p>Project file round-trip: load → save → byte-identical (after canonicalization).</p>
+</li>
+<li>
+<p>Render parity: a project containing one input → one plugin → one output renders bit-identically to a CLI invocation of <code>process_audio_to_file</code> over the same plugin and parameters.</p>
+</li>
+<li>
+<p>Graph render parity vs manual <code>PluginChain</code> for linear graphs; vs the parallel-branches <code>PluginBus</code> for the fan-out + mix case. These mirror the validation plan in <code>docs/dev/graph.md</code>.</p>
+</li>
+<li>
+<p>Editor window smoke test: open / close 50× on a known plugin under ASan; assert no leaks.</p>
+</li>
+<li>
+<p>v2: RT-allocation test for <code>mh_graph_render_block</code> analogous to <code>test_rt_allocations.py</code>.</p>
+</li>
 </ul>
 <h3 id="distribution">Distribution<a class="headerlink" href="#distribution" title="Permanent link">&para;</a></h3>
 <ul>
-<li>macOS: <code>.app</code> bundle, signed and notarized; <code>.dmg</code> for download.</li>
-<li>Windows: portable <code>.exe</code> first; installer once configuration paths
-  stabilize.</li>
-<li>Linux: AppImage. Distro packages out of scope until demand exists.</li>
+<li>
+<p>macOS: <code>.app</code> bundle, signed and notarized; <code>.dmg</code> for download.</p>
+</li>
+<li>
+<p>Windows: portable <code>.exe</code> first; installer once configuration paths stabilize.</p>
+</li>
+<li>
+<p>Linux: AppImage. Distro packages out of scope until demand exists.</p>
+</li>
 </ul>
 <h3 id="telemetry-crash-reporting">Telemetry / crash reporting<a class="headerlink" href="#telemetry-crash-reporting" title="Permanent link">&para;</a></h3>
-<p>None in v1. v2 may add opt-in crash reporting if hosted plugins prove
-to be a routine source of crashes. No usage telemetry either way.</p>
+<p>None in v1. v2 may add opt-in crash reporting if hosted plugins prove to be a routine source of crashes. No usage telemetry either way.</p>
+<h2 id="crash-resilience-decided">Crash resilience (decided)<a class="headerlink" href="#crash-resilience-decided" title="Permanent link">&para;</a></h2>
+<p><strong>Decision (for the first public release): ship in-process, document the limitation, add cheap recovery, and gate out-of-process hosting on evidence.</strong></p>
+<p>Hosting third-party plugins in the app's own process means a plugin crash takes down the app. Out-of-process hosting (one helper per plugin or per format) is the standard mitigation, but it adds an IPC seam to every audio block and roughly doubles the engine's complexity. Paying that cost before we know crashes are a real problem for our users is premature. The stance is therefore:</p>
+<ol>
+<li>
+<p><strong>Ship in-process.</strong> The realtime and offline engines both run plugins in-process, as built today. This is the same trust model every plugin loaded into a DAW already lives under.</p>
+</li>
+<li>
+<p><strong>Document the limitation.</strong> A user-facing note (README + in-app About/first-run) states plainly that a misbehaving plugin can crash the app, and that unsaved graph edits may be lost. This is honesty, not a disclaimer to hide behind — it sets the expectation that matches the architecture.</p>
+</li>
+<li>
+<p><strong>Make a crash cheap to recover from.</strong> Cheap mitigations that do not require an IPC redesign:</p>
+</li>
+<li>
+<p><em>Autosave / crash recovery</em>: periodically snapshot the working <code>ProjectDocument</code> to a sidecar file; on the next launch, offer to reopen the last session. This bounds the blast radius of a crash to "a few seconds of unsaved canvas edits," which is the actual user-visible harm.</p>
+</li>
+<li>
+<p><em>Out-of-process plugin scanning</em>: enumerating an unknown plugin folder is the one place we deliberately run untrusted code before the user asked to host it. JUCE supports scanning in a child process; adopt it when the plugin browser lands (see the deferred TODO) so a plugin that crashes on instantiation-during-scan cannot take down the whole app.</p>
+</li>
+<li>
+<p><em>Opt-in crash reporting</em>: a minimal, opt-in crash dump (no usage telemetry) so we can see whether in-process crashes are actually routine. This is the evidence that would justify — or not — the out-of-process investment.</p>
+</li>
+<li>
+<p><strong>Revisit out-of-process hosting only on evidence.</strong> If crash reports (or user reports) show that in-process plugin crashes are a routine support burden, escalate to out-of-process hosting for the audio path. Until then it stays deferred (see Phase 2.5+ in the TODO). The decision is reversible: the engine already sits behind the <code>mh_graph_*</code> C ABI, so an out-of-process backend can be introduced without rewriting the UI.</p>
+</li>
+</ol>
 <h2 id="open-questions">Open questions<a class="headerlink" href="#open-questions" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Process isolation for plugins.</strong> Hosting third-party plugins
-  in-process means a plugin crash kills the app. Out-of-process plugin
-  hosting (one helper per plugin or per format) is the standard
-  mitigation; it adds an IPC seam to every audio block and roughly
-  doubles the engine's complexity. Defer to v2.5; revisit if v1
-  testing shows crashes are routine.</li>
-<li><strong>Project file versioning.</strong> <code>minihost_project_version: 1</code> is the
-  obvious lever, but plugin state blobs embedded in projects are
-  versioned by the plugin author, not by us. A project that loads
-  cleanly on one machine may produce different audio on another if a
-  plugin's state format silently changed. Document this; don't try
-  to solve it.</li>
-<li><strong>Undo/redo granularity.</strong> Per-parameter undo is cheap; per-editor-
-  session undo (grouping a burst of edits from a plugin's own GUI) is
-  harder. v1 ships per-command undo (add node, connect, set parameter
-  from the app's own controls); editor-window edits go into a single
-  coalesced undo entry per editor open/close cycle.</li>
-<li><strong>macOS sandbox.</strong> Hosting arbitrary VST3/AU code is hostile to App
-  Store distribution; direct download only.</li>
+<li>
+<p><strong>Project file versioning.</strong> <code>minihost_project_version: 1</code> is the obvious lever, but plugin state blobs embedded in projects are versioned by the plugin author, not by us. A project that loads cleanly on one machine may produce different audio on another if a plugin's state format silently changed. Document this; don't try to solve it.</p>
+</li>
+<li>
+<p><strong>Undo/redo granularity.</strong> Per-parameter undo is cheap; per-editor- session undo (grouping a burst of edits from a plugin's own GUI) is harder. v1 ships per-command undo (add node, connect, set parameter from the app's own controls); editor-window edits go into a single coalesced undo entry per editor open/close cycle.</p>
+</li>
+<li>
+<p><strong>macOS sandbox.</strong> Hosting arbitrary VST3/AU code is hostile to App Store distribution; direct download only.</p>
+</li>
 </ul>
 <h2 id="validation-plan">Validation plan<a class="headerlink" href="#validation-plan" title="Permanent link">&para;</a></h2>
 <p>Before committing to the design, confirm:</p>
 <ol>
-<li>The C-level graph executor (<code>mh_graph_*</code>) can be built from the
-   existing <code>PluginBus</code> source with bounded effort. If extending
-   "parallel branches" to a general DAG requires a rewrite rather than
-   an extension, reconsider whether to host the executor in Python
-   (per the original <code>graph.md</code> sketch) for v1 and port to C only for
-   v2's realtime path.</li>
-<li>JUCE's <code>AudioProcessorEditor</code> lifetime composes with <code>MH_Plugin</code>'s
-   internal locking. Specifically: opening an editor while
-   <code>mh_process_*</code> runs on another thread must not deadlock or race.
-   Smoke-test before committing to in-process editor hosting.</li>
-<li>A throwaway prototype loads one plugin, opens its editor window,
-   tweaks a parameter, and renders 5 seconds of output to a WAV. If
-   that's not working end-to-end in a week, the stack choice (or the
-   scope) is wrong.</li>
+<li>
+<p>The C-level graph executor (<code>mh_graph_*</code>) can be built from the existing <code>PluginBus</code> source with bounded effort. If extending "parallel branches" to a general DAG requires a rewrite rather than an extension, reconsider whether to host the executor in Python (per the original <code>graph.md</code> sketch) for v1 and port to C only for v2's realtime path.</p>
+</li>
+<li>
+<p>JUCE's <code>AudioProcessorEditor</code> lifetime composes with <code>MH_Plugin</code>'s internal locking. Specifically: opening an editor while <code>mh_process_*</code> runs on another thread must not deadlock or race. Smoke-test before committing to in-process editor hosting.</p>
+</li>
+<li>
+<p>A throwaway prototype loads one plugin, opens its editor window, tweaks a parameter, and renders 5 seconds of output to a WAV. If that's not working end-to-end in a week, the stack choice (or the scope) is wrong.</p>
+</li>
 </ol>
 
 
