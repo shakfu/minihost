@@ -195,6 +195,128 @@ for (int i = 0; i < count; i++) {
 | `mh_audio_is_midi_output_virtual` | Check if MIDI output is a virtual port |
 | `mh_audio_send_midi` | Send MIDI event programmatically to plugin |
 
+### Parameter Changes
+
+| Function | Description |
+|----------|-------------|
+| `mh_audio_send_param` | Queue a parameter change from application code |
+| `mh_audio_send_param_control` | Queue one from a control-surface thread (its own ring) |
+
+Both take `(dev, plugin_index, param_index, value)`, where `plugin_index`
+selects the chain slot on a device opened with `mh_audio_open_chain` and is 0
+otherwise. `value` is normalized 0..1 and clamped when applied.
+
+Prefer these to `mh_set_param` while a device is running. `mh_set_param` takes
+the plugin's state mutex and writes the parameter underneath a running
+`processBlock`, which by contract takes no lock -- so nothing orders the two
+and the change lands at an undefined point in the block. These queue the change
+lock-free; the audio thread drains at the top of the next block and applies it
+through the `_auto` process entry point.
+
+Call each from a single thread. There are two rings for the same
+single-producer reason the MIDI pair has: sharing one between two producers
+corrupts its indices. The drain coalesces per parameter per block, so a fader
+drag emitting hundreds of values costs one parameter write.
+
+### Host Playhead
+
+| Function | Description |
+|----------|-------------|
+| `mh_audio_set_transport_enabled` | Enable the host playhead (off by default) |
+| `mh_audio_get_transport_enabled` | Is it enabled? |
+| `mh_audio_transport_play` / `_stop` | Start / stop the playhead |
+| `mh_audio_transport_set_bpm` | Set tempo |
+| `mh_audio_transport_set_time_sig` | Set time signature |
+| `mh_audio_transport_set_position` | Move the playhead, in samples |
+| `mh_audio_transport_set_loop` | Set loop points, in samples |
+| `mh_audio_transport_set_recording` | Set the recording flag passed to the plugin |
+| `mh_audio_get_transport` | Read the current playhead into an `MH_TransportInfo` |
+
+Off by default, in which case the plugin is told there is no transport. The
+audio thread owns the transport and is its only writer; setters post to a
+lock-free command ring it drains each block, so a setter never blocks and its
+effect is visible one block later. Call the setters from a single thread.
+
+A device opened on a chain hands the playhead to every plugin in it, resolved
+once at open.
+
+`mh_audio_get_transport` copies the most recently published snapshot. Rotating
+buffers make a torn read require the reader to be descheduled across several
+audio callbacks mid-copy; that is a bound, not a proof of atomicity.
+
+### OSC Input
+
+| Function | Description |
+|----------|-------------|
+| `mh_audio_connect_osc` | Listen for OSC on a UDP port and drive parameters directly |
+| `mh_audio_disconnect_osc` | Stop listening |
+| `mh_audio_get_osc_port` | Bound port, or -1 |
+| `mh_audio_set_slot_name` | Give a chain slot a stable name for addressing |
+| `mh_audio_get_slot_name` | The name given to a slot, or NULL |
+
+Recognised addresses, each taking one float in 0..1 unless noted:
+`/mh/param/<index>`, `/mh/<slot>/param/<index>`, `/mh/<name>/param/<index>`,
+`/mh/transport/play`, `/stop`, `/bpm`, `/position` (beats), `/loop`,
+`/record`. Anything else is ignored.
+
+Parameters are addressed only by index: resolving a parameter *name* means a
+table of every parameter and the plugin's own lock, and the socket thread must
+have neither. The value goes straight onto the control parameter ring, so the
+socket thread never blocks and never takes a lock.
+
+Chain slots are the exception, and are worth the small table.
+`/mh/<slot>/param/<index>` addresses a slot by position, which is stable only
+while the chain is built the same way -- and a generated layout outlives the
+code that builds the chain. `mh_audio_set_slot_name` attaches a name to the
+plugin rather than to a position, so the address survives the chain being
+rebuilt in a different order. Names are alphanumeric, start with a letter (which
+keeps them distinct from the numeric form), must be unique, and must be set
+before `mh_audio_connect_osc` -- the table is read by the socket thread and is
+never written while that thread exists.
+
+---
+
+## OSC Functions (minihost_osc.h)
+
+OSC input and output, built on JUCE's `juce_osc` module rather than a vendored
+OSC library -- JUCE is already a dependency, `juce_osc` needs only
+`juce_events`, and it carries the same licence as every other JUCE module
+minihost links.
+
+| Function | Description |
+|----------|-------------|
+| `mh_osc_server_open` | Bind a UDP port and start listening. Port 0 lets the OS choose |
+| `mh_osc_server_close` | Stop listening. Blocks until the socket thread has stopped |
+| `mh_osc_server_get_port` | The port actually bound |
+| `mh_osc_client_open` | Open a sender aimed at host:port |
+| `mh_osc_client_close` | Close the sender |
+| `mh_osc_send_float` / `_int` / `_string` | Send a message with one argument |
+| `mh_osc_send_bang` | Send a message with no arguments (a trigger) |
+| `mh_osc_send_floats` | Send a message with an array of floats |
+| `mh_osc_address_matches` | Does a pattern match a concrete address? |
+| `mh_osc_is_valid_address` | Is this a valid OSC address pattern? |
+
+```c
+typedef void (*MH_OscCallback)(const char* address, const float* args,
+                               int num_args, void* user_data);
+```
+
+The callback runs on the OSC socket thread, not the audio thread and not a JUCE
+message thread. It must not block: that thread is the only reader, so a slow
+callback costs incoming messages. The intended shape is a push onto a lock-free
+ring that some other thread drains.
+
+Argument types: float32 arrives as itself and int32 is converted; any other
+type (string, blob, time tag) is reported as `0.0f` rather than skipped, so
+argument positions stay aligned with what the sender wrote.
+
+Scope, stated rather than discovered later:
+
+- UDP only. No TCP, no SLIP. This is what tablet surfaces use; a serial OSC
+  device is not served.
+- Bundle time tags are parsed but not scheduled. Bundle contents are delivered
+  immediately, which is right for control and wrong for sequencing.
+
 ---
 
 ## Audio File I/O Functions (minihost_audiofile.h)

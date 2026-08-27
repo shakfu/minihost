@@ -411,7 +411,13 @@ jobs:
           CIBW_BEFORE_ALL_MACOS: python3 {project}/scripts/download_juce.py
           CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET=11.0
           CIBW_BEFORE_ALL_WINDOWS: python {project}/scripts/download_juce.py
-          CIBW_TEST_REQUIRES: pytest numpy
+          # py2tosc is the optional [touch] extra. Installed here so the
+          # generated-surface tests actually run: without it they skip, and a
+          # permanently skipping test is worse than no test because it reads
+          # as coverage. The one that matters most is the check that minihost
+          # and py2tosc slug a parameter name identically -- a divergence
+          # there is a control that silently never arrives.
+          CIBW_TEST_REQUIRES: pytest numpy py2tosc>=0.5.2
           CIBW_TEST_COMMAND: pytest {project}/tests -v
         run: cibuildwheel --output-dir wheelhouse
 

@@ -1,6 +1,6 @@
 [project]
 name = "minihost"
-version = "0.7.2"
+version = "0.8.0"
 description = "A minimal juce-based plugin host using nanobind"
 requires-python = ">=3.10"
 dependencies = []
@@ -53,9 +53,9 @@ numpy = ["numpy>=1.20"]
 #
 # A floor rather than a minor pin. The ui_json dialect versions itself with a
 # `schema` number in the envelope, a reader rejects only what is above its
-# range, and 0.5.2 is where the case/when branch tables this generator emits
-# (schema 2) arrived. See docs/dev/osc_and_touch.md section 6.
-touch = ["py2tosc>=0.5.2"]
+# range, and 0.6.0 is where the choice among bindings this generator emits
+# (schema 3) arrived. See docs/dev/osc_and_touch.md section 6.
+touch = ["py2tosc>=0.6.0"]
 
 [project.scripts]
 minihost = "minihost.cli:main"

@@ -10,7 +10,7 @@ This file tracks the vendored C/C++ libraries included in `projects/`. JUCE is n
 | tflac | unversioned (2024) | `projects/tflac/` | <https://github.com/jprjr/tflac> | BSD-0 |
 | libremidi | 5.3.1 | `projects/libremidi/` | <https://github.com/jcelerier/libremidi> | BSD-2-Clause |
 | midifile | unversioned (2021) | `projects/midifile/` | <https://github.com/craigsapp/midifile> | BSD-2-Clause |
-| py2tosc `check_json.py` | 0.5.2 | `tests/check_json.py` | <https://github.com/shakfu/py2tosc> | MIT |
+| py2tosc `check_json.py` | 0.6.0 | `tests/check_json.py` | <https://github.com/shakfu/py2tosc> | MIT |
 
 ## Update Process
 

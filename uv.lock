@@ -590,7 +590,7 @@ wheels = [
 
 [[package]]
 name = "minihost"
-version = "0.7.2"
+version = "0.8.0"
 source = { editable = "." }
 
 [package.optional-dependencies]
@@ -619,7 +619,7 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "numpy", marker = "extra == 'numpy'", specifier = ">=1.20" },
-    { name = "py2tosc", marker = "extra == 'touch'", specifier = ">=0.5.2" },
+    { name = "py2tosc", marker = "extra == 'touch'", specifier = ">=0.6.0" },
 ]
 provides-extras = ["numpy", "touch"]
 
@@ -996,11 +996,11 @@ wheels = [
 
 [[package]]
 name = "py2tosc"
-version = "0.5.2"
+version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/50/80/d5466d0afbda88a6e510c5110c7cebb3939645f8ee45beea404e9fe1dc34/py2tosc-0.5.2.tar.gz", hash = "sha256:befbc0c095936bdfc19930b782a421eed5301719475e9b4d014be7a048833c4f", size = 115211, upload-time = "2026-08-26T16:09:34.129Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/27/e5/296b58a9126ebae0dff194af6d56f3c2e393a4229038e14ccded1189bc7c/py2tosc-0.6.0.tar.gz", hash = "sha256:8f838ffc1328d0d5ee610f6e6197a06b514c76516b7e5b2f6c1f9444d71a4a6a", size = 127324, upload-time = "2026-08-27T02:57:45.193Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b8/ec/3f985a9cb38045f672b78871e85b25ca188b662bcfe4169e4ae5ef33036f/py2tosc-0.5.2-py3-none-any.whl", hash = "sha256:8615ff13ef35833b75ea30eb2462876132d08078bf1547e355dc08539f80db2c", size = 97876, upload-time = "2026-08-26T16:09:32.433Z" },
+    { url = "https://files.pythonhosted.org/packages/09/1f/35ae13494a73b0f2d4f5bb4004822c55c2ec3ddc8696e5dcd38b786f7170/py2tosc-0.6.0-py3-none-any.whl", hash = "sha256:260c6c0369375d3568b032860280a0052bf74f8ee4cb8986ba307261808381f2", size = 108132, upload-time = "2026-08-27T02:57:43.697Z" },
 ]
 
 [[package]]

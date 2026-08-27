@@ -2477,6 +2477,26 @@ public:
         }
     }
 
+    void set_slot_name(int slot_index, nb::object name) {
+        const char* text = nullptr;
+        std::string held;
+        if (!name.is_none()) {
+            held = nb::cast<std::string>(name);
+            text = held.c_str();
+        }
+        if (!mh_audio_set_slot_name(device_, slot_index, text)) {
+            throw nb::value_error(
+                "slot name must be alphanumeric and start with a letter, the "
+                "slot must be in range, the name must not already belong to "
+                "another slot, and OSC must not be connected yet");
+        }
+    }
+
+    nb::object slot_name(int slot_index) const {
+        const char* name = mh_audio_get_slot_name(device_, slot_index);
+        return name ? nb::cast<nb::object>(nb::str(name)) : nb::none();
+    }
+
     void disconnect_osc() {
         // No Python runs on this socket thread -- the native path parses the
         // address in C -- but releasing the GIL while joining a thread is the
@@ -4731,6 +4751,26 @@ NB_MODULE(_core, m) {
              "parameter automation: it takes neither a lock nor the GIL, where a "
              "Python callback pays a GIL acquisition per message.\n\n"
              "port=0 lets the OS choose; read it back from osc_port.")
+        .def("set_slot_name", &AudioDevice::set_slot_name,
+             nb::arg("slot_index"), nb::arg("name").none(),
+             "Give a chain slot a stable name for OSC addressing, so "
+             "/mh/<name>/param/<index> reaches it.\n\n"
+             "The numeric form addresses a slot by its position, which is only "
+             "stable while the chain is built the same way. A layout generated "
+             "for [synth, reverb, limiter] and saved to a file keeps working "
+             "until the script that builds the chain is edited -- swap two "
+             "entries and every address silently points at a different plugin. "
+             "A name attached by the caller survives that, because it is "
+             "attached to the plugin rather than to a position.\n\n"
+             "Names are alphanumeric and start with a letter, which is what "
+             "keeps them distinct from the numeric form. Pass None to clear "
+             "one. Must be called before connect_osc: the table is read by the "
+             "OSC socket thread and is never written while that thread exists, "
+             "which is what makes it lock-free rather than merely usually "
+             "fine.")
+        .def("slot_name", &AudioDevice::slot_name,
+             nb::arg("slot_index"),
+             "The name given to a chain slot, or None.")
         .def("disconnect_osc", &AudioDevice::disconnect_osc,
              "Stop listening for OSC. Blocks until the socket thread has stopped.")
         .def_prop_ro("osc_port", &AudioDevice::osc_port,

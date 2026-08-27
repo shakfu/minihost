@@ -1,15 +1,3 @@
-# VENDORED from py2tosc 0.5.2 (scripts/check_json.py).
-#
-# Copied deliberately, which is what it is written to be: one stdlib-only file
-# meant for a project that *writes* these descriptions and wants its own tests
-# to say they are well formed, without putting the compiler in its
-# dependencies. minihost's touch-surface generator is exactly that caller.
-#
-# Do not edit. Re-copy on a py2tosc schema bump; its tables are generated from
-# the live modules by py2tosc's scripts/make_check_json.py, and a stale copy
-# reports a description declaring a schema its tables do not know.
-#
-# See docs/vendored.md.
 #!/usr/bin/env python3
 """Check a py2tosc JSON file without py2tosc installed.
 
@@ -183,6 +171,7 @@ TABLES: dict[str, Any] = {
             "TEXT": ["text", "touch"],
             "XY": ["touch", "x", "y"],
         },
+        "choice_keys": ["case", "when"],
         "common_keys": ["id", "messages", "props", "values"],
         "control_types": [
             "BOX",
@@ -607,7 +596,16 @@ TABLES: dict[str, Any] = {
             ],
         },
         "repeat_keys": ["as", "case", "each", "from", "of", "repeat", "when"],
-        "schemas": [1, 2],
+        "schemas": [1, 2, 3],
+        "slots": {
+            "column": "children",
+            "group": "children",
+            "messages": "bindings",
+            "pager": "children",
+            "row": "children",
+            "stack": "children",
+            "tiles": "children",
+        },
         "tags": [
             "box",
             "button",
@@ -722,15 +720,28 @@ class _Report:
 
 
 def _needs(entry: dict[str, Any]) -> int:
-    """The schema one node needs, ignoring what is nested inside it."""
+    """The schema one node needs, ignoring what is nested inside it.
+
+    A hand copy of the table in `py2tosc.ui_json`, because no generated table
+    can carry code. `tests/test_schema_corpus.py` in py2tosc runs both over one
+    description per schema, which is what stops the two answering differently.
+    """
+    ui = TABLES["ui"]
+    for key in ui["slots"]:
+        held = entry.get(key)
+        if isinstance(held, list) and any(_is_choice(item) for item in held):
+            return 3
+    if _is_choice(entry):
+        table = entry.get("when")
+        if isinstance(table, dict) and any(
+            isinstance(branch, list) for branch in table.values()
+        ):
+            return 3
+
     held = entry.get("of")
-    if (
-        ("repeat" in entry or "each" in entry)
-        and isinstance(held, dict)
-        and {"case", "when"} & set(held)
-    ):
-        return 2  # a repeat that chooses among branches
-    return int(TABLES["ui"]["schemas"][0])
+    if ("repeat" in entry or "each" in entry) and _is_choice(held):
+        return 2
+    return int(ui["schemas"][0])
 
 
 def required_schema(data: Any) -> int:
@@ -790,11 +801,16 @@ def _spelled(value: Any) -> str:
 
 
 def _is_choice(described: Any) -> bool:
-    """Whether an `of` holds a table of branches rather than a node."""
+    """Whether one object is a choice rather than a node."""
     if not isinstance(described, dict):
         return False
     named = {k for k in described if not k.startswith(_COMMENT)}
     return bool({"case", "when"} & named)
+
+
+def _branch_list(branch: Any) -> list[Any]:
+    """One branch as the list it stands for, which may be empty."""
+    return branch if isinstance(branch, list) else [branch]
 
 
 class _Description:
@@ -868,7 +884,7 @@ class _Description:
             return None
         return [{} for _ in range(count)]
 
-    def repeat(self, entry: dict[str, Any], where: str, bound: set[str]) -> None:
+    def repeat(self, entry: dict[str, Any], where: str, bound: dict[str, Any]) -> None:
         """Check one `repeat` or `each`, and the node it stands for."""
         if "of" in entry:
             also = [k for k in entry if k in self.ui["tags"]]
@@ -915,69 +931,139 @@ class _Description:
 
         choice = None
         if "of" in entry and _is_choice(described):
-            choice = self.choice(described, where)
+            choice = self.check_choice(described, "node", f"{where}.of")
             if choice is None:
                 return  # the choice itself was refused; nothing left to check
 
         for step, row in enumerate(rows):
             bindings: dict[str, Any] = {counter: start + step, f"{counter}0": step}
             bindings.update(row)
-            here = bound | set(bindings)
+            here = {**bound, **bindings}
             spot = f"{where}#{step + 1}"
             if choice is None:
                 self.node(described, spot, here)
                 continue
-            case, branches = choice
-            picked = _spelled(_interpolate(case, bindings))
-            if picked not in branches:
-                written = ", ".join(repr(k) for k in branches)
-                self.report.error(
-                    spot,
-                    f"case read {picked!r}, and no branch is written for it; "
-                    f"when holds {written}",
-                )
-                continue
-            self.node(branches[picked], spot, here)
+            picked = self.pick(choice, bindings, spot)
+            if picked is not None:
+                self.node(picked, spot, here)
 
-    def choice(self, described: Any, where: str) -> tuple[str, dict[str, Any]] | None:
-        """The branches an `of` chooses between, or None if it will not read."""
-        spot = f"{where}.of"
-        entry = self.report.object(described, spot)
-        if entry is None:
+    # -- nodes ---------------------------------------------------------------
+
+    def check_choice(
+        self, entry: dict[str, Any], slot: str, where: str
+    ) -> dict[str, Any] | None:
+        """A choice appearing among children or among bindings.
+
+        Shape only, and every branch rather than the one taken -- which is
+        exactly what the reader checks before expansion, so this refuses
+        nothing it would accept.
+        """
+        held = self.report.object(entry, where)
+        if held is None:
             return None
-
-        self.report.keys(entry, {"case", "when"}, spot)
-        missing = sorted({"case", "when"} - set(entry))
+        self.report.keys(held, set(self.ui["choice_keys"]), where)
+        missing = sorted(set(self.ui["choice_keys"]) - set(held))
         if missing:
             self.report.error(
-                spot,
+                where,
                 f"a choice reads a field with `case` and holds the branches it "
                 f"chooses between under `when`; {missing[0]!r} is missing",
             )
             return None
-
-        case = entry["case"]
-        if not isinstance(case, str):
+        if not isinstance(held["case"], str):
             self.report.error(
-                spot,
-                f"case reads the field that chooses a branch, found {_describe(case)}",
+                where,
+                f"case reads the field that chooses a branch, "
+                f"found {_describe(held['case'])}",
             )
             return None
 
-        table = self.report.object(entry["when"], f"{spot}.when")
+        table = self.report.object(held["when"], f"{where}.when")
         if table is None:
             return None
         if not table:
-            self.report.error(f"{spot}.when", "a choice needs a branch to choose")
+            self.report.error(f"{where}.when", "a choice needs a branch to choose")
             return None
 
         for name, branch in table.items():
-            node = self.report.object(branch, f"{spot}.when[{name!r}]")
-            if node is not None:
-                self.tag(node, f"{spot}.when[{name!r}]")
-        return case, table
+            spot = f"{where}.when[{name!r}]"
+            for index, node in enumerate(_branch_list(branch)):
+                at = spot if not isinstance(branch, list) else f"{spot}[{index}]"
+                written = self.report.object(node, at)
+                if written is None:
+                    continue
+                if slot == "bindings":
+                    self.binding_kind(written, at)
+                else:
+                    self.tag(written, at)
+        return held
 
-    # -- nodes ---------------------------------------------------------------
+    def pick(self, entry: dict[str, Any], bound: dict[str, Any], where: str) -> Any:
+        """Which branch this pass takes, or None with the reason reported.
+
+        Unlike the reader, this walks with every enclosing repeat's names
+        already in hand, so a selector that still will not resolve is one
+        nothing binds rather than one an inner pass will fill.
+        """
+        picked = _interpolate(entry["case"], bound)
+        if isinstance(picked, str) and _PLACEHOLDER.search(picked):
+            if bound:
+                known = ", ".join(f"${key}" for key in sorted(bound))
+                self.report.error(
+                    where,
+                    f"case reads {entry['case']!r}, which is not one of the "
+                    f"names this repeat binds ({known})",
+                )
+            else:
+                self.report.error(
+                    where,
+                    "a choice is selected by a value a repeat binds, and "
+                    "nothing here is inside a repeat",
+                )
+            return None
+        name = _spelled(picked)
+        if name not in entry["when"]:
+            written = ", ".join(repr(key) for key in entry["when"])
+            self.report.error(
+                where,
+                f"case read {name!r}, and no branch is written for it; "
+                f"when holds {written}",
+            )
+            return None
+        return entry["when"][name]
+
+    def expand(
+        self, data: Any, where: str, slot: str, bound: dict[str, Any]
+    ) -> list[tuple[str, Any]]:
+        """One list with every choice in it opened out where it stood."""
+        opened: list[tuple[str, Any]] = []
+        for index, item in enumerate(self.report.list(data, where) or []):
+            spot = f"{where}[{index}]"
+            if not _is_choice(item):
+                opened.append((spot, item))
+                continue
+            held = self.check_choice(item, slot, spot)
+            if held is None:
+                continue
+            picked = self.pick(held, bound, spot)
+            if picked is None:
+                continue
+            for step, node in enumerate(_branch_list(picked)):
+                opened.append((f"{spot}#{step + 1}", node))
+        return opened
+
+    def binding_kind(self, entry: dict[str, Any], where: str) -> str | None:
+        """Which of the four a binding is, checked without building it."""
+        found = [k for k in entry if k in self.ui["messages"]]
+        if len(found) == 1:
+            return found[0]
+        kinds = ", ".join(sorted(self.ui["messages"]))
+        self.report.error(
+            where,
+            f"a binding is one of {kinds}"
+            + (f", found {' and '.join(repr(f) for f in found)}" if found else ""),
+        )
+        return None
 
     def tag(self, entry: dict[str, Any], where: str) -> str | None:
         """Which key names the thing, of the ones that could."""
@@ -1000,7 +1086,7 @@ class _Description:
         )
         return None
 
-    def strings(self, value: Any, where: str, bound: set[str]) -> None:
+    def strings(self, value: Any, where: str, bound: dict[str, Any]) -> None:
         """Every `$name` in one value's strings, against what is bound."""
         if isinstance(value, str):
             for name in _names(value):
@@ -1020,7 +1106,7 @@ class _Description:
                 if not key.startswith(_COMMENT):
                     self.strings(item, where, bound)
 
-    def node(self, data: Any, where: str, bound: set[str]) -> None:
+    def node(self, data: Any, where: str, bound: dict[str, Any]) -> None:
         """Read one node: the tag, its argument, and everything hanging off it."""
         entry = self.report.object(data, where)
         if entry is None:
@@ -1057,21 +1143,13 @@ class _Description:
         self.extras(entry, where, bound)
 
     def argument(
-        self, tag: str, entry: dict[str, Any], where: str, bound: set[str]
+        self, tag: str, entry: dict[str, Any], where: str, bound: dict[str, Any]
     ) -> None:
         """What the tag's one positional value has to be."""
         value = entry[tag]
-        if tag in self.ui["arrange"]:
-            children = self.report.list(value, f"{where}.{tag}")
-            if children is None:
-                return
-            for index, child in enumerate(children):
-                self.child(child, f"{where}.{tag}[{index}]", bound)
-        elif tag == "group":
-            children = self.report.list(value, f"{where}.{tag}")
-            if children is not None:
-                for index, child in enumerate(children):
-                    self.child(child, f"{where}.{tag}[{index}]", bound)
+        if tag in self.ui["arrange"] or tag == "group":
+            for spot, child in self.expand(value, f"{where}.{tag}", "children", bound):
+                self.child(child, spot, bound)
         elif tag == "grid":
             if not isinstance(value, str):
                 self.report.error(
@@ -1105,7 +1183,7 @@ class _Description:
         elif value is not None:
             self.report.error(where, f"{tag} takes its name, found {_describe(value)}")
 
-    def child(self, data: Any, where: str, bound: set[str]) -> None:
+    def child(self, data: Any, where: str, bound: dict[str, Any]) -> None:
         entry = self.report.object(data, where)
         if entry is None:
             return
@@ -1114,7 +1192,7 @@ class _Description:
         else:
             self.node(entry, where, bound)
 
-    def extras(self, entry: dict[str, Any], where: str, bound: set[str]) -> None:
+    def extras(self, entry: dict[str, Any], where: str, bound: dict[str, Any]) -> None:
         """`id`, `props`, `values` and the bindings."""
         identifier = entry.get("id")
         if identifier is not None and not isinstance(identifier, str):
@@ -1135,25 +1213,18 @@ class _Description:
 
         if "messages" not in entry:
             return
-        bindings = self.report.list(entry["messages"], f"{where}.messages")
-        for index, item in enumerate(bindings or []):
-            self.message(item, f"{where}.messages[{index}]", bound)
+        for spot, item in self.expand(
+            entry["messages"], f"{where}.messages", "bindings", bound
+        ):
+            self.message(item, spot, bound)
 
-    def message(self, data: Any, where: str, bound: set[str]) -> None:
+    def message(self, data: Any, where: str, bound: dict[str, Any]) -> None:
         entry = self.report.object(data, where)
         if entry is None:
             return
-        found = [k for k in entry if k in self.ui["messages"]]
-        kinds = ", ".join(sorted(self.ui["messages"]))
-        if len(found) != 1:
-            self.report.error(
-                where,
-                f"a binding is one of {kinds}"
-                + (f", found {' and '.join(repr(f) for f in found)}" if found else ""),
-            )
+        kind = self.binding_kind(entry, where)
+        if kind is None:
             return
-
-        kind = found[0]
         self.report.keys(entry, set(self.ui["messages"][kind]) | {kind}, where)
         self.strings({k: v for k, v in entry.items() if k != kind}, where, bound)
 
@@ -1273,7 +1344,7 @@ def _check_description(data: dict[str, Any], report: _Report) -> None:
         return
 
     described = _Description(report)
-    described.node(data["root"], "root", set())
+    described.node(data["root"], "root", {})
     described.finish()
 
 

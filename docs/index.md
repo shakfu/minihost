@@ -24,6 +24,8 @@ minihost provides a C API built on JUCE with Python bindings via nanobind. It bu
 
 - **Real-time MIDI**: input/output via libremidi, virtual ports on macOS/Linux
 
+- **Control surfaces**: MIDI CC mapping (7-bit and 14-bit), OSC in and out, generated TouchOSC layouts (`minihost touch`), and a host playhead for live tempo. See [Control Surfaces](control_surfaces.md).
+
 - **Audio file I/O**: read WAV/FLAC/MP3/Vorbis, write WAV and FLAC
 
 - **Sample rate conversion**: built-in resampling via miniaudio

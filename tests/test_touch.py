@@ -145,7 +145,7 @@ def test_the_envelope_declares_the_dialect_and_stamps_the_schema():
     description with no schema key means 'whatever the reader is'."""
     layout = _layout()
     assert layout["format"] == "py2tosc.ui"
-    assert layout["schema"] == 2
+    assert layout["schema"] == 3
 
 
 def test_the_layout_passes_the_vendored_checker():
@@ -199,13 +199,18 @@ def test_parameters_past_the_cc_limit_select_a_no_cc_branch():
         for page in layout["root"]["stack"][0]["pager"]
         for row in page["tiles"][0]["each"]
     ]
-    assert rows[127]["kind"] == "continuous"
-    assert rows[128]["kind"] == "continuousNoCc"
+    # The widget kind is one question and the controller number another, so
+    # both rows take the same arm and differ only in what they say about CC.
+    assert rows[127]["kind"] == rows[128]["kind"] == "continuous"
+    assert rows[127]["hasCc"] is True and rows[128]["hasCc"] is False
     assert "cc" in rows[127] and "cc" not in rows[128]
 
     when = layout["root"]["stack"][0]["pager"][0]["tiles"][0]["of"]["when"]
-    assert any("midi_cc" in m for m in when["continuous"]["messages"])
-    assert not any("midi_cc" in m for m in when["continuousNoCc"]["messages"])
+    assert set(when) == {"continuous", "toggle", "stepped"}
+    choice = when["continuous"]["messages"][-1]
+    assert choice["case"] == "$hasCc"
+    assert choice["when"]["true"] == [{"midi_cc": "$cc"}]
+    assert choice["when"]["false"] == []
 
 
 def test_pages_are_filled_to_the_grid():

@@ -27,8 +27,9 @@ reasons:
 Widget choice needs a branch table, because substitution in that dialect
 reaches values and never keys -- so the tag naming a node is fixed in a
 template and one ``each`` would otherwise build one kind of control. py2tosc
-0.5.2 added ``of: {case, when}`` for this (at minihost's request), which is
-``ui_json`` schema 2.
+0.5.2 added ``of: {case, when}`` for this (at minihost's request) and 0.6.0
+let a choice stand among bindings as well, which is what lets a row say it
+has no controller number. The layout stamps ``ui_json`` schema 3.
 """
 
 from __future__ import annotations
@@ -166,18 +167,20 @@ def _branch(
     the tag table before any row is read -- a branch naming two tags or none
     is refused whether or not a row reaches it.
 
-    There are two arms per widget kind because a parameter past the 128th has
-    no controller number left, and ``each`` cannot conditionally include a
-    message: a row picks a branch, and the branch either has a ``midi_cc``
-    binding or does not. A branch nothing selects is not an error, so a
-    surface with fewer than 128 parameters simply never reaches the no-CC
-    arms.
+    Whether a row has a controller number is a second choice nested in the
+    bindings, not a second arm here. A parameter past the 128th has none, and
+    its row selects the empty branch. ``[]`` emits nothing.
     """
-    messages: list[dict] = []
+    messages: list[Any] = []
     if with_osc:
         messages.append({"osc": "$address"})
     if with_cc:
-        messages.append({"midi_cc": "$cc"})
+        messages.append(
+            {
+                "case": "$hasCc",
+                "when": {"true": [{"midi_cc": "$cc"}], "false": []},
+            }
+        )
 
     node: dict[str, Any] = {tag: "$name", "messages": messages}
     if extra:
@@ -186,16 +189,20 @@ def _branch(
 
 
 def _branch_table(midi: bool, osc: bool) -> dict:
-    """Every widget kind, with and without a controller number."""
-    table: dict[str, Any] = {}
-    for kind, tag, extra in (
-        ("continuous", "fader", None),
-        ("toggle", "button", None),
-        ("stepped", "radio", {"steps": "$steps"}),
-    ):
-        table[kind] = _branch(tag, with_osc=osc, with_cc=midi, extra=extra)
-        table[f"{kind}NoCc"] = _branch(tag, with_osc=osc, with_cc=False, extra=extra)
-    return table
+    """One arm per widget kind.
+
+    Three arms rather than six: the CC question is asked once, inside each
+    arm, instead of doubling the table. A fourth question would add two arms
+    here where the flat form would have doubled it again.
+    """
+    return {
+        kind: _branch(tag, with_osc=osc, with_cc=midi, extra=extra)
+        for kind, tag, extra in (
+            ("continuous", "fader", None),
+            ("toggle", "button", None),
+            ("stepped", "radio", {"steps": "$steps"}),
+        )
+    }
 
 
 def build_layout(
@@ -225,16 +232,17 @@ def build_layout(
     per_page = max(1, columns * rows)
 
     def row_for(p: Parameter) -> dict:
-        has_cc = midi and p.cc is not None
         row: dict[str, Any] = {
-            "kind": p.kind if has_cc else f"{p.kind}NoCc",
+            "kind": p.kind,
             "name": p.slug,
             "caption": p.name if not p.unit else f"{p.name} ({p.unit})",
         }
         if osc:
             row["address"] = f"{prefix}/{p.slug}"
-        if has_cc:
-            row["cc"] = p.cc
+        if midi:
+            row["hasCc"] = p.cc is not None
+            if p.cc is not None:
+                row["cc"] = p.cc
         if p.kind == "stepped":
             row["steps"] = p.steps
         return row
@@ -273,9 +281,9 @@ def build_layout(
         # Stamped explicitly rather than left to default. ui_json is read and
         # never written, so the producer stamps -- and a description with no
         # schema key means "whatever the reader is", which is the ambiguity a
-        # version number exists to remove. 2 is the schema that introduced the
-        # case/when branch tables this layout uses.
-        "schema": 2,
+        # version number exists to remove. 3 is the schema that let a choice
+        # stand among bindings, which is how a row says it has no CC.
+        "schema": 3,
         "//": header,
         "root": {
             "stack": [root],

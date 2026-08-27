@@ -303,11 +303,14 @@ def cmd_params(args: argparse.Namespace) -> int:
             flags = []
             if info.get("is_automatable"):
                 flags.append("automatable")
-            if info.get("is_discrete"):
-                flags.append("discrete")
-                num_steps = info.get("num_steps")
-                if num_steps is not None:
-                    flags.append(f"{num_steps} steps")
+            # `num_steps` and `is_boolean` are the keys get_param_info
+            # actually returns; an earlier `is_discrete` lookup here matched
+            # nothing, so the flag never printed.
+            if info.get("is_boolean"):
+                flags.append("boolean")
+            num_steps = info.get("num_steps") or 0
+            if num_steps > 1:
+                flags.append(f"discrete, {num_steps} steps")
             if flags:
                 print(f"         Flags:   {', '.join(flags)}")
     else:

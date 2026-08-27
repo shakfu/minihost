@@ -2,7 +2,19 @@
 
 ## [Unreleased]
 
+## [0.8.0]
+
 ### Added
+
+- **Stable OSC addressing for chain slots.** `/mh/<slot>/param/<index>` addresses a slot by its position in the chain, which is stable only while the chain is built the same way -- and the durable artefact here is the *layout*, which outlives the script that builds the chain. Generate a surface for `[synth, reverb, limiter]`, later edit the script to put the limiter second, and every address silently points at a different plugin with nothing anywhere to say so. Chains cannot be reordered at runtime, so this was never a live-editing hazard; it is a persistence hazard, which is worse for being invisible.
+
+  `mh_audio_set_slot_name` (`AudioDevice.set_slot_name`) attaches a name to the plugin rather than to a position, and `/mh/<name>/param/<index>` resolves through it. Names are alphanumeric and start with a letter, which is what keeps them unambiguous against the numeric form, and must be unique -- two slots sharing one would make the second silently unreachable. The numeric form is unchanged, so this is purely additive.
+
+  Naming is refused once OSC is connected, and that constraint is enforced rather than documented: the table is read by the socket thread and is never written while that thread exists, which is what makes the lookup lock-free rather than merely usually fine. A test asserts the refusal.
+
+  The guarantee is a test rather than a claim: `test_a_named_slot_survives_reordering` builds a chain, addresses a plugin by name, rebuilds the chain in the opposite order, and requires the identical address to reach the identical plugin -- where the positional address would have swapped.
+
+  Considered and rejected: deriving the name from the plugin itself. `MH_Plugin` exposes no name at all, so it would have meant new C API on the eve of a release, and it would not have worked anyway -- two reverbs in one chain would be numbered `reverb` and `reverb2`, which is positional again by another spelling.
 
 - **`minihost touch`: a control surface generated from a plugin's parameters.** Writes `<name>.ui.json` (a layout in the `py2tosc.ui` dialect) and `<name>.map.json` (a `--map-file` mapping) from one parameter table, and compiles a `.tosc` when the optional `minihost[touch]` extra is installed. Widget choice comes from metadata minihost already exported and the flat `py2tosc.surface` path discards: `is_boolean` becomes a button, `num_steps` a radio, everything else a fader.
 
@@ -10,11 +22,11 @@
 
   Targeting `ui_json` rather than emitting a `.tosc` directly means **generation imports nothing**. `touch.py` writes JSON text; py2tosc is needed only to compile. Absent, the command still produces a complete, valid description and prints how to compile it, rather than failing and producing nothing. It also makes the output a source file rather than an artefact -- a `.tosc` is a zipped XML blob nobody hand-edits, so a generator that emits one owns every layout decision forever.
 
-  Widget variety needs a branch table, because substitution in that dialect reaches values and never keys, so one `each` would otherwise build one kind of control. The `of: {case, when}` form py2tosc 0.5.2 added at minihost's request is exactly this, and it is why the envelope stamps `"schema": 2`. There are two arms per widget kind rather than three total: a parameter past the 128th has no controller number left and `each` cannot conditionally include a message, so the row selects a branch that has no `midi_cc` binding at all. A branch nothing selects is not an error, so a surface under 128 parameters never reaches those arms.
+  Widget variety needs a branch table, because substitution in that dialect reaches values and never keys, so one `each` would otherwise build one kind of control. py2tosc added `of: {case, when}` in 0.5.2 at minihost's request, and in 0.6.0 let a choice stand among bindings too. The envelope stamps `"schema": 3`. Three arms, one per widget kind: whether a row has a controller number is a second choice nested in the bindings, so a parameter past the 128th selects an empty branch rather than needing an arm of its own. Six arms would have become twelve at the next question.
 
   Parameter order is preserved, which is what ruled out the simpler shape of one `each` per widget kind -- grouping by widget regroups the surface and throws away an ordering the plugin author chose. CC exhaustion is printed rather than silent; py2tosc's own flat path lets the remainder go OSC-only without saying so, which for a 300-parameter plugin is a discovery rather than a decision.
 
-  `tests/check_json.py` is vendored from py2tosc 0.5.2 and every generated description goes through it. It is one stdlib-only file published for projects that *write* these descriptions, so it costs no dependency and catches what a golden file cannot: a key nothing reads, silently ignored, so a typo drops a subtree while the output still looks correct. Recorded in `docs/vendored.md` as a test-only vendoring.
+  `tests/check_json.py` is vendored from py2tosc 0.6.0 and every generated description goes through it. It is one stdlib-only file published for projects that *write* these descriptions, so it costs no dependency and catches what a golden file cannot: a key nothing reads, silently ignored, so a typo drops a subtree while the output still looks correct. Recorded in `docs/vendored.md` as a test-only vendoring.
 
 - **A host playhead for the live device.** `grep -n transport projects/libminihost_audio/minihost_audio.c` used to return nothing: the realtime device never called `mh_set_transport`, so a tempo-synced delay, an arpeggiator or an LFO running under `minihost play` saw no host tempo and a playhead pinned at sample 0. Offline renders had one; realtime did not. New `mh_audio_set_transport_enabled`, `mh_audio_transport_play` / `_stop` / `_set_bpm` / `_set_time_sig` / `_set_position` / `_set_loop` / `_set_recording` and `mh_audio_get_transport`, exposed on `AudioDevice`. Off by default, so a device that does not ask behaves exactly as before.
 
@@ -70,6 +82,8 @@
 
   Overflow defers rather than drops. The first implementation discarded a change that did not fit the drain array, which the TSan harness caught immediately: nothing upstream resends, so a discarded value is lost for good and the parameter sits at a stale setting. The drain now stops at the first change it cannot place and leaves it queued for the next block. `tests/tsan/ringbuffer_stress.cpp` gained a parameter section asserting the properties that actually hold under coalescing -- no torn triples, no parameter twice in one drain, and every parameter converged on the producer's last value -- deliberately driven with more parameters than the drain array holds so the overflow branch is exercised.
 
+- **New page: Control Surfaces** (`docs/control_surfaces.md`, added to the nav). Everything this release added -- OSC transport, `OscMapper`, 14-bit CC, feedback, transport, `minihost touch` -- was reachable only from the API reference and `docs/dev/osc_and_touch.md`, which is a design note rather than a guide. The page covers driving a plugin from a MIDI controller, from a tablet running TouchOSC, and from anything speaking OSC, with the mapping layer and the generated-surface path in one place.
+
 ### Fixed
 
 - **Closing a busy `OscServer` or `MidiIn` deadlocked.** `OscServer.close()` joins the OSC socket thread while holding the GIL, and that thread needs the GIL to run the Python callback -- so close waited for a thread that was waiting for close. A hard deadlock, not a slow path, and `MidiIn.close()` had the same shape against the libremidi input thread.
@@ -83,7 +97,6 @@
   Two details the implementation turns on. Instances are GC-tracked from allocation, which is *before* the C++ constructor runs, so every traverse guards on `nb::inst_ready` rather than reading uninitialised storage. And `tp_clear` closes the device, chain or graph before dropping the reference, because the audio thread reaches the plugin through a raw pointer -- using the C entry point directly rather than the raising wrapper, since an exception must not escape a GC pass.
 
   `tests/test_callback_gc.py` covers it, including that the lifetime guarantee did not weaken: dropping the caller's reference, forcing collection, then actually starting the device and processing. The first version of those tests was worthless and passed against a deliberately unfixed build -- `del holder` on a closed-over variable empties the closure cell, dismantling the cycle by hand before the collector ever ran. Rewritten to build each cycle inside a helper and leave it intact, they fail correctly on the unfixed build. A direct `Py_TPFLAGS_HAVE_GC` assertion sits alongside them so a regression that drops the slots fails loudly rather than silently voiding every other test in the file.
-
 
 ## [0.7.2]
 
@@ -623,7 +636,7 @@ All changes below are additive or bug fixes relative to the published 0.2.0; the
 
   - **Canvas**: four new colours (purple-violet family), four context-menu entries ("Add MIDI Filter" / "Add MIDI Transpose" / "Add MIDI Velocity Curve" / "Add MIDI Merge (2 in)"), property dialogs for each (min_note/max_note/channel_mask for filter, semitones for transpose, gamma for velocity_curve, num_inputs for merge). The MIDI-edge-detection in `addEdgeToDoc` treats all four new kinds as MIDI sources / sinks (processors and merges are both). Edge-drag into a `midi_merge` auto-assigns to the lowest unconnected input port (or shows a "merge full" alert when all ports are used). `removeNodeFromDoc` sweeps all four new spec vectors.
 
-  - **Tests**: 13 new tests in `tests/test_graph_v2_midi_processors.py` covering filter note-range and channel-mask behavior, transpose with out-of-range drop, velocity curve identity / compress / zero-velocity preservation, merge concatenation + sort + port-range rejection + per-port compile validation, processor topology validation, `set_midi_processor_params` live updates, and a filter→transpose chain. Test suite: **651 passed, 71 skipped**.
+  - **Tests**: 13 new tests in `tests/test_graph_v2_midi_processors.py` covering filter note-range and channel-mask behavior, transpose with out-of-range drop, velocity curve identity / compress / zero-velocity preservation, merge concatenation + sort + port-range rejection + per-port compile validation, processor topology validation, `set_midi_processor_params` live updates, and a filter-to-transpose chain. Test suite: **651 passed, 71 skipped**.
 
 - **Transport-driven `metronome` and `midi_clock` nodes** -- two new project-level node kinds that emit audio / MIDI synchronized to `LiveEngine`'s transport (`transport_bpm_`, `transport_playing_`, `transport_pos_samples_`). No libminihost changes: each rides on an existing graph node kind, and `LiveEngine` fills its buffer / event list per block.
 

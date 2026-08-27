@@ -46,6 +46,7 @@ nav:
   - Python API: api_python.md
   - Composition Pipelines: composition.md
   - MIDI Routing: midi_routing.md
+  - Control Surfaces: control_surfaces.md
   - C API: api_c.md
   - Hosting Guide: hosting_guide.md
   - Migration Guide: migration.md

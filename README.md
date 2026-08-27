@@ -54,6 +54,16 @@ with (
 
 - **Control surface mapping** -- `minihost.MidiMapper` translates incoming MIDI CCs from a USB control surface (Launch Control / MIDIMix / nanoKONTROL / X-Touch / etc.) onto plugin parameters with optional value-range and curve (`linear`/`exp`/`log`); CLI: `minihost play --map "channel:cc:param[:lo:hi[:curve]]"` (repeatable) or `--map-file PATH` for saved JSON mappings.
 
+- **14-bit MIDI CC** -- `map_cc14` pairs controller *n* (0-31) with *n*+32 for 16384 steps instead of 128, which matters on anything a 7-bit CC makes audibly stepped; CLI: `minihost play --map14 "channel:msb_cc:param"`. Overlap with a plain CC is rejected at map time, because a stray mapping on the LSB otherwise shadows it silently.
+
+- **OSC in and out** -- `OscServer` / `OscClient` over UDP, built on JUCE's `juce_osc` (no new dependency). `AudioDevice.connect_osc(port)` parses `/mh/param/<index>` in C and drives parameters without taking a lock or the GIL; `OscMapper` adds name addressing, curves and ranges; `OscFeedback` sends values back so a surface tracks preset loads instead of lying. CLI: `minihost play --osc-port 9000 --osc-feedback HOST:PORT`.
+
+- **Sample-accurate live parameter writes** -- `AudioDevice.send_param()` queues a change on a lock-free ring the audio thread drains at the next block boundary, rather than writing the parameter underneath a running `processBlock` as `set_param` does. Coalesces per parameter per block, so a fader drag costs one write.
+
+- **Host playhead for realtime** -- `AudioDevice.set_transport_enabled(True)` plus `transport_play()` / `transport_set_bpm()` / loop points gives live plugins a tempo and a position. Tempo-synced delays, arpeggiators and LFOs previously saw no transport at all under `minihost play`.
+
+- **Generated touch surfaces** -- `minihost touch synth.vst3` turns a plugin's parameters into a TouchOSC layout and a matching MIDI map, rendered from one table so the two cannot disagree. Widget choice follows the plugin's metadata (boolean -> button, stepped -> radio, else fader). Generation needs no dependency; compiling to `.tosc` uses the optional `minihost[touch]` extra ([py2tosc](https://github.com/shakfu/py2tosc)).
+
 - **Looped sources for live tweaking** -- `minihost play --loop-midi PATH` loops a MIDI file through the plugin (with All Notes Off between iterations); `--loop-audio PATH` loops an audio file into the plugin's input ring buffer at real time. Useful for parameter exploration against a repeating pattern.
 
 - **Virtual MIDI ports** - create named ports that DAWs can connect to (macOS, Linux)

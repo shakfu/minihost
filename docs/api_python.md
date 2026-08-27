@@ -320,6 +320,9 @@ When `capture=True`, the audio device opens in duplex mode: system audio input i
 | `is_midi_input_virtual` | `bool` | Whether MIDI input is a virtual port |
 | `is_midi_output_virtual` | `bool` | Whether MIDI output is a virtual port |
 | `input_available` | `int` | Frames available in input ring buffer (0 if not enabled) |
+| `transport_enabled` | `bool` | Whether the host playhead is enabled |
+| `transport` | `dict \| None` | Current playhead, or `None` if disabled or no block rendered yet |
+| `osc_port` | `int` | UDP port OSC is bound to (-1 if not connected) |
 
 ### Methods
 
@@ -337,6 +340,111 @@ When `capture=True`, the audio device opens in duplex mode: system audio input i
 | `enable_input(capacity_frames=0)` | Enable ring buffer audio input. `capacity_frames=0` uses ~0.5s default |
 | `disable_input()` | Disable ring buffer audio input (revert to silence) |
 | `write_input(data)` | Write `(channels, frames)` audio data into input ring buffer. Accepts AudioBuffer, numpy ndarray, or any 2D float32 c-contig buffer-protocol producer. Returns frames written. Thread-safe |
+| `send_param(index, value, plugin_index=0)` | Queue a parameter change, applied by the audio thread at the next block. See below |
+| `send_param_control(index, value, plugin_index=0)` | As `send_param`, from a control-surface thread (its own queue) |
+| `connect_osc(port=0)` | Listen for OSC parameter control. `port=0` lets the OS choose |
+| `disconnect_osc()` | Stop listening for OSC |
+| `set_slot_name(slot_index, name)` | Name a chain slot for stable OSC addressing. `None` clears |
+| `slot_name(slot_index)` | The name given to a slot, or `None` |
+| `set_transport_enabled(enabled)` | Enable the host playhead (off by default) |
+| `transport_play()` / `transport_stop()` | Start / stop the playhead |
+| `transport_set_bpm(bpm)` | Set tempo |
+| `transport_set_time_sig(numerator, denominator)` | Set time signature |
+| `transport_set_position(position_samples)` | Move the playhead |
+| `transport_set_loop(enabled, start_samples=0, end_samples=0)` | Set loop points |
+| `transport_set_recording(recording)` | Set the recording flag passed to the plugin |
+
+### Parameter changes while playing
+
+Prefer `send_param` to `Plugin.set_param` while a device is running.
+
+`set_param` takes the plugin's state mutex and writes the parameter underneath
+a running `processBlock`, which by contract takes no lock -- so nothing orders
+the two and the change lands at an undefined point inside the block. It also
+means a control thread can block behind an offline caller holding that mutex.
+
+`send_param` puts the change on a lock-free queue that the audio thread drains
+at the top of the next block and applies through the sample-accurate process
+entry point. Two queues exist for the same single-producer reason the MIDI
+ones do: `send_param` is for application code, `send_param_control` for a
+control surface's own thread. Call each from one thread.
+
+Changes coalesce per parameter per block, so a fader drag emitting hundreds of
+values costs one parameter write rather than hundreds of sub-block splits.
+
+```python
+with minihost.AudioDevice(plugin) as audio:
+    audio.start()
+    for i in range(200):
+        audio.send_param(0, i / 199.0)   # 200 writes, 1 applied change
+```
+
+### Host playhead
+
+Off by default, in which case the plugin is told there is no transport -- which
+is what the live device did before this existed, so a tempo-synced delay or
+arpeggiator ran at its own default with the playhead pinned at sample 0.
+
+```python
+with minihost.AudioDevice(plugin) as audio:
+    audio.set_transport_enabled(True)
+    audio.transport_set_bpm(128.0)
+    audio.transport_set_time_sig(4, 4)
+    audio.transport_play()
+    audio.start()
+    ...
+    print(audio.transport["position_beats"])
+```
+
+The audio thread owns the transport; setters post to a lock-free command queue
+it drains each block, so a setter never blocks and its effect is visible one
+block later. `transport` returns a dict with `bpm`, `time_sig_numerator`,
+`time_sig_denominator`, `position_samples`, `position_beats`, `is_playing`,
+`is_recording`, `is_looping`, `loop_start_samples`, `loop_end_samples`.
+
+### Native OSC input
+
+`connect_osc` parses addresses in C and pushes straight to the parameter queue,
+taking neither a lock nor the GIL:
+
+| Address | Argument | Effect |
+|---------|----------|--------|
+| `/mh/param/<index>` | float 0..1 | Set parameter `<index>` |
+| `/mh/<slot>/param/<index>` | float 0..1 | Set a chain slot's parameter, by position |
+| `/mh/<name>/param/<index>` | float 0..1 | Set a chain slot's parameter, by name |
+| `/mh/transport/play` | none or non-zero | Start the playhead |
+| `/mh/transport/stop` | none or non-zero | Stop the playhead |
+| `/mh/transport/bpm` | float | Set tempo |
+| `/mh/transport/position` | float (beats) | Move the playhead |
+| `/mh/transport/loop` | float | Non-zero enables looping |
+| `/mh/transport/record` | float | Non-zero arms recording |
+
+Anything else is ignored. Parameters are addressed only by index: resolving a
+parameter *name* means a table of every parameter and the plugin's own lock,
+and the socket thread must have neither.
+
+Chain slots are the exception. `/mh/<slot>/param/<index>` addresses a slot by
+its **position**, which is only stable while the chain is built the same way --
+and a generated layout outlives the script that builds it. Save a surface for
+`[synth, reverb, limiter]`, edit the script to put the limiter second, and
+every address silently points at a different plugin. Name the slots instead:
+
+```python
+audio.set_slot_name(1, "reverb")   # before connect_osc
+audio.connect_osc(9000)
+# /mh/reverb/param/7 now reaches that plugin wherever it sits
+```
+
+Names are alphanumeric and start with a letter, which is what keeps them
+distinct from the numeric form; they must be unique, since two slots sharing
+one would make the second unreachable. `set_slot_name` must be called before
+`connect_osc` and is refused afterwards: the table is read by the OSC socket
+thread and is never written while that thread exists, which is what makes it
+lock-free rather than merely usually fine. For
+names, curves, ranges or callbacks use `OscMapper`, which resolves once at bind
+time. A zero argument on a transport button is ignored rather than acted on --
+a surface sends 1.0 on press and 0.0 on release, and acting on the release
+would make every press a press-and-undo.
 
 ---
 
@@ -414,6 +522,206 @@ Standalone MIDI input for monitoring raw MIDI messages without loading a plugin.
 | `close()` | Close the MIDI input |
 
 Supports context manager: `with MidiIn.open(0, cb) as m: ...`
+
+---
+
+## MidiMapper
+
+Translates incoming MIDI from a control surface into plugin parameter writes
+or callbacks. Callable, so it is passed straight to `MidiIn.open`.
+
+Most USB MIDI control surfaces (Novation Launch Control, Akai MIDIMix, Korg
+nanoKONTROL, Behringer X-Touch, MIDI Fighter Twister, Arturia BeatStep) emit
+standard CC messages and appear as ordinary MIDI input ports.
+
+### Constructor
+
+```python
+MidiMapper(
+    plugin: Plugin,
+    on_unmapped: Callable[[bytes], None] | None = None,
+    device: AudioDevice | None = None,   # route writes through the device queue
+    plugin_index: int = 0,               # chain slot, when device holds a chain
+)
+```
+
+### Methods
+
+| Method | Description |
+|--------|-------------|
+| `map_cc(channel, cc, param, value_range=(0,1), curve="linear")` | Map a 7-bit CC to a parameter |
+| `map_cc14(channel, cc, param, value_range=(0,1), curve="linear")` | Map a 14-bit CC pair. `cc` is the MSB controller, 0-31; the LSB is `cc + 32` |
+| `map_note(channel, note, callback)` | Call `callback(velocity)` on note-on |
+| `unmap_cc(channel, cc)` / `unmap_cc14(channel, cc)` / `unmap_note(channel, note)` | Remove a mapping |
+| `clear()` | Remove every mapping |
+| `bind_device(device, plugin_index=0)` | Route writes through an AudioDevice; `None` unbinds |
+| `set_on_unmapped(callback)` | Replace the unmapped-event fallback |
+
+### Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `cc_mappings` | `dict[(int,int), str]` | `{(channel, cc): param_name}` |
+| `cc14_mappings` | `dict[(int,int), str]` | `{(channel, msb_cc): param_name}` |
+| `note_mappings` | `set[(int,int)]` | Mapped `(channel, note)` pairs |
+
+Curves: `"linear"`, `"exp"` (more resolution low down, useful for filter
+cutoffs), `"log"` (more resolution high up).
+
+### 14-bit CC
+
+A plain CC carries 7 bits: 128 steps across a parameter's whole range, which is
+audibly stepped on a filter cutoff. `map_cc14` pairs controller `n` (0-31,
+high 7 bits) with `n + 32` (low 7 bits) for 16384 steps.
+
+```python
+mapper.map_cc14(channel=0, cc=1, param="Cutoff", curve="exp")
+```
+
+Overlap is rejected at map time in both directions: `map_cc14` refuses a pair
+whose MSB or LSB is already a plain CC, and `map_cc` refuses either half of an
+existing pair. Without that check a stray `map_cc` on `n + 32` silently shadows
+the LSB, and the symptom is a fader moving in coarse steps with nothing to say
+why.
+
+An LSB arriving before any MSB is held rather than applied -- alone it reads as
+`msb = 0` and would slam the parameter to the bottom of its range.
+
+---
+
+## OscServer / OscClient
+
+OSC over UDP, built on JUCE's `juce_osc`.
+
+```python
+with minihost.OscServer.open(9000, callback) as server:
+    print(server.port)          # useful when opened on port 0
+
+with minihost.OscClient("192.168.1.40", 9001) as client:
+    client.send("/mh/param/cutoff", 0.5)
+    client.send("/mh/transport/play")          # no argument = a trigger
+    client.send("/mh/xy", [0.1, 0.9])          # several floats
+```
+
+`OscServer.open(port, callback)` calls `callback(address, args)` for each
+message, where `args` is a list of floats. Pass `port=0` to let the OS choose
+and read it back from `.port`.
+
+The callback runs on the OSC socket thread, which is the only reader, so it
+must return quickly or incoming messages are lost. To drive parameters, call
+`AudioDevice.send_param_control` from it -- lock-free, applied at the next
+block boundary.
+
+`OscClient.send(address, value)` accepts a float, an int, a bool (sent as int),
+a str, a sequence of floats, or `None` for a message with no arguments.
+
+Argument types on receive: float32 arrives as itself and int32 is converted;
+any other OSC type (string, blob) is reported as `0.0` rather than dropped, so
+argument positions stay aligned with what the sender wrote.
+
+Two limits, stated rather than discovered: UDP only (no TCP, no SLIP), and
+bundle time tags are parsed but not scheduled -- bundle contents are delivered
+immediately.
+
+### Helpers
+
+| Function | Description |
+|----------|-------------|
+| `osc_address_matches(pattern, address)` | Does an OSC pattern (`*`, `?`, `[a-z]`, `{a,b}`) match a concrete address? Delegates to JUCE |
+| `osc_is_valid_address(address)` | Is this a valid OSC address pattern? |
+| `slug(name)` | A parameter name as an OSC-safe address segment |
+
+---
+
+## OscMapper
+
+Maps OSC addresses to parameter writes. Callable, so it is passed straight to
+`OscServer.open`.
+
+The difference from `MidiMapper` that matters is resolution: a CC carries 7
+bits, where OSC carries float32 and is not quantized at all.
+
+```python
+with minihost.AudioDevice(plugin) as audio:
+    mapper = minihost.OscMapper(plugin, device=audio)
+    mapper.bind_all()                                    # /mh/param/<name>
+    mapper.map_address("/fx/mix", "Dry Wet", curve="exp")
+    with minihost.OscServer.open(9000, mapper):
+        ...
+```
+
+### Methods
+
+| Method | Description |
+|--------|-------------|
+| `map_address(address, param, value_range=(0,1), curve="linear")` | Map one address to one parameter |
+| `bind_all(prefix="/mh/param", automatable_only=True, curve="linear", numeric=True)` | Bind every parameter by slugged name. Returns the count |
+| `unmap_address(address)` / `clear()` | Remove mappings |
+| `bind_device(device, plugin_index=0)` | Route writes through an AudioDevice |
+| `feedback_addresses()` | `{address: param_index}` for `OscFeedback`, one address per parameter |
+| `set_on_unmapped(callback)` | Fallback receiving `(address, args)` |
+| `addresses` | Snapshot as `{address: param_name}` |
+
+`bind_all` also binds `/mh/param/<index>` by default, so one port accepts the
+same numeric addressing `connect_osc` parses natively. Duplicate parameter
+names are numbered (`bypass`, `bypass2`), because plugins really do expose
+three parameters called "Bypass" and two sharing one address would make the
+second unreachable.
+
+Wildcards are supported and a pattern writes every parameter it matches --
+addressing a whole page at once is what a pattern is for.
+
+Note that for plain parameter automation `AudioDevice.connect_osc` is the
+better tool: it parses in C and takes neither a lock nor the GIL, where every
+message through `OscMapper` costs a GIL acquisition. Use `OscMapper` when you
+want names, curves, ranges or callbacks.
+
+---
+
+## OscFeedback
+
+Sends changed parameter values back to a surface, so its faders track preset
+loads and anything else that moves a parameter. Without it a generated surface
+is write-only: load a preset and every fader lies.
+
+```python
+with minihost.OscClient("192.168.1.40", 9001) as out:
+    fb = minihost.OscFeedback(
+        plugin, out, mapper.feedback_addresses(), mapper=mapper
+    )
+    with fb:
+        ...   # surface now tracks the plugin
+```
+
+### Constructor
+
+```python
+OscFeedback(
+    plugin, client, addresses,
+    mapper=None,          # suppress echo of this mapper's own writes
+    interval=1/30,        # poll period, seconds
+    suppress=0.15,        # quiet window after a mapper write, seconds
+    epsilon=1/100000,     # smallest change worth a packet
+)
+```
+
+### Methods
+
+| Method | Description |
+|--------|-------------|
+| `start()` / `stop(timeout=2.0)` | Run or stop the poll thread. Both idempotent |
+| `poll_once()` | Send whatever changed now. Returns messages sent |
+| `sent_count` / `is_running` | Diagnostics |
+
+Passing `mapper` suppresses the echo of that mapper's own writes for
+`suppress` seconds. The hazard is a loop with a human in it: the surface sends
+0.5, the poller sends 0.5 back a frame later, and during a drag that fights the
+finger. Suppression delays rather than drops, so the surface still converges.
+
+Polling rather than hooking the parameter-value callback is deliberate: that
+callback is a single slot the `Plugin` binding already occupies, it fires on
+whatever thread changed the parameter (including the audio thread), and a
+surface cannot use more than about 30 updates a second anyway.
 
 ---
 

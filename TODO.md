@@ -24,6 +24,10 @@ Real improvements but each affects a narrower slice of users, or is a "nice to h
 
 - [ ] **Parallel-branch latency compensation** (`MH_PluginBus`, `minihost_graph.cpp:209-262`). The bus sums branches sample-aligned and `mh_bus_get_latency_samples` returns only the max (`:346-355`), so branches with differing plugin latencies phase-misalign. **Deferred** in the 2026-07-07 wave, deliberately: a correct fix needs (a) a control-thread prepare step that reads each branch's latency and sizes per-branch delay lines, (b) RT-safe ring buffers in the process loop (no audio-thread allocation), (c) handling of dynamic latency changes (plugins report latency updates via callback), and (d) MIDI-output offset compensation for delayed branches. Crucially, meaningful end-to-end verification needs branches with *different, known* latencies -- the fixed-latency test plugins (Dexed) can't construct that scenario, so this wants a controllable-latency test fixture (or a checked-in latency plugin, cf. the Tier 3 "CI integration test plugin" item) before it can be shipped under the zero-tolerance testing bar. Lowest user value in the tier (niche parallel-routing nicety), highest correctness risk -- hence its own focused pass.
 
+- [ ] **Adopt `ui_json` schema 3 in `minihost touch` once py2tosc releases it.** Schema 3 lets a choice stand among *bindings*, not just in place of a node, and lets a branch hold a list -- including an empty one. That is exactly what Phase 6 worked around: a parameter past the 128th has no CC to bind, `each` could not conditionally omit a message, so `touch.py::_branch_table` doubles every widget kind into a `...NoCc` twin. Six complete templates for two independent questions; schema 3 nests them and makes it five, and the growth is additive rather than multiplicative (a third question: seven against twelve). py2tosc's own schema-3 fixture is this case verbatim and its changelog names minihost as the caller that prompted the change.
+
+  **Blocked on a release.** py2tosc's working tree has `SCHEMA = 3` but `__version__` is still `0.5.2` and that is the newest tag, so emitting schema 3 now would produce descriptions that `pip install 'minihost[touch]'` refuses with a `SchemaError`. When it lands: move the `touch` extra floor and `CIBW_TEST_REQUIRES` off `>=0.5.2`, re-copy `tests/check_json.py` (the vendored one is from 0.5.2 and does not know schema 3), and simplify the branch table. `build_layout` already stamps what `required_schema` computes rather than a constant, so the envelope needs no change. Rows could also drop the `cc` key entirely instead of carrying a sentinel, since only the taken branch is substituted into. Full notes in [docs/dev/osc_and_touch.md](docs/dev/osc_and_touch.md) section 6.
+
 ### From the code-review pass (user-facing)
 
 - [ ] **Verify the MIDI back-end on Windows and Linux.** Enabling it was the 0.5.0 fix for a subsystem that was inert on every platform (libremidi was compiling its dummy back-end). The WinMM and ALSA macros mirror libremidi's own cmake but have **never been built or exercised** -- only macOS/CoreMIDI is verified. Neither platform has the run-loop hazard that drove the isolation work there, so behaviour may differ. Highest-value open item: a whole subsystem is unproven on two of three platforms.
@@ -199,7 +203,12 @@ Intentionally omitted for headless / server use:
 
 - Preset browser UI
 
-- MIDI learn
+- MIDI learn -- still a non-goal, and `minihost touch` is not it. A generated
+  surface computes its mapping from the plugin's parameter list and writes it
+  to a file that can be read, edited and version-controlled; MIDI learn means
+  watching for the next incoming controller and binding it interactively, which
+  needs UI state this library has nowhere to put. `--map`, `--map14` and
+  `--map-file` cover the same ground declaratively.
 
 - Plugin shell / multi-instrument handling
 

@@ -155,10 +155,104 @@ minihost play /path/to/effect.vst3 --input --capture-device 1 --playback-device 
 | `--virtual-midi-out NAME` | Create virtual MIDI output |
 | `--playback-device INDEX_OR_NAME` | Playback device selector (default: system default) |
 | `--capture-device INDEX_OR_NAME` | Capture device selector for `--input` duplex mode |
+| `--map SPEC` | Map a MIDI CC to a parameter: `channel:cc:param[:lo:hi[:curve]]`. Repeatable |
+| `--map14 SPEC` | Map a 14-bit CC pair. Same grammar; the controller is the MSB, 0-31 |
+| `--map-file PATH` | Load mappings from JSON |
+| `--osc-port PORT` | Listen for OSC parameter control. `0` lets the OS choose |
+| `--osc-prefix ADDR` | OSC address prefix (default: `/mh/param`) |
+| `--osc-feedback HOST:PORT` | Send values back so a surface tracks the plugin. Needs `--osc-port` |
+| `--loop-midi PATH` | Loop a MIDI file through the plugin |
+| `--loop-audio PATH` | Loop an audio file through the plugin |
 
 When `--input` is enabled, the audio device opens in duplex mode: system audio input is captured, processed through the plugin, and played back through speakers. This is useful for guitar amp sims, vocal processing, and live effects.
 
 `--playback-device` and `--capture-device` accept either an integer index from `minihost devices` or a case-insensitive substring of the device name.
+
+#### Control surfaces
+
+```bash
+# A hardware controller: CC 74 to Cutoff, with more resolution low down
+minihost play synth.vst3 --midi 0 --map 0:74:Cutoff:0:1:exp
+
+# 14-bit, for anything a 7-bit CC makes audibly stepped
+minihost play synth.vst3 --midi 0 --map14 0:1:Cutoff
+
+# A tablet over OSC, with the surface tracking the plugin
+minihost play synth.vst3 --osc-port 9000 --osc-feedback 192.168.1.40:9001
+```
+
+`--osc-port` binds every automatable parameter under `--osc-prefix`, reachable
+by name (`/mh/param/cutoff`) or index (`/mh/param/3`), each taking one float in
+0..1. Transport addresses are accepted on the same port: `/mh/transport/play`,
+`/stop`, `/bpm`, `/position` (beats), `/loop`, `/record`.
+
+`--map-file` takes JSON, with `cc` for 7-bit and `cc14` for a 14-bit pair:
+
+```json
+{
+  "mappings": [
+    {"channel": 0, "cc": 7,  "param": "Volume"},
+    {"channel": 0, "cc": 10, "param": "Pan", "value_range": [-1.0, 1.0]},
+    {"channel": 0, "cc": 74, "param": "Cutoff", "curve": "exp"},
+    {"channel": 0, "cc14": 1, "param": "Resonance"}
+  ]
+}
+```
+
+An entry carries `cc` or `cc14`, never both. Curves are `linear`, `exp` or
+`log`. This is the format `minihost touch` writes.
+
+### `touch` -- Generate a control surface from a plugin's parameters
+
+```bash
+minihost touch synth.vst3 -o synth
+minihost touch synth.vst3 -o synth --params 0-23 --size 1024x768
+minihost touch synth.vst3 --osc-only --no-compile
+```
+
+Writes `<out>.ui.json` (a layout in the `py2tosc.ui` dialect) and
+`<out>.map.json` (a `--map-file` mapping), then compiles `<out>.tosc` when the
+optional extra is installed:
+
+```bash
+pip install 'minihost[touch]'
+```
+
+Both files come from one parameter table, so the layout and the host's mapping
+cannot disagree. Widget choice follows the plugin's own metadata: a boolean
+parameter becomes a button, a stepped one a radio, everything else a fader.
+
+| Option | Description |
+|--------|-------------|
+| `plugin` | Path to plugin (required) |
+| `-o, --out BASE` | Output base name (default: the plugin's file stem) |
+| `--osc-prefix ADDR` | OSC address prefix (default: `/mh/param`) |
+| `--size WxH` | Design canvas (default: `1024x768`) |
+| `--columns N` / `--rows N` | Controls across / down a page (default: 4 x 3) |
+| `--params SPEC` | Only these parameters: `0-15,20,30-32` |
+| `--all` | Include non-automatable parameters (usually meters and readouts) |
+| `--midi-only` / `--osc-only` | Emit one kind of binding rather than both |
+| `--no-compile` | Stop at the `.ui.json` |
+
+Generation imports nothing: without py2tosc the command still writes a
+complete, valid `.ui.json` and prints how to compile it. That also makes the
+output a source file rather than an artefact -- a `.tosc` is a zipped XML blob
+nobody hand-edits, so it can be reviewed, edited and recompiled:
+
+```bash
+py2tosc convert synth.ui.json -o synth.tosc
+```
+
+MIDI has 128 controller numbers, so a plugin with more parameters than that
+gets the remainder bound over OSC only. The command says so rather than
+leaving it to be discovered.
+
+Then drive it:
+
+```bash
+minihost play synth.vst3 --map-file synth.map.json \
+    --osc-port 9000 --osc-feedback 192.168.1.40:9001
+```
 
 ### `process` -- Process audio/MIDI offline
 

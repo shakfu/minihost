@@ -44,6 +44,8 @@ static inline void mh_atomic_store_release_ptr(void* volatile* slot, void* value
 #endif
 
 #define MH_TRANSPORT_PUB_SLOTS 4
+#define MH_MAX_SLOT_NAMES 64
+#define MH_SLOT_NAME_LEN 64
 #define MH_TRANSPORT_MAX_TARGETS 64
 
 struct MH_AudioDevice {
@@ -116,6 +118,12 @@ struct MH_AudioDevice {
     // param_ctl_buffer, which is why mh_audio_send_param_control is
     // documented as belonging to one control thread: connecting OSC claims it.
     MH_OscServer* osc_server;
+
+    // Optional per-slot names for OSC addressing. Written only while the OSC
+    // socket thread does not exist (mh_audio_set_slot_name refuses once
+    // connected), so the socket thread reads it with no synchronisation and
+    // none is needed.
+    char slot_names[MH_MAX_SLOT_NAMES][MH_SLOT_NAME_LEN];
 
     // Host playhead. `transport` is owned outright by the audio thread; every
     // other thread posts commands to transport_commands and reads back
@@ -1245,9 +1253,15 @@ static int parse_index(const char* begin, const char* end) {
     return (int)value;
 }
 
-// Match "/mh/param/<index>" or "/mh/<slot>/param/<index>".
+// Defined with the other slot-name plumbing further down, next to the setter
+// whose invariants it depends on.
+static int slot_for_name(MH_AudioDevice* dev, const char* begin, const char* end);
+
+// Match "/mh/param/<index>", "/mh/<slot>/param/<index>" or
+// "/mh/<name>/param/<index>".
 // Returns 1 and fills the outputs on a match, 0 otherwise.
-static int parse_param_address(const char* address, int* out_slot, int* out_param) {
+static int parse_param_address(MH_AudioDevice* dev, const char* address,
+                               int* out_slot, int* out_param) {
     static const char prefix[] = "/mh/";
     const size_t prefix_len = sizeof(prefix) - 1;
     if (strncmp(address, prefix, prefix_len) != 0) return 0;
@@ -1265,15 +1279,20 @@ static int parse_param_address(const char* address, int* out_slot, int* out_para
         return 1;
     }
 
-    // "/mh/<slot>/param/<index>"
+    // "/mh/<slot-or-name>/param/<index>"
     const char* slash = strchr(rest, '/');
     if (!slash) return 0;
-    int slot = parse_index(rest, slash);
-    if (slot < 0) return 0;
     if (strncmp(slash + 1, param, param_len) != 0) return 0;
     const char* tail = slash + 1 + param_len;
     int index = parse_index(tail, tail + strlen(tail));
     if (index < 0) return 0;
+
+    // A digit run is a position; anything else is a name. The two cannot be
+    // confused because an acceptable slot name must start with a letter.
+    int slot = parse_index(rest, slash);
+    if (slot < 0) slot = slot_for_name(dev, rest, slash);
+    if (slot < 0) return 0;
+
     *out_slot = slot;
     *out_param = index;
     return 1;
@@ -1353,7 +1372,7 @@ static void osc_param_callback(const char* address, const float* args,
     if (!dev->param_ctl_buffer || num_args < 1 || !args) return;
 
     int slot = 0, param = 0;
-    if (!parse_param_address(address, &slot, &param)) return;
+    if (!parse_param_address(dev, address, &slot, &param)) return;
 
     mh_param_ringbuffer_push(dev->param_ctl_buffer, slot, param, args[0]);
 }
@@ -1444,6 +1463,65 @@ int mh_audio_get_transport(MH_AudioDevice* dev, MH_TransportInfo* out) {
     if (!published) return 0;
     *out = *published;
     return 1;
+}
+
+// An acceptable slot name: alphanumeric, starting with a letter, non-empty and
+// short enough to store. Starting with a letter is what keeps it distinct from
+// the numeric form -- "/mh/2/param/0" must never be ambiguous.
+static int slot_name_is_acceptable(const char* name) {
+    if (!name || !*name) return 0;
+    if (!((name[0] >= 'a' && name[0] <= 'z') || (name[0] >= 'A' && name[0] <= 'Z')))
+        return 0;
+    size_t len = strlen(name);
+    if (len >= MH_SLOT_NAME_LEN) return 0;
+    for (size_t i = 0; i < len; i++) {
+        char c = name[i];
+        int alnum = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                    (c >= '0' && c <= '9');
+        if (!alnum) return 0;
+    }
+    return 1;
+}
+
+int mh_audio_set_slot_name(MH_AudioDevice* dev, int slot_index, const char* name) {
+    if (!dev) return 0;
+    if (slot_index < 0 || slot_index >= MH_MAX_SLOT_NAMES) return 0;
+    // Refused once the socket thread exists, which is what lets it read the
+    // table without synchronisation.
+    if (dev->osc_server) return 0;
+
+    if (!name) {
+        dev->slot_names[slot_index][0] = '\0';
+        return 1;
+    }
+    if (!slot_name_is_acceptable(name)) return 0;
+
+    // Two slots sharing a name would make one of them unreachable, silently.
+    for (int i = 0; i < MH_MAX_SLOT_NAMES; i++) {
+        if (i != slot_index && strcmp(dev->slot_names[i], name) == 0) return 0;
+    }
+
+    snprintf(dev->slot_names[slot_index], MH_SLOT_NAME_LEN, "%s", name);
+    return 1;
+}
+
+const char* mh_audio_get_slot_name(MH_AudioDevice* dev, int slot_index) {
+    if (!dev || slot_index < 0 || slot_index >= MH_MAX_SLOT_NAMES) return NULL;
+    return dev->slot_names[slot_index][0] ? dev->slot_names[slot_index] : NULL;
+}
+
+// Which slot a name segment refers to, or -1. A linear scan over at most 64
+// short strings, on the socket thread; no lock and no allocation.
+static int slot_for_name(MH_AudioDevice* dev, const char* begin, const char* end) {
+    size_t len = (size_t)(end - begin);
+    if (len == 0 || len >= MH_SLOT_NAME_LEN) return -1;
+    for (int i = 0; i < MH_MAX_SLOT_NAMES; i++) {
+        const char* candidate = dev->slot_names[i];
+        if (!candidate[0]) continue;
+        if (strlen(candidate) == len && strncmp(candidate, begin, len) == 0)
+            return i;
+    }
+    return -1;
 }
 
 int mh_audio_connect_osc(MH_AudioDevice* dev, int port) {

@@ -394,13 +394,24 @@ Plugin parameters are mixed, though -- a bypass wants `button`, a waveform selec
 
 Every key stays literal, so every branch is validated against the tag table before any row is read -- a branch naming two tags or none is refused whether or not a row selects it. This is `ui_json` **schema 2**.
 
+**py2tosc 0.6.0 extended it to bindings.** A choice may also stand where a list of children or of bindings is accepted, and a branch may hold a list, including an empty one. That answers the second question a generated table asks: there are 128 controller numbers and plugins routinely have more parameters, so a row past the last has no CC to bind.
+
+```json
+"of": {"fader": "$name", "messages": [
+  {"osc": "$address"},
+  {"case": "$hasCc", "when": {"true": [{"midi_cc": "$cc"}], "false": []}}
+]}
+```
+
+This is `ui_json` **schema 3**, and it is what keeps the table additive. Asking the two questions separately -- widget kind, then CC -- is three arms plus two branches; asking them together in one flat table is six arms, and twelve once a third question appears.
+
 Two behaviours worth knowing before writing the generator, both from the 0.5.2 notes:
 
 - **Only the selected branch is substituted into.** A branch reads the fields its own rows carry and no others, so a `sw` row needs no `steps` for a `radio` branch that mentions one. Rows can therefore be exactly as wide as their kind requires; no padding the table to a union of fields.
 
 - **A branch nothing selects is not an error.** A template carrying a `radio` branch for a plugin with no stepped parameters is fine. A row selecting a branch nobody wrote *is* an error, and names the value it read. So minihost can emit one full-width template covering every widget kind and let the parameter table decide what appears.
 
-**So the recommendation flips.** Use `each` with a `case`/`when` branch table as the default, not explicit per-parameter nodes. It keeps parameter order (rows expand in list order, each selecting its own branch), which was the objection that ruled out grouping by widget kind, and it keeps the compactness that made `each` worth targeting in the first place. The parameter table lands in the file as a table -- which is what it is, and what makes the output legible and hand-editable.
+**So the recommendation flips.** Use `each` with a `case`/`when` branch table as the default, not explicit per-parameter nodes, and nest a second choice in the bindings rather than doubling the arms. It keeps parameter order (rows expand in list order, each selecting its own branch), which was the objection that ruled out grouping by widget kind, and it keeps the compactness that made `each` worth targeting in the first place. The parameter table lands in the file as a table -- which is what it is, and what makes the output legible and hand-editable.
 
 Explicit nodes remain the fallback for anything the branch table cannot express, and the generator should be structured so that choice is one function, not a shape assumption spread through the emitter.
 
@@ -444,7 +455,7 @@ Flags: `--template FILE`, `--midi-only` / `--osc-only`, `--size WxH`, `--columns
 
 ```toml
 [project.optional-dependencies]
-touch = ["py2tosc >= 0.5.2"]
+touch = ["py2tosc >= 0.6.0"]
 ```
 
 A floor, not a minor pin. Both JSON dialects version themselves: the envelope carries a `schema` number, and a reader rejects only what is above its range, so a newer py2tosc still builds an older description -- files are durable, readers advance. As of 0.5.2:
@@ -454,7 +465,7 @@ A floor, not a minor pin. Both JSON dialects version themselves: the envelope ca
 | `ui_json` | 2 | `range(1, 3)` |
 | `json_codec` | 1 | `range(1, 2)` |
 
-0.5.2 is the floor because `case`/`when` is schema 2 and arrived in it.
+0.6.0 is the floor because a choice among bindings is schema 3 and arrived in it.
 
 **Stamp the schema, and compute it rather than remember it.** `ui_json` is read and never written, so the producer stamps -- and minihost is the producer. A description carrying no `schema` key means "whatever the reader is", which is the ambiguity a version number exists to remove.
 
@@ -479,7 +490,7 @@ The table minihost keeps:
 
 | minihost | emits ui_json schema | py2tosc known to build it |
 |---|---|---|
-| 0.8.x (planned) | 2 (1 for layouts using no schema-2 spelling) | 0.5.2+ |
+| 0.8.x (planned) | 3 | 0.6.0+ |
 
 What the schema does not cover is a provisional change that alters *output* without stopping a file from building -- different default sizing, say -- nor, per the `required_schema` docstring, a future schema that changed what an existing spelling *does*, since the description would be textually identical. Golden files are the guard for both, and they catch it on a deliberate extra bump rather than at a user's machine. That is the right place for the cost, and it is why the floor is a floor.
 
@@ -514,7 +525,7 @@ Nothing here justifies weakening the existing standard. Per phase:
 `make test` after each phase, per the project rule. `make qa` before declaring a phase done.
 
 
-## 6. Upstream: what py2tosc 0.5.2 landed
+## 6. Upstream: py2tosc 0.5.2, and schema 3 coming
 
 Both feature requests this plan raised shipped in py2tosc 0.5.2, in the shape proposed, plus two things nobody asked for that change how Phase 6 is tested. The changelog credits minihost by name as the caller that found the gaps -- a generator rather than a hand-author.
 
@@ -535,7 +546,11 @@ warning: <envelope>: the description declares schema 1 and uses schema 2; a
 release reading only schema 1 will refuse it with a message about a node
 ```
 
-A warning, not a refusal -- a refusal would only ever fire on files the refusing reader can build. Exit codes unchanged. Two stated limits carry over into how minihost should test: `required_schema` detects spellings, not meanings, and the table behind it is a hand-written historical record that a future schema bump could under-extend.
+A warning, not a refusal -- a refusal would only ever fire on files the refusing reader can build. Exit codes unchanged.
+
+One stated limit still carries over into how minihost should test: `required_schema` detects spellings, not meanings, so a future schema that changed what an existing spelling *does* would leave a description textually identical and the warning quiet. Golden files are the guard for that.
+
+The other limit recorded here has since been closed upstream and this note was wrong to leave standing: `_needs`, the hand-written record of which schema each spelling arrived in, is now guarded by a per-schema description corpus (`tests/data/schemas/`, `tests/test_schema_corpus.py`). A schema with no fixture fails, and a fixture whose declared schema disagrees with `required_schema` fails, so a bump that forgets to extend the table is a failing test rather than a silently clean bill of health. The corpus also runs every description through `scripts/check_json.py`, which carries its own copy of that table -- the one drift nothing else compared.
 
 **4. `scripts/check_json.py` -- a standalone, stdlib-only checker.** One file, no py2tosc import, explicitly meant to be copied into a project that *writes* these files. That is minihost's case exactly, and it is why section 5's Phase 6 tests mostly do not need the optional extra.
 
@@ -544,6 +559,42 @@ It reads both dialects (told apart by `format`, as `py2tosc.load` does), exposes
 Conservative by construction -- everything it calls an error, py2tosc refuses too -- and the reverse is explicitly not promised: it resolves nothing, so a `sizes` that does not divide, a row too narrow for its children, and a property that will not coerce are invisible to it. Those need the real compiler, which is the one place Phase 6's tests want the extra installed.
 
 Its tables are generated off the live modules by `scripts/make_check_json.py` (with a `--check` mode for CI) rather than retyped, so the copy cannot drift silently.
+
+### Schema 3: coming, and it undoes Phase 6's workaround
+
+**Unreleased at the time of writing.** py2tosc's working tree has `SCHEMA = 3` and `SCHEMAS = range(1, 4)`, but `__version__` is still `0.5.2` and that is the newest tag, so no *released* py2tosc reads it. minihost therefore keeps emitting schema 2 -- see the adoption conditions below.
+
+What it adds: a choice may now stand wherever a list of children **or bindings** is accepted, and a branch may hold a *list* -- several nodes, or none. Schema 2 let a row choose which control it built, but `messages` stayed written in the template, so one `each` still built one fixed *set of bindings*.
+
+That is exactly the wall Phase 6 hit. There are 128 controller numbers and plugins routinely have more parameters, so a row past the last one has no CC to bind at all, and `each` could not conditionally omit a message. The workaround was to double the arms -- `continuous` / `continuousNoCc`, and the same for the other two kinds -- six complete templates for what is really two independent questions. The upstream changelog names minihost as the caller that prompted the change, and its own schema-3 fixture is this case verbatim.
+
+Schema 3 nests the second question inside the first instead:
+
+```json
+{"case": "$kind", "when": {
+  "cont": {"fader": "$n", "messages": [
+    {"osc": "/mh/param/$n"},
+    {"case": "$cc", "when": {"true": [{"midi_cc": "$num"}], "false": []}}
+  ]}
+}}
+```
+
+A branch of `[]` is how a row says nothing goes here; a branch holding several nodes splices them all in -- the same "expands in place" rule `repeat` already had, which is what makes this a generalisation rather than a second mechanism.
+
+The saving is in how it grows, not in the count today: one choice per question makes three kinds and two CC states **five** branches against the flat table's **six**, but a third question makes that **seven** against **twelve**. Phase 6's generator would shed `_branch_table`'s doubling entirely.
+
+Two rules to respect when adopting it. A branch under a repeat's `of` is one node, because a repeat builds one node per pass; a list there is refused. A branch among children or bindings is one node *or* a list of them. And only the branch a row takes is substituted into, at any depth, which is what lets rows be ragged -- the `true` branch reads `$num` and the row that does not take it need not carry a `num` field at all. That would let `Parameter` rows drop the `cc` key rather than carrying a sentinel.
+
+**Conditions for adopting it, none of which hold yet:**
+
+1. A released py2tosc carries schema 3. Emitting it now would produce descriptions that `pip install 'minihost[touch]'` -- which resolves to 0.5.2 -- refuses with a `SchemaError`.
+2. `pyproject.toml`'s `touch` extra floor moves from `>=0.5.2` to that release, and `CIBW_TEST_REQUIRES` with it.
+3. `tests/check_json.py` is re-copied. The vendored one is from 0.5.2 and does not know schema 3, so it would report a schema newer than its tables know -- which is the vendoring banner's stated re-copy trigger working as intended.
+4. `build_layout` stamps what `required_schema` computes, which it already does not hardcode.
+
+Until then the generator emits schema 2, which every release from 0.5.2 onward keeps building -- files are durable and readers advance.
+
+One upstream fix worth knowing even though it does not reach minihost: `case` ignored the counters an inner repeat had yet to bind, so a choice nested inside another repeat was selected by the outer pass. minihost nests no repeats, so nothing generated here could have hit it.
 
 **Still outstanding upstream:** nothing this plan needs. `json_codec` remains at schema 1, which is fine -- Phase 6 does not target it, and the lower-level escape hatch noted earlier stays hypothetical.
 
@@ -642,15 +693,18 @@ Phase 1's numeric `/mh/param/<index>` addressing already has that shape.
 
 ## 8. Open questions
 
-- **Chain and graph addressing.** `/mh/<slot>/param/<slug>` is proposed above, but the device can also be opened on a chain whose slots change at runtime. Does the address bind to slot position (breaks on reorder) or to a stable slot id? Leaning stable id, which may need one to exist first.
+Kept as a record of what was decided, not only what is undecided. Four of the
+five are now closed.
 
-- **Sample-offset placement.** Phase 0 ships offset 0. Is sub-block placement ever worth the jitter and the one-block delay for a human finger on a tablet? Probably not; worth deciding rather than leaving open.
+- ~~**Chain addressing binds to slot position.**~~ **Closed before 0.8.0.** The framing in this plan was wrong about *why* it mattered: chains cannot be reordered at runtime, so it looked like a hazard waiting on a feature that does not exist. The real exposure is that the generated layout is the durable artefact and outlives the script that builds the chain -- edit the construction order and every saved address repoints in silence. Fixed by caller-assigned slot names (`mh_audio_set_slot_name`), addressed as `/mh/<name>/param/<index>`, with the numeric form kept unchanged. Deriving the name from the plugin was considered and rejected: `MH_Plugin` exposes no name, and duplicates in one chain would have to be numbered, which is positional again.
 
-- **`MidiMapper` reuse.** `OscMapper` and `MidiMapper` should share a core, but `MidiMapper` is public API. Refactoring behind it is fine; changing its signatures is not.
+- ~~**Sample-offset placement.**~~ **Closed: not doing it.** Phase 0 ships offset 0 and that is where it stays. Sub-block placement buys accuracy no human finger can produce, and costs jitter plus a one-block safety delay to get it. Coalescing was the part that actually mattered, and it is in. If a sequenced source ever wants sample-accurate live automation, that is a different feature with a real timestamp behind it rather than a refinement of this one.
 
-- **Discovery.** Should minihost advertise itself over Bonjour/mDNS so TouchOSC finds it without typing an IP? Real usability gain, but it is a platform-specific dependency and JUCE does not provide it. Leaning no.
+- ~~**`MidiMapper` reuse.**~~ **Closed.** Both mappers now sit on `_ParamWriter` and `_Binding`, keyed on a normalized float plus a source identity. No public signature changed, and the existing `MidiMapper` tests passed unmodified through the refactor -- which is what makes that claim checkable rather than asserted.
 
-- **"MIDI learn" is a listed non-goal** (`TODO.md:202`). Generated surfaces are a different thing -- the mapping is computed and written to a file, not learned interactively -- but the boundary should be stated in the docs so the non-goal is not read as excluding this work.
+- **Discovery.** Should minihost advertise itself over Bonjour/mDNS so TouchOSC finds it without typing an IP? Real usability gain, but a platform-specific dependency JUCE does not provide. **Still leaning no**, and nothing since has changed the balance.
+
+- ~~**"MIDI learn" is a listed non-goal.**~~ **Closed.** The boundary is stated in `TODO.md` beside the non-goal itself: a generated surface computes its mapping and writes it to a file that can be read, edited and version-controlled, where MIDI learn watches for the next incoming controller and binds it interactively. Different feature, still not wanted.
 
 
 ## 9. Non-goals

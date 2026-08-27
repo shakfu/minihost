@@ -236,11 +236,16 @@ int mh_audio_get_transport(MH_AudioDevice* dev, MH_TransportInfo* out);
 //
 //   /mh/param/<index>              parameter <index> of the plugin
 //   /mh/<slot>/param/<index>       parameter <index> of chain slot <slot>
+//   /mh/<name>/param/<index>       parameter <index> of the slot called <name>
 //
-// Anything else is ignored. This is deliberately the numeric-only subset:
-// resolving a parameter *name* means holding a name table and a lock, and the
-// socket thread must do neither. Name-addressed control belongs in the mapping
-// layer above this, which can resolve at bind time and send numerically.
+// Anything else is ignored. Parameters are addressed only by index: resolving
+// a parameter *name* means a table of every parameter and the plugin's own
+// lock, and the socket thread must have neither. Name-addressed parameters
+// belong in the mapping layer above this, which resolves at bind time and
+// sends numerically.
+//
+// Slot names are the exception, and are worth the small table: see
+// mh_audio_set_slot_name for why a position is not a durable address.
 //
 // The value goes straight onto the control parameter ring, so the socket
 // thread never blocks and never takes the GIL -- which is the advantage of
@@ -251,6 +256,36 @@ int mh_audio_get_transport(MH_AudioDevice* dev, MH_TransportInfo* out);
 //   mh_audio_get_osc_port). Disconnects any existing OSC connection first.
 // Returns 1 on success, 0 on failure (port in use, or not permitted).
 int mh_audio_connect_osc(MH_AudioDevice* dev, int port);
+
+// Give a chain slot a stable name for OSC addressing.
+//
+// The numeric form above addresses a slot by its position in the chain, which
+// is only stable while the chain is built the same way. A layout generated for
+// `[synth, reverb, limiter]` and saved to a file keeps working only until the
+// script that builds the chain is edited -- swap two entries and every address
+// silently points at a different plugin, with nothing to say so. Chains cannot
+// be reordered at runtime today, so this is a hazard of the persisted layout
+// outliving the code that built the chain, not of live editing.
+//
+// A name attached by the caller fixes that, because the caller attaches it to
+// the plugin it means rather than to a position:
+//
+//   mh_audio_set_slot_name(dev, 1, "reverb");
+//   ...  /mh/reverb/param/7  now reaches slot 1 wherever slot 1 ends up
+//
+// name: alphanumeric, starting with a letter, at most 63 characters -- the
+//   subset that is safe in an OSC address and cannot be mistaken for the
+//   numeric form. Pass NULL to clear the name.
+//
+// Must be called before mh_audio_connect_osc: the table is read by the OSC
+// socket thread and is not written while that thread exists, which is what
+// makes it lock-free rather than merely usually-fine. Returns 0 if OSC is
+// already connected, if the slot is out of range, if the name is not
+// acceptable, or if another slot already has it.
+int mh_audio_set_slot_name(MH_AudioDevice* dev, int slot_index, const char* name);
+
+// The name given to a slot, or NULL if it has none.
+const char* mh_audio_get_slot_name(MH_AudioDevice* dev, int slot_index);
 
 // Stop listening for OSC. Returns 1 on success, 0 if nothing was connected.
 // Blocks until the socket thread has stopped.
