@@ -7,7 +7,7 @@ the close button or Escape -- and any owning pointer the app kept is left
 dangling. Holding it in a ``std::unique_ptr`` meant the next "open the plugin
 browser" dereferenced freed memory (segfault) and shutdown double-freed it.
 
-Clicking through the dialog cannot be automated here, but the load-bearing
+Clicking through the dialog cannot be automated here, but the structural
 part -- the window's ownership and lifetime across open / dismiss / reopen --
 is driven end-to-end through the binary's ``--plugin-browser-selftest`` mode.
 It asserts that opening creates a window, that re-requesting while open reuses

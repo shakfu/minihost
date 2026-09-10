@@ -7,7 +7,7 @@ launch a surviving sidecar (a clean exit deletes it) triggers a recovery
 prompt.
 
 The timer, the recovery dialog, and the dirty-flag wiring are GUI-thread
-orchestration that can't be driven headlessly, but the load-bearing part --
+orchestration that can't be driven headlessly, but the structural part --
 the sidecar read/write/clear mechanics that could silently corrupt or lose
 recovery data -- is exercised end-to-end through the binary's
 ``--autosave-selftest`` mode. It drives the production writeAutosaveSnapshot

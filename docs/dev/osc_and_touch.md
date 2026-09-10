@@ -13,7 +13,7 @@ Worth establishing first, because the gap is smaller than it looks and two of th
 
 `minihost params <plugin> --json` (`src/minihost/cli.py:266`) emits a list of objects carrying `name`, `index`, `label`, `default_value`, `num_steps`, `is_boolean`, `is_automatable`, `category`.
 
-The sibling project `py2tosc` has a `surface` module -- a `Parameter` dataclass, a `read()` that accepts exactly that JSON shape, and a `build()` that lays parameters out across paged TouchOSC controls bound to MIDI CC, to OSC, or to both. It is already exposed as `py2tosc build params.json`. `py2tosc/src/py2tosc/surface.py:111` even documents the seam: "A plugin host exports an `index` alongside each name."
+The sibling project `py2tosc` has a `surface` module -- a `Parameter` dataclass, a `read()` that accepts exactly that JSON shape, and a `build()` that lays parameters out across paged TouchOSC controls bound to MIDI CC, to OSC, or to both. It is already exposed as `py2tosc build params.json`. `py2tosc/src/py2tosc/surface.py:111` even documents the layer: "A plugin host exports an `index` alongside each name."
 
 So this pipes together today:
 

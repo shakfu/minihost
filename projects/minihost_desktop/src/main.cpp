@@ -2198,7 +2198,7 @@ private:
                     // window was freed in step 2, so the allocator may hand
                     // the very same block back here. Address identity across
                     // a free/alloc cycle proves nothing either way. What is
-                    // load-bearing is step 2 (the pointer nulled itself, so
+                    // structural is step 2 (the pointer nulled itself, so
                     // nothing dangled) plus a live, fully-formed window here.
                     showPluginBrowser();
                     if (auto* w = plugin_browser_window_.getComponent())

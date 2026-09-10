@@ -38,7 +38,7 @@ JUCE C++, single binary, statically linked.
 
 Rationale for JUCE C++ over Python+Qt or Tauri+web:
 
-1. Plugin editor windows require a native window handle that composes with JUCE's `AudioProcessorEditor`. Other shells force either window embedding or an out-of-process editor daemon — both add a permanent IPC seam between UI and audio that JUCE-native avoids.
+1. Plugin editor windows require a native window handle that composes with JUCE's `AudioProcessorEditor`. Other shells force either window embedding or an out-of-process editor daemon — both add a permanent IPC layer between UI and audio that JUCE-native avoids.
 
 2. `libminihost` is already JUCE. The GUI build compiles the same sources a second time against the full `juce_audio_processors` (the `minihost_gui` target) and adds `juce_gui_basics` to the same CMake project; nothing is reimplemented.
 
@@ -246,7 +246,7 @@ None in v1. v2 may add opt-in crash reporting if hosted plugins prove to be a ro
 
 **Decision (for the first public release): ship in-process, document the limitation, add cheap recovery, and gate out-of-process hosting on evidence.**
 
-Hosting third-party plugins in the app's own process means a plugin crash takes down the app. Out-of-process hosting (one helper per plugin or per format) is the standard mitigation, but it adds an IPC seam to every audio block and roughly doubles the engine's complexity. Paying that cost before we know crashes are a real problem for our users is premature. The stance is therefore:
+Hosting third-party plugins in the app's own process means a plugin crash takes down the app. Out-of-process hosting (one helper per plugin or per format) is the standard mitigation, but it adds an IPC layer to every audio block and roughly doubles the engine's complexity. Paying that cost before we know crashes are a real problem for our users is premature. The stance is therefore:
 
 1. **Ship in-process.** The realtime and offline engines both run plugins in-process, as built today. This is the same trust model every plugin loaded into a DAW already lives under.
 

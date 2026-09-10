@@ -50,7 +50,7 @@ The TL;DR: **three artifacts, one C core.** The wheel and the desktop binary are
 
 - **The Python wheel doesn't use `libminihost_gui` or any GUI code.** It links `libminihost.a` (headless), which substitutes `juce_audio_processors_headless` for `juce_audio_processors`. The wheel has no `juce::Component`, no editor windows, no `AudioDeviceManager`. (See the build / link layer in [docs/dev/desktop_app.md](desktop_app.md).)
 
-- **The desktop binary doesn't embed Python.** It calls `mh_graph_*` natively from C++. No Python interpreter, no `nanobind`, no IPC seam.
+- **The desktop binary doesn't embed Python.** It calls `mh_graph_*` natively from C++. No Python interpreter, no `nanobind`, no IPC layer.
 
 - **`minihost::PluginGraph`** -- the header-only RAII wrapper in `projects/libminihost/minihost_graph_v2.hpp` -- is used only by the desktop's `LiveEngine` and project loader. The Python binding talks straight to the C ABI through `nanobind`; the C++ wrapper is not on its path.
 
