@@ -1,6 +1,4 @@
-# minihost TODO
-
-Tasks are ordered by **user-facing value**: things a user notices first or unblock workflows currently sit at the top; internal quality and style nits sit at the bottom.
+# TODO
 
 ## Critical
 
