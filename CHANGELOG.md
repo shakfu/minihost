@@ -2,11 +2,11 @@
 
 ## [Unreleased]
 
+## [0.8.1]
+
 ### Changed
 
 - **`make native-tests` runs from its own CI job, not from pytest.** The `tests/test_native.py` wrapper skipped on "no C++ compiler", which is not the condition the target needs: the manylinux and mingw toolchains on the wheel runners compile `-fsanitize=undefined` and then fail at `cannot find -lubsan`, so every wheel job failed on a test about the source tree rather than the wheel. The `native-tests` job in `.github/workflows/native.yml` pins clang++ instead of inheriting whatever the runner ships.
-
-## [0.8.1]
 
 ### Fixed
 
