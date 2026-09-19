@@ -2,7 +2,7 @@
 //
 // These are only reachable through the C API (every in-tree caller passes a
 // constant), so there is no Python path to drive them; the harness links the
-// ring-buffer sources directly. Built and run by tests/test_native.py.
+// ring-buffer sources directly. Built and run by `make native-tests`.
 //
 // The case that motivated the harness: a capacity above 1<<30 used to round up
 // through a signed-overflowing shift sequence to INT_MIN, leaving mask =

@@ -3,7 +3,7 @@
 // There is no headless way to assert what reaches a MIDI port -- it needs a
 // real device -- so the length itself is tested here and the callback in
 // minihost_audio.c is a single call to it. Built and run by
-// tests/test_native.py.
+// `make native-tests`.
 
 #include <cstdio>
 

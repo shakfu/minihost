@@ -62,8 +62,8 @@ tsan:
 # Built with UBSan and
 # -fno-sanitize-recover, because the capacity-rounding bug it covers is signed
 # overflow that calloc then masks: without the sanitizer the constructor
-# returns NULL either way and the test cannot tell the two apart. Also run from
-# tests/test_native.py, which skips when no compiler is present.
+# returns NULL either way and the test cannot tell the two apart. Run in CI by
+# the native-tests job in .github/workflows/native.yml.
 native-tests:
 	@mkdir -p build
 	@$(CXX) -std=c++17 -O1 -g -fsanitize=undefined -fno-sanitize-recover=all \
