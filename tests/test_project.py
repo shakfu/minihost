@@ -441,3 +441,131 @@ def test_single_plugin_project_matches_process_audio_to_file(tmp_path):
     # a slightly different total length due to internal tail handling.
     n = min(ref.shape[1], got.shape[1])
     np.testing.assert_allclose(got[:, :n], ref[:, :n], atol=1e-5, rtol=1e-5)
+
+
+# -------------------------------------------------------------------- #
+# Path resolution: every path in a project is relative to the project   #
+# file, not to the process working directory.                           #
+# -------------------------------------------------------------------- #
+
+
+def _relative_path_project(tmp_path: Path) -> Path:
+    """A project whose every path is written relative to the project file."""
+    proj_dir = tmp_path / "project"
+    proj_dir.mkdir()
+    _write_input_wav(proj_dir / "in.wav", frames=1024)
+
+    doc = {
+        "minihost_project_version": 1,
+        "sample_rate": 48000,
+        "block_size": 256,
+        "nodes": [
+            {"id": "in", "kind": "input", "channels": 2, "source": "in.wav"},
+            {"id": "fx", "kind": "plugin", "path": "Plug.vst3"},
+            {"id": "out", "kind": "output", "channels": 2, "sink": "out.wav"},
+        ],
+        "edges": [
+            {"src": "in", "dst": "fx", "dst_port": 0},
+            {"src": "fx", "dst": "out"},
+        ],
+    }
+    proj = proj_dir / "project.json"
+    proj.write_text(json.dumps(doc))
+    return proj
+
+
+def test_relative_plugin_path_resolves_against_the_project_dir(tmp_path, monkeypatch):
+    """A relative plugin path used to be kept verbatim and opened against the
+    process working directory, so the same project loaded a different plugin
+    -- or none -- depending on where it was run from."""
+    proj = _relative_path_project(tmp_path)
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    with pytest.raises(minihost.ProjectError) as excinfo:
+        minihost.load_project(proj)
+
+    message = str(excinfo.value)
+    assert "plugin path not found" in message
+    # The path it looked for is next to the project file, not next to cwd.
+    assert str(proj.parent / "Plug.vst3") in message
+    assert str(elsewhere) not in message
+
+
+def test_relative_plugin_path_is_the_same_from_any_cwd(tmp_path, monkeypatch):
+    proj = _relative_path_project(tmp_path)
+
+    expected = f"plugin path not found: {proj.parent / 'Plug.vst3'}"
+    for cwd in (proj.parent, tmp_path, Path(os.sep)):
+        monkeypatch.chdir(cwd)
+        with pytest.raises(minihost.ProjectError) as excinfo:
+            minihost.load_project(proj)
+        # Not just "the same message everywhere" -- a verbatim relative path
+        # is also the same everywhere while meaning a different file.
+        assert str(excinfo.value) == expected
+
+
+def test_absolute_plugin_path_is_left_alone(tmp_path, monkeypatch):
+    absolute = tmp_path / "Somewhere" / "Plug.vst3"
+    proj_dir = tmp_path / "project"
+    proj_dir.mkdir()
+    _write_input_wav(proj_dir / "in.wav", frames=1024)
+    proj = proj_dir / "project.json"
+    proj.write_text(
+        json.dumps(
+            {
+                "minihost_project_version": 1,
+                "sample_rate": 48000,
+                "block_size": 256,
+                "nodes": [
+                    {"id": "in", "kind": "input", "channels": 2, "source": "in.wav"},
+                    {"id": "fx", "kind": "plugin", "path": str(absolute)},
+                    {"id": "out", "kind": "output", "channels": 2, "sink": "out.wav"},
+                ],
+                "edges": [
+                    {"src": "in", "dst": "fx", "dst_port": 0},
+                    {"src": "fx", "dst": "out"},
+                ],
+            }
+        )
+    )
+
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(minihost.ProjectError) as excinfo:
+        minihost.load_project(proj)
+
+    assert str(absolute) in str(excinfo.value)
+
+
+def test_relative_input_and_sink_resolve_against_the_project_dir(tmp_path, monkeypatch):
+    """The input and output paths already behaved this way; the plugin path
+    now matches them, so pin all three together."""
+    proj_dir = tmp_path / "project"
+    proj_dir.mkdir()
+    _write_input_wav(proj_dir / "in.wav", frames=1024)
+    proj = proj_dir / "project.json"
+    proj.write_text(
+        json.dumps(
+            {
+                "minihost_project_version": 1,
+                "sample_rate": 48000,
+                "block_size": 256,
+                "nodes": [
+                    {"id": "in", "kind": "input", "channels": 2, "source": "in.wav"},
+                    {"id": "out", "kind": "output", "channels": 2, "sink": "out.wav"},
+                ],
+                "edges": [{"src": "in", "dst": "out"}],
+            }
+        )
+    )
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    minihost.render_project(proj)
+
+    assert (proj_dir / "out.wav").exists()
+    assert not (elsewhere / "out.wav").exists()

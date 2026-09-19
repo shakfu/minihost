@@ -9,9 +9,10 @@ name: ThreadSanitizer
 #   - weekly, to catch a race that only shows up under a different runner or a
 #     toolchain update rather than a code change;
 #   - on demand, with a configurable workload;
-#   - on pushes/PRs that actually touch the lock-free ring buffers or the
-#     harness. The run finishes in seconds, so gating those specific paths
-#     costs effectively nothing and catches the regression at review time.
+#   - on pushes/PRs that actually touch the lock-free ring buffers, the
+#     transport seqlock, or the harness. The run finishes in seconds, so gating
+#     those specific paths costs effectively nothing and catches the regression
+#     at review time.
 
 on:
   schedule:
@@ -26,21 +27,21 @@ on:
   push:
     branches: [main]
     paths:
-      - 'projects/libminihost_audio/midi_ringbuffer.*'
-      - 'projects/libminihost_audio/audio_ringbuffer.*'
+      - 'projects/libminihost_audio/*_ringbuffer.*'
+      - 'projects/libminihost/transport_seqlock.h'
       - 'tests/tsan/**'
       - '.github/workflows/tsan.yml'
   pull_request:
     branches: [main]
     paths:
-      - 'projects/libminihost_audio/midi_ringbuffer.*'
-      - 'projects/libminihost_audio/audio_ringbuffer.*'
+      - 'projects/libminihost_audio/*_ringbuffer.*'
+      - 'projects/libminihost/transport_seqlock.h'
       - 'tests/tsan/**'
       - '.github/workflows/tsan.yml'
 
 jobs:
   tsan:
-    name: Ring-buffer race stress
+    name: Lock-free race stress
     runs-on: ubuntu-22.04
     # The harness needs no JUCE, no Python and no audio device; a clean run is
     # seconds. A cap this low means a hang (e.g. a deadlocked SPSC handshake)

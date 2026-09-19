@@ -16,8 +16,9 @@ extern "C" {
 
 typedef struct MH_MidiRingBuffer MH_MidiRingBuffer;
 
-// Create a ring buffer with given capacity (must be power of 2 for efficiency)
-// Returns NULL on failure
+// Create a ring buffer. Capacity is rounded up to the next power of 2; a
+// non-positive capacity uses the default of 256. Returns NULL on failure,
+// which includes a capacity above the largest power of 2 an int holds.
 MH_MidiRingBuffer* mh_midi_ringbuffer_create(int capacity);
 
 // Free a ring buffer

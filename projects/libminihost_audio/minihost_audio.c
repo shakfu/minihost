@@ -8,6 +8,7 @@
 #include "minihost_audio.h"
 #include "minihost_midi.h"
 #include "minihost_osc.h"
+#include "midi_message_length.h"
 #include "midi_ringbuffer.h"
 #include "param_ringbuffer.h"
 #include "transport_ringbuffer.h"
@@ -554,14 +555,20 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
         return;
     }
 
-    // Send MIDI output
+    // Send MIDI output. The length comes from the status byte: a fixed 3
+    // appends data2 to a Program Change or Channel Pressure, and two zero
+    // bytes to a real-time message, which the receiver reads as the start of
+    // the next message. A status with no 3-byte form (System Exclusive, which
+    // MH_MidiEvent cannot carry) is dropped rather than sent truncated.
     if (num_midi_out > 0 && dev->midi_out) {
         for (int i = 0; i < num_midi_out; i++) {
             unsigned char msg[3];
             msg[0] = midi_out[i].status;
             msg[1] = midi_out[i].data1;
             msg[2] = midi_out[i].data2;
-            mh_midi_out_send(dev->midi_out, msg, 3);
+            int len = mh_midi_message_length(msg[0]);
+            if (len > 0)
+                mh_midi_out_send(dev->midi_out, msg, (size_t)len);
         }
     }
 

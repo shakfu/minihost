@@ -249,3 +249,60 @@ class TestResample:
         down = resample(up, 48000, 44100)
         # Allow small rounding differences
         assert abs(down.shape[1] - 44100) <= 2
+
+
+class TestResampleBoundaries:
+    """Extreme dimensions and sample-rate ratios.
+
+    Frame counts, channel counts and sample rates all reach the C layer as
+    unsigned ints, and the output length is the product of a frame count and
+    an unbounded rate ratio. These cases pin the sizes that must be refused
+    before any allocation or narrowing happens.
+    """
+
+    def test_zero_sample_rate_in_is_rejected(self):
+        data = np.zeros((1, 100), dtype=np.float32)
+        with pytest.raises(RuntimeError, match="Sample rates must be > 0"):
+            resample(data, 0, 48000)
+
+    def test_zero_sample_rate_out_is_rejected(self):
+        data = np.zeros((1, 100), dtype=np.float32)
+        with pytest.raises(RuntimeError, match="Sample rates must be > 0"):
+            resample(data, 48000, 0)
+
+    @pytest.mark.parametrize("sample_rate_out", [2**31, 2**32 - 1, 4_000_000_000])
+    def test_extreme_upsample_ratio_is_refused(self, sample_rate_out):
+        # 1000 frames at a ratio of 2**31 or more is over 2**41 output frames,
+        # which cannot be represented in MH_AudioData.frames (unsigned int).
+        # The estimate is range-checked in double, because converting an
+        # out-of-range double to an unsigned integer type is undefined rather
+        # than saturating.
+        data = np.zeros((1, 1000), dtype=np.float32)
+        with pytest.raises(RuntimeError, match="exceeds the maximum output length"):
+            resample(data, 1, sample_rate_out)
+
+    def test_sample_rate_above_unsigned_int_is_a_type_error(self):
+        data = np.zeros((1, 100), dtype=np.float32)
+        with pytest.raises(TypeError):
+            resample(data, 1, 2**64)
+
+    def test_extreme_downsample_ratio_yields_at_least_one_frame(self):
+        # The mirror image: a ratio small enough to round the output to zero
+        # frames still has to produce a valid buffer, not a zero-size one.
+        data = np.zeros((1, 1000), dtype=np.float32)
+        out = resample(data, 4_000_000_000, 1)
+        assert out.shape[0] == 1
+        assert out.shape[1] >= 1
+
+    def test_single_frame_input(self):
+        data = np.zeros((2, 1), dtype=np.float32)
+        out = resample(data, 44100, 48000)
+        assert out.shape[0] == 2
+
+    def test_many_channels(self):
+        # Output bytes are frames * channels * 4; a wide file exercises the
+        # product rather than either factor.
+        data = np.zeros((64, 1000), dtype=np.float32)
+        out = resample(data, 44100, 48000)
+        assert out.shape[0] == 64
+        assert out.shape[1] == pytest.approx(1088, abs=2)

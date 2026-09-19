@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [0.8.1]
+
+### Fixed
+
+- **Transport snapshots are no longer a data race.** `MH_PlayHead` published a plain `State` struct under a seqlock, which is undefined behaviour however carefully the counter is ordered -- the reader's copy of the payload is unsynchronized with the writer's store by construction, and a retry loop cannot make it defined. ThreadSanitizer flags it on the first concurrent read. The state moved to `projects/libminihost/transport_seqlock.h` with each field an atomic, and `MH_PlayHead::sampleRate`, written by `mh_set_sample_rate` while `getPosition()` reads it, became atomic too.
+
+  Accesses are seq_cst rather than relaxed-plus-fences. Relaxed payload accesses leave the classic seqlock hole -- nothing orders the reader's payload loads before its second counter load, so a mid-write snapshot escapes with both counter reads agreeing -- and the standalone fences that close it are not modelled by GCC's ThreadSanitizer, which would have made the new stress test unable to see the bug it exists to catch. The header is free of JUCE so `make tsan` can link it; the harness drives one writer against two readers and asserts no snapshot mixes two writes.
+
+- **A malformed `.vstpreset` could read outside the file.** The chunk bounds check was `chunk_offset + chunk_size > flen` on two int64 values taken straight from the file. A preset naming offset and size near `INT64_MAX` overflows that addition to a negative number, passes the check, and hands `memcpy` a wild source and length -- a segfault in the test that now covers it. The check is a subtraction now, and a chunk larger than `INT_MAX` is refused rather than narrowed into the `int` sizes of `MH_VstPreset`.
+
+- **Ring-buffer capacities above `1 << 30` are rejected instead of rounded.** `next_power_of_2` ran a request near `INT_MAX` through a shift sequence whose final `n++` is signed overflow, yielding a capacity of `INT_MIN` and a mask of `INT_MAX`. `calloc` rejected the resulting size, so the corrupt geometry never reached index arithmetic and nothing observable failed -- the invariant held by accident. `mh_audio_ringbuffer_create` also bounds `capacity_frames * channels`, since samples are addressed as `frame * channels` through an `int`.
+
+- **Live MIDI output uses the message's real length.** The audio-device callback sent every event as three bytes, appending `data2` to a Program Change or Channel Pressure and two zero bytes to a real-time message, which a receiver reads as the start of the next message. The length now comes from the status byte (`midi_message_length.h`); System Exclusive, which `MH_MidiEvent` cannot carry, is dropped rather than sent truncated.
+
+- **Resampling refuses output lengths it cannot represent.** `mh_audio_resample` estimated the output frame count as `frames_in * rate_out / rate_in` and converted the double straight to an integer -- undefined, not saturating, once the ratio pushes it past the target type -- then multiplied it by the channel count for the allocation. The estimate is range-checked in double before conversion, and every frames * channels * sizeof(float) product is checked against `SIZE_MAX`. `mh_audio_read` likewise refuses a file with more frames than `MH_AudioData.frames` can hold.
+
+- **Project plugin paths resolve against the project file.** Input, output and MIDI paths were resolved against the project directory but a plugin `path` was kept verbatim, so a project with a relative plugin path opened a different plugin, or none, depending on the process working directory. All five path kinds now go through one helper; an absolute path is still used as given.
+
+### Added
+
+- `make native-tests`: UBSan-built unit tests for the C layers with no Python binding -- ring-buffer constructor bounds and the MIDI message-length table. Run from `tests/test_native.py`, skipped when no C++ compiler is present.
+
 ## [0.8.0]
 
 ### Added

@@ -44,6 +44,9 @@ typedef struct MH_TransportCommand {
 
 typedef struct MH_TransportRingBuffer MH_TransportRingBuffer;
 
+// Capacity is rounded up to the next power of 2; a non-positive capacity uses
+// the default of 64. Returns NULL on failure, which includes a capacity above
+// the largest power of 2 an int holds.
 MH_TransportRingBuffer* mh_transport_ringbuffer_create(int capacity);
 void mh_transport_ringbuffer_free(MH_TransportRingBuffer* rb);
 

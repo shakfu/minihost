@@ -5,6 +5,7 @@
 
 #include "minihost_vstpreset.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -182,10 +183,21 @@ int mh_vstpreset_read(const char* path, MH_VstPreset* out,
         long long chunk_size = read_le_i64(entry + 12);
 
         if (chunk_offset < 0 || chunk_size < 0) continue;
-        if (chunk_offset + chunk_size > flen) {
+        // Both values come straight out of the file as int64, so the bounds
+        // check is written as a subtraction: chunk_offset + chunk_size
+        // overflows for offsets and sizes near INT64_MAX, wraps negative, and
+        // passes, which would hand memcpy an out-of-bounds source and length.
+        if (chunk_offset > flen || chunk_size > flen - chunk_offset) {
             free(data);
             mh_vstpreset_free(out);
             set_err(err_buf, err_buf_size, "Chunk extends beyond file");
+            return 0;
+        }
+        // component_size / controller_size are int in the public struct.
+        if (chunk_size > INT_MAX) {
+            free(data);
+            mh_vstpreset_free(out);
+            set_err(err_buf, err_buf_size, "Chunk too large");
             return 0;
         }
 
@@ -197,7 +209,10 @@ int mh_vstpreset_read(const char* path, MH_VstPreset* out,
                 set_err(err_buf, err_buf_size, "Out of memory");
                 return 0;
             }
-            memcpy(out->component_state, data + chunk_offset, (size_t)chunk_size);
+            // malloc(0) may return NULL, and memcpy with a NULL
+            // destination is undefined even for a length of zero.
+            if (chunk_size > 0)
+                memcpy(out->component_state, data + chunk_offset, (size_t)chunk_size);
             out->component_size = (int)chunk_size;
         } else if (memcmp(entry, CHUNK_CONT, 4) == 0) {
             out->controller_state = malloc((size_t)chunk_size);
@@ -207,7 +222,10 @@ int mh_vstpreset_read(const char* path, MH_VstPreset* out,
                 set_err(err_buf, err_buf_size, "Out of memory");
                 return 0;
             }
-            memcpy(out->controller_state, data + chunk_offset, (size_t)chunk_size);
+            // malloc(0) may return NULL, and memcpy with a NULL
+            // destination is undefined even for a length of zero.
+            if (chunk_size > 0)
+                memcpy(out->controller_state, data + chunk_offset, (size_t)chunk_size);
             out->controller_size = (int)chunk_size;
         }
         // Unknown chunks are silently ignored (matches Python reader behaviour).

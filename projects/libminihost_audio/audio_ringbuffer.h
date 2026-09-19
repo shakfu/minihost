@@ -19,8 +19,10 @@ extern "C" {
 typedef struct MH_AudioRingBuffer MH_AudioRingBuffer;
 
 // Create a ring buffer for the given number of channels and frame capacity.
-// Capacity is rounded up to the next power of 2.
-// Returns NULL on failure.
+// Capacity is rounded up to the next power of 2. Returns NULL on failure,
+// which includes a non-positive argument, a capacity above the largest power
+// of 2 an int holds, and a capacity * channels product that does not fit an
+// int (samples are addressed as frame * channels).
 MH_AudioRingBuffer* mh_audio_ringbuffer_create(int channels, int capacity_frames);
 
 // Free a ring buffer.
