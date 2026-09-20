@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.2]
+
 ### Added
 
 - **Deterministic VST3 test fixtures** (`projects/test_plugin`, `-DMINIHOST_BUILD_TEST_PLUGIN=ON`). `MinihostTestFx` is a 2-in/2-out effect with a sidechain bus whose three parameters -- gain, latency, sidechain mix -- each map to an exact output: unity gain is bit-identical pass-through, latency *N* delays by exactly *N* samples, MIDI passes through byte for byte at the same offsets. `MinihostTestSynth` is the instrument build, a monophonic A440-referenced sine at quarter scale so summing several instances does not clip.
