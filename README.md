@@ -206,11 +206,7 @@ cmake --build build --config Release
 JUCE is downloaded automatically by `make` (macOS/Linux). You can also download it manually:
 
 ```bash
-# Cross-platform (recommended) - works on Windows, macOS, Linux
 python scripts/download_juce.py
-
-# Unix only (bash)
-./scripts/download_juce.sh
 ```
 
 To use a different version or existing installation:

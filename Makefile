@@ -9,9 +9,12 @@
 # Default target - build Python bindings
 all: build
 
-# Download JUCE if needed (prefer Python for cross-platform compatibility)
+# Download JUCE if needed, and patch it (see scripts/download_juce.py). The
+# script is the only supported path: it pins the SHA, installs to
+# thirdparty/JUCE and applies the macOS message-queue patch the build checks
+# for. A shell fallback used to sit here and did none of the three.
 juce:
-	@python3 scripts/download_juce.py 2>/dev/null || python scripts/download_juce.py 2>/dev/null || ./scripts/download_juce.sh
+	@python3 scripts/download_juce.py || python scripts/download_juce.py
 
 # Build C/C++ CLI tools only. CMAKE_BUILD_TYPE has to be set at configure
 # time: --config Release is read only by multi-config generators (Xcode,

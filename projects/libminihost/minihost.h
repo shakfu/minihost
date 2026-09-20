@@ -157,6 +157,16 @@ int mh_api_version(void);
 // MINIHOST_MESSAGE_THREAD=0 to disable (operations then run inline on the
 // caller's thread, and cross-thread plugin use is unsafe again). Call it
 // explicitly only to force the thread up early. See minihost.cpp.
+//
+// macOS only: MINIHOST_MESSAGE_THREAD=main makes the main thread the message
+// thread and starts no background thread. A plugin that touches AppKit from a
+// control call needs this -- AppKit refuses an NSWindow anywhere else, and the
+// operation fails on the background thread. In exchange every minihost call
+// must come from the main thread: JUCE marshals plugin construction to the
+// message thread and blocks, so a load from any other thread waits for a main
+// thread that cannot pump while it is itself inside a minihost call. The
+// plugin's own error handling also runs for real in this mode, so a plugin
+// that puts up a dialog blocks the host.
 void mh_message_thread_init(void);
 
 // Stop the dedicated JUCE plugin thread and tear down the MessageManager on

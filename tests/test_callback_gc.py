@@ -32,6 +32,8 @@ import pytest
 
 import minihost
 
+from device_helpers import skip_if_no_audio_device
+
 PLUGIN = (
     os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
 )
@@ -136,6 +138,7 @@ def test_all_three_plugin_callbacks_are_traversed():
 
 
 @skip_if_no_plugin
+@skip_if_no_audio_device
 def test_a_device_holding_a_plugin_in_a_cycle_is_collected():
     """The device's reference to its plugin must be visible to the GC.
 
@@ -163,6 +166,7 @@ def test_a_device_holding_a_plugin_in_a_cycle_is_collected():
 
 
 @skip_if_no_plugin
+@skip_if_no_audio_device
 def test_the_device_still_keeps_its_plugin_alive():
     """Replacing keep_alive must not weaken the lifetime guarantee.
 
@@ -182,6 +186,7 @@ def test_the_device_still_keeps_its_plugin_alive():
 
 
 @skip_if_no_plugin
+@skip_if_no_audio_device
 def test_a_chain_device_keeps_its_chain_alive():
     a = minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=512)
     chain = minihost.PluginChain([a])

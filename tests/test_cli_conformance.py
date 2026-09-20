@@ -21,6 +21,7 @@ from ``MINIHOST_TEST_PLUGIN`` (default: Dexed).
 from __future__ import annotations
 
 import functools
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -122,6 +123,36 @@ def _morph_is_exercisable() -> bool:
         plugin.close()
 
 
+@functools.lru_cache(maxsize=1)
+def _plugin_writes_to_stdout() -> bool:
+    """Whether the plugin prints to stdout, which makes this comparison moot.
+
+    Renoise Redux writes its own log there, complete with a clock time and the
+    host binary's name, so `minihost_c` and `minihost_cpp` can never produce
+    identical bytes no matter how interchangeable they are. Nothing the CLIs
+    can do about it: the plugin holds the same fd.
+
+    Detected by whether a `-j` command's output parses as JSON, which is what
+    the CLI alone would emit.
+    """
+    proc = _run(C_BIN, ["probe", "{PLUGIN}", "-j"])
+    if proc.returncode != 0:
+        return False  # a failure to probe is not noise; let the test report it
+    try:
+        json.loads(proc.stdout.decode("utf-8", "replace"))
+    except ValueError:
+        return True
+    return False
+
+
+def _skip_if_plugin_writes_to_stdout() -> None:
+    if _plugin_writes_to_stdout():
+        pytest.skip(
+            f"{PLUGIN} writes to stdout; a byte comparison measures its log, "
+            "not the two CLIs"
+        )
+
+
 def _assert_stdout_identical(c, cpp, args) -> None:
     if c.stdout == cpp.stdout:
         return
@@ -146,6 +177,7 @@ def _assert_stdout_identical(c, cpp, args) -> None:
 @skip_if_no_plugin
 @pytest.mark.parametrize("args", CONFORMANCE_COMMANDS, ids=_cmd_id)
 def test_c_and_cpp_stdout_identical(args):
+    _skip_if_plugin_writes_to_stdout()
     c = _run(C_BIN, args)
     cpp = _run(CPP_BIN, args)
 
@@ -179,6 +211,7 @@ def test_morph_blend_endpoints_match_across_clis():
     # plugin (JUCE initialisation during collection is best avoided).
     if not _morph_is_exercisable():
         pytest.skip(f"{PLUGIN} exposes < 2 factory programs; morph cannot blend")
+    _skip_if_plugin_writes_to_stdout()
     for t in ("0.1", "0.5", "0.9"):
         args = ["morph", "{PLUGIN}", "-t", t, "-j"]
         c = _run(C_BIN, args)
@@ -450,7 +483,9 @@ def test_mono_input_fills_a_wider_plugin_bus(binary_name, tmp_path):
     src = np.asarray(src)
     got = np.asarray(got)
     assert src.shape[0] == 1, "this test needs a mono input file"
-    assert got.shape[0] == 2, f"expected the plugin's 2 output channels, got {got.shape[0]}"
+    assert got.shape[0] == 2, (
+        f"expected the plugin's 2 output channels, got {got.shape[0]}"
+    )
 
     n = min(src.shape[-1], got.shape[-1])
     assert np.allclose(got[0, :n], src[0, :n], atol=1e-6), "left is not the input"

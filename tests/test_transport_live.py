@@ -21,6 +21,11 @@ import pytest
 
 import minihost
 
+from device_helpers import skip_if_no_audio_device
+
+# Every test here opens a live device; without one there is nothing to test.
+pytestmark = skip_if_no_audio_device
+
 PLUGIN = (
     os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
 )

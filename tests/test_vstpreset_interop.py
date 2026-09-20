@@ -43,18 +43,50 @@ def _open():
     return minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=512)
 
 
-def _rejects_foreign_state() -> bool:
-    """Whether the plugin under test can fail a state restore at all.
+def _rejects_bad_state(plugin) -> bool:
+    """Whether this plugin reports a state it cannot use as a failure.
 
     A JUCE-built VST3 cannot: its wrapper's `readFromUnknownStream` hands any
     bytes it does not recognise to `setStateInformation`, which has no way to
-    report failure, and returns kResultTrue. minihost's own fixtures are
-    JUCE-built, so the corrupt-chunk case needs a plugin that validates.
+    report failure, and returns kResultTrue. The vendor name used to stand in
+    for this and was wrong in both directions -- Renoise Redux is not
+    JUCE-built and also accepts anything -- so ask the plugin.
+
+    Not the assertion the test makes: that one goes through `load_vstpreset`,
+    the layer under test, and checks the error survives it. This is only the
+    condition that makes the assertion meaningful.
     """
     try:
-        return minihost.probe(PLUGIN).get("vendor") != "minihost"
-    except Exception:
+        plugin.set_state(_core.vst3_state_join(b"definitely not component state"))
+    except RuntimeError:
         return True
+    return False
+
+
+def _state_round_trips(plugin, idx) -> bool:
+    """Whether a parameter value survives the plugin's own get_state/set_state.
+
+    That pair is the measuring instrument for every test below: they set a
+    parameter, push the state through a file, and read the value back. A
+    plugin whose restore does not carry the value can say nothing about the
+    file layer under test.
+
+    Renoise Redux is such a plugin on the default message thread. It builds
+    an NSWindow inside setStateInformation, which AppKit refuses anywhere but
+    the main thread, so the restore either fails outright or leaves the
+    parameter at the plugin's default. `MINIHOST_MESSAGE_THREAD=main` runs
+    control calls on the main thread and Redux then round-trips correctly,
+    at the price of every minihost call having to come from there.
+    """
+    want = plugin.get_param(idx)
+    snapshot = plugin.get_state()
+    plugin.set_param(idx, 0.5 if want != 0.5 else 0.1)
+    _commit_params(plugin)
+    try:
+        plugin.set_state(snapshot)
+    except RuntimeError:
+        return False
+    return plugin.get_param(idx) == pytest.approx(want, abs=1e-4)
 
 
 def _commit_params(plugin):
@@ -81,7 +113,14 @@ def _commit_params(plugin):
 
 
 def _first_automatable_param(plugin):
-    """Index of a parameter whose value we can set and read back.
+    """Index of a parameter we can set, read back, *and* that the plugin stores.
+
+    Reading the value back is not enough. Renoise Redux's parameter 0 is a
+    Preset selector: it reports whatever is written to it and is absent from
+    IComponent::getState, so it reads 0 after any restore and these tests
+    measured the plugin's state model instead of the preset code. Requiring
+    the state snapshot to move as well picks a parameter a round trip can
+    carry -- Redux's parameter 1 and every one after it qualifies.
 
     Leaves the chosen parameter committed to the processor (see
     _commit_params), so a state snapshot taken straight after this call
@@ -89,10 +128,15 @@ def _first_automatable_param(plugin):
     """
     for i in range(plugin.num_params):
         before = plugin.get_param(i)
+        baseline = plugin.get_state()
         plugin.set_param(i, 0.25 if before > 0.5 else 0.75)
-        if plugin.get_param(i) != before:
-            _commit_params(plugin)
+        if plugin.get_param(i) == before:
+            continue
+        _commit_params(plugin)
+        if plugin.get_state() != baseline:
             return i
+        plugin.set_param(i, before)
+        _commit_params(plugin)
     return None
 
 
@@ -122,6 +166,8 @@ def test_split_join_round_trips_through_the_plugin():
         idx = _first_automatable_param(plugin)
         if idx is None:
             pytest.skip("plugin exposes no settable parameter")
+        if not _state_round_trips(plugin, idx):
+            pytest.skip("plugin's own state round trip does not carry a value here")
         want = plugin.get_param(idx)
 
         component, controller = _core.vst3_state_split(plugin.get_state())
@@ -194,6 +240,8 @@ def test_save_then_load_restores_parameters(tmp_path):
         idx = _first_automatable_param(plugin)
         if idx is None:
             pytest.skip("plugin exposes no settable parameter")
+        if not _state_round_trips(plugin, idx):
+            pytest.skip("plugin's own state round trip does not carry a value here")
         want = plugin.get_param(idx)
 
         path = tmp_path / "round.vstpreset"
@@ -225,6 +273,8 @@ def test_foreign_style_preset_loads(tmp_path):
         idx = _first_automatable_param(plugin)
         if idx is None:
             pytest.skip("plugin exposes no settable parameter")
+        if not _state_round_trips(plugin, idx):
+            pytest.skip("plugin's own state round trip does not carry a value here")
         want = plugin.get_param(idx)
 
         # Exactly what a foreign host writes: the raw IComponent chunk.
@@ -253,6 +303,8 @@ def test_legacy_minihost_preset_still_loads(tmp_path):
         idx = _first_automatable_param(plugin)
         if idx is None:
             pytest.skip("plugin exposes no settable parameter")
+        if not _state_round_trips(plugin, idx):
+            pytest.skip("plugin's own state round trip does not carry a value here")
         want = plugin.get_param(idx)
 
         path = tmp_path / "legacy.vstpreset"
@@ -270,12 +322,17 @@ def test_loading_a_corrupt_preset_raises_rather_than_silently_doing_nothing(tmp_
     """The failure mode that started all this: a preset whose chunk the plugin
     cannot use must surface as an error, not a successful no-op.
     """
-    if not _rejects_foreign_state():
-        pytest.skip(
-            "plugin under test accepts any state chunk; see _rejects_foreign_state"
-        )
+    if os.environ.get("MINIHOST_MESSAGE_THREAD") == "main":
+        # The probe below hands the plugin bytes it cannot parse. On the main
+        # thread a plugin's own error handling runs: Renoise Redux blocks
+        # there indefinitely, presumably on a dialog no one can answer.
+        pytest.skip("corrupt-state probe can block a plugin in main-thread mode")
     plugin = _open()
     try:
+        if not _rejects_bad_state(plugin):
+            pytest.skip(
+                "plugin accepts any state chunk, so it cannot report a bad preset"
+            )
         path = tmp_path / "corrupt.vstpreset"
         minihost.write_vstpreset(path, "A" * 32, b"definitely not component state")
 

@@ -66,11 +66,7 @@ cmake --build build
 JUCE is downloaded automatically by `make`. Manual options:
 
 ```bash
-# Cross-platform (recommended)
 python scripts/download_juce.py
-
-# Unix only
-./scripts/download_juce.sh
 
 # Specific version
 JUCE_VERSION=8.0.12 python scripts/download_juce.py

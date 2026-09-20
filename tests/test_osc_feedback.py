@@ -19,6 +19,8 @@ import pytest
 import minihost
 from minihost import OscFeedback, OscMapper
 
+from osc_helpers import first_bound_param
+
 PLUGIN = (
     os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
 )
@@ -279,16 +281,15 @@ def test_feedback_reaches_a_real_surface_over_udp():
         received.append((address, args))
         arrived.set()
 
-    name = plugin.get_param_info(0)["name"]
-    address = f"/mh/param/{minihost.slug(name)}"
-
     with minihost.OscServer.open(0, on_osc) as surface:
         with minihost.OscClient("127.0.0.1", surface.port) as out:
             mapper = OscMapper(plugin)
             mapper.bind_all()
+            idx, address = first_bound_param(mapper, plugin)
+            assert idx is not None, "bind_all exposed no parameter by name"
             fb = OscFeedback(plugin, out, mapper.feedback_addresses(), mapper=mapper)
 
-            plugin.set_param(0, 0.625)
+            plugin.set_param(idx, 0.625)
             fb.poll_once()
             assert arrived.wait(5.0), "no feedback arrived"
 

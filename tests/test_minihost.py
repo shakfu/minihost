@@ -3,6 +3,8 @@
 import pytest
 import minihost
 
+from device_helpers import skip_if_no_audio_device
+
 
 def test_module_has_plugin_class():
     """Test that Plugin class is exported."""
@@ -759,6 +761,7 @@ class TestPluginIntegration:
         # Verify output is still float64
         assert output_audio.dtype == np.float64
 
+    @skip_if_no_audio_device
     def test_audio_device(self, plugin):
         """Test AudioDevice creation and properties."""
         # Create audio device
@@ -770,6 +773,7 @@ class TestPluginIntegration:
         assert audio.channels > 0
         assert audio.is_playing is False
 
+    @skip_if_no_audio_device
     def test_audio_device_start_stop(self, plugin):
         """Test AudioDevice start/stop."""
         audio = minihost.AudioDevice(plugin)
@@ -782,6 +786,7 @@ class TestPluginIntegration:
         audio.stop()
         assert audio.is_playing is False
 
+    @skip_if_no_audio_device
     def test_audio_device_context_manager(self, plugin):
         """Test AudioDevice as context manager."""
         with minihost.AudioDevice(plugin) as audio:
@@ -790,6 +795,7 @@ class TestPluginIntegration:
         # After exiting context, should be stopped
         # Note: audio object is invalid after close, so we don't check is_playing
 
+    @skip_if_no_audio_device
     def test_audio_device_with_config(self, plugin_path):
         """Test AudioDevice with custom configuration."""
         # Create plugin with specific sample rate
@@ -807,6 +813,7 @@ class TestPluginIntegration:
 
         audio.stop()  # Cleanup
 
+    @skip_if_no_audio_device
     def test_audio_device_midi_properties(self, plugin):
         """Test AudioDevice MIDI properties."""
         audio = minihost.AudioDevice(plugin)
@@ -953,6 +960,7 @@ class TestPluginIntegration:
         # Clear both
         plugin.set_track_properties()
 
+    @skip_if_no_audio_device
     def test_audio_device_midi_connection(self, plugin):
         """Test AudioDevice MIDI connection (if ports available)."""
         audio = minihost.AudioDevice(plugin)
@@ -1388,18 +1396,47 @@ class TestPluginChain:
         # Tail is max of all plugin tails
         assert chain.tail_seconds >= 0.0
 
-    def test_chain_audio_device(self, plugin, plugin2):
+    @pytest.fixture
+    def device_sample_rate(self, plugin_path):
+        """The rate the default output device actually runs at.
+
+        AudioDevice refuses a chain whose rate differs from the device's, and
+        the device's rate is whatever the backend negotiated -- 44100 on
+        plenty of machines. Building the chain at a hard-coded 48000 made
+        these tests a property of the developer's hardware.
+        """
+        probe = minihost.Plugin(plugin_path, sample_rate=48000, max_block_size=512)
+        try:
+            device = minihost.AudioDevice(probe)
+            rate = device.sample_rate
+            del device
+        except RuntimeError as exc:
+            pytest.skip(f"no usable output device: {exc}")
+        finally:
+            probe.close()
+        return rate
+
+    def _chain_at(self, plugin_path, rate, count=1):
+        plugins = [
+            minihost.Plugin(plugin_path, sample_rate=rate, max_block_size=512)
+            for _ in range(count)
+        ]
+        return minihost.PluginChain(plugins)
+
+    @skip_if_no_audio_device
+    def test_chain_audio_device(self, plugin_path, device_sample_rate):
         """Test AudioDevice with plugin chain."""
-        chain = minihost.PluginChain([plugin, plugin2])
+        chain = self._chain_at(plugin_path, device_sample_rate, count=2)
         audio = minihost.AudioDevice(chain)
 
         assert audio.sample_rate > 0
         assert audio.buffer_frames > 0
         assert audio.is_playing is False
 
-    def test_chain_audio_device_start_stop(self, plugin):
+    @skip_if_no_audio_device
+    def test_chain_audio_device_start_stop(self, plugin_path, device_sample_rate):
         """Test AudioDevice start/stop with chain."""
-        chain = minihost.PluginChain([plugin])
+        chain = self._chain_at(plugin_path, device_sample_rate)
         audio = minihost.AudioDevice(chain)
 
         audio.start()
@@ -1408,9 +1445,10 @@ class TestPluginChain:
         audio.stop()
         assert audio.is_playing is False
 
-    def test_chain_audio_device_context_manager(self, plugin):
+    @skip_if_no_audio_device
+    def test_chain_audio_device_context_manager(self, plugin_path, device_sample_rate):
         """Test AudioDevice as context manager with chain."""
-        chain = minihost.PluginChain([plugin])
+        chain = self._chain_at(plugin_path, device_sample_rate)
         with minihost.AudioDevice(chain) as audio:
             assert audio.is_playing is True
 

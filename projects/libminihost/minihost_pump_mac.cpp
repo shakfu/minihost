@@ -32,6 +32,8 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <pthread.h>
 
+#include "minihost_diag.h"
+
 // Must match PUMP_MODE in scripts/download_juce.py.
 #define MH_PUMP_MODE CFSTR("net.minihost.pump")
 
@@ -55,6 +57,7 @@ extern "C" int mh_pump_main_runloop(int max_messages)
     }
     catch (...)
     {
+        minihost::reportSwallowedException("the macOS message pump");
     }
     return n;
 }

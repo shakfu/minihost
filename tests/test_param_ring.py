@@ -25,6 +25,8 @@ import pytest
 
 import minihost
 
+from device_helpers import skip_if_no_audio_device
+
 PLUGIN = os.environ.get("MINIHOST_TEST_PLUGIN")
 requires_plugin = pytest.mark.skipif(not PLUGIN, reason="MINIHOST_TEST_PLUGIN not set")
 
@@ -50,6 +52,7 @@ def test_mapper_accepts_a_device_binding():
 
 
 @requires_plugin
+@skip_if_no_audio_device
 def test_repeated_writes_to_one_param_land_as_the_last_value():
     """A fader drag inside one block collapses to its final value.
 
@@ -75,6 +78,7 @@ def test_repeated_writes_to_one_param_land_as_the_last_value():
 
 
 @requires_plugin
+@skip_if_no_audio_device
 def test_a_burst_of_writes_is_coalesced_before_the_processor_sees_it():
     """The point of the drain: N writes to one parameter become far fewer
     applied changes.
@@ -118,6 +122,7 @@ def test_a_burst_of_writes_is_coalesced_before_the_processor_sees_it():
 
 
 @requires_plugin
+@skip_if_no_audio_device
 def test_two_params_both_arrive():
     """Coalescing is per parameter, not a single-slot latch."""
     plugin = _plugin()
@@ -141,6 +146,7 @@ def test_two_params_both_arrive():
 
 
 @requires_plugin
+@skip_if_no_audio_device
 def test_negative_indices_are_refused():
     plugin = _plugin()
     with minihost.AudioDevice(plugin, sample_rate=48000, buffer_frames=256) as audio:
@@ -151,6 +157,7 @@ def test_negative_indices_are_refused():
 
 
 @requires_plugin
+@skip_if_no_audio_device
 def test_a_write_before_start_is_applied_once_running():
     """The ring is live from open, not from start."""
     plugin = _plugin()
@@ -172,6 +179,7 @@ def test_a_write_before_start_is_applied_once_running():
 
 
 @requires_plugin
+@skip_if_no_audio_device
 def test_bound_mapper_routes_through_the_device():
     """A CC write reaches the parameter via the device queue."""
     plugin = _plugin()

@@ -37,6 +37,11 @@
 #include <shared_mutex>
 #include <string>
 #include <thread>
+
+#include "minihost_diag.h"
+#if defined(__APPLE__)
+#include <pthread.h>
+#endif
 #include <type_traits>
 #include <vector>
 
@@ -144,6 +149,32 @@ public:
             return;
         }
 
+       #if JUCE_MAC || JUCE_IOS
+        // MINIHOST_MESSAGE_THREAD=main: the main thread is the message thread
+        // and there is no worker. For a plugin that touches AppKit from a
+        // control call this is the only mode that works -- Renoise Redux
+        // builds an NSWindow inside setStateInformation, and AppKit raises an
+        // NSException anywhere but the main thread, so on the worker the state
+        // restore fails. It also makes isThisTheMessageThread() true for the
+        // main thread, so a JUCE-built plugin's wrapper calls through
+        // synchronously instead of deferring a raw AudioProcessor* to
+        // callAsync.
+        //
+        // Opt-in, because it moves a constraint onto the caller: every
+        // minihost call must come from the main thread. JUCE marshals plugin
+        // *creation* to the message thread and blocks, so an mh_open from any
+        // other thread waits for a main thread that is not pumping -- and the
+        // main thread cannot pump while it is inside a minihost call. The
+        // default keeps the worker, where cross-thread use is safe.
+        if (env != nullptr && std::strcmp(env, "main") == 0
+            && pthread_main_np() != 0)
+        {
+            juce::MessageManager::getInstance();
+            state_ = State::MainThread;
+            return;
+        }
+       #endif
+
         std::promise<void> ready;
         auto fut = ready.get_future();
         thread_ = std::thread([this, &ready]()
@@ -227,9 +258,17 @@ public:
         // worker is deleting the MessageManager underneath it.
         std::unique_lock<std::shared_mutex> lk(lifeMtx_);
         const bool wasRunning = (state_ == State::Running);
+       #if JUCE_MAC || JUCE_IOS
+        const bool ownedByMain = (state_ == State::MainThread);
+       #endif
         state_ = State::ShutDown;
+       #if JUCE_MAC || JUCE_IOS
+        // Same thread that created it, which is where JUCE wants it deleted.
+        if (ownedByMain && pthread_main_np() != 0)
+            juce::MessageManager::deleteInstance();
+       #endif
         if (! wasRunning)
-            return;   // never started, disabled, or already shut down
+            return;   // never started, disabled, on the main thread, or already shut down
 
         {
             std::lock_guard<std::mutex> qlk(mtx_);
@@ -240,8 +279,9 @@ public:
             thread_.join();
     }
 
-    // Run fn on the message thread and block until it finishes. Inline when the
-    // message thread is disabled or we are already on it.
+    // Run fn on the message thread and block until it finishes. Inline when we
+    // are already on it, when the message thread is disabled, and on macOS,
+    // where the main thread owns the MessageManager and no worker exists.
     void run(const std::function<void()>& fn)
     {
         // Checked before the lock: a task already running on the message
@@ -257,7 +297,7 @@ public:
         std::shared_lock<std::shared_mutex> lk(lifeMtx_);
         if (state_ != State::Running)
         {
-            fn();   // disabled, not yet up, or shut down
+            fn();   // disabled, not yet up, shut down, or macOS main-thread mode
             return;
         }
         std::promise<void> prom;
@@ -279,7 +319,7 @@ private:
         std::promise<void>* prom;
     };
 
-    enum class State { NotStarted, Running, Disabled, ShutDown };
+    enum class State { NotStarted, Running, MainThread, Disabled, ShutDown };
 
     // Guards state_ and the thread's lifetime. run() holds it shared for as
     // long as its call lasts; init() and shutdown() take it exclusively.
@@ -333,6 +373,7 @@ static auto runOnMsg(Fn&& fn) -> decltype(fn())
         }
         catch (...)
         {
+            minihost::reportSwallowedException("a thread-affine plugin call");
         }
     }
     else
@@ -344,6 +385,7 @@ static auto runOnMsg(Fn&& fn) -> decltype(fn())
         }
         catch (...)
         {
+            minihost::reportSwallowedException("a thread-affine plugin call");
             return R{};   // 0 / nullptr: the failure value in every C API here
         }
         return result;

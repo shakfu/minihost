@@ -30,6 +30,8 @@ import pytest
 
 import minihost
 
+from device_helpers import skip_if_no_audio_device
+
 PLUGIN = (
     os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
 )
@@ -148,6 +150,7 @@ def test_graph_accepts_a_matching_plugin():
 
 
 @skip_if_no_plugin
+@skip_if_no_audio_device
 def test_audio_device_refuses_a_plugin_that_cannot_span_the_device_period():
     """Pre-fix the device opened happily and then played a repeating buzz,
     because every process call was refused and the stale output buffer was

@@ -16,6 +16,8 @@ import pytest
 
 import minihost
 
+from device_helpers import skip_if_no_audio_device
+
 PLUGIN = (
     os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
 )
@@ -41,6 +43,7 @@ def test_pluginchain_keeps_anonymous_plugins_alive():
 
 
 @skip_if_no_plugin
+@skip_if_no_audio_device
 def test_audiodevice_keeps_anonymous_chain_alive():
     # AudioDevice over an anonymous chain over an anonymous Plugin: the
     # device must keep the chain alive, and the chain must keep the plugin
@@ -57,6 +60,7 @@ def test_audiodevice_keeps_anonymous_chain_alive():
 
 
 @skip_if_no_plugin
+@skip_if_no_audio_device
 def test_audiodevice_keeps_anonymous_plugin_alive():
     device = minihost.AudioDevice(
         minihost.Plugin(PLUGIN, sample_rate=48000),

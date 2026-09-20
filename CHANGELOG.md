@@ -12,6 +12,10 @@
 
 - `mh_audio_get_midi_out_dropped` -- MIDI output events the audio callback could not queue. Non-zero means generated MIDI was lost.
 
+- A `catch(...)` at the C API boundary now names what it discarded on stderr, at most three times per process. Identifying the `NSException` above otherwise took a breakpoint on `__cxa_throw`.
+
+- `MINIHOST_MESSAGE_THREAD=main` (macOS): the main thread becomes the JUCE message thread and no background thread starts. A plugin that touches AppKit from a control call needs it -- Renoise Redux builds an `NSWindow` inside `setStateInformation`, which AppKit refuses off the main thread, so on the background thread its state restore fails or lands half-applied. The cost is that every minihost call must then come from the main thread: JUCE marshals plugin construction to the message thread and blocks, so a load from anywhere else waits for a main thread that cannot pump while it is inside a minihost call. The plugin's own error handling also runs for real, so one that opens a dialog blocks the host. Default behaviour is unchanged.
+
 - `mh_message_thread_poll` -- deliver JUCE messages a plugin has queued. Only needed on macOS, and `Plugin.poll_callbacks()` already calls it; see the fix below.
 
 ### Fixed
@@ -55,6 +59,10 @@
 - `--bit-depth` help said "match input or 24"; it has always used 24.
 
 - Removed the unused `_READ_EXTENSIONS`. Reads are validated by decoding, not by file name; `read_audio`'s docstring now says so.
+
+### Removed
+
+- `scripts/download_juce.sh`. It pinned JUCE 8.0.6, installed to the wrong directory and could not apply the message-queue patch the macOS build now checks for, and `make juce` fell back to it. `scripts/download_juce.py` is the only supported path.
 
 ## [0.8.1]
 

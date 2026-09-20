@@ -19,6 +19,9 @@ import pytest
 
 import minihost
 
+from device_helpers import skip_if_no_audio_device
+from osc_helpers import first_bound_param
+
 PLUGIN = (
     os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
 )
@@ -219,6 +222,7 @@ def test_no_callback_fires_after_close():
 
 
 @skip_if_no_plugin
+@skip_if_no_audio_device
 def test_osc_can_drive_a_plugin_parameter():
     """The point of the whole layer: a message on the wire moves a parameter.
 
@@ -256,6 +260,7 @@ def test_osc_can_drive_a_plugin_parameter():
 
 
 @skip_if_no_plugin
+@skip_if_no_audio_device
 def test_connect_osc_drives_a_parameter_with_no_python_in_the_path():
     """AudioDevice.connect_osc parses the address in C and pushes to the ring.
 
@@ -283,6 +288,7 @@ def test_connect_osc_drives_a_parameter_with_no_python_in_the_path():
 
 
 @skip_if_no_plugin
+@skip_if_no_audio_device
 def test_the_slot_form_addresses_a_chain_slot():
     import time
 
@@ -315,6 +321,7 @@ def test_the_slot_form_addresses_a_chain_slot():
         "/mh/-1/param/0",
     ],
 )
+@skip_if_no_audio_device
 def test_unrecognised_addresses_are_ignored_not_misrouted(address):
     """A near-miss address must do nothing at all.
 
@@ -343,6 +350,7 @@ def test_unrecognised_addresses_are_ignored_not_misrouted(address):
 
 
 @skip_if_no_plugin
+@skip_if_no_audio_device
 def test_an_out_of_range_parameter_index_is_harmless():
     """The ring carries the index; mh_process_auto range-checks before it is
     applied. The device must keep running and keep accepting real writes."""
@@ -368,6 +376,7 @@ def test_an_out_of_range_parameter_index_is_harmless():
 
 
 @skip_if_no_plugin
+@skip_if_no_audio_device
 def test_connect_osc_twice_rebinds_rather_than_leaking_the_first_port():
     plugin = minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=512)
     with minihost.AudioDevice(plugin, sample_rate=48000, buffer_frames=256) as audio:
@@ -386,6 +395,7 @@ def test_connect_osc_twice_rebinds_rather_than_leaking_the_first_port():
 
 
 @skip_if_no_plugin
+@skip_if_no_audio_device
 def test_osc_mapper_drives_parameters_by_name_over_the_wire():
     """The name-addressed path end to end: bind_all, then send by slug."""
     import time
@@ -394,14 +404,13 @@ def test_osc_mapper_drives_parameters_by_name_over_the_wire():
     if plugin.num_params == 0:
         pytest.skip("plugin exposes no parameters")
 
-    name = plugin.get_param_info(0)["name"]
-    address = f"/mh/param/{minihost.slug(name)}"
-
     with minihost.AudioDevice(plugin, sample_rate=48000, buffer_frames=256) as audio:
         mapper = minihost.OscMapper(plugin, device=audio)
         bound = mapper.bind_all()
         assert bound > 0
-        assert address in mapper.addresses
+
+        idx, address = first_bound_param(mapper, plugin)
+        assert idx is not None, "bind_all exposed no parameter by name"
 
         with minihost.OscServer.open(0, mapper) as server:
             with minihost.OscClient("127.0.0.1", server.port) as client:
@@ -410,10 +419,11 @@ def test_osc_mapper_drives_parameters_by_name_over_the_wire():
                 time.sleep(0.3)
                 audio.stop()
 
-    assert plugin.get_param(0) == pytest.approx(0.35, abs=1e-3)
+    assert plugin.get_param(idx) == pytest.approx(0.35, abs=1e-3)
 
 
 @skip_if_no_plugin
+@skip_if_no_audio_device
 def test_the_mapper_accepts_the_numeric_form_too():
     """One port serves both spellings, so a sender written against
     connect_osc's numeric addressing does not silently do nothing here."""
@@ -426,17 +436,21 @@ def test_the_mapper_accepts_the_numeric_form_too():
     with minihost.AudioDevice(plugin, sample_rate=48000, buffer_frames=256) as audio:
         mapper = minihost.OscMapper(plugin, device=audio)
         mapper.bind_all()
+        idx, _ = first_bound_param(mapper, plugin)
+        assert idx is not None, "bind_all exposed no parameter by name"
+
         with minihost.OscServer.open(0, mapper) as server:
             with minihost.OscClient("127.0.0.1", server.port) as client:
                 audio.start()
-                client.send("/mh/param/0", 0.45)
+                client.send(f"/mh/param/{idx}", 0.45)
                 time.sleep(0.3)
                 audio.stop()
 
-    assert plugin.get_param(0) == pytest.approx(0.45, abs=1e-3)
+    assert plugin.get_param(idx) == pytest.approx(0.45, abs=1e-3)
 
 
 @skip_if_no_plugin
+@skip_if_no_audio_device
 def test_a_wildcard_sets_several_parameters_at_once():
     import time
 
