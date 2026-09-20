@@ -464,18 +464,12 @@ jobs:
             libcurl4-openssl-dev \
             pkg-config
 
-      # The runner has no sound card, so every test that opens an AudioDevice
-      # skips (tests/device_helpers.py). snd-dummy gives them one to open.
-      # Every step is non-fatal: without the module the tests skip exactly as
-      # they did, which is a worse result than running them and a better one
-      # than failing the job over a missing kernel module.
-      - name: Load a dummy sound card
-        if: runner.os == 'Linux'
-        continue-on-error: true
-        run: |
-          sudo apt-get install -y "linux-modules-extra-$(uname -r)" || true
-          sudo modprobe snd-dummy || true
-          cat /proc/asound/cards || true
+      # No sound card here, so the tests that open an AudioDevice skip
+      # (tests/device_helpers.py). snd-dummy was tried and is not in the
+      # runner's kernel: "Module snd-dummy not found in
+      # /lib/modules/6.8.0-1064-azure". A PulseAudio null sink is the other
+      # candidate, and would need the Linux probe in device_helpers.py to stop
+      # insisting on an ALSA card.
 
       - uses: actions/setup-python@v7
         with:
