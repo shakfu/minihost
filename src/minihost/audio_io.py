@@ -23,10 +23,9 @@ from minihost._core import audio_read as _read
 from minihost._core import audio_resample as _resample
 from minihost._core import audio_write as _write
 
-# Extensions supported for reading
-_READ_EXTENSIONS = {".wav", ".flac", ".mp3", ".ogg"}
-
-# Extensions supported for writing
+# Extensions supported for writing. There is no read-side equivalent: the
+# decoder detects the container from the file's contents, so an input is
+# validated by decoding it rather than by its name.
 _WRITE_EXTENSIONS = {".wav", ".flac"}
 
 _VALID_BIT_DEPTHS = {16, 24, 32}
@@ -51,7 +50,9 @@ def read_audio(
     """Read an audio file and return (data, sample_rate).
 
     Args:
-        path: Path to audio file (WAV, FLAC, MP3, Vorbis).
+        path: Path to audio file. The container is detected from the file's
+            contents, not its extension; WAV, FLAC, MP3 and Vorbis decode,
+            anything else raises RuntimeError.
         as_: Container type for the returned audio data. ``AudioBuffer``
             (default, no numpy required) or ``numpy.ndarray`` (requires
             numpy installed). The data is float32 with shape

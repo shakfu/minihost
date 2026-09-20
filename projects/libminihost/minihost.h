@@ -6,7 +6,8 @@
 //
 //   1. AUDIO-THREAD ONLY (no locks, no allocations after warmup):
 //        mh_process, mh_process_midi, mh_process_midi_io,
-//        mh_process_auto, mh_process_sidechain, mh_process_double
+//        mh_process_auto, mh_process_sidechain, mh_process_double,
+//        mh_set_param_rt
 //      Call from exactly one thread (the audio callback). Concurrent calls
 //      from multiple threads on the same MH_Plugin are undefined.
 //
@@ -144,7 +145,9 @@ extern "C" {
 // Compare with MH_API_VERSION_NUMBER (header-side) to detect mismatches.
 int mh_api_version(void);
 
-// Bring up the dedicated JUCE plugin thread. Idempotent. Called automatically
+// Bring up the dedicated JUCE plugin thread. Idempotent, and one-way: once
+// mh_message_thread_shutdown() has run, this does not bring the thread back
+// and later operations run inline on the caller's thread. Called automatically
 // on the first plugin load (not at import), so a process that never loads a
 // plugin does no JUCE initialization -- important on headless systems.
 // Creates the JUCE MessageManager on a background thread (no GUI/display init)
@@ -157,11 +160,34 @@ int mh_api_version(void);
 void mh_message_thread_init(void);
 
 // Stop the dedicated JUCE plugin thread and tear down the MessageManager on
-// that thread. Idempotent; safe no-op if the thread was never started. Must be
+// that thread. Idempotent and final -- see mh_message_thread_init. Safe no-op
+// if the thread was never started, and it serializes against in-flight
+// operations rather than tearing the MessageManager out from under one. Must be
 // called at process exit (the Python bindings register it with atexit):
 // leaving the MessageManager alive on a background thread into JUCE's static
 // teardown deadlocks process exit on Linux.
 void mh_message_thread_shutdown(void);
+
+// Deliver JUCE messages a plugin has queued -- its own async work, and the
+// restartComponent notifications that carry a latency, parameter-info,
+// program or I/O change back to the host. Returns how many were delivered.
+//
+// On Linux and Windows the plugin thread does this by itself and this is a
+// no-op from anywhere else; call it only when the plugin thread is disabled
+// (MINIHOST_MESSAGE_THREAD=0), where the caller's thread owns the queue.
+//
+// On macOS it is NOT automatic and this call is the only delivery path: JUCE
+// binds its message queue to the process's main run loop, which a headless
+// host never runs. Call it periodically from the main thread -- the Python
+// bindings do so from Plugin.poll_callbacks(). Called from any other thread
+// it is a no-op and returns 0.
+//
+// Note for macOS callers: servicing that queue means briefly running the main
+// run loop, so sources other libraries have attached to it may fire too. That
+// is what "lending the main thread" costs; it is bounded (at most one source
+// per iteration, and a fixed number of iterations per call), but it is not
+// nothing, so call it from a place where re-entrancy is acceptable.
+int mh_message_thread_poll(void);
 
 // Returns the implementation's API version as a "MAJOR.MINOR.PATCH" string.
 // Storage is owned by the library; do not free.
@@ -334,6 +360,13 @@ int mh_process_midi_io(MH_Plugin* p,
 int   mh_get_num_params(MH_Plugin* p);
 float mh_get_param(MH_Plugin* p, int index);
 int   mh_set_param(MH_Plugin* p, int index, float normalized_0_1);
+
+// Audio-thread parameter write. Takes no lock and notifies no listener, so
+// it is safe from the audio callback; mh_set_param is not (it takes the
+// state mutex and runs listeners synchronously). The value reaches the
+// plugin's processor; host-side value/gesture callbacks do not fire, so a
+// GUI does not follow writes made through this entry point.
+int   mh_set_param_rt(MH_Plugin* p, int index, float normalized_0_1);
 
 // Get parameter metadata (returns 1 on success, 0 on failure)
 int   mh_get_param_info(MH_Plugin* p, int index, MH_ParamInfo* out_info);

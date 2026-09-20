@@ -24,6 +24,8 @@ set(_minihost_sources
     minihost_graph.cpp
     minihost_graph_v2.cpp
     minihost_vstpreset.c
+    # Empty outside Apple; kept in the list so the file is never orphaned.
+    minihost_pump_mac.cpp
 )
 
 # Common configuration applied to both flavours. JUCE module selection

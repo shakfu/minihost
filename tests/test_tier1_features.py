@@ -18,6 +18,7 @@ import sys
 import pytest
 
 import minihost
+from minihost.cli import _resolve_tail
 from minihost.process import _normalize_peak
 
 
@@ -219,3 +220,25 @@ def test_progress_bar_enabled_writes_to_stderr(capsys):
     assert "render" in err
     assert "100%" in err
     assert err.endswith("\n")
+
+
+# ---------------------------------------------------------------------------
+# --tail resolution (no plugin required)
+# ---------------------------------------------------------------------------
+
+
+def test_tail_default_applies_to_midi_only_renders():
+    assert _resolve_tail(None, has_midi_input=True, has_audio_input=False) == 2.0
+
+
+def test_tail_defaults_to_zero_for_audio_input():
+    assert _resolve_tail(None, has_midi_input=False, has_audio_input=True) == 0.0
+    assert _resolve_tail(None, has_midi_input=True, has_audio_input=True) == 0.0
+
+
+def test_explicit_tail_applies_to_audio_input_renders():
+    """`process reverb.vst3 -i dry.wav -o wet.wav --tail 4` used to discard
+    the tail and render only the source duration, silently truncating the
+    reverb."""
+    assert _resolve_tail(4.0, has_midi_input=False, has_audio_input=True) == 4.0
+    assert _resolve_tail(0.0, has_midi_input=True, has_audio_input=False) == 0.0

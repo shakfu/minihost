@@ -4,15 +4,21 @@
 
 ## High
 
+- [ ] **Verify the macOS message pump on a Mac.** The plugin thread now delivers JUCE's queued messages (`pumpJuceMessages` in `minihost.cpp`), which is what makes a plugin's `restartComponent` -- its latency, parameter-info, program and I/O changes -- reach the host at all. Linux and Windows pump from the plugin thread itself and are automatic. macOS cannot: JUCE binds its queue's run-loop source to the process's *main* run loop (`juce_MessageQueue_mac.h`), whatever thread posted the message, so delivery is `CFRunLoopRunInMode` on the main thread and `Plugin.poll_callbacks()` is the only path. That branch is written but has only been compiled and reasoned about, never run -- the development machine is Linux.
+
+  One consequence to weigh while checking: servicing JUCE's queue on macOS means running the main run loop, so sources other libraries attached to it fire too. Bounded, but `poll_callbacks()` is no longer a pure drain of minihost's own queue there.
+
+  What to check on a Mac: `tests/test_fixture_signal.py::test_reported_latency_matches_the_delay_actually_applied` (it polls, so it should pass), the full suite against both fixtures, and that a long-running `minihost play` does not stall. If it holds, this entry closes; if `poll_callbacks` proves too easy to forget, consider pumping from a couple of read-side entry points as well -- but not from inside a getter, where re-entrantly running arbitrary JUCE messages is its own hazard.
+
 ## Medium
 
-- [ ] Verify the affine-op set is complete beyond what the suite exercises (e.g. `set_track_properties`/`updateTrackProperties`, param gestures): if any rarely-used control op turns out thread-affine, wrap it with `runOnMsg` (the pattern is established in `minihost.cpp`).
+- [ ] Verify the affine-op set is complete beyond what the suite exercises. `set_track_properties` turned out to be affine and now goes through `runOnMsg`; param gestures and the remaining rarely-used control ops are still unchecked. The deterministic fixture makes this testable.
 
 - [ ] The plugin thread currently runs for the process lifetime (detached; reclaimed at exit) -- a deliberate choice to avoid JUCE teardown-ordering hangs at interpreter shutdown. Add a clean stop only if a real need arises.
 
 - [ ] Truly *parallel* loading (not just non-blocking) would need out-of-process hosting; still a separate future feature.
 
-- [ ] **Parallel-branch latency compensation** (`MH_PluginBus`, `minihost_graph.cpp:209-262`). The bus sums branches sample-aligned and `mh_bus_get_latency_samples` returns only the max (`:346-355`), so branches with differing plugin latencies phase-misalign. **Deferred** in the 2026-07-07 wave, deliberately: a correct fix needs (a) a control-thread prepare step that reads each branch's latency and sizes per-branch delay lines, (b) RT-safe ring buffers in the process loop (no audio-thread allocation), (c) handling of dynamic latency changes (plugins report latency updates via callback), and (d) MIDI-output offset compensation for delayed branches. Crucially, meaningful end-to-end verification needs branches with *different, known* latencies -- the fixed-latency test plugins (Dexed) can't construct that scenario, so this wants a controllable-latency test fixture (or a checked-in latency plugin, cf. the Tier 3 "CI integration test plugin" item) before it can be shipped under the zero-tolerance testing bar. Lowest user value in the tier (niche parallel-routing nicety), highest correctness risk -- hence its own focused pass.
+- [ ] **Parallel-branch latency compensation** (`MH_PluginBus`, `minihost_graph.cpp:209-262`). The bus sums branches sample-aligned and `mh_bus_get_latency_samples` returns only the max (`:346-355`), so branches with differing plugin latencies phase-misalign. **Deferred** in the 2026-07-07 wave, deliberately: a correct fix needs (a) a control-thread prepare step that reads each branch's latency and sizes per-branch delay lines, (b) RT-safe ring buffers in the process loop (no audio-thread allocation), (c) handling of dynamic latency changes (plugins report latency updates via callback), and (d) MIDI-output offset compensation for delayed branches. **The fixture blocker is gone**: `MinihostTestFx` (`projects/test_plugin`) has a `latency` parameter that both reports and applies an exact sample delay, so two branches with different, known latencies can now be built and the misalignment measured -- `tests/test_fixture_signal.py` shows the pattern. Lowest user value in the tier (niche parallel-routing nicety), highest correctness risk -- hence its own focused pass. A plugin changing its latency mid-session now does reach the host, so (c) has what it needs.
 
 - [ ] **Adopt `ui_json` schema 3 in `minihost touch` once py2tosc releases it.** Schema 3 lets a choice stand among *bindings*, not just in place of a node, and lets a branch hold a list -- including an empty one. That is exactly what Phase 6 worked around: a parameter past the 128th has no CC to bind, `each` could not conditionally omit a message, so `touch.py::_branch_table` doubles every widget kind into a `...NoCc` twin. Six complete templates for two independent questions; schema 3 nests them and makes it five, and the growth is additive rather than multiplicative (a third question: seven against twelve). py2tosc's own schema-3 fixture is this case verbatim and its changelog names minihost as the caller that prompted the change.
 
@@ -32,11 +38,9 @@
 
 - [ ] **No SysEx support anywhere** (review M5). `MH_MidiEvent` is a fixed `(offset, status, data1, data2)`, so there is no SysEx path in the C API, bindings, graph or device layer (`live.cpp` explicitly drops anything longer than 3 bytes). Patch dumps, MPE configuration and MIDI-CI all need it -- and Dexed, the project's own default test plugin, is SysEx-driven.
 
-- [ ] **Resampling is linear-interpolation only** (review M6). `minihost_audiofile.c` uses `ma_resample_algorithm_linear` with a 4th-order low-pass; linear resampling has audible aliasing and HF loss. It is on by default in `process_audio_to_file` (`resample_to_plugin_rate=True`), so processing a 44.1 kHz file through a 48 kHz plugin silently degrades the audio. Also `mh_audio_resample` never checks that all input was consumed and never flushes the resampler tail, so frames can be dropped silently. At minimum document it; better, offer a higher-quality backend.
+- [ ] **Resampling is linear-interpolation only** (review M6). `minihost_audiofile.c` uses `ma_resample_algorithm_linear`; that is the only algorithm miniaudio ships, and its one quality knob (the anti-alias filter order) is now at the maximum, so the remaining aliasing and HF loss are inherent to linear interpolation. It is on by default in `process_audio_to_file` (`resample_to_plugin_rate=True`), so processing a 44.1 kHz file through a 48 kHz plugin silently degrades the audio. A real fix means a second backend (sinc/polyphase) behind a quality argument. At minimum document it.
 
 - [ ] **CLI: `--block-size` / `--sample-rate` must precede the subcommand** (review M8). They are on the top-level parser, so `minihost process plugin.vst3 --block-size 1024 ...` fails with "unrecognized arguments", and `minihost process --help` never mentions them -- yet the command prints `Block size:` in its summary. Additionally `-r/--sample-rate` is silently overridden by the input file's rate whenever audio input is present, so it only matters in MIDI-only mode. Make them per-subcommand (or use a parent parser) and document the override.
-
-- [ ] **CLI: `--tail` is ignored for audio-input processing** (review M9). `minihost process reverb.vst3 -i dry.wav -o wet.wav --tail 4.0` silently truncates at the source length; the tail only applies in MIDI-only mode. The underlying `process_audio_to_file` supports it fine, so this reads as a missing feature rather than a deliberate restriction -- and it is the single most common effect-processing need.
 
 - [ ] **`MidiIn` tests** -- only an existence/export check today (`tests/test_minihost.py:48-52`). No virtual-port or real-input coverage. Skip gracefully on unsupported platforms.
 
@@ -52,7 +56,9 @@
 
 ### Developer experience
 
-- [ ] **CI integration test plugin** -- a lightweight JUCE-built pass-through plugin checked into the repo so integration tests (~30% of suite, currently skipped in CI) can run everywhere.
+- [x] **CI integration test plugin** -- done. `projects/test_plugin` builds two deterministic VST3 fixtures (`MinihostTestFx`: pass-through / exact gain / exact sample delay / sidechain / MIDI passthrough; `MinihostTestSynth`: monophonic sine instrument), behind `-DMINIHOST_BUILD_TEST_PLUGIN=ON`. The `integration` job in `build.yml` builds them on Linux and macOS and runs the suite with `MINIHOST_TEST_PLUGIN` (the synth, which is what the plugin-gated tests have always meant) and `MINIHOST_TEST_PLUGIN_FX`. Skips went 405 -> 116.
+
+- [ ] **Extend the fixture where the suite still cannot reach.** The two builds cover the paths the review named, but not: a plugin that rejects a foreign state chunk (a JUCE wrapper accepts any bytes, so `test_vstpreset_interop.py::test_loading_a_corrupt_preset_raises_rather_than_silently_doing_nothing` skips against it), asymmetric channel counts, or double-precision processing. Windows is not in the `integration` job either -- the job costs a second full compile and the fixture is platform-independent by construction, but the hosting paths are not proven there.
 
 - [ ] **Incremental build support** -- `make test` currently forces a full rebuild via `uv sync --reinstall-package`. Add a `test-only` target or file-based dependencies.
 
@@ -102,19 +108,11 @@
 
 ## Low
 
-- [ ] `minihost_audiofile.c:87-89,108`: `ma_encoder_write_pcm_frames` result is checked but `written != frames` is not, so a partial WAV write reports success. Trivial.
-
-- [ ] `minihost_audiofile.c:412-421`: single-shot `ma_resampler_process_pcm_frames` never flushes the linear filter's internal delay, dropping a few trailing output frames. Small.
+- [ ] `mh_audio_resample`: the single-shot `ma_resampler_process_pcm_frames` never flushes the linear filter's internal delay, dropping a few trailing output frames. (It now errors rather than truncating silently when input is left unconsumed, which was the larger half.) Small.
 
 - [ ] **`MidiMapper` documents a value range the plugin layer clamps away** (review L1). `control.py`'s docstring shows `map_cc(..., value_range=(-1.0, 1.0))`, but `mh_set_param` clamps to `[0, 1]`, so the bottom half of the fader travel maps to a constant 0. The documented example is actively misleading.
 
-- [ ] **`--bit-depth` help does not match behaviour** (review L4). `cli.py` says "default: match input or 24"; the code uses a flat 24 and never inspects the input.
-
 - [ ] **Chain channel truncation is silent** (review L5). `minihost_chain.cpp` zero-pads when the next plugin needs more channels but silently drops the extras when it needs fewer -- a 6-channel plugin feeding a stereo one loses channels 2-5 with no warning. Document it, or offer a downmix.
-
-- [ ] **`write_wav` ignores the written-frame count** (review L8). `minihost_audiofile.c` discards `written`, so a short write is reported as success.
-
-- [ ] **`_READ_EXTENSIONS` is dead** (review L9). `audio_io.py` defines it and nothing uses it; `read_audio` does no extension validation, so an unsupported file surfaces as a raw miniaudio error code.
 
 - [ ] **Decide on `sdist.include = ["thirdparty/JUCE"]`** (review L10). The sdist ships the whole JUCE tree (24 MB compressed, 4377 files, verified self-contained). That is deliberate and structural -- a source install builds without fetching JUCE -- but if the directory is absent at build time the sdist silently ships without it, which is the worse failure. Either document the intent or make its absence an error.
 

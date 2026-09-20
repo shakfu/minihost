@@ -2,6 +2,52 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Deterministic VST3 test fixtures** (`projects/test_plugin`, `-DMINIHOST_BUILD_TEST_PLUGIN=ON`). `MinihostTestFx` is a 2-in/2-out effect with a sidechain bus whose three parameters -- gain, latency, sidechain mix -- each map to an exact output: unity gain is bit-identical pass-through, latency *N* delays by exactly *N* samples, MIDI passes through byte for byte at the same offsets. `MinihostTestSynth` is the instrument build, a monophonic A440-referenced sine at quarter scale so summing several instances does not clip.
+
+  Built in CI rather than checked in, by a new `integration` job on Linux and macOS: a VST3 binary per platform in the repo would need rebuilding on every JUCE bump and could not be reviewed. The job exports `MINIHOST_TEST_PLUGIN` (the synth, which is what the plugin-gated tests have always assumed) and `MINIHOST_TEST_PLUGIN_FX`. Skips went from 405 to 116, and `tests/test_fixture_signal.py` asserts exact sample values where the suite previously asserted nothing.
+
+- `mh_set_param_rt` -- an audio-thread parameter write. Takes no lock and runs no plugin listener; `mh_set_param` keeps doing both and stays the control-thread entry point.
+
+- `mh_audio_get_midi_out_dropped` -- MIDI output events the audio callback could not queue. Non-zero means generated MIDI was lost.
+
+- `mh_message_thread_poll` -- deliver JUCE messages a plugin has queued. Only needed on macOS, and `Plugin.poll_callbacks()` already calls it; see the fix below.
+
+### Fixed
+
+- **Sample-accurate automation no longer takes a lock on the audio thread.** `mh_process_auto` applied changes with `setValueNotifyingHost`, which takes JUCE's listener lock and runs every listener inline; the chain path went through `mh_set_param`, which also takes the plugin's state mutex. Both are reachable from the audio callback, which the header documents as lock-free. They now use `mh_set_param_rt`. minihost's own parameter-value callback still fires -- two atomic loads and a call into a consumer already documented as audio-thread-safe -- so only the plugin's listeners are bypassed.
+
+- **MIDI output no longer enters libremidi from the audio callback.** The callback sent each generated event with `mh_midi_out_send`, which may lock, allocate or issue a write; a slow backend was an underrun. Events now go into the SPSC ring that was allocated for this and never used, and a pump thread sends them. A full ring drops the event and counts it rather than blocking.
+
+- **`minihost process --tail` applies to audio-input renders.** It was honoured only in MIDI-only mode, so `--tail 4` on a reverb silently rendered the source length. Left unset it still defaults to 2 s for MIDI-only and 0 otherwise, so no existing render changes length.
+
+- **Plugin-cache discovery matches what the host can load.** `PLUGIN_EXTS` listed `.vst`, `.clap`, `.dll` and `.so`, none of which minihost hosts, so every unrelated shared library under a scanned directory became a permanent cached failure. It now mirrors `mh_scan_directory`: VST3 and LV2 everywhere, AudioUnit on macOS.
+
+- **A bundle's cache entry survives an in-place binary swap.** The fingerprint stat'd the bundle directory, whose mtime and size do not change when a binary inside it is replaced, so stale metadata -- or a stale error -- was served indefinitely. It now digests the names, sizes and mtimes of the files in the bundle; no file contents are read.
+
+- **A plugin's latency, parameter-info, program and I/O changes never reached the host.** A VST3 reports one by calling `restartComponent`, which JUCE's host side defers with `AsyncUpdater`; the plugin thread created a `MessageManager` but never delivered anything queued on it, so those notifications sat there until process teardown. Set a plugin's latency mid-session and `latency_samples` kept reporting the old value indefinitely -- and a deferred callback that finally ran during teardown, against objects already destroyed, is where the two crashes below came from.
+
+  The thread now pumps JUCE's queue between tasks and while idle. The pump has to be per-platform: `MessageManager::runDispatchLoop` never returns, and on macOS it is `[NSApp run]`, which is the GUI initialisation a headless host exists to avoid. On Linux and Windows the queue belongs to the thread that created the `MessageManager`, so the plugin thread services it itself and nothing changes for callers. On macOS JUCE binds the queue to the process's *main* run loop whatever thread posted to it, so only the main thread can deliver: `Plugin.poll_callbacks()` does it, and that is the only path. A macOS caller that wants these notifications has to poll.
+
+- **`set_track_properties` crashed the process with a JUCE-built VST3.** It ran on the caller's thread, so the plugin's wrapper deferred `updateTrackProperties` to a message loop with a raw `AudioProcessor*`; the deferred call ran during teardown, after `mh_close`. It now goes through `runOnMsg`, where the wrapper calls through synchronously rather than posting at all.
+
+- **A plugin left open at interpreter exit hung the process.** Python's atexit handler stopped the plugin thread and deleted the JUCE MessageManager, and the plugin was then destroyed during finalization without either. Every wrapper that owns a native handle now registers a closer, and the handler runs them first, newest first so an owner goes before what it borrows.
+
+- **The message thread's lifetime is a state machine.** `shutdown()` cleared its enabled flag and joined without resetting the `call_once` guard, so a later `init()` was a no-op and `run()` could execute JUCE work inline on a caller's thread while the worker was still deleting the MessageManager. The lifetime is now explicitly one-way, and `run()` holds a shared lock that `shutdown()` takes exclusively across the join.
+
+- **Short audio writes are no longer reported as success.** `write_wav` discarded the encoder's frame count, and `write_flac` left the header writes, the STREAMINFO rewrite and `fclose` unchecked -- so a full disk produced a truncated file and a success return.
+
+- `mh_audio_resample` errors instead of silently dropping frames when the resampler leaves input unconsumed, and its anti-alias filter runs at miniaudio's maximum order rather than 4. Every caller is offline, where the extra biquads cost nothing measurable.
+
+- An audio device refused for block size names the `buffer_frames` that was requested alongside the period the backend negotiated. Only the negotiated number appeared, which is not the number the caller passed.
+
+- Graph v2 passed an uninitialised pointer table as `inputs` for zero-input plugin nodes. Harmless while the plugin reports no input channels, but the contract is a null table.
+
+- `--bit-depth` help said "match input or 24"; it has always used 24.
+
+- Removed the unused `_READ_EXTENSIONS`. Reads are validated by decoding, not by file name; `read_audio`'s docstring now says so.
+
 ## [0.8.0]
 
 ### Added

@@ -995,8 +995,13 @@ extern "C" int mh_graph_render_block(MH_PluginGraph* g,
             const float* in_ptrs[64];
             const int kMaxCh = 64;
             if (in_ch > kMaxCh) return 0;
+            // Null table, not an uninitialised one: mh_process* documents a
+            // null `inputs` as "silence in", and only the plugin reporting
+            // zero input channels keeps it from reading these slots.
+            const float* const* in_table = nullptr;
             if (n.num_input_ports > 0)
             {
+                in_table = in_ptrs;
                 const auto& ref = n.input_sources[0];
                 if (ref.is_silent)
                 {
@@ -1070,22 +1075,22 @@ extern "C" int mh_graph_render_block(MH_PluginGraph* g,
             int r;
             if (autm.count > 0)
                 r = mh_process_auto(
-                        n.plugin, in_ptrs, out_ptrs_raw, nframes,
+                        n.plugin, in_table, out_ptrs_raw, nframes,
                         midi_in_evts, midi_in_n,
                         midi_out_ptr, midi_out_cap,
                         capture_midi_out ? &midi_out_n : nullptr,
                         autm.changes, autm.count);
             else if (capture_midi_out)
-                r = mh_process_midi_io(n.plugin, in_ptrs, out_ptrs_raw,
+                r = mh_process_midi_io(n.plugin, in_table, out_ptrs_raw,
                                        nframes,
                                        midi_in_evts, midi_in_n,
                                        midi_out_ptr, midi_out_cap,
                                        &midi_out_n);
             else if (midi_in_n > 0)
-                r = mh_process_midi(n.plugin, in_ptrs, out_ptrs_raw,
+                r = mh_process_midi(n.plugin, in_table, out_ptrs_raw,
                                     nframes, midi_in_evts, midi_in_n);
             else
-                r = mh_process(n.plugin, in_ptrs, out_ptrs_raw, nframes);
+                r = mh_process(n.plugin, in_table, out_ptrs_raw, nframes);
             if (!r) return 0;
             if (capture_midi_out)
             {

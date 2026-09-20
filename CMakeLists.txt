@@ -93,6 +93,15 @@ if(NOT DEFINED SKBUILD)
     add_subdirectory(projects/minihost_cpp)
 endif()
 
+# Deterministic VST3 fixtures for the test suite. Opt-in, because they cost a
+# JUCE plugin-client compile and nothing that ships links them. CI builds them
+# and points MINIHOST_TEST_PLUGIN at the result so the signal-level tests run
+# instead of skipping. See projects/test_plugin/.
+option(MINIHOST_BUILD_TEST_PLUGIN "Build the deterministic VST3 test fixtures" OFF)
+if(MINIHOST_BUILD_TEST_PLUGIN)
+    add_subdirectory(projects/test_plugin)
+endif()
+
 # Desktop GUI application. Opt-in via -DMINIHOST_BUILD_DESKTOP=ON. The app
 # hosts plugin editor windows, so it links the non-headless `minihost_gui`
 # sibling archive, which this option also builds; the headless `minihost`

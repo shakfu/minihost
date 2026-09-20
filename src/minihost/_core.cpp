@@ -9,6 +9,8 @@
 #include <stdexcept>
 #include <cstring>
 #include <mutex>
+#include <functional>
+#include <cstdint>
 #include <memory>
 
 #include <juce_core/juce_core.h>
@@ -27,6 +29,73 @@
 
 namespace nb = nanobind;
 using namespace nb::literals;
+
+// -- live-object registry --------------------------------------------------
+//
+// Python's atexit handler stops the native plugin thread and deletes the
+// JUCE MessageManager. Anything still open at that point is destroyed
+// afterwards, during interpreter finalization, with neither of those alive
+// -- which hangs on Linux. Every wrapper that owns a native handle
+// registers a closer here and the atexit handler runs them first.
+//
+// Newest first. A device is always created after the chain it drives and a
+// chain after the plugins it points into, so reverse creation order tears
+// down owners before the things they borrow, with no per-type ordering
+// table to keep in step.
+namespace {
+
+std::mutex g_live_mutex;
+std::vector<std::pair<std::uint64_t, std::function<void()>>> g_live;
+std::uint64_t g_live_next_id = 1;
+
+std::uint64_t live_register(std::function<void()> closer)
+{
+    std::lock_guard<std::mutex> lock(g_live_mutex);
+    const std::uint64_t id = g_live_next_id++;
+    g_live.emplace_back(id, std::move(closer));
+    return id;
+}
+
+void live_unregister(std::uint64_t id)
+{
+    std::lock_guard<std::mutex> lock(g_live_mutex);
+    for (auto it = g_live.begin(); it != g_live.end(); ++it) {
+        if (it->first == id) { g_live.erase(it); return; }
+    }
+}
+
+void live_close_all()
+{
+    std::vector<std::pair<std::uint64_t, std::function<void()>>> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(g_live_mutex);
+        snapshot.swap(g_live);
+    }
+    // Outside the lock: a closer may destroy something that unregisters.
+    for (auto it = snapshot.rbegin(); it != snapshot.rend(); ++it) {
+        try { it->second(); } catch (...) {}
+    }
+}
+
+// Declared last in an owning wrapper, so it is constructed after everything
+// its closer touches and destroyed first. Construction-order alone gives the
+// exception safety: a constructor body that throws still unwinds this member,
+// which unregisters.
+class LiveEntry {
+public:
+    LiveEntry() = default;
+    explicit LiveEntry(std::function<void()> closer)
+        : id_(live_register(std::move(closer))) {}
+    ~LiveEntry() { if (id_ != 0) live_unregister(id_); }
+
+    LiveEntry(const LiveEntry&) = delete;
+    LiveEntry& operator=(const LiveEntry&) = delete;
+
+private:
+    std::uint64_t id_ = 0;
+};
+
+} // namespace
 
 // Thin wrapper around juce::AudioBuffer<float> exposed to Python as
 // minihost.AudioBuffer. The wrapper enforces the contiguous-memory
@@ -1117,6 +1186,15 @@ public:
     // notifications that the plugin queued since the last poll.
     // Returns the number of events dispatched.
     int poll_callbacks() {
+        // Deliver whatever JUCE has queued first. On macOS that is this
+        // call's only chance to happen (the queue is bound to the main run
+        // loop, which a headless host never runs), and the events it
+        // generates -- a latency or parameter-info change -- land in the
+        // queue drained just below, so they arrive on this poll rather than
+        // the next. A no-op on Linux and Windows, where the plugin thread
+        // pumps for itself.
+        mh_message_thread_poll();
+
         // Copy out events under the lock; clear() preserves capacity so the
         // producer side never has to reallocate inside the trampoline. The
         // local `dispatch_buffer_` is reused across calls for the same
@@ -1264,6 +1342,9 @@ private:
     friend class AudioDevice;
     friend class PluginChain;
     friend class PluginGraph;
+
+    // See LiveEntry. Declared last on purpose.
+    LiveEntry live_{ [this] { close(); } };
 };
 
 
@@ -1613,6 +1694,9 @@ private:
     // Allow AudioDevice and PluginBus to access the raw chain pointer.
     friend class AudioDevice;
     friend class PluginBus;
+
+    // See LiveEntry. Declared last on purpose.
+    LiveEntry live_{ [this] { close(); } };
 };
 
 
@@ -1815,6 +1899,9 @@ private:
     MH_PluginBus* graph_ = nullptr;
     std::vector<PluginChain*> branch_refs_;  // keep branches alive
     nb::object owner_;  // list of the branch Python objects; see tp_traverse
+
+    // See LiveEntry. Declared last on purpose.
+    LiveEntry live_{ [this] { close(); } };
 };
 
 
@@ -2195,6 +2282,9 @@ private:
     // boundaries (the graph borrows pointers during render_block).
     std::unordered_map<int, std::vector<MH_ParamChange>> autos_scratch_;
     std::unordered_map<int, std::vector<MH_MidiEvent>>   midi_in_scratch_;
+
+    // See LiveEntry. Declared last on purpose.
+    LiveEntry live_{ [this] { close(); } };
 };
 
 
@@ -2233,6 +2323,9 @@ public:
 
 private:
     MH_Session* session_ = nullptr;
+
+    // See LiveEntry. Declared last on purpose.
+    LiveEntry live_{ [this] { close(); } };
 };
 
 
@@ -2618,6 +2711,12 @@ private:
     MH_AudioDevice* device_ = nullptr;
     Plugin* plugin_ref_ = nullptr;        // Keep reference to prevent plugin from being GC'd
     PluginChain* chain_ref_ = nullptr;    // Keep reference to prevent chain from being GC'd
+
+    // Last member: constructed after everything its closer touches, and
+    // destroyed (unregistered) before them. See LiveEntry.
+    LiveEntry live_{ [this] {
+        if (device_) { mh_audio_close(device_); device_ = nullptr; }
+    } };
 };
 
 
@@ -3179,8 +3278,20 @@ NB_MODULE(_core, m) {
     // Cleanly stop the native plugin thread at interpreter exit. Registered
     // with atexit in __init__.py; without it, a MessageManager left alive on
     // the background thread deadlocks process exit on Linux.
-    m.def("_message_thread_shutdown", &mh_message_thread_shutdown,
-          "Stop the dedicated native plugin thread (registered with atexit).");
+    m.def("_message_thread_poll", &mh_message_thread_poll,
+          "Deliver JUCE messages a plugin has queued and return how many. "
+          "Automatic on Linux/Windows; on macOS this is the only delivery "
+          "path and must come from the main thread.");
+
+    m.def("_message_thread_shutdown", []() {
+              // Close what is still open first. The plugin thread and the
+              // JUCE MessageManager go with this call; anything destroyed
+              // after them is destroyed without either, which hangs on Linux.
+              live_close_all();
+              mh_message_thread_shutdown();
+          },
+          "Close every open native handle, then stop the dedicated native "
+          "plugin thread (registered with atexit).");
 
     // ABI version of the linked C library. Header constants
     // MH_API_VERSION_{MAJOR,MINOR,PATCH} are exposed so a wheel built against

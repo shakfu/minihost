@@ -2,7 +2,11 @@
 // MIDI port enumeration and I/O implementation using libremidi
 
 #include "minihost_midi.h"
+#include "midi_ringbuffer.h"
 
+#include <atomic>
+#include <new>
+#include <chrono>
 #include <libremidi/libremidi.hpp>
 #include <cstdio>
 #include <cstring>
@@ -437,6 +441,68 @@ int mh_midi_out_send(MH_MidiOut* midi_out, const unsigned char* data, size_t len
     } catch (...) {
         return 0;
     }
+}
+
+// -- MIDI output pump ---------------------------------------------------
+//
+// The audio callback used to call mh_midi_out_send() per event, which enters
+// libremidi (locks, allocation, a write() on some backends) on the thread
+// that must never block. The callback now pushes into an SPSC ring and this
+// thread does the sending.
+
+struct MH_MidiOutPump {
+    MH_MidiOut*        out  = nullptr;
+    MH_MidiRingBuffer* ring = nullptr;
+    std::atomic<bool>  running{ false };
+    std::thread        thread;
+};
+
+static void midi_out_pump_drain(MH_MidiOutPump* pump) {
+    MH_MidiEvent events[64];
+    for (;;) {
+        int n = mh_midi_ringbuffer_pop_all(pump->ring, events, 64);
+        if (n <= 0) return;
+        for (int i = 0; i < n; ++i) {
+            const unsigned char msg[3] = { events[i].status,
+                                           events[i].data1,
+                                           events[i].data2 };
+            mh_midi_out_send(pump->out, msg, 3);
+        }
+    }
+}
+
+MH_MidiOutPump* mh_midi_out_pump_start(MH_MidiOut* out, struct MH_MidiRingBuffer* ring) {
+    if (!out || !ring) return nullptr;
+
+    auto* pump = new (std::nothrow) MH_MidiOutPump();
+    if (!pump) return nullptr;
+    pump->out  = out;
+    pump->ring = ring;
+    pump->running.store(true, std::memory_order_release);
+
+    try {
+        pump->thread = std::thread([pump]() {
+            while (pump->running.load(std::memory_order_acquire)) {
+                midi_out_pump_drain(pump);
+                std::this_thread::sleep_for(
+                    std::chrono::microseconds(MH_MIDI_PUMP_POLL_US));
+            }
+            // Whatever the audio thread queued before the stop still goes out.
+            midi_out_pump_drain(pump);
+        });
+    } catch (...) {
+        delete pump;
+        return nullptr;
+    }
+    return pump;
+}
+
+void mh_midi_out_pump_stop(MH_MidiOutPump* pump) {
+    if (!pump) return;
+    pump->running.store(false, std::memory_order_release);
+    if (pump->thread.joinable())
+        pump->thread.join();
+    delete pump;
 }
 
 }  // extern "C"

@@ -33,6 +33,7 @@
 #include <functional>
 #include <future>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -62,8 +63,63 @@ using namespace juce;
 // from ever touching JUCE. Enabled by default; set MINIHOST_MESSAGE_THREAD=0 to
 // disable (run() then executes inline on the caller's thread, the pre-existing
 // behavior).
+//
+// The thread also delivers JUCE's own queued messages -- see pumpJuceMessages
+// below. Without that, anything a plugin posts with AsyncUpdater or
+// MessageManager::callAsync sits in the queue until process teardown: most
+// visibly restartComponent, which is how a VST3 reports a latency, parameter
+// or program change, so those never reached the host at all.
 // ---------------------------------------------------------------------------
+
+#if JUCE_MAC || JUCE_IOS
+// Defined in minihost_pump_mac.cpp, which owns the CoreFoundation include.
+extern "C" int mh_pump_main_runloop (int max_messages);
+#else
+// JUCE's per-platform pump, declared rather than included: it is internal, and
+// the only public alternative is MessageManager::runDispatchLoop, which never
+// returns (and on macOS is [NSApp run]). JUCE's own plugin client declares it
+// exactly this way in detail/juce_LinuxMessageThread.h.
+namespace juce::detail { bool dispatchNextMessageOnSystemQueue (bool returnIfNoPendingMessages); }
+#endif
+
 namespace {
+
+// Ceiling on messages delivered per pump. A listener that posts from its own
+// callback would otherwise keep the thread here indefinitely, starving the
+// task queue this thread exists for.
+constexpr int kMaxMessagesPerPump = 256;
+
+// Milliseconds the worker waits for a task before pumping again. JUCE's own
+// plugin-client message thread polls at 1 ms; control-plane notifications do
+// not need that, and this thread is asleep the rest of the time.
+constexpr int kPumpIntervalMs = 10;
+
+// Deliver queued JUCE messages, if this thread is the one that can.
+//
+// The caller-thread check is not defensive, it is the contract. On macOS JUCE
+// binds its queue's run-loop source to the *main* run loop
+// (juce_MessageQueue_mac.h), whatever thread posted the message or created the
+// MessageManager, so only the main thread can deliver. On Linux and Windows it
+// is the reverse: the queue belongs to the thread that created the
+// MessageManager (a hidden window on Windows, an fd set on Linux), and JUCE's
+// Linux pump documents that two threads must never call it at once.
+//
+// Returns the number of messages delivered.
+int pumpJuceMessages()
+{
+   #if JUCE_MAC || JUCE_IOS
+    return mh_pump_main_runloop (kMaxMessagesPerPump);
+   #else
+    auto* mm = juce::MessageManager::getInstanceWithoutCreating();
+    if (mm == nullptr || ! mm->isThisTheMessageThread())
+        return 0;
+
+    int n = 0;
+    while (n < kMaxMessagesPerPump && juce::detail::dispatchNextMessageOnSystemQueue (true))
+        ++n;
+    return n;
+   #endif
+}
 
 class MinihostMessageThread
 {
@@ -76,16 +132,21 @@ public:
 
     void init()
     {
-        std::call_once(initFlag_, [this]()
-        {
-            const char* env = std::getenv("MINIHOST_MESSAGE_THREAD");
-            if (env != nullptr && env[0] == '0')
-                return;   // explicitly disabled
+        std::unique_lock<std::shared_mutex> lk(lifeMtx_);
+        if (state_ != State::NotStarted)
+            return;   // already up, disabled, or shut down for good
 
-            std::promise<void> ready;
-            auto fut = ready.get_future();
-            thread_ = std::thread([this, &ready]()
-            {
+        const char* env = std::getenv("MINIHOST_MESSAGE_THREAD");
+        if (env != nullptr && env[0] == '0')
+        {
+            state_ = State::Disabled;
+            return;
+        }
+
+        std::promise<void> ready;
+        auto fut = ready.get_future();
+        thread_ = std::thread([this, &ready]()
+        {
                 // Create the MessageManager on THIS thread so it becomes the
                 // JUCE message thread. We deliberately do NOT call
                 // initialiseJuce_GUI(): that pulls in GUI/display setup which
@@ -95,53 +156,82 @@ public:
                 // itself creates on its calling thread when no message thread
                 // exists -- so this matches the pre-existing headless path.
                 juce::MessageManager::getInstance();
-                enabled_.store(true);
                 ready.set_value();
                 // Execute queued tasks directly on this (message) thread; they
-                // are self-contained, so no JUCE dispatch loop is needed. A
-                // condition variable gives immediate wake-up with no polling.
+                // are self-contained, so JUCE's dispatch loop is not what runs
+                // them. The condition variable gives immediate wake-up; the
+                // timeout exists only so JUCE's own queue gets pumped while no
+                // task is arriving.
                 for (;;)
                 {
                     Task t{ nullptr, nullptr };
+                    bool haveTask = false;
                     {
                         std::unique_lock<std::mutex> lk(mtx_);
-                        cv_.wait(lk, [this] {
+                        cv_.wait_for(lk, std::chrono::milliseconds(kPumpIntervalMs),
+                                     [this] {
                             return ! queue_.empty() || ! running_.load();
                         });
-                        if (queue_.empty())
+                        if (! queue_.empty())
+                        {
+                            t = queue_.front();
+                            queue_.pop_front();
+                            haveTask = true;
+                        }
+                        else if (! running_.load())
+                        {
                             break;   // woken for shutdown with nothing pending
-                        t = queue_.front();
-                        queue_.pop_front();
+                        }
                     }
-                    try
+
+                    if (haveTask)
                     {
-                        (*t.fn)();
-                        t.prom->set_value();
+                        try
+                        {
+                            (*t.fn)();
+                            t.prom->set_value();
+                        }
+                        catch (...)
+                        {
+                            t.prom->set_exception(std::current_exception());
+                        }
                     }
-                    catch (...)
-                    {
-                        t.prom->set_exception(std::current_exception());
-                    }
+
+                    // After a task as well as when idle: a control call is
+                    // exactly what makes a plugin post.
+                    pumpJuceMessages();
                 }
                 // Delete the MessageManager on its own (this) thread before the
                 // thread ends. Leaving it alive on a background thread past
                 // process exit deadlocks JUCE's static teardown on Linux.
                 juce::MessageManager::deleteInstance();
             });
-            fut.wait();
-        });
+        fut.wait();
+        state_ = State::Running;
     }
 
-    // Stop the message thread and join it. Idempotent. Called at process exit
-    // (via a Python atexit handler) so the MessageManager is torn down on its
-    // own thread rather than left dangling into JUCE's static teardown, which
-    // deadlocks on Linux. Safe no-op if the thread was never started.
+    // Stop the message thread and join it. Idempotent, and final: the
+    // lifetime is one-way, so a later init() does not bring the thread back
+    // and subsequent run() calls execute inline, as they do when the thread
+    // is disabled outright. Restarting would have to re-create a
+    // MessageManager that JUCE has already torn down once in this process.
+    //
+    // Called at process exit (via a Python atexit handler) so the
+    // MessageManager is torn down on its own thread rather than left
+    // dangling into JUCE's static teardown, which deadlocks on Linux.
     void shutdown()
     {
-        if (! enabled_.exchange(false))
-            return;   // never started, or already shut down
+        // The exclusive side of the lock run() shares: taken across the
+        // join, so no inline run can be executing JUCE work while the
+        // worker is deleting the MessageManager underneath it.
+        std::unique_lock<std::shared_mutex> lk(lifeMtx_);
+        const bool wasRunning = (state_ == State::Running);
+        state_ = State::ShutDown;
+        if (! wasRunning)
+            return;   // never started, disabled, or already shut down
+
         {
-            std::lock_guard<std::mutex> lk(mtx_);
+            std::lock_guard<std::mutex> qlk(mtx_);
             running_.store(false);
         }
         cv_.notify_one();
@@ -153,21 +243,26 @@ public:
     // message thread is disabled or we are already on it.
     void run(const std::function<void()>& fn)
     {
-        if (! enabled_.load())
-        {
-            fn();
-            return;
-        }
+        // Checked before the lock: a task already running on the message
+        // thread holds the shared lock through this nested call, and
+        // shared_mutex is not recursive.
         auto* mm = juce::MessageManager::getInstanceWithoutCreating();
         if (mm != nullptr && mm->isThisTheMessageThread())
         {
             fn();
             return;
         }
+
+        std::shared_lock<std::shared_mutex> lk(lifeMtx_);
+        if (state_ != State::Running)
+        {
+            fn();   // disabled, not yet up, or shut down
+            return;
+        }
         std::promise<void> prom;
         auto fut = prom.get_future();
         {
-            std::lock_guard<std::mutex> lk(mtx_);
+            std::lock_guard<std::mutex> qlk(mtx_);
             queue_.push_back(Task{ &fn, &prom });
         }
         cv_.notify_one();
@@ -183,8 +278,12 @@ private:
         std::promise<void>* prom;
     };
 
-    std::once_flag initFlag_;
-    std::atomic<bool> enabled_{false};
+    enum class State { NotStarted, Running, Disabled, ShutDown };
+
+    // Guards state_ and the thread's lifetime. run() holds it shared for as
+    // long as its call lasts; init() and shutdown() take it exclusively.
+    std::shared_mutex lifeMtx_;
+    State state_ = State::NotStarted;
     std::atomic<bool> running_{true};
     std::mutex mtx_;
     std::condition_variable cv_;
@@ -202,6 +301,11 @@ extern "C" void mh_message_thread_init(void)
 extern "C" void mh_message_thread_shutdown(void)
 {
     MinihostMessageThread::instance().shutdown();
+}
+
+extern "C" int mh_message_thread_poll(void)
+{
+    return pumpJuceMessages();
 }
 
 // Run a callable on the JUCE plugin thread and return its result (or void).
@@ -1045,12 +1149,7 @@ extern "C" int mh_process_auto(MH_Plugin* p,
                param_changes[param_idx].sample_offset <= current_sample)
         {
             const auto& pc = param_changes[param_idx];
-            auto& params = p->inst->getParameters();
-            if (pc.param_index >= 0 && pc.param_index < params.size())
-            {
-                float val = jlimit(0.0f, 1.0f, pc.value);
-                params.getUnchecked(pc.param_index)->setValueNotifyingHost(val);
-            }
+            mh_set_param_rt(p, pc.param_index, pc.value);
             ++param_idx;
         }
 
@@ -1757,6 +1856,27 @@ extern "C" int mh_set_change_callback(MH_Plugin* p, MH_ChangeCallback cb, void* 
     return 1;
 }
 
+extern "C" int mh_set_param_rt(MH_Plugin* p, int index, float normalized_0_1)
+{
+    if (!p || !p->inst) return 0;
+    auto& params = p->inst->getParameters();
+    if (index < 0 || index >= params.size()) return 0;
+
+    // setValue() only: setValueNotifyingHost() additionally takes JUCE's
+    // listenerLock and runs every listener inline, which on the audio thread
+    // means blocking behind control-thread work and arbitrary plugin code.
+    const float value = jlimit(0.0f, 1.0f, normalized_0_1);
+    params.getUnchecked(index)->setValue(value);
+
+    // Deliver our own value callback anyway -- two atomic loads and a call
+    // into a caller that is documented as audio-thread-safe. Skipping JUCE's
+    // dispatch must not mean a host that registered a callback stops seeing
+    // automation; only the plugin's own listeners are bypassed.
+    if (auto cb = p->listener.paramValueCb.load(std::memory_order_acquire))
+        cb(p, index, value,
+           p->listener.paramValueUserData.load(std::memory_order_relaxed));
+    return 1;
+}
 extern "C" int mh_set_param_value_callback(MH_Plugin* p, MH_ParamValueCallback cb, void* user_data)
 {
     if (!p) return 0;
@@ -2053,6 +2173,13 @@ extern "C" int mh_set_track_properties(MH_Plugin* p, const char* name,
                                        int has_colour, unsigned int colour_argb)
 {
     if (!p || !p->inst) return 0;
+    // Thread-affine. A JUCE-built VST3 defers updateTrackProperties to
+    // MessageManager::callAsync when the caller is not the message thread,
+    // capturing the AudioProcessor* raw; the deferred call then runs after
+    // mh_close has destroyed it. On the message thread the wrapper takes its
+    // synchronous branch instead.
+    return runOnMsg([&]() -> int
+    {
     std::lock_guard<std::mutex> lock(p->stateMutex);
 
     AudioProcessor::TrackProperties props;
@@ -2067,6 +2194,7 @@ extern "C" int mh_set_track_properties(MH_Plugin* p, const char* name,
 
     p->inst->updateTrackProperties(props);
     return 1;
+    });
 }
 
 extern "C" int mh_process_double(MH_Plugin* p,

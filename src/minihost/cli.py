@@ -1875,6 +1875,27 @@ def _is_batch_output(output_path):
     )
 
 
+# Default tail for a MIDI-only render, in seconds. Matches --tail's help.
+_DEFAULT_MIDI_TAIL_SECONDS = 2.0
+
+
+def _resolve_tail(
+    tail_arg: float | None, has_midi_input: bool, has_audio_input: bool
+) -> float:
+    """Seconds to render past the source.
+
+    An explicit --tail applies to every render, audio input included: an
+    effect's tail is exactly what it is for. Left unset, only a MIDI-only
+    render gets one, because there the tail is the whole release stage and
+    an audio render would otherwise grow by two seconds of silence.
+    """
+    if tail_arg is not None:
+        return tail_arg
+    if has_midi_input and not has_audio_input:
+        return _DEFAULT_MIDI_TAIL_SECONDS
+    return 0.0
+
+
 def cmd_process(args: argparse.Namespace) -> int:
     """Process audio file through plugin (offline).
 
@@ -2068,16 +2089,18 @@ def cmd_process(args: argparse.Namespace) -> int:
     # --- Resolve param_changes (CLI + automation file -> 3-tuples) ---
     # The automation parser needs an upper bound on total_samples; peek
     # the audio file's frame count or load MIDI events to get one.
+    tail_seconds = _resolve_tail(args.tail, has_midi_input, has_audio_input)
+
     total_samples_hint: int | None = None
     if has_audio_input:
-        total_samples_hint = int(first_info["frames"])
+        total_samples_hint = int(first_info["frames"]) + int(tail_seconds * sample_rate)
     elif has_midi_input:
         try:
             _events, _max = _load_midi_events(midi_path, sample_rate)
         except RuntimeError as e:
             print(f"Error loading MIDI: {e}", file=sys.stderr)
             return 1
-        total_samples_hint = _max + int(args.tail * sample_rate)
+        total_samples_hint = _max + int(tail_seconds * sample_rate)
 
     if not total_samples_hint:
         print("Error: No audio or MIDI input data to process.", file=sys.stderr)
@@ -2146,7 +2169,6 @@ def cmd_process(args: argparse.Namespace) -> int:
 
     # --- Delegate to library ---
     progress = _ProgressBar("processing", enabled=getattr(args, "progress", False))
-    tail_seconds = args.tail if (has_midi_input and not has_audio_input) else 0.0
     bit_depth = args.bit_depth if args.bit_depth is not None else 24
 
     try:
@@ -2769,8 +2791,9 @@ Examples:
         "-t",
         "--tail",
         type=float,
-        default=2.0,
-        help="Tail length in seconds after MIDI ends (default: 2.0, MIDI-only mode)",
+        default=None,
+        help="Extra seconds rendered after the source, for reverb/delay "
+        "tails (default: 2.0 in MIDI-only mode, 0 with audio input)",
     )
     process_p.add_argument("-s", "--state", help="Load plugin state from file")
     process_p.add_argument("--vstpreset", metavar="FILE", help="Load .vstpreset file")
@@ -2799,7 +2822,7 @@ Examples:
         type=int,
         default=None,
         choices=[16, 24, 32],
-        help="Output bit depth (default: match input or 24)",
+        help="Output bit depth (default: 24)",
     )
     process_p.add_argument(
         "--out-channels",

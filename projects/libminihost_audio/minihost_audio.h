@@ -136,6 +136,11 @@ int mh_audio_get_midi_input_port(MH_AudioDevice* dev);
 // Get connected MIDI output port index (-1 if not connected or virtual)
 int mh_audio_get_midi_output_port(MH_AudioDevice* dev);
 
+// MIDI output events the audio callback could not queue because the pump
+// was behind and the ring was full. Monotonic for the device's lifetime;
+// non-zero means generated MIDI was lost.
+long mh_audio_get_midi_out_dropped(MH_AudioDevice* dev);
+
 // Create a virtual MIDI input port (can be called while running)
 // Other applications can send MIDI to this port
 // Disconnects any existing MIDI input connection

@@ -515,7 +515,9 @@ int mh_chain_process_auto(MH_PluginChain* chain,
             MH_Plugin* plugin = mh_chain_get_plugin(chain, pc.plugin_index);
             if (plugin)
             {
-                mh_set_param(plugin, pc.param_index, pc.value);
+                // _rt, not mh_set_param: this runs on the audio thread and
+                // mh_set_param takes the plugin's state mutex.
+                mh_set_param_rt(plugin, pc.param_index, pc.value);
             }
             ++param_idx;
         }

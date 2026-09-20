@@ -25,17 +25,19 @@ Cache location (override with ``MINIHOST_CACHE_DIR``):
   - Windows: %LOCALAPPDATA%/minihost/Cache/plugins.json
   - other:   $XDG_CACHE_HOME/minihost/plugins.json (or ~/.cache/...)
 
-Plugin discovery is by known extension (.vst3, .component, .lv2, ...), so a
-cached scan finds the same file/bundle plugins as the uncached
-``minihost.scan_directory`` for the formats minihost supports. Pass
+Plugin discovery is by known extension, using the same set the native
+scanner filters on (see ``PLUGIN_EXTS``), so a cached scan finds the same
+file/bundle plugins as the uncached ``minihost.scan_directory``. Pass
 ``no_cache`` at the CLI (or call ``minihost.scan_directory``) to bypass.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shlex
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -56,7 +58,14 @@ DEFAULT_PROBE_TIMEOUT = 60.0
 
 # Path suffixes that denote a plugin bundle or binary. Discovery treats any
 # matching entry as a leaf (it is not descended into).
-PLUGIN_EXTS = {".vst3", ".component", ".lv2", ".vst", ".clap", ".dll", ".so"}
+#
+# The set mirrors mh_scan_directory's filters, because anything else is a
+# path the host cannot load: probing it only writes a permanent error entry
+# to the cache. That previously included .so and .dll, so every unrelated
+# shared library under a scanned directory became a cached failure.
+PLUGIN_EXTS = frozenset(
+    {".vst3", ".lv2"} | ({".component"} if sys.platform == "darwin" else set())
+)
 
 
 # -- cache location --------------------------------------------------- #
@@ -88,13 +97,49 @@ def _probe(path: str) -> dict:
     return minihost.probe(path)
 
 
+# Upper bound on files fingerprinted inside one bundle. A plugin bundle holds
+# a handful; the cap only stops a pathological tree from costing real time.
+_FINGERPRINT_MAX_ENTRIES = 4096
+
+
 def _fingerprint(path: str) -> dict:
-    """Cheap freshness key for a plugin path. Uses the path's own stat
-    (mtime + size); for bundles this is the bundle directory's metadata,
-    which changes when the plugin is (re)installed. Cheap by design -- it
-    must never approach the cost of a probe."""
+    """Cheap freshness key for a plugin path.
+
+    A plain file is keyed by its own mtime + size. A bundle directory is
+    keyed by a digest over the names, sizes and mtimes of the files it
+    contains: replacing a binary inside a .vst3/.component leaves the
+    directory's own mtime and size untouched, so keying on those served
+    stale metadata -- or a stale error -- indefinitely. Names and stats
+    only, never file contents, so the cost stays one stat per file.
+    """
     st = os.stat(path)
-    return {"mtime_ns": st.st_mtime_ns, "size": st.st_size}
+    if not stat.S_ISDIR(st.st_mode):
+        return {"mtime_ns": st.st_mtime_ns, "size": st.st_size}
+
+    h = hashlib.sha256()
+    entries = 0
+    truncated = False
+    for root, dirs, files in os.walk(path):
+        dirs.sort()
+        for name in sorted(files):
+            if entries >= _FINGERPRINT_MAX_ENTRIES:
+                truncated = True
+                break
+            full = os.path.join(root, name)
+            rel = os.path.relpath(full, path)
+            try:
+                est = os.lstat(full)
+            except OSError:
+                continue
+            h.update(
+                f"{rel}\0{est.st_size}\0{est.st_mtime_ns}\0".encode(
+                    "utf-8", "surrogateescape"
+                )
+            )
+            entries += 1
+        if truncated:
+            break
+    return {"bundle": h.hexdigest(), "entries": entries}
 
 
 # -- raw cache I/O ---------------------------------------------------- #

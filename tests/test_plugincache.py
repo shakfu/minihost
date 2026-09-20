@@ -89,7 +89,7 @@ def _touch_plugin(directory, name: str) -> str:
 def test_discovery_finds_extensions_and_treats_bundles_as_leaves(cache_env):
     plugins, _ = cache_env
     _touch_plugin(plugins, "synthA.vst3")
-    _touch_plugin(plugins, "fxB.component")
+    _touch_plugin(plugins, "fxB.lv2")
     (plugins / "notes.txt").write_text("ignore me")
     # A bundle directory must be a leaf: nested plugin-like files inside it
     # are NOT discovered separately.
@@ -103,7 +103,52 @@ def test_discovery_finds_extensions_and_treats_bundles_as_leaves(cache_env):
 
     found = plugincache._discover_plugins(str(plugins))
     names = sorted(os.path.basename(p) for p in found)
-    assert names == ["C.vst3", "deepD.vst3", "fxB.component", "synthA.vst3"]
+    assert names == ["C.vst3", "deepD.vst3", "fxB.lv2", "synthA.vst3"]
+
+
+def test_discovery_ignores_formats_the_host_cannot_load(cache_env):
+    """A plain shared library, or a format minihost does not host, must not
+    be discovered: probing it can only record a permanent error entry."""
+    plugins, _ = cache_env
+    _touch_plugin(plugins, "real.vst3")
+    for name in ("libfoo.so", "helper.dll", "old.vst", "modern.clap"):
+        _touch_plugin(plugins, name)
+
+    found = plugincache._discover_plugins(str(plugins))
+    assert [os.path.basename(p) for p in found] == ["real.vst3"]
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin", reason="AudioUnit is hosted on macOS only"
+)
+def test_discovery_finds_audiounit_on_macos(cache_env):
+    plugins, _ = cache_env
+    _touch_plugin(plugins, "fxB.component")
+    found = plugincache._discover_plugins(str(plugins))
+    assert [os.path.basename(p) for p in found] == ["fxB.component"]
+
+
+def test_bundle_rescans_when_its_binary_is_replaced_in_place(cache_env):
+    """Replacing a binary inside a bundle leaves the bundle directory's own
+    mtime and size untouched. The fingerprint must still change, or the
+    cache serves the old plugin's metadata forever."""
+    plugins, calls = cache_env
+    bundle = plugins / "synthA.vst3"
+    binary = bundle / "Contents" / "x86_64-linux" / "synthA.so"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("v1")
+
+    plugincache.scan(plugins)
+    assert len(calls) == 1
+    before = os.stat(bundle)
+
+    # Same byte count, new contents: only the inner file's stat moves.
+    binary.write_text("v2")
+    after = os.stat(bundle)
+    assert (after.st_mtime_ns, after.st_size) == (before.st_mtime_ns, before.st_size)
+
+    plugincache.scan(plugins)
+    assert len(calls) == 2
 
 
 # -- caching behaviour ------------------------------------------------ #
@@ -209,12 +254,12 @@ def test_info_raises_and_caches_error(cache_env):
 def test_query_filters(cache_env):
     plugins, _ = cache_env
     _touch_plugin(plugins, "synthA.vst3")  # accepts_midi, vendor Acme, VST3
-    _touch_plugin(plugins, "fxB.component")  # AU, vendor Other
+    _touch_plugin(plugins, "fxB.lv2")  # LV2, vendor Other
     _touch_plugin(plugins, "arpC.vst3")  # produces_midi
     plugincache.scan(plugins)
 
     assert {d["name"] for d in plugincache.query(format="VST3")} == {"synthA", "arpC"}
-    assert {d["name"] for d in plugincache.query(format="AudioUnit")} == {"fxB"}
+    assert {d["name"] for d in plugincache.query(format="LV2")} == {"fxB"}
     assert {d["name"] for d in plugincache.query(accepts_midi=True)} == {"synthA"}
     assert {d["name"] for d in plugincache.query(produces_midi=True)} == {"arpC"}
     assert {d["name"] for d in plugincache.query(vendor_contains="acme")} == {"synthA"}

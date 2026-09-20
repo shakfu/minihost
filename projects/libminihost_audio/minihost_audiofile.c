@@ -83,9 +83,9 @@ static int write_wav(const char* path, const float* data,
     }
 
     ma_uint64 total_samples = (ma_uint64)frames * channels;
+    ma_uint64 written = 0;
 
     if (format == ma_format_f32) {
-        ma_uint64 written = 0;
         result = ma_encoder_write_pcm_frames(&encoder, data, frames, &written);
     } else {
         size_t bytes_per_sample = ma_get_bytes_per_sample(format);
@@ -104,7 +104,6 @@ static int write_wav(const char* path, const float* data,
             ma_pcm_f32_to_s24(converted, data, total_samples, ma_dither_mode_triangle);
         }
 
-        ma_uint64 written = 0;
         result = ma_encoder_write_pcm_frames(&encoder, converted, frames, &written);
         free(converted);
     }
@@ -114,6 +113,17 @@ static int write_wav(const char* path, const float* data,
     if (result != MA_SUCCESS) {
         if (err && err_size > 0) {
             snprintf(err, err_size, "Failed to write audio data (error %d)", result);
+        }
+        return 0;
+    }
+
+    // A short write reports MA_SUCCESS: without this the caller gets a
+    // successful result and a truncated file.
+    if (written != (ma_uint64)frames) {
+        if (err && err_size > 0) {
+            snprintf(err, err_size,
+                     "Short write to %s: %llu of %u frames",
+                     path, (unsigned long long)written, frames);
         }
         return 0;
     }
@@ -172,12 +182,20 @@ static int write_flac(const char* path, const float* data,
 
     // Write fLaC marker
     const unsigned char flac_marker[4] = {'f', 'L', 'a', 'C'};
-    fwrite(flac_marker, 1, 4, fp);
-
     // Reserve space for STREAMINFO metadata block (4-byte header + 34-byte body = 38 bytes)
     unsigned char streaminfo_placeholder[38];
     memset(streaminfo_placeholder, 0, sizeof(streaminfo_placeholder));
-    fwrite(streaminfo_placeholder, 1, 38, fp);
+
+    if (fwrite(flac_marker, 1, 4, fp) != 4 ||
+        fwrite(streaminfo_placeholder, 1, 38, fp) != 38) {
+        fclose(fp);
+        remove(path);
+        free(frame_buf);
+        free(mem);
+        if (err && err_size > 0)
+            snprintf(err, err_size, "Failed to write FLAC header: %s", path);
+        return 0;
+    }
 
     // Allocate conversion buffer for one block of interleaved samples
     size_t block_samples = (size_t)FLAC_BLOCKSIZE * channels;
@@ -258,14 +276,21 @@ static int write_flac(const char* path, const float* data,
         if (tflac_encode_streaminfo(&t, 1, si_buf, sizeof(si_buf), &si_used) != 0) {
             if (err && err_size > 0) snprintf(err, err_size, "Failed to encode STREAMINFO");
             ok = 0;
-        } else {
-            // Seek back and overwrite STREAMINFO
-            fseek(fp, 4, SEEK_SET);
-            fwrite(si_buf, 1, si_used, fp);
+        } else if (fseek(fp, 4, SEEK_SET) != 0 ||
+                   fwrite(si_buf, 1, si_used, fp) != si_used) {
+            if (err && err_size > 0)
+                snprintf(err, err_size, "Failed to write STREAMINFO");
+            ok = 0;
         }
     }
 
-    fclose(fp);
+    // fclose flushes: a full disk surfaces here and nowhere earlier, so an
+    // unchecked close is a truncated file reported as success.
+    if (fclose(fp) != 0 && ok) {
+        if (err && err_size > 0)
+            snprintf(err, err_size, "Failed to flush FLAC output: %s", path);
+        ok = 0;
+    }
     free(conv_buf);
     free(frame_buf);
     free(mem);
@@ -513,7 +538,10 @@ MH_AudioData* mh_audio_resample(const float* data_in,
     ma_resampler_config config = ma_resampler_config_init(
         ma_format_f32, channels, sample_rate_in, sample_rate_out,
         ma_resample_algorithm_linear);
-    config.linear.lpfOrder = 4;  // Low-pass filter for anti-aliasing
+    // Linear is the only algorithm miniaudio ships; its one quality knob is
+    // the anti-alias filter order, and every caller here is offline, where
+    // the extra biquads cost nothing worth measuring. Was 4.
+    config.linear.lpfOrder = MA_MAX_FILTER_ORDER;
 
     ma_resampler resampler;
     ma_result result = ma_resampler_init(&config, NULL, &resampler);
@@ -532,6 +560,18 @@ MH_AudioData* mh_audio_resample(const float* data_in,
     if (result != MA_SUCCESS) {
         free(out_buf);
         if (err && err_size > 0) snprintf(err, err_size, "Resampler failed: %d", result);
+        return NULL;
+    }
+
+    // A single-shot call stops at whichever side runs out first. If the
+    // output estimate above were ever short, the excess input would be
+    // dropped and the caller would get a quietly truncated buffer.
+    if (in_count != (ma_uint64)frames_in) {
+        free(out_buf);
+        if (err && err_size > 0)
+            snprintf(err, err_size,
+                     "Resampler consumed %llu of %u input frames",
+                     (unsigned long long)in_count, frames_in);
         return NULL;
     }
 

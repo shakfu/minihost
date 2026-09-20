@@ -43,6 +43,22 @@ static inline void mh_atomic_store_release_ptr(void* volatile* slot, void* value
 }
 #endif
 
+#if defined(_MSC_VER)
+static inline void mh_atomic_inc_long(volatile long* slot) {
+    (void)_InterlockedIncrement(slot);
+}
+static inline long mh_atomic_load_long(volatile long* slot) {
+    return _InterlockedCompareExchange(slot, 0, 0);
+}
+#else
+static inline void mh_atomic_inc_long(volatile long* slot) {
+    (void)__atomic_add_fetch(slot, 1, __ATOMIC_RELAXED);
+}
+static inline long mh_atomic_load_long(volatile long* slot) {
+    return __atomic_load_n(slot, __ATOMIC_RELAXED);
+}
+#endif
+
 #define MH_TRANSPORT_PUB_SLOTS 4
 #define MH_MAX_SLOT_NAMES 64
 #define MH_SLOT_NAME_LEN 64
@@ -94,6 +110,14 @@ struct MH_AudioDevice {
     // MIDI I/O
     MH_MidiIn* midi_in;
     MH_MidiOut* midi_out;
+    // Sends what the audio thread queues into midi_out_buffer. Published
+    // with a release store and read by the audio thread with an acquire
+    // load: a non-NULL pump is the callback's licence to enqueue, and it is
+    // cleared before the port it owns is closed.
+    void* midi_out_pump;   // holds an MH_MidiOutPump*
+    // Events the callback could not enqueue because the ring was full.
+    // Incremented by the audio thread, read by anyone; diagnostic only.
+    volatile long midi_out_dropped;
     // MH_MidiRingBuffer is single-producer/single-consumer (see its header).
     // midi_in_buffer therefore belongs exclusively to the libremidi input
     // thread; mh_audio_send_midi gets its own ring rather than becoming a
@@ -230,18 +254,28 @@ static ma_result resolve_device_ids(ma_context* ctx,
 // conversion buffers -- requiring double the period would reject the common
 // and perfectly workable case of a plugin and device sized alike. The headroom
 // is handled by clamping instead (see max_process_frames). Returns 1 if usable.
+// `requested` is what the caller asked for; a backend is free to negotiate a
+// different period, and naming only the negotiated one leaves the reader
+// unable to connect the message to the buffer_frames they passed.
 static int validate_block_size(int processor_max_block, int needed,
-                               const char* what,
+                               int requested, const char* what,
                                char* err_buf, size_t err_buf_size) {
     if (processor_max_block > 0 && processor_max_block >= needed) {
         return 1;
     }
     if (err_buf && err_buf_size > 0) {
+        char negotiated[128];
+        negotiated[0] = '\0';
+        if (requested > 0 && requested != needed) {
+            snprintf(negotiated, sizeof(negotiated),
+                     " (buffer_frames=%d was requested; the device negotiated "
+                     "%d)", requested, needed);
+        }
         snprintf(err_buf, err_buf_size,
                  "%s was opened with max_block_size=%d but the audio device "
-                 "needs up to %d frames per callback. Reopen the %s with "
+                 "needs up to %d frames per callback%s. Reopen the %s with "
                  "max_block_size >= %d, or request a smaller buffer_frames.",
-                 what, processor_max_block, needed, what, needed);
+                 what, processor_max_block, needed, negotiated, what, needed);
     }
     return 0;
 }
@@ -272,6 +306,32 @@ static void free_channel_buffers(float** buffers, int channels) {
         free(buffers[ch]);
     }
     free(buffers);
+}
+
+// Start/stop the thread that drains midi_out_buffer into dev->midi_out.
+// Attach after the port is open; detach before it is closed.
+static void midi_out_pump_attach(MH_AudioDevice* dev) {
+    if (!dev->midi_out || !dev->midi_out_buffer) return;
+    MH_MidiOutPump* pump = mh_midi_out_pump_start(dev->midi_out,
+                                                  dev->midi_out_buffer);
+    mh_atomic_store_release_ptr((void* volatile*)&dev->midi_out_pump, pump);
+}
+
+static void midi_out_pump_detach(MH_AudioDevice* dev) {
+    MH_MidiOutPump* pump = (MH_MidiOutPump*)mh_atomic_load_acquire_ptr(
+        (void* volatile*)&dev->midi_out_pump);
+    if (!pump) return;
+    // Clear the gate first so the callback stops enqueueing, then join.
+    mh_atomic_store_release_ptr((void* volatile*)&dev->midi_out_pump, NULL);
+    mh_midi_out_pump_stop(pump);
+    // A callback that was already past the gate may have pushed after the
+    // pump's last drain. Discard those rather than sending them into the
+    // next port this device connects to.
+    if (dev->midi_out_buffer) {
+        MH_MidiEvent discard[64];
+        while (mh_midi_ringbuffer_pop_all(dev->midi_out_buffer, discard, 64) > 0)
+            ;
+    }
 }
 
 // MIDI input callback - called from MIDI thread when messages arrive
@@ -554,14 +614,17 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
         return;
     }
 
-    // Send MIDI output
-    if (num_midi_out > 0 && dev->midi_out) {
+    // Hand MIDI output to the pump thread. mh_midi_out_send() enters
+    // libremidi, which may lock, allocate or issue a write(); a slow backend
+    // called from here is an underrun.
+    if (num_midi_out > 0 &&
+        mh_atomic_load_acquire_ptr((void* volatile*)&dev->midi_out_pump)) {
         for (int i = 0; i < num_midi_out; i++) {
-            unsigned char msg[3];
-            msg[0] = midi_out[i].status;
-            msg[1] = midi_out[i].data1;
-            msg[2] = midi_out[i].data2;
-            mh_midi_out_send(dev->midi_out, msg, 3);
+            // Full ring: drop the event and count it. Dropping is the only
+            // option that keeps the callback bounded, and a caller can see
+            // it happened via mh_audio_get_midi_out_dropped().
+            if (!mh_midi_ringbuffer_push(dev->midi_out_buffer, &midi_out[i]))
+                mh_atomic_inc_long(&dev->midi_out_dropped);
         }
     }
 
@@ -701,6 +764,7 @@ MH_AudioDevice* mh_audio_open(MH_Plugin* plugin, const MH_AudioConfig* config,
     dev->buffer_capacity = dev->buffer_frames * 2; // 2x headroom for safety
 
     if (!validate_block_size(mh_get_max_block_size(plugin), dev->buffer_frames,
+                             requested_buffer_frames,
                              "plugin", err_buf, err_buf_size)) {
         ma_device_uninit(&dev->device);
         ma_context_uninit(&dev->context);
@@ -780,6 +844,7 @@ MH_AudioDevice* mh_audio_open(MH_Plugin* plugin, const MH_AudioConfig* config,
                                              midi_err, sizeof(midi_err));
             if (dev->midi_out) {
                 dev->midi_out_port = config->midi_output_port;
+                midi_out_pump_attach(dev);
             }
         }
     }
@@ -908,7 +973,8 @@ MH_AudioDevice* mh_audio_open_chain(MH_PluginChain* chain, const MH_AudioConfig*
     dev->buffer_capacity = dev->buffer_frames * 2; // 2x headroom for safety
 
     if (!validate_block_size(mh_chain_get_max_block_size(chain),
-                             dev->buffer_frames, "chain",
+                             dev->buffer_frames,
+                             requested_buffer_frames, "chain",
                              err_buf, err_buf_size)) {
         ma_device_uninit(&dev->device);
         ma_context_uninit(&dev->context);
@@ -987,6 +1053,7 @@ MH_AudioDevice* mh_audio_open_chain(MH_PluginChain* chain, const MH_AudioConfig*
                                              midi_err, sizeof(midi_err));
             if (dev->midi_out) {
                 dev->midi_out_port = config->midi_output_port;
+                midi_out_pump_attach(dev);
             }
         }
     }
@@ -1007,6 +1074,7 @@ void mh_audio_close(MH_AudioDevice* dev) {
         mh_midi_in_close(dev->midi_in);
     }
     if (dev->midi_out) {
+        midi_out_pump_detach(dev);
         mh_midi_out_close(dev->midi_out);
     }
     if (dev->midi_in_buffer) {
@@ -1133,6 +1201,7 @@ int mh_audio_connect_midi_output(MH_AudioDevice* dev, int port_index) {
 
     // Disconnect existing if any
     if (dev->midi_out) {
+        midi_out_pump_detach(dev);
         mh_midi_out_close(dev->midi_out);
         dev->midi_out = NULL;
         dev->midi_out_port = -1;
@@ -1151,6 +1220,7 @@ int mh_audio_connect_midi_output(MH_AudioDevice* dev, int port_index) {
 
     dev->midi_out_port = port_index;
     dev->midi_out_virtual = 0;
+    midi_out_pump_attach(dev);
     return 1;
 }
 
@@ -1170,6 +1240,11 @@ int mh_audio_get_midi_input_port(MH_AudioDevice* dev) {
 int mh_audio_get_midi_output_port(MH_AudioDevice* dev) {
     if (!dev) return -1;
     return dev->midi_out_port;
+}
+
+long mh_audio_get_midi_out_dropped(MH_AudioDevice* dev) {
+    if (!dev) return 0;
+    return mh_atomic_load_long(&dev->midi_out_dropped);
 }
 
 int mh_audio_create_virtual_midi_input(MH_AudioDevice* dev, const char* port_name) {
@@ -1199,6 +1274,7 @@ int mh_audio_create_virtual_midi_output(MH_AudioDevice* dev, const char* port_na
 
     // Disconnect existing if any
     if (dev->midi_out) {
+        midi_out_pump_detach(dev);
         mh_midi_out_close(dev->midi_out);
         dev->midi_out = NULL;
         dev->midi_out_port = -1;
@@ -1213,6 +1289,7 @@ int mh_audio_create_virtual_midi_output(MH_AudioDevice* dev, const char* port_na
 
     dev->midi_out_port = -1;  // Virtual ports don't have an index
     dev->midi_out_virtual = 1;
+    midi_out_pump_attach(dev);
     return 1;
 }
 
