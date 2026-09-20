@@ -1476,6 +1476,33 @@ static int cmd_process(const char* plugin_path,
     mh_get_info(p, &pinfo);
     int out_ch = pinfo.num_output_ch > 0 ? pinfo.num_output_ch : 2;
     int latency = mh_get_latency_samples(p);
+
+    /* A plugin can negotiate a wider main input bus than was requested -- an
+     * instrument that only accepts stereo, handed a mono file. mh_process*
+     * reads pinfo.num_input_ch pointers out of the table it is given
+     * (minihost.h), so the table has to be that wide whatever the file holds;
+     * the channels the file does not supply repeat its last. Same for the
+     * sidechain. */
+    int proc_in_ch = in_ch > pinfo.num_input_ch ? in_ch : pinfo.num_input_ch;
+    int proc_sc_ch = sc_ch;
+    if (has_sidechain) {
+        int negotiated_sc = mh_get_sidechain_channels(p);
+        if (negotiated_sc > proc_sc_ch) proc_sc_ch = negotiated_sc;
+    }
+
+    /* The pointer tables in the process loop are fixed at 32 entries, and
+     * truncating to them would hand the library fewer channels than it
+     * reads. */
+    if (proc_in_ch > 32 || out_ch > 32 || proc_sc_ch > 32) {
+        fprintf(stderr, "Error: %d in / %d out / %d sidechain channels exceeds the 32 this command supports\n",
+                proc_in_ch, out_ch, proc_sc_ch);
+        mh_close(p);
+        if (audio_data) mh_audio_data_free(audio_data);
+        if (sc_data) mh_audio_data_free(sc_data);
+        free(raw_data);
+        mh_midi_file_free(midi_events);
+        return 1;
+    }
     int tail_frames = 0;
     if (tail_seconds > 0)
         tail_frames = (int)(tail_seconds * sample_rate);
@@ -1500,15 +1527,15 @@ static int cmd_process(const char* plugin_path,
     fprintf(stderr, "  Output:      %d ch -> %s\n", out_ch, output_file);
 
     // --- Deinterleave audio input ---
-    float** in_channels = alloc_channels(in_ch, output_total);
+    float** in_channels = alloc_channels(proc_in_ch, output_total);
     float** out_channels = alloc_channels(out_ch, output_total);
-    float** sc_channels = has_sidechain ? alloc_channels(sc_ch, output_total) : NULL;
+    float** sc_channels = has_sidechain ? alloc_channels(proc_sc_ch, output_total) : NULL;
 
     if (!in_channels || !out_channels || (has_sidechain && !sc_channels)) {
         fprintf(stderr, "Error: Out of memory\n");
-        free_channels(in_channels, in_ch);
+        free_channels(in_channels, proc_in_ch);
         free_channels(out_channels, out_ch);
-        if (sc_channels) free_channels(sc_channels, sc_ch);
+        if (sc_channels) free_channels(sc_channels, proc_sc_ch);
         mh_close(p);
         if (audio_data) mh_audio_data_free(audio_data);
         if (sc_data) mh_audio_data_free(sc_data);
@@ -1532,11 +1559,28 @@ static int cmd_process(const char* plugin_path,
         }
     }
 
+    /* Channels the file does not supply repeat the last one it did, so a mono
+     * file into a plugin that only accepts stereo plays in both rather than
+     * hard left. With no input file there is nothing to repeat and the calloc'd
+     * silence stands. */
+    if ((audio_data || raw_data) && in_ch > 0) {
+        for (int c = in_ch; c < proc_in_ch; c++) {
+            memcpy(in_channels[c], in_channels[in_ch - 1],
+                   (size_t)output_total * sizeof(float));
+        }
+    }
+
     if (sc_data && sc_channels) {
         int sc_frames = min_int((int)sc_data->frames, output_total);
         for (int f = 0; f < sc_frames; f++) {
             for (int c = 0; c < sc_ch; c++) {
                 sc_channels[c][f] = sc_data->data[f * sc_ch + c];
+            }
+        }
+        if (sc_ch > 0) {
+            for (int c = sc_ch; c < proc_sc_ch; c++) {
+                memcpy(sc_channels[c], sc_channels[sc_ch - 1],
+                       (size_t)output_total * sizeof(float));
             }
         }
     }
@@ -1556,7 +1600,7 @@ static int cmd_process(const char* plugin_path,
     double** out_d = NULL;
     int supports_double = mh_supports_double(p);
     if (use_double && supports_double && !has_sidechain && num_changes == 0) {
-        in_d = alloc_channels_double(in_ch, block_size);
+        in_d = alloc_channels_double(proc_in_ch, block_size);
         out_d = alloc_channels_double(out_ch, block_size);
     }
 
@@ -1571,9 +1615,9 @@ static int cmd_process(const char* plugin_path,
 
         const float* in_ptrs[32];
         float* out_ptrs[32];
-        for (int c = 0; c < in_ch && c < 32; c++)
+        for (int c = 0; c < proc_in_ch; c++)
             in_ptrs[c] = in_channels[c] + start;
-        for (int c = 0; c < out_ch && c < 32; c++)
+        for (int c = 0; c < out_ch; c++)
             out_ptrs[c] = out_channels[c] + start;
 
         /* Slice this block's MIDI out of the absolute-offset array and
@@ -1595,7 +1639,7 @@ static int cmd_process(const char* plugin_path,
 
         if (has_sidechain && sc_channels) {
             const float* sc_ptrs[32];
-            for (int c = 0; c < sc_ch && c < 32; c++)
+            for (int c = 0; c < proc_sc_ch; c++)
                 sc_ptrs[c] = sc_channels[c] + start;
             mh_process_sidechain(p, in_ptrs, out_ptrs, sc_ptrs, bsize);
         } else if (has_midi || has_param_automation) {
@@ -1609,17 +1653,17 @@ static int cmd_process(const char* plugin_path,
         } else if (use_double && supports_double && in_d && out_d) {
             const double* in_d_ptrs[32];
             double* out_d_ptrs[32];
-            for (int c = 0; c < in_ch && c < 32; c++) {
+            for (int c = 0; c < proc_in_ch; c++) {
                 for (int f = 0; f < bsize; f++)
                     in_d[c][f] = (double)in_ptrs[c][f];
                 in_d_ptrs[c] = in_d[c];
             }
-            for (int c = 0; c < out_ch && c < 32; c++) {
+            for (int c = 0; c < out_ch; c++) {
                 memset(out_d[c], 0, (size_t)bsize * sizeof(double));
                 out_d_ptrs[c] = out_d[c];
             }
             mh_process_double(p, in_d_ptrs, out_d_ptrs, bsize);
-            for (int c = 0; c < out_ch && c < 32; c++) {
+            for (int c = 0; c < out_ch; c++) {
                 for (int f = 0; f < bsize; f++)
                     out_ptrs[c][f] = (float)out_d[c][f];
             }
@@ -1644,10 +1688,10 @@ static int cmd_process(const char* plugin_path,
         float* out_interleaved = (float*)malloc((size_t)out_ch * (size_t)write_frames * sizeof(float));
         if (!out_interleaved) {
             fprintf(stderr, "Error: Out of memory\n");
-            free_channels(in_channels, in_ch);
+            free_channels(in_channels, proc_in_ch);
             free_channels(out_channels, out_ch);
-            if (sc_channels) free_channels(sc_channels, sc_ch);
-            if (in_d) free_channels_double(in_d, in_ch);
+            if (sc_channels) free_channels(sc_channels, proc_sc_ch);
+            if (in_d) free_channels_double(in_d, proc_in_ch);
             if (out_d) free_channels_double(out_d, out_ch);
             mh_close(p);
             return 1;
@@ -1664,10 +1708,10 @@ static int cmd_process(const char* plugin_path,
                             err, sizeof(err))) {
             fprintf(stderr, "Error: %s\n", err);
             free(out_interleaved);
-            free_channels(in_channels, in_ch);
+            free_channels(in_channels, proc_in_ch);
             free_channels(out_channels, out_ch);
-            if (sc_channels) free_channels(sc_channels, sc_ch);
-            if (in_d) free_channels_double(in_d, in_ch);
+            if (sc_channels) free_channels(sc_channels, proc_sc_ch);
+            if (in_d) free_channels_double(in_d, proc_in_ch);
             if (out_d) free_channels_double(out_d, out_ch);
             mh_close(p);
             return 1;
@@ -1678,10 +1722,10 @@ static int cmd_process(const char* plugin_path,
         FILE* fout = fopen(output_file, "wb");
         if (!fout) {
             fprintf(stderr, "Error: Cannot open output file %s\n", output_file);
-            free_channels(in_channels, in_ch);
+            free_channels(in_channels, proc_in_ch);
             free_channels(out_channels, out_ch);
-            if (sc_channels) free_channels(sc_channels, sc_ch);
-            if (in_d) free_channels_double(in_d, in_ch);
+            if (sc_channels) free_channels(sc_channels, proc_sc_ch);
+            if (in_d) free_channels_double(in_d, proc_in_ch);
             if (out_d) free_channels_double(out_d, out_ch);
             mh_close(p);
             return 1;
@@ -1701,10 +1745,10 @@ static int cmd_process(const char* plugin_path,
     fprintf(stderr, "Wrote %d samples (%.2fs) to %s\n", write_frames, duration, output_file);
 
     // Cleanup
-    free_channels(in_channels, in_ch);
+    free_channels(in_channels, proc_in_ch);
     free_channels(out_channels, out_ch);
-    if (sc_channels) free_channels(sc_channels, sc_ch);
-    if (in_d) free_channels_double(in_d, in_ch);
+    if (sc_channels) free_channels(sc_channels, proc_sc_ch);
+    if (in_d) free_channels_double(in_d, proc_in_ch);
     if (out_d) free_channels_double(out_d, out_ch);
     mh_close(p);
     return 0;

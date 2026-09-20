@@ -312,6 +312,14 @@ extern "C" int mh_message_thread_poll(void)
 // Run a callable on the JUCE plugin thread and return its result (or void).
 // Wrap the body of any thread-affine control function in this. When the plugin
 // thread is disabled, it runs inline. NOT for the process*() hot path.
+//
+// Nothing a plugin throws leaves here. The C API is documented in return
+// codes, and an exception crossing an extern "C" boundary reaches a caller
+// that cannot name it: a Python caller gets nanobind's "exception could not be
+// translated" instead of the RuntimeError the binding promises. The exception
+// need not even be C++ -- Renoise Redux builds an NSWindow while parsing a
+// state chunk, and AppKit raises an NSException because the plugin thread is
+// not the process's main thread. The call reports failure instead.
 namespace {
 template <typename Fn>
 static auto runOnMsg(Fn&& fn) -> decltype(fn())
@@ -319,12 +327,25 @@ static auto runOnMsg(Fn&& fn) -> decltype(fn())
     using R = decltype(fn());
     if constexpr (std::is_void_v<R>)
     {
-        MinihostMessageThread::instance().run([&]() { fn(); });
+        try
+        {
+            MinihostMessageThread::instance().run([&]() { fn(); });
+        }
+        catch (...)
+        {
+        }
     }
     else
     {
         R result{};
-        MinihostMessageThread::instance().run([&]() { result = fn(); });
+        try
+        {
+            MinihostMessageThread::instance().run([&]() { result = fn(); });
+        }
+        catch (...)
+        {
+            return R{};   // 0 / nullptr: the failure value in every C API here
+        }
         return result;
     }
 }

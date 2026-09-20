@@ -56,6 +56,15 @@ skip_if_no_audio = pytest.mark.skipif(
     not PIANO.exists(), reason=f"test audio not found at {PIANO}"
 )
 
+# The effect fixture, whose input bus is stereo and whose unity gain is
+# bit-exact pass-through. Exact assertions need a plugin specified to the
+# sample; MINIHOST_TEST_PLUGIN is whatever the machine happens to have.
+FX = os.environ.get("MINIHOST_TEST_PLUGIN_FX")
+skip_if_no_fx = pytest.mark.skipif(
+    not FX or not os.path.exists(FX),
+    reason="set MINIHOST_TEST_PLUGIN_FX to the MinihostTestFx build",
+)
+
 
 # Deterministic data commands. Each entry is the argument list following the
 # binary; {PLUGIN} is substituted at runtime.
@@ -414,3 +423,37 @@ def test_both_clis_reject_an_unknown_command():
             timeout=120,
         )
         assert proc.returncode != 0
+
+
+@skip_if_no_fx
+@skip_if_no_audio
+@pytest.mark.parametrize("binary_name", ["minihost_c", "minihost_cpp"])
+def test_mono_input_fills_a_wider_plugin_bus(binary_name, tmp_path):
+    """A mono file into a stereo-only plugin plays in both channels.
+
+    The plugin decides its own bus layout, and it can come back wider than
+    the file: mh_process* then reads MH_Info.num_input_ch pointers, so the
+    CLI has to supply that many. It used to supply as many as the file had,
+    which crashed minihost_cpp and made minihost_c read uninitialised stack.
+    The channels the file does not supply repeat its last one, so the render
+    is centred rather than hard left.
+    """
+    np = pytest.importorskip("numpy")
+    minihost = pytest.importorskip("minihost")
+
+    binary = C_BIN if binary_name == "minihost_c" else CPP_BIN
+    out = tmp_path / "widened.wav"
+    _render(binary, ["process", FX, "-i", "{PIANO}", "-o", "{OUT}", "--tail", "0"], out)
+
+    src, _ = minihost.read_audio(str(PIANO), as_=np.ndarray)
+    got, _ = minihost.read_audio(str(out), as_=np.ndarray)
+    src = np.asarray(src)
+    got = np.asarray(got)
+    assert src.shape[0] == 1, "this test needs a mono input file"
+    assert got.shape[0] == 2, f"expected the plugin's 2 output channels, got {got.shape[0]}"
+
+    n = min(src.shape[-1], got.shape[-1])
+    assert np.allclose(got[0, :n], src[0, :n], atol=1e-6), "left is not the input"
+    assert np.array_equal(got[0, :n], got[1, :n]), (
+        "right differs from left: the channel the file did not supply was not filled"
+    )

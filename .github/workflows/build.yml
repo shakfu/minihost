@@ -471,11 +471,14 @@ jobs:
       - name: Download JUCE
         run: python scripts/download_juce.py
 
-      - name: Build the test plugin fixtures
+      # The CLI binaries come along because this is the only job with both a
+      # plugin and a CLI: build-cli has no plugin, so every plugin-gated CLI
+      # test skips there.
+      - name: Build the test plugin fixtures and the CLIs
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Release -DMINIHOST_BUILD_TEST_PLUGIN=ON
           cmake --build build --config Release \
-            --target MinihostTestFx_VST3 MinihostTestSynth_VST3
+            --target MinihostTestFx_VST3 MinihostTestSynth_VST3 minihost_c minihost_cpp
 
       - name: Install minihost
         run: pip install --verbose '.[numpy]' pytest

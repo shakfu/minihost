@@ -129,6 +129,26 @@ static bool parse_param_spec(MH_Plugin* p, const std::string& spec,
     return false;
 }
 
+// Widen a deinterleaved buffer to `channels`, repeating the last channel the
+// source supplied, and pad every channel to `frames`. A plugin can negotiate a
+// wider input bus than the file has: a mono file into a stereo-only plugin
+// plays in both channels this way rather than hard left.
+static void widen_channels(std::vector<std::vector<float>>& ch_data,
+                           int channels, int frames)
+{
+    const int have = static_cast<int>(ch_data.size());
+    ch_data.resize(channels);
+    for (int c = 0; c < channels; c++) {
+        if (c < have) {
+            ch_data[c].resize(frames, 0.0f);
+        } else if (have > 0) {
+            ch_data[c] = ch_data[have - 1];   // already padded to frames
+        } else {
+            ch_data[c].assign(frames, 0.0f);  // no source: silence
+        }
+    }
+}
+
 // Interleaved float32 buffer helper
 struct AudioBuffer {
     std::vector<float> interleaved;  // interleaved samples
@@ -1403,6 +1423,16 @@ int cmd_process(const std::string& plugin_path,
     int out_ch = pinfo.num_output_ch > 0 ? pinfo.num_output_ch : 2;
     int latency = mh_get_latency_samples(p);
 
+    // A plugin can negotiate a wider main input bus than was requested -- an
+    // instrument that only accepts stereo, handed a mono file. mh_process*
+    // reads pinfo.num_input_ch pointers out of the table it is given
+    // (minihost.h), so the table has to be that wide whatever the file holds.
+    // widen_channels fills what the file does not. Same for the sidechain.
+    int proc_in_ch = std::max(in_ch, pinfo.num_input_ch);
+    int proc_sc_ch = has_sidechain
+                       ? std::max(sidechain_ch, mh_get_sidechain_channels(p))
+                       : 0;
+
     // --- Calculate total processing length ---
     int total_samples = 0;
     if (has_audio_input) {
@@ -1446,23 +1476,13 @@ int cmd_process(const std::string& plugin_path,
     std::vector<std::vector<float>> in_channels;
     if (has_audio_input) {
         audio_in.deinterleave(in_channels);
-        // Pad to output_total
-        for (auto& ch : in_channels) {
-            ch.resize(output_total, 0.0f);
-        }
-    } else {
-        in_channels.resize(in_ch);
-        for (auto& ch : in_channels) {
-            ch.assign(output_total, 0.0f);
-        }
     }
+    widen_channels(in_channels, proc_in_ch, output_total);
 
     std::vector<std::vector<float>> sc_channels;
     if (has_sidechain) {
         sidechain_in.deinterleave(sc_channels);
-        for (auto& ch : sc_channels) {
-            ch.resize(output_total, 0.0f);
-        }
+        widen_channels(sc_channels, proc_sc_ch, output_total);
     }
 
     // --- Allocate output ---
@@ -1480,8 +1500,8 @@ int cmd_process(const std::string& plugin_path,
         int bsize = end - start;
 
         // Input pointers for this block
-        std::vector<const float*> in_ptrs(in_ch);
-        for (int c = 0; c < in_ch; c++) {
+        std::vector<const float*> in_ptrs(proc_in_ch);
+        for (int c = 0; c < proc_in_ch; c++) {
             in_ptrs[c] = in_channels[c].data() + start;
         }
 
@@ -1507,8 +1527,8 @@ int cmd_process(const std::string& plugin_path,
 
         // Choose processing path
         if (has_sidechain) {
-            std::vector<const float*> sc_ptrs(sidechain_ch);
-            for (int c = 0; c < sidechain_ch; c++) {
+            std::vector<const float*> sc_ptrs(proc_sc_ch);
+            for (int c = 0; c < proc_sc_ch; c++) {
                 sc_ptrs[c] = sc_channels[c].data() + start;
             }
             mh_process_sidechain(p, in_ptrs.data(), out_ptrs.data(),
@@ -1525,11 +1545,11 @@ int cmd_process(const std::string& plugin_path,
                             (start == 0 && has_param_automation) ? static_cast<int>(param_changes.size()) : 0);
         } else if (use_double && mh_supports_double(p)) {
             // Double precision path
-            std::vector<std::vector<double>> in_d(in_ch, std::vector<double>(bsize));
+            std::vector<std::vector<double>> in_d(proc_in_ch, std::vector<double>(bsize));
             std::vector<std::vector<double>> out_d(out_ch, std::vector<double>(bsize));
-            std::vector<const double*> in_d_ptrs(in_ch);
+            std::vector<const double*> in_d_ptrs(proc_in_ch);
             std::vector<double*> out_d_ptrs(out_ch);
-            for (int c = 0; c < in_ch; c++) {
+            for (int c = 0; c < proc_in_ch; c++) {
                 for (int f = 0; f < bsize; f++) in_d[c][f] = in_ptrs[c][f];
                 in_d_ptrs[c] = in_d[c].data();
             }

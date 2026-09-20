@@ -35,6 +35,69 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 PROJECT_ROOT = SCRIPT_DIR.parent
 JUCE_DIR = Path(os.environ.get("JUCE_DIR", PROJECT_ROOT / "thirdparty" / "JUCE"))
 
+# minihost patches applied to the downloaded tree.
+#
+# JUCE's macOS message queue registers its run-loop source for
+# kCFRunLoopCommonModes only, so the only way to deliver a message is to run a
+# common mode -- which also runs every other main-loop client in the process,
+# including the main dispatch queue. A headless host runs that loop from
+# Plugin.poll_callbacks(), so it would be running arbitrary foreign work inside
+# a library call. The patch adds the source to a private mode as well, holding
+# nothing else, and projects/libminihost/minihost_pump_mac.cpp runs only that.
+#
+# MINIHOST_PUMP_MODE marks a patched file, which makes this idempotent. An
+# anchor that no longer matches is a hard error: that is how a JUCE bump which
+# moves the code gets noticed rather than silently dropping the patch.
+PUMP_MODE = "net.minihost.pump"
+PATCH_MARKER = "MINIHOST_PUMP_MODE"
+
+JUCE_PATCHES = {
+    "modules/juce_events/native/juce_MessageQueue_mac.h": [
+        (
+            "        CFRunLoopAddSource (runLoop, runLoopSource.get(), kCFRunLoopCommonModes);\n",
+            "        CFRunLoopAddSource (runLoop, runLoopSource.get(), kCFRunLoopCommonModes);\n"
+            "        // MINIHOST_PUMP_MODE: patched in by scripts/download_juce.py. A private\n"
+            "        // mode this source is the only member of, so a headless host can deliver\n"
+            "        // these without running the rest of the main loop. See\n"
+            "        // projects/libminihost/minihost_pump_mac.cpp.\n"
+            f'        CFRunLoopAddSource (runLoop, runLoopSource.get(), CFSTR ("{PUMP_MODE}"));\n',
+        ),
+        (
+            "        CFRunLoopRemoveSource (runLoop, runLoopSource.get(), kCFRunLoopCommonModes);\n",
+            "        CFRunLoopRemoveSource (runLoop, runLoopSource.get(), kCFRunLoopCommonModes);\n"
+            f'        CFRunLoopRemoveSource (runLoop, runLoopSource.get(), CFSTR ("{PUMP_MODE}"));  // MINIHOST_PUMP_MODE\n',
+        ),
+    ],
+}
+
+
+def apply_patches(juce_dir: Path) -> int:
+    """Apply the minihost patches above. Idempotent; returns 0 on success."""
+    for rel, edits in JUCE_PATCHES.items():
+        path = juce_dir / rel
+        if not path.exists():
+            print(f"Error: cannot patch {path}: no such file", file=sys.stderr)
+            return 1
+
+        src = path.read_text(encoding="utf-8")
+        if PATCH_MARKER in src:
+            continue
+
+        for anchor, replacement in edits:
+            found = src.count(anchor)
+            if found != 1:
+                print(
+                    f"Error: patch anchor in {rel} matched {found} times, expected 1. "
+                    "JUCE changed -- update JUCE_PATCHES in this script.",
+                    file=sys.stderr,
+                )
+                return 1
+            src = src.replace(anchor, replacement)
+
+        path.write_text(src, encoding="utf-8")
+        print(f"Patched {rel}")
+    return 0
+
 
 def download_file(url: str, dest: Path) -> None:
     """Download a file from URL to destination."""
@@ -63,7 +126,7 @@ def main() -> int:
     # Check if JUCE already exists
     if JUCE_DIR.exists() and (JUCE_DIR / "CMakeLists.txt").exists():
         print(f"JUCE already exists at {JUCE_DIR}")
-        return 0
+        return apply_patches(JUCE_DIR)
 
     if JUCE_ALLOW_TAG:
         print(f"Downloading JUCE {JUCE_VERSION} (by tag, NOT SHA-pinned)...")
@@ -113,7 +176,7 @@ def main() -> int:
         shutil.move(str(extracted_dir), str(JUCE_DIR))
 
     print(f"JUCE {JUCE_VERSION} installed to {JUCE_DIR}")
-    return 0
+    return apply_patches(JUCE_DIR)
 
 
 if __name__ == "__main__":

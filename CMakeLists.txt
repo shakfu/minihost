@@ -66,6 +66,20 @@ if(NOT EXISTS "${JUCE_PATH}/CMakeLists.txt")
     message(FATAL_ERROR "JUCE not found at ${JUCE_PATH}. Run 'python scripts/download_juce.py' or set -DJUCE_PATH=/path/to/JUCE")
 endif()
 
+# The macOS message pump runs one private run-loop mode, which is empty unless
+# JUCE's message queue has been patched to register its source there. Unpatched
+# it builds and links, and every pump delivers nothing -- so check here rather
+# than let a headless host silently stop seeing latency and parameter-info
+# changes. See projects/libminihost/minihost_pump_mac.cpp.
+if(APPLE)
+    set(_MH_MSGQUEUE "${JUCE_PATH}/modules/juce_events/native/juce_MessageQueue_mac.h")
+    file(READ "${_MH_MSGQUEUE}" _MH_MSGQUEUE_SRC)
+    string(FIND "${_MH_MSGQUEUE_SRC}" "MINIHOST_PUMP_MODE" _MH_PATCHED)
+    if(_MH_PATCHED EQUAL -1)
+        message(FATAL_ERROR "${_MH_MSGQUEUE} is missing the minihost pump-mode patch. Run 'python scripts/download_juce.py' to apply it to ${JUCE_PATH}.")
+    endif()
+endif()
+
 add_subdirectory(${JUCE_PATH} ${CMAKE_CURRENT_BINARY_DIR}/JUCE EXCLUDE_FROM_ALL)
 
 # Install option must be set before subdirectories so install(TARGETS ... EXPORT)
