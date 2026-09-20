@@ -34,8 +34,9 @@ extern "C" {
 
 typedef struct MH_ParamRingBuffer MH_ParamRingBuffer;
 
-// Create a ring buffer with given capacity (rounded up to a power of 2)
-// Returns NULL on failure
+// Create a ring buffer. Capacity is rounded up to the next power of 2; a
+// non-positive capacity uses the default of 1024. Returns NULL on failure,
+// which includes a capacity above the largest power of 2 an int holds.
 MH_ParamRingBuffer* mh_param_ringbuffer_create(int capacity);
 
 // Free a ring buffer

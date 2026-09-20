@@ -14,8 +14,15 @@ struct MH_ParamRingBuffer {
     std::atomic<int> read_pos;
 };
 
+// Largest power of two an int holds. Rounding a larger request would
+// overflow the shift sequence and yield a negative capacity and a mask of
+// INT_MAX, so the create functions reject it instead.
+#define MH_RINGBUFFER_MAX_CAPACITY (1 << 30)
+
 // Round up to next power of 2
+// Returns 0 when n exceeds the largest representable power of two.
 static int next_power_of_2(int n) {
+    if (n > MH_RINGBUFFER_MAX_CAPACITY) return 0;
     n--;
     n |= n >> 1;
     n |= n >> 2;
@@ -34,6 +41,7 @@ MH_ParamRingBuffer* mh_param_ringbuffer_create(int capacity) {
     }
 
     capacity = next_power_of_2(capacity);
+    if (capacity == 0) return nullptr;
 
     MH_ParamRingBuffer* rb = new (std::nothrow) MH_ParamRingBuffer();
     if (!rb) return nullptr;

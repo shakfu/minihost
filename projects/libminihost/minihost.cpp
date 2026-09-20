@@ -1,5 +1,6 @@
 // minihost.cpp
 #include "minihost.h"
+#include "transport_seqlock.h"
 
 #include <juce_core/juce_core.h>
 #include <juce_audio_basics/juce_audio_basics.h>
@@ -345,58 +346,29 @@ extern "C" const char* mh_api_version_string(void)
 class MH_PlayHead : public AudioPlayHead
 {
 public:
-    // Transport state snapshot -- copied atomically via seqlock
-    struct State
-    {
-        bool hasTransport = false;
-        double bpm = 120.0;
-        int timeSigNum = 4;
-        int timeSigDenom = 4;
-        int64_t positionSamples = 0;
-        double positionBeats = 0.0;
-        bool isPlaying = false;
-        bool isRecording = false;
-        bool isLooping = false;
-        int64_t loopStartSamples = 0;
-        int64_t loopEndSamples = 0;
-    };
+    // Transport state snapshot -- see transport_seqlock.h for the ordering.
+    using State = minihost::TransportState;
 
-    double sampleRate = 44100.0;
+    // Written by mh_set_sample_rate on a control thread while getPosition()
+    // reads it on the audio thread.
+    std::atomic<double> sampleRate{44100.0};
 
-    // Seqlock: writer increments seq_ before and after updating state_.
-    // Reader retries if seq_ changed during read (ensures torn-read safety
-    // without blocking the audio thread).
-    void write(const State& s)
-    {
-        seq_.fetch_add(1, std::memory_order_release);    // odd  = write in progress
-        state_ = s;
-        seq_.fetch_add(1, std::memory_order_release);    // even = write complete
-    }
-
-    State read() const
-    {
-        State s;
-        unsigned seq0, seq1;
-        do {
-            seq0 = seq_.load(std::memory_order_acquire);
-            s = state_;
-            seq1 = seq_.load(std::memory_order_acquire);
-        } while (seq0 != seq1 || (seq0 & 1));            // retry if torn or mid-write
-        return s;
-    }
+    void write(const State& s) { seqlock_.write(s); }
+    State read() const         { return seqlock_.read(); }
 
     Optional<PositionInfo> getPosition() const override
     {
         State s = read();
-
         if (!s.hasTransport)
             return nullopt;
+
+        const double sr = sampleRate.load(std::memory_order_relaxed);
 
         PositionInfo info;
         info.setBpm(s.bpm);
         info.setTimeSignature(TimeSignature{s.timeSigNum, s.timeSigDenom});
         info.setTimeInSamples(s.positionSamples);
-        info.setTimeInSeconds(static_cast<double>(s.positionSamples) / sampleRate);
+        info.setTimeInSeconds(static_cast<double>(s.positionSamples) / sr);
         info.setPpqPosition(s.positionBeats);
         info.setIsPlaying(s.isPlaying);
         info.setIsRecording(s.isRecording);
@@ -404,16 +376,15 @@ public:
         if (s.isLooping)
         {
             info.setLoopPoints(LoopPoints{
-                static_cast<double>(s.loopStartSamples) / sampleRate * (s.bpm / 60.0),
-                static_cast<double>(s.loopEndSamples) / sampleRate * (s.bpm / 60.0)
+                static_cast<double>(s.loopStartSamples) / sr * (s.bpm / 60.0),
+                static_cast<double>(s.loopEndSamples) / sr * (s.bpm / 60.0)
             });
         }
         return info;
     }
 
 private:
-    State state_;
-    std::atomic<unsigned> seq_{0};
+    minihost::TransportSeqlock seqlock_;
 };
 
 struct MH_Plugin;

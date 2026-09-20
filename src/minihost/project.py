@@ -35,6 +35,10 @@ Schema notes:
     - Plugin nodes have a `path`. Optional `state_b64` for persisted
       plugin state. Plugin's I/O channel counts are read from the
       plugin itself; the schema does not duplicate them.
+    - Every path in a project -- input `source`, output `sink`, plugin
+      `path`, MIDI `source` / `sink` -- is relative to the directory
+      holding the project file, not to the process working directory.
+      An absolute path is used as given.
     - Mix nodes have `num_inputs` and `channels`. Optional `gains` array
       of length num_inputs (default all 1.0).
     - MIDI routing uses a second edge class and dedicated node kinds:
@@ -262,7 +266,7 @@ def load_project(project_path: str | Path) -> LoadedProject:
             in_node = _InputNode(
                 id=nid,
                 channels=_require_field(raw, "channels", int),
-                source=(project_dir / _require_field(raw, "source", str)).resolve(),
+                source=_resolve(project_dir, _require_field(raw, "source", str)),
                 resample=bool(raw.get("resample", False)),
             )
             inputs.append(in_node)
@@ -271,7 +275,7 @@ def load_project(project_path: str | Path) -> LoadedProject:
             out_node = _OutputNode(
                 id=nid,
                 channels=_require_field(raw, "channels", int),
-                sink=(project_dir / _require_field(raw, "sink", str)).resolve(),
+                sink=_resolve(project_dir, _require_field(raw, "sink", str)),
                 bit_depth=int(raw.get("bit_depth", 24)),
             )
             outputs.append(out_node)
@@ -283,14 +287,14 @@ def load_project(project_path: str | Path) -> LoadedProject:
                 path_val = raw.get("path")
                 pl_node = _PluginNode(
                     id=nid,
-                    path=Path(path_val) if path_val else None,
+                    path=_resolve(project_dir, path_val) if path_val else None,
                     state_b64=raw.get("state_b64"),
                     descriptor=descriptor,
                 )
             else:
                 pl_node = _PluginNode(
                     id=nid,
-                    path=Path(_require_field(raw, "path", str)),
+                    path=_resolve(project_dir, _require_field(raw, "path", str)),
                     state_b64=raw.get("state_b64"),
                 )
             plugins.append(pl_node)
@@ -314,7 +318,7 @@ def load_project(project_path: str | Path) -> LoadedProject:
             src = raw.get("source")
             mi = _MidiInputNode(
                 id=nid,
-                source=(project_dir / src).resolve() if src else None,
+                source=_resolve(project_dir, src) if src else None,
             )
             midi_inputs.append(mi)
             node_by_id[nid] = ("midi_input", mi)
@@ -322,7 +326,7 @@ def load_project(project_path: str | Path) -> LoadedProject:
             snk = raw.get("sink")
             mo = _MidiOutputNode(
                 id=nid,
-                sink=(project_dir / snk).resolve() if snk else None,
+                sink=_resolve(project_dir, snk) if snk else None,
             )
             midi_outputs.append(mo)
             node_by_id[nid] = ("midi_output", mo)
@@ -724,6 +728,16 @@ def _write_midi_events(
         # Other message classes (channel pressure, sysex, ...) are not
         # represented by the MidiFile writer and are dropped.
     mf.save(str(path))
+
+
+def _resolve(project_dir: Path, value: str) -> Path:
+    """Resolve a path from a project file against the project's directory.
+
+    Every path in a project is relative to the file that names it, so a
+    project renders the same from any working directory. An absolute path is
+    returned as given.
+    """
+    return (project_dir / value).resolve()
 
 
 def _require_field(d: dict, key: str, expected_type) -> Any:

@@ -8,6 +8,7 @@
 
 #include "audio_ringbuffer.h"
 #include <atomic>
+#include <climits>
 #include <cstdlib>
 #include <cstring>
 #include <new>
@@ -21,7 +22,14 @@ struct MH_AudioRingBuffer {
     std::atomic<int> read_pos;   // frame index
 };
 
+// Largest power of two an int holds. Rounding a larger request would
+// overflow the shift sequence and yield a negative capacity and a mask of
+// INT_MAX, so the create functions reject it instead.
+#define MH_RINGBUFFER_MAX_CAPACITY (1 << 30)
+
+// Returns 0 when n exceeds the largest representable power of two.
 static int next_power_of_2(int n) {
+    if (n > MH_RINGBUFFER_MAX_CAPACITY) return 0;
     n--;
     n |= n >> 1;
     n |= n >> 2;
@@ -38,6 +46,10 @@ MH_AudioRingBuffer* mh_audio_ringbuffer_create(int channels, int capacity_frames
     if (channels <= 0 || capacity_frames <= 0) return nullptr;
 
     capacity_frames = next_power_of_2(capacity_frames);
+    if (capacity_frames == 0) return nullptr;
+    // Samples are addressed as frame * channels, so that product must stay
+    // an int as well as fit in memory.
+    if (capacity_frames > INT_MAX / channels) return nullptr;
 
     auto* rb = new (std::nothrow) MH_AudioRingBuffer();
     if (!rb) return nullptr;

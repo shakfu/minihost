@@ -33,6 +33,7 @@
 #include "midi_ringbuffer.h"
 #include "param_ringbuffer.h"
 #include "transport_ringbuffer.h"
+#include "transport_seqlock.h"
 
 namespace {
 
@@ -366,6 +367,101 @@ long stress_transport(long N) {
     return fails;
 }
 
+// --- transport seqlock: not a ring buffer. One writer publishes a whole
+// TransportState; readers (the audio thread calls this from getPosition())
+// must never observe a snapshot mixed from two writes. Every field is derived
+// from the same seed, so any mixed read is detectable.
+minihost::TransportState encode_transport(long seq) {
+    minihost::TransportState s;
+    s.hasTransport = true;
+    s.bpm = (double) seq;
+    s.timeSigNum = (int) (seq & 0xFFFF);
+    s.timeSigDenom = (int) ((seq >> 4) & 0xFFFF);
+    s.positionSamples = (int64_t) seq;
+    s.positionBeats = (double) -seq;
+    s.isPlaying = (seq & 1) != 0;
+    s.isRecording = (seq & 2) != 0;
+    s.isLooping = (seq & 4) != 0;
+    s.loopStartSamples = (int64_t) (seq * 2);
+    s.loopEndSamples = (int64_t) (seq * 3);
+    return s;
+}
+
+bool transport_state_consistent(const minihost::TransportState& s) {
+    const long seq = (long) s.positionSamples;
+    const minihost::TransportState want = encode_transport(seq);
+    return s.hasTransport == want.hasTransport &&
+           s.bpm == want.bpm &&
+           s.timeSigNum == want.timeSigNum &&
+           s.timeSigDenom == want.timeSigDenom &&
+           s.positionBeats == want.positionBeats &&
+           s.isPlaying == want.isPlaying &&
+           s.isRecording == want.isRecording &&
+           s.isLooping == want.isLooping &&
+           s.loopStartSamples == want.loopStartSamples &&
+           s.loopEndSamples == want.loopEndSamples;
+}
+
+long stress_seqlock(long N) {
+    minihost::TransportSeqlock lock;
+    lock.write(encode_transport(0));
+
+    std::atomic<bool> done{false};
+    std::atomic<long> fails{0};
+
+    std::thread writer([&] {
+        for (long i = 1; i <= N; ++i) {
+            lock.write(encode_transport(i));
+        }
+        done.store(true, std::memory_order_release);
+    });
+
+    // Two readers, because the seqlock permits any number and a second one
+    // widens the window in which a mid-write snapshot could escape.
+    auto reader = [&] {
+        long local = 0;
+        long last = -1;
+        while (!done.load(std::memory_order_acquire)) {
+            const minihost::TransportState s = lock.read();
+            if (!transport_state_consistent(s)) {
+                if (local < 10) {
+                    std::fprintf(stderr,
+                        "FAIL: seqlock torn snapshot at positionSamples=%lld\n",
+                        (long long) s.positionSamples);
+                }
+                ++local;
+            }
+            // The writer only moves forward, so a reader must too.
+            if ((long) s.positionSamples < last) {
+                if (local < 10) {
+                    std::fprintf(stderr,
+                        "FAIL: seqlock went backwards %ld -> %lld\n",
+                        last, (long long) s.positionSamples);
+                }
+                ++local;
+            }
+            last = (long) s.positionSamples;
+        }
+        fails.fetch_add(local, std::memory_order_relaxed);
+    };
+
+    std::thread r1(reader);
+    std::thread r2(reader);
+
+    writer.join();
+    r1.join();
+    r2.join();
+
+    const minihost::TransportState final_state = lock.read();
+    if (final_state.positionSamples != (int64_t) N ||
+        !transport_state_consistent(final_state)) {
+        std::fprintf(stderr, "FAIL: seqlock final snapshot wrong\n");
+        fails.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    return fails.load(std::memory_order_relaxed);
+}
+
 int main() {
     const long N = stress_count();
     std::printf("TSan ring-buffer stress: N=%ld events/frames per test\n", N);
@@ -389,6 +485,10 @@ int main() {
 
     std::printf("  audio............"); std::fflush(stdout);
     f = stress_audio(N);           fails += f;
+    std::printf(" %s\n", f ? "FAIL" : "ok");
+
+    std::printf("  seqlock.........."); std::fflush(stdout);
+    f = stress_seqlock(N);         fails += f;
     std::printf(" %s\n", f ? "FAIL" : "ok");
 
     if (fails) {

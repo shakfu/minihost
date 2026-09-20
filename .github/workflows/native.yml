@@ -2,7 +2,7 @@ name: Native CLI
 
 # Kept out of the main Build workflow on purpose, for the same reasons as
 # tsan.yml: the binaries these jobs produce are Debug or sanitizer-instrumented
-# and must never be shipped, and neither job should be able to block a release
+# and must never be shipped, and no job here should be able to block a release
 # by failing on something unrelated to the artifacts being published.
 #
 # What this adds over build-cli in build.yml, which already compiles both
@@ -18,6 +18,10 @@ name: Native CLI
 #     CLI tests, or the build files that shape them. It is a plain build plus
 #     the same pytest files build-cli runs, so gating those paths costs one
 #     compile and catches an assertion regression at review time.
+#   - the native unit tests gate the same paths. They compile the harnesses in
+#     tests/native/ under UBSan with no JUCE and no Python, so a run is
+#     seconds; they run on the weekly cron too, where a toolchain update is
+#     what breaks them.
 #   - the sanitizer job is weekly and on demand only. It is a full
 #     instrumented rebuild of JUCE and libminihost on one runner, far too slow
 #     to sit in front of every PR, and its value is finding latent memory and
@@ -36,6 +40,7 @@ on:
       - 'tests/test_cli_conformance.py'
       - 'tests/test_release_version.py'
       - 'tests/cli_helpers.py'
+      - 'tests/native/**'
       - 'CMakeLists.txt'
       - 'cmake/**'
       - 'Makefile'
@@ -50,6 +55,7 @@ on:
       - 'tests/test_cli_conformance.py'
       - 'tests/test_release_version.py'
       - 'tests/cli_helpers.py'
+      - 'tests/native/**'
       - 'CMakeLists.txt'
       - 'cmake/**'
       - 'Makefile'
@@ -61,6 +67,23 @@ on:
   workflow_dispatch:
 
 jobs:
+  native-tests:
+    name: Native unit tests
+    runs-on: ubuntu-22.04
+    # The harnesses need no JUCE, no Python and no audio device; a clean run is
+    # seconds, so a low cap fails fast on a hang.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      # The flags live in the Makefile target so `make native-tests` locally is
+      # what CI runs. clang++ is pinned for the reason the sanitizer job below
+      # pins it: the runner's default c++ is whatever the image ships, and a
+      # toolchain without a UBSan runtime fails at link rather than reporting
+      # anything useful.
+      - name: Build and run the native harnesses under UBSan
+        run: make native-tests CXX=clang++
+
   debug:
     name: Debug build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

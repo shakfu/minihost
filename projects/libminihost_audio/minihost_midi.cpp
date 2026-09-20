@@ -3,6 +3,7 @@
 
 #include "minihost_midi.h"
 #include "midi_ringbuffer.h"
+#include "midi_message_length.h"
 
 #include <atomic>
 #include <new>
@@ -466,7 +467,14 @@ static void midi_out_pump_drain(MH_MidiOutPump* pump) {
             const unsigned char msg[3] = { events[i].status,
                                            events[i].data1,
                                            events[i].data2 };
-            mh_midi_out_send(pump->out, msg, 3);
+            // Length comes from the status byte: a fixed 3 appends data2 to a
+            // Program Change or Channel Pressure, and two zero bytes to a
+            // real-time message, which the receiver reads as the start of the
+            // next message. A status with no 3-byte form (System Exclusive,
+            // which MH_MidiEvent cannot carry) is dropped, not truncated.
+            const int len = mh_midi_message_length(msg[0]);
+            if (len > 0)
+                mh_midi_out_send(pump->out, msg, (size_t)len);
         }
     }
 }

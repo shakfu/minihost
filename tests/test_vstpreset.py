@@ -165,6 +165,132 @@ class TestReadVstPreset:
             read_vstpreset(path)
 
 
+def _build_malformed_vstpreset(entries, class_id="A" * 32, data_area=b""):
+    """Build a .vstpreset with arbitrary chunk-list entries.
+
+    ``entries`` is a list of ``(chunk_id, offset, size)`` with the offset and
+    size written verbatim as signed 64-bit values, so a test can put values in
+    the file that no writer would produce. ``entry_count`` is taken from the
+    list unless the caller overrides it by appending to the returned bytes.
+    """
+    list_offset = 48 + len(data_area)
+    header = (
+        b"VST3"
+        + struct.pack("<i", 1)
+        + class_id.encode("ascii").ljust(32, b"\x00")[:32]
+        + struct.pack("<q", list_offset)
+    )
+    chunk_list = b"List" + struct.pack("<i", len(entries))
+    for chunk_id, offset, size in entries:
+        chunk_list += chunk_id + struct.pack("<q", offset) + struct.pack("<q", size)
+    return header + data_area + chunk_list
+
+
+class TestMalformedVstPreset:
+    """Offsets and sizes come out of the file as signed 64-bit values, so the
+    parser's bounds checks have to hold for values a writer would never emit.
+    The read must fail cleanly (or ignore the chunk); it must never read
+    outside the buffer. Run these under ASan/UBSan to see an escape."""
+
+    def _read(self, tmp_path, data, name="malformed.vstpreset"):
+        path = tmp_path / name
+        path.write_bytes(data)
+        return read_vstpreset(path)
+
+    def test_offset_plus_size_wraps_past_int64_max(self, tmp_path):
+        # offset + size is 1<<63, which wraps to INT64_MIN. A check written as
+        # `offset + size > flen` passes here and hands memcpy a wild source;
+        # before the bounds check was rewritten as a subtraction this
+        # segfaulted the interpreter.
+        half = 1 << 62
+        data = _build_malformed_vstpreset([(b"Comp", half, half)])
+        with pytest.raises(ValueError, match="beyond file"):
+            self._read(tmp_path, data)
+
+    def test_offset_at_int64_max(self, tmp_path):
+        data = _build_malformed_vstpreset([(b"Comp", (1 << 63) - 1, 1)])
+        with pytest.raises(ValueError, match="beyond file"):
+            self._read(tmp_path, data)
+
+    def test_size_at_int64_max(self, tmp_path):
+        data = _build_malformed_vstpreset([(b"Comp", 48, (1 << 63) - 1)])
+        with pytest.raises(ValueError, match="beyond file"):
+            self._read(tmp_path, data)
+
+    def test_size_above_int_max_is_rejected(self, tmp_path):
+        # component_size is an int in the public struct, so a size that does
+        # not fit must be refused rather than narrowed.
+        data = _build_malformed_vstpreset([(b"Comp", 48, (1 << 31) + 1)])
+        with pytest.raises(ValueError, match="beyond file|too large"):
+            self._read(tmp_path, data)
+
+    def test_negative_offset_and_size_are_skipped(self, tmp_path):
+        # A negative offset or size skips the entry, like an unrecognised
+        # chunk id: the parse succeeds with no state rather than failing.
+        data = _build_malformed_vstpreset([(b"Comp", -1, -1)])
+        preset = self._read(tmp_path, data)
+        assert preset.component_state is None
+        assert preset.controller_state is None
+
+    def test_chunk_one_byte_past_end(self, tmp_path):
+        # The tightest in-bounds/out-of-bounds boundary: a chunk that ends
+        # exactly one byte past the file. The chunk list sits after the data
+        # area, so the size has to be patched once the file length is known.
+        payload = b"\x01\x02\x03\x04"
+        data = bytearray(
+            _build_malformed_vstpreset([(b"Comp", 48, 0)], data_area=payload)
+        )
+        size_field = len(data) - 8
+        data[size_field:] = struct.pack("<q", len(data) - 48 + 1)
+        with pytest.raises(ValueError, match="beyond file"):
+            self._read(tmp_path, bytes(data))
+
+    def test_chunk_ending_exactly_at_end_of_file_is_accepted(self, tmp_path):
+        payload = b"\x01\x02\x03\x04"
+        data = bytearray(
+            _build_malformed_vstpreset([(b"Comp", 48, 0)], data_area=payload)
+        )
+        size_field = len(data) - 8
+        data[size_field:] = struct.pack("<q", len(data) - 48)
+        preset = self._read(tmp_path, bytes(data))
+        assert len(preset.component_state) == len(data) - 48
+
+    def test_overlapping_chunks_read_within_bounds(self, tmp_path):
+        # Overlap is not illegal -- both chunks stay inside the file -- so the
+        # parse succeeds and both come back with the bytes they point at.
+        payload = b"0123456789"
+        data = _build_malformed_vstpreset(
+            [(b"Comp", 48, 10), (b"Cont", 52, 6)], data_area=payload
+        )
+        preset = self._read(tmp_path, data)
+        assert preset.component_state == payload
+        assert preset.controller_state == payload[4:]
+
+    def test_truncated_entry_table(self, tmp_path):
+        # Entry count claims two entries but only one is present.
+        data = _build_malformed_vstpreset([(b"Comp", 48, 0)])
+        data = data[:52] + struct.pack("<i", 2) + data[56:]
+        with pytest.raises(ValueError, match="truncated"):
+            self._read(tmp_path, data)
+
+    def test_entry_count_above_the_cap(self, tmp_path):
+        data = _build_malformed_vstpreset([(b"Comp", 48, 0)])
+        data = data[:52] + struct.pack("<i", 129) + data[56:]
+        with pytest.raises(ValueError, match="Invalid chunk entry count"):
+            self._read(tmp_path, data)
+
+    def test_negative_entry_count(self, tmp_path):
+        data = _build_malformed_vstpreset([(b"Comp", 48, 0)])
+        data = data[:52] + struct.pack("<i", -1) + data[56:]
+        with pytest.raises(ValueError, match="Invalid chunk entry count"):
+            self._read(tmp_path, data)
+
+    def test_zero_size_chunk_yields_empty_state(self, tmp_path):
+        data = _build_malformed_vstpreset([(b"Comp", 48, 0)])
+        preset = self._read(tmp_path, data)
+        assert preset.component_state == b""
+
+
 def _juce_state(component: bytes, controller: bytes | None = None) -> bytes:
     """A realistic JUCE VST3 host state blob wrapping `component`.
 

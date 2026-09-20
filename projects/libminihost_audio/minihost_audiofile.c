@@ -4,6 +4,8 @@
 #include "minihost_audiofile.h"
 #include "miniaudio.h"
 #include "tflac.h"
+#include <limits.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -31,6 +33,16 @@ MH_AudioData* mh_audio_read(const char* path, char* err, size_t err_size) {
     // actual values from the decoded file (via ma_decoder__full_decode_and_uninit).
     unsigned int channels = config.channels;
     unsigned int sample_rate = config.sampleRate;
+
+    if (frame_count > UINT_MAX) {
+        ma_free(frames, NULL);
+        if (err && err_size > 0) {
+            snprintf(err, err_size,
+                     "Audio file has too many frames to represent: %llu",
+                     (unsigned long long)frame_count);
+        }
+        return NULL;
+    }
 
     MH_AudioData* data = (MH_AudioData*)malloc(sizeof(MH_AudioData));
     if (!data) {
@@ -89,7 +101,13 @@ static int write_wav(const char* path, const float* data,
         result = ma_encoder_write_pcm_frames(&encoder, data, frames, &written);
     } else {
         size_t bytes_per_sample = ma_get_bytes_per_sample(format);
-        size_t buffer_size = total_samples * bytes_per_sample;
+        if (total_samples > SIZE_MAX / bytes_per_sample) {
+            ma_encoder_uninit(&encoder);
+            if (err && err_size > 0)
+                snprintf(err, err_size, "Audio data too large to convert");
+            return 0;
+        }
+        size_t buffer_size = (size_t)total_samples * bytes_per_sample;
 
         void* converted = malloc(buffer_size);
         if (!converted) {
@@ -489,6 +507,18 @@ int mh_audio_get_file_info(const char* path, MH_AudioFileInfo* info,
     return 1;
 }
 
+// frames * channels * sizeof(float), rejected rather than wrapped. The frame
+// count is capped at UINT_MAX because MH_AudioData.frames is an unsigned int.
+static int samples_to_bytes(unsigned int frames, unsigned int channels,
+                            size_t* out_bytes) {
+    if (channels == 0) return 0;
+    if ((size_t)frames > SIZE_MAX / channels) return 0;
+    size_t samples = (size_t)frames * channels;
+    if (samples > SIZE_MAX / sizeof(float)) return 0;
+    *out_bytes = samples * sizeof(float);
+    return 1;
+}
+
 MH_AudioData* mh_audio_resample(const float* data_in,
                                 unsigned int channels,
                                 unsigned int frames_in,
@@ -510,7 +540,12 @@ MH_AudioData* mh_audio_resample(const float* data_in,
             if (err && err_size > 0) snprintf(err, err_size, "Out of memory");
             return NULL;
         }
-        size_t byte_size = (size_t)frames_in * channels * sizeof(float);
+        size_t byte_size;
+        if (!samples_to_bytes(frames_in, channels, &byte_size)) {
+            free(out);
+            if (err && err_size > 0) snprintf(err, err_size, "Audio data too large");
+            return NULL;
+        }
         out->data = (float*)malloc(byte_size);
         if (!out->data) {
             free(out);
@@ -524,11 +559,30 @@ MH_AudioData* mh_audio_resample(const float* data_in,
         return out;
     }
 
-    // Estimate output frame count
-    ma_uint64 expected_out = (ma_uint64)((double)frames_in * sample_rate_out / sample_rate_in) + 16;
+    // Estimate output frame count. The ratio is unbounded (both rates are a
+    // caller-supplied unsigned int), so the estimate is checked in double
+    // before the conversion: a double above UINT64_MAX converts to an
+    // unsigned integer type by undefined behaviour, not by saturating.
+    const double estimate = (double)frames_in * (double)sample_rate_out
+                            / (double)sample_rate_in + 16.0;
+    if (!(estimate >= 0.0) || estimate > (double)UINT_MAX) {
+        if (err && err_size > 0) {
+            snprintf(err, err_size,
+                     "Resampling %u frames from %u Hz to %u Hz exceeds the "
+                     "maximum output length",
+                     frames_in, sample_rate_in, sample_rate_out);
+        }
+        return NULL;
+    }
+    ma_uint64 expected_out = (ma_uint64)estimate;
 
     // Allocate output buffer
-    float* out_buf = (float*)malloc((size_t)expected_out * channels * sizeof(float));
+    size_t out_bytes;
+    if (!samples_to_bytes((unsigned int)expected_out, channels, &out_bytes)) {
+        if (err && err_size > 0) snprintf(err, err_size, "Audio data too large");
+        return NULL;
+    }
+    float* out_buf = (float*)malloc(out_bytes);
     if (!out_buf) {
         if (err && err_size > 0) snprintf(err, err_size, "Out of memory");
         return NULL;
@@ -584,6 +638,7 @@ MH_AudioData* mh_audio_resample(const float* data_in,
     }
     out->data = out_buf;
     out->channels = channels;
+    // out_count cannot exceed expected_out, which was capped at UINT_MAX.
     out->frames = (unsigned int)out_count;
     out->sample_rate = sample_rate_out;
     return out;

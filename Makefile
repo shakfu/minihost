@@ -4,7 +4,7 @@
 .PHONY: all juce cli sync build rebuild test wheel sdist clean distclean help \
 		check publish-test publish lint lint-fix format format-check \
 		typecheck qa docs docs-serve docs-deploy desktop run-desktop tsan \
-		cli-debug cli-asan
+		native-tests cli-debug cli-asan
 
 # Default target - build Python bindings
 all: build
@@ -37,7 +37,8 @@ rebuild: build
 test: build
 	@uv run pytest tests/ -v
 
-# ThreadSanitizer stress test for the lock-free SPSC ring buffers.
+# ThreadSanitizer stress test for the lock-free SPSC ring buffers and the
+# transport seqlock.
 # Compiles the ring buffers + harness with -fsanitize=thread (no JUCE) and
 # runs them. Override the workload with N=... (default 200000). macOS/Linux;
 # needs a clang/gcc with TSan. See tests/tsan/README.md.
@@ -54,6 +55,31 @@ tsan:
 		-o build/tsan_ringbuffer_stress
 	@TSAN_OPTIONS="halt_on_error=1 $(TSAN_OPTIONS)" \
 		TSAN_STRESS_N=$(or $(N),200000) ./build/tsan_ringbuffer_stress
+
+# Native unit tests for the C layers no Python path can reach: the ring-buffer
+# constructors (every in-tree caller passes a constant) and the MIDI
+# message-length table (asserting what reaches a port needs a real device).
+# Built with UBSan and
+# -fno-sanitize-recover, because the capacity-rounding bug it covers is signed
+# overflow that calloc then masks: without the sanitizer the constructor
+# returns NULL either way and the test cannot tell the two apart. Run in CI by
+# the native-tests job in .github/workflows/native.yml.
+native-tests:
+	@mkdir -p build
+	@$(CXX) -std=c++17 -O1 -g -fsanitize=undefined -fno-sanitize-recover=all \
+		-Iprojects/libminihost_audio -Iprojects/libminihost \
+		tests/native/ringbuffer_bounds.cpp \
+		projects/libminihost_audio/midi_ringbuffer.cpp \
+		projects/libminihost_audio/param_ringbuffer.cpp \
+		projects/libminihost_audio/transport_ringbuffer.cpp \
+		projects/libminihost_audio/audio_ringbuffer.cpp \
+		-o build/ringbuffer_bounds
+	@./build/ringbuffer_bounds
+	@$(CXX) -std=c++17 -O1 -g -fsanitize=undefined -fno-sanitize-recover=all \
+		-Iprojects/libminihost_audio -Iprojects/libminihost \
+		tests/native/midi_message_length.cpp \
+		-o build/midi_message_length
+	@./build/midi_message_length
 
 # The two native CLI binaries built in configurations the Release build in CI
 # does not exercise. Both use their own build dir so the Release build/ tree
@@ -239,7 +265,8 @@ help:
 	@echo "  format       - Apply code formatting (mutates)"
 	@echo "  typecheck    - Run mypy type checker"
 	@echo "  qa           - Non-mutating gate: test, lint, format-check, typecheck"
-	@echo "  tsan         - ThreadSanitizer ring-buffer stress test"
+	@echo "  tsan         - ThreadSanitizer lock-free stress test"
+	@echo "  native-tests - UBSan unit tests for C layers with no Python binding"
 	@echo "  cli-debug    - Build native CLIs with assertions on, run CLI tests"
 	@echo "  cli-asan     - Build native CLIs with ASan+UBSan, run CLI tests"
 	@echo "  wheel        - Build wheel distribution"
