@@ -48,6 +48,9 @@ not classify as a race) is still caught:
   backwards. The payload is individual atomics rather than a plain struct,
   because a seqlock over a plain struct is a data race however the counter is
   ordered -- TSan flags that version on the first read.
+- **Transport snapshot** (`mh_transport_snapshot_*`, the C API the audio
+  device publishes its playhead through): the same checks through the C
+  struct, plus nothing is readable before the first write.
 
 A clean run prints `all clean (no data races, SPSC correctness held)`.
 

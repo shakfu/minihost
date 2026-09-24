@@ -105,6 +105,13 @@ def test_duplicate_names_are_numbered():
     assert slugs == ["bypass", "bypass2", "bypass3"]
 
 
+def test_numbering_skips_an_independently_named_slug():
+    """The layout and OscMapper.bind_all must spell the same addresses."""
+    plugin = _fake_plugin([_info("Foo"), _info("Foo"), _info("Foo2")])
+    slugs = [p.slug for p in touch.collect_parameters(plugin)]
+    assert slugs == ["foo", "foo3", "foo2"]
+
+
 def test_cc_numbers_run_out_at_128():
     plugin = _fake_plugin([_info(f"P{i}") for i in range(200)])
     params = touch.collect_parameters(plugin)

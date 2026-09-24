@@ -60,8 +60,9 @@ tsan:
 		TSAN_STRESS_N=$(or $(N),200000) ./build/tsan_ringbuffer_stress
 
 # Native unit tests for the C layers no Python path can reach: the ring-buffer
-# constructors (every in-tree caller passes a constant) and the MIDI
-# message-length table (asserting what reaches a port needs a real device).
+# constructors (every in-tree caller passes a constant), the MIDI
+# message-length table (asserting what reaches a port needs a real device) and
+# the .vstpreset int64 decoder (only UBSan sees its signed-shift UB).
 # Built with UBSan and
 # -fno-sanitize-recover, because the capacity-rounding bug it covers is signed
 # overflow that calloc then masks: without the sanitizer the constructor
@@ -83,6 +84,13 @@ native-tests:
 		tests/native/midi_message_length.cpp \
 		-o build/midi_message_length
 	@./build/midi_message_length
+	@$(CC) -std=c11 -O1 -g -fsanitize=undefined -fno-sanitize-recover=all \
+		-Iprojects/libminihost -c projects/libminihost/minihost_vstpreset.c \
+		-o build/minihost_vstpreset_ubsan.o
+	@$(CXX) -std=c++17 -O1 -g -fsanitize=undefined -fno-sanitize-recover=all \
+		-Iprojects/libminihost tests/native/vstpreset_malformed.cpp \
+		build/minihost_vstpreset_ubsan.o -o build/vstpreset_malformed
+	@./build/vstpreset_malformed build
 
 # The two native CLI binaries built in configurations the Release build in CI
 # does not exercise. Both use their own build dir so the Release build/ tree

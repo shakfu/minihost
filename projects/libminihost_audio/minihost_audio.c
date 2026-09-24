@@ -19,8 +19,8 @@
 #include <stdio.h>
 
 // Portable acquire/release atomics for a single pointer-sized slot, used for
-// the audio input-callback pointer (published by the app thread, read by the
-// audio thread). We avoid C11 <stdatomic.h> because MSVC gates it behind an
+// the MIDI-out pump pointer (published by the app thread, read by the audio
+// thread). We avoid C11 <stdatomic.h> because MSVC gates it behind an
 // opt-in flag that the Visual Studio generator does not reliably pass; the
 // builtins/intrinsics below need no flag and work on every platform minihost
 // builds for (x86-64 and arm64, Clang / GCC / MSVC).
@@ -50,6 +50,9 @@ static inline void mh_atomic_inc_long(volatile long* slot) {
 static inline long mh_atomic_load_long(volatile long* slot) {
     return _InterlockedCompareExchange(slot, 0, 0);
 }
+static inline void mh_atomic_store_long(volatile long* slot, long value) {
+    (void)_InterlockedExchange(slot, value);
+}
 #else
 static inline void mh_atomic_inc_long(volatile long* slot) {
     (void)__atomic_add_fetch(slot, 1, __ATOMIC_RELAXED);
@@ -57,9 +60,42 @@ static inline void mh_atomic_inc_long(volatile long* slot) {
 static inline long mh_atomic_load_long(volatile long* slot) {
     return __atomic_load_n(slot, __ATOMIC_RELAXED);
 }
+static inline void mh_atomic_store_long(volatile long* slot, long value) {
+    __atomic_store_n(slot, value, __ATOMIC_RELAXED);
+}
 #endif
 
-#define MH_TRANSPORT_PUB_SLOTS 4
+// Sequentially consistent accessors for the input-callback handshake
+// (mh_audio_set_input_callback). It is a Dekker pattern: each side stores one
+// flag and loads the other's, which acquire/release does not order.
+#if defined(_MSC_VER)
+static inline void* mh_atomic_load_seqcst_ptr(void* volatile* slot) {
+    return _InterlockedCompareExchangePointer(slot, NULL, NULL);
+}
+static inline void mh_atomic_store_seqcst_ptr(void* volatile* slot, void* value) {
+    (void)_InterlockedExchangePointer(slot, value);
+}
+static inline long mh_atomic_load_seqcst_long(volatile long* slot) {
+    return _InterlockedCompareExchange(slot, 0, 0);
+}
+static inline void mh_atomic_store_seqcst_long(volatile long* slot, long value) {
+    (void)_InterlockedExchange(slot, value);
+}
+#else
+static inline void* mh_atomic_load_seqcst_ptr(void* volatile* slot) {
+    return __atomic_load_n(slot, __ATOMIC_SEQ_CST);
+}
+static inline void mh_atomic_store_seqcst_ptr(void* volatile* slot, void* value) {
+    __atomic_store_n(slot, value, __ATOMIC_SEQ_CST);
+}
+static inline long mh_atomic_load_seqcst_long(volatile long* slot) {
+    return __atomic_load_n(slot, __ATOMIC_SEQ_CST);
+}
+static inline void mh_atomic_store_seqcst_long(volatile long* slot, long value) {
+    __atomic_store_n(slot, value, __ATOMIC_SEQ_CST);
+}
+#endif
+
 #define MH_MAX_SLOT_NAMES 64
 #define MH_SLOT_NAME_LEN 64
 #define MH_TRANSPORT_MAX_TARGETS 64
@@ -77,15 +113,14 @@ struct MH_AudioDevice {
     int capture;             // 1 if duplex (capture enabled), 0 if playback only
 
     // Input callback for effects. Read on the audio thread, written from the
-    // app thread (mh_audio_set_input_callback). Stored type-erased as void*
-    // and accessed through the acquire/release pointer atomics above, so the
-    // audio thread never reads a torn pointer; user_data is published before
-    // the pointer, so observing a non-NULL callback implies its user_data is
-    // visible too. Callers must clear (set NULL) before installing a different
-    // callback (the existing contract -- the live source goes start -> stop ->
-    // start, never a hot swap between two distinct non-NULL callbacks).
+    // app thread (mh_audio_set_input_callback). The audio thread holds
+    // input_callback_busy nonzero from before it loads the pointer until the
+    // call returns; the setter unpublishes the old pointer and waits for busy
+    // to clear before it writes user_data or returns. Once the setter returns,
+    // the old callback, its user_data and anything they own are unreferenced.
     void* input_callback;  // holds an MH_AudioInputCallback
     void* input_callback_user_data;
+    volatile long input_callback_busy;
 
     // Pre-allocated conversion buffers (non-interleaved).
     //
@@ -151,17 +186,15 @@ struct MH_AudioDevice {
 
     // Host playhead. `transport` is owned outright by the audio thread; every
     // other thread posts commands to transport_commands and reads back
-    // through the published snapshots. transport_enabled is written only by
-    // the audio thread (via a command) and read by mh_audio_get_transport_*.
+    // through transport_pub, which the audio thread writes once per block.
     MH_TransportRingBuffer* transport_commands;
     MH_TransportInfo transport;
-    int transport_enabled;
-    // Rotating published snapshots. The audio thread fills the next slot and
-    // publishes its address; readers take the address and copy. See the note
-    // on mh_audio_get_transport about what this does and does not guarantee.
-    MH_TransportInfo transport_pub[MH_TRANSPORT_PUB_SLOTS];
-    int transport_pub_next;
-    void* transport_pub_current;  // holds an MH_TransportInfo*
+    MH_TransportSnapshot* transport_pub;
+    // Written by any thread, read by the audio thread and the getters, always
+    // through the relaxed long atomics above. It orders nothing: commands and
+    // snapshots carry their own synchronisation, so a toggle only has to
+    // become visible, and it does by the next block.
+    volatile long transport_enabled;
     // Every plugin the playhead must be handed to, resolved once at open.
     // A chain holds several, and mh_chain_get_plugin is a thread-safe (i.e.
     // locking) accessor -- calling it per block from the audio thread would
@@ -280,13 +313,36 @@ static int validate_block_size(int processor_max_block, int needed,
     return 0;
 }
 
-// Allocate non-interleaved buffer array
+// Largest device period accepted. Keeps buffer_capacity (twice this) and the
+// callback's interleave index (frame * channels, channels <= MA_MAX_CHANNELS)
+// inside int.
+#define MH_AUDIO_MAX_PERIOD_FRAMES (1 << 20)
+
+// The period the conversion buffers are sized from: the negotiated one, or
+// the request if the backend reports none. Returns 0 if it is too large.
+static int period_frames(ma_uint32 negotiated, int requested,
+                         char* err_buf, size_t err_buf_size) {
+    ma_uint32 period = negotiated ? negotiated : (ma_uint32)requested;
+    if (period > MH_AUDIO_MAX_PERIOD_FRAMES) {
+        if (err_buf && err_buf_size > 0) {
+            snprintf(err_buf, err_buf_size,
+                     "Audio device period of %u frames exceeds the %d-frame "
+                     "limit. Request a smaller buffer_frames.",
+                     (unsigned)period, MH_AUDIO_MAX_PERIOD_FRAMES);
+        }
+        return 0;
+    }
+    return (int)period;
+}
+
+// Allocate non-interleaved buffer array. calloc checks both products.
 static float** alloc_channel_buffers(int channels, int frames) {
-    float** buffers = (float**)malloc(channels * sizeof(float*));
+    if (channels <= 0 || frames <= 0) return NULL;
+    float** buffers = (float**)calloc((size_t)channels, sizeof(float*));
     if (!buffers) return NULL;
 
     for (int ch = 0; ch < channels; ch++) {
-        buffers[ch] = (float*)calloc(frames, sizeof(float));
+        buffers[ch] = (float*)calloc((size_t)frames, sizeof(float));
         if (!buffers[ch]) {
             // Cleanup on failure
             for (int i = 0; i < ch; i++) {
@@ -434,15 +490,6 @@ static void transport_advance(MH_AudioDevice* dev, int frames) {
     }
 }
 
-// Publish a snapshot for readers. Audio thread only.
-static void transport_publish(MH_AudioDevice* dev) {
-    MH_TransportInfo* slot = &dev->transport_pub[dev->transport_pub_next];
-    *slot = dev->transport;
-    dev->transport_pub_next =
-        (dev->transport_pub_next + 1) % MH_TRANSPORT_PUB_SLOTS;
-    mh_atomic_store_release_ptr(&dev->transport_pub_current, slot);
-}
-
 // Audio callback - called from miniaudio's audio thread
 static void audio_callback(ma_device* device, void* output, const void* input, ma_uint32 frame_count) {
     MH_AudioDevice* dev = (MH_AudioDevice*)device->pUserData;
@@ -462,7 +509,6 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
     // Get input audio: capture (duplex) > input callback > silence.
     // Every path below fills only the device's own `channels`; the sources
     // (capture stream, ring buffer, user callback) are all device-shaped.
-    void* cbp;
     if (dev->capture && input) {
         // De-interleave capture input into per-channel buffers
         const float* interleaved_input = (const float*)input;
@@ -471,13 +517,19 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
                 dev->input_buffers[ch][f] = interleaved_input[f * channels + ch];
             }
         }
-    } else if ((cbp = mh_atomic_load_acquire_ptr(&dev->input_callback)) != NULL) {
-        ((MH_AudioInputCallback)cbp)(dev->input_buffers, frames,
-                                     dev->input_callback_user_data);
     } else {
-        // Zero input buffers for synth plugins
-        for (int ch = 0; ch < channels; ch++) {
-            memset(dev->input_buffers[ch], 0, frames * sizeof(float));
+        mh_atomic_store_seqcst_long(&dev->input_callback_busy, 1);
+        void* cbp = mh_atomic_load_seqcst_ptr(&dev->input_callback);
+        if (cbp) {
+            ((MH_AudioInputCallback)cbp)(dev->input_buffers, frames,
+                                         dev->input_callback_user_data);
+        }
+        mh_atomic_store_seqcst_long(&dev->input_callback_busy, 0);
+        if (!cbp) {
+            // Zero input buffers for synth plugins
+            for (int ch = 0; ch < channels; ch++) {
+                memset(dev->input_buffers[ch], 0, frames * sizeof(float));
+            }
         }
     }
 
@@ -518,13 +570,15 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
     // Transport: commands, then hand the plugin the playhead for this block.
     // Before processing, so the plugin sees the position of the samples it is
     // about to render rather than the position after them.
+    // Read once so a block cannot publish a playhead it then fails to advance.
+    const int transport_on = mh_atomic_load_long(&dev->transport_enabled) != 0;
     if (dev->transport_commands) {
         transport_apply_commands(dev);
-        if (dev->transport_enabled) {
+        if (transport_on) {
             for (int i = 0; i < dev->transport_num_targets; i++) {
                 mh_set_transport(dev->transport_targets[i], &dev->transport);
             }
-            transport_publish(dev);
+            mh_transport_snapshot_write(dev->transport_pub, &dev->transport);
         }
     }
 
@@ -628,7 +682,7 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
         }
     }
 
-    if (dev->transport_enabled) {
+    if (transport_on) {
         transport_advance(dev, frames);
     }
 
@@ -737,9 +791,14 @@ MH_AudioDevice* mh_audio_open(MH_Plugin* plugin, const MH_AudioConfig* config,
     dev->sample_rate = dev->device.sampleRate;
     dev->channels = dev->device.playback.channels;
     // Buffer frames: use period size, with some headroom
-    dev->buffer_frames = dev->device.playback.internalPeriodSizeInFrames;
-    if (dev->buffer_frames == 0) {
-        dev->buffer_frames = requested_buffer_frames;
+    dev->buffer_frames = period_frames(
+        dev->device.playback.internalPeriodSizeInFrames,
+        requested_buffer_frames, err_buf, err_buf_size);
+    if (!dev->buffer_frames) {
+        ma_device_uninit(&dev->device);
+        ma_context_uninit(&dev->context);
+        free(dev);
+        return NULL;
     }
 
     // If device sample rate differs from plugin, update plugin
@@ -821,6 +880,7 @@ MH_AudioDevice* mh_audio_open(MH_Plugin* plugin, const MH_AudioConfig* config,
     // Transport starts disabled and at a musically sane default, so enabling
     // it does not first hand the plugin a tempo of zero.
     dev->transport_commands = mh_transport_ringbuffer_create(64);
+    dev->transport_pub = mh_transport_snapshot_create();
     dev->transport.bpm = 120.0;
     dev->transport.time_sig_numerator = 4;
     dev->transport.time_sig_denominator = 4;
@@ -945,9 +1005,14 @@ MH_AudioDevice* mh_audio_open_chain(MH_PluginChain* chain, const MH_AudioConfig*
     // Store actual configuration
     dev->sample_rate = dev->device.sampleRate;
     dev->channels = dev->device.playback.channels;
-    dev->buffer_frames = dev->device.playback.internalPeriodSizeInFrames;
-    if (dev->buffer_frames == 0) {
-        dev->buffer_frames = requested_buffer_frames;
+    dev->buffer_frames = period_frames(
+        dev->device.playback.internalPeriodSizeInFrames,
+        requested_buffer_frames, err_buf, err_buf_size);
+    if (!dev->buffer_frames) {
+        ma_device_uninit(&dev->device);
+        ma_context_uninit(&dev->context);
+        free(dev);
+        return NULL;
     }
 
     // Note: For chains, we don't adjust sample rate of individual plugins here.
@@ -1031,6 +1096,7 @@ MH_AudioDevice* mh_audio_open_chain(MH_PluginChain* chain, const MH_AudioConfig*
     // Transport starts disabled and at a musically sane default, so enabling
     // it does not first hand the plugin a tempo of zero.
     dev->transport_commands = mh_transport_ringbuffer_create(64);
+    dev->transport_pub = mh_transport_snapshot_create();
     dev->transport.bpm = 120.0;
     dev->transport.time_sig_numerator = 4;
     dev->transport.time_sig_denominator = 4;
@@ -1101,6 +1167,7 @@ void mh_audio_close(MH_AudioDevice* dev) {
     if (dev->transport_commands) {
         mh_transport_ringbuffer_free(dev->transport_commands);
     }
+    mh_transport_snapshot_free(dev->transport_pub);
 
     // Cleanup audio input ring buffer
     if (dev->audio_in_buffer) {
@@ -1148,11 +1215,17 @@ int mh_audio_is_playing(MH_AudioDevice* dev) {
 
 void mh_audio_set_input_callback(MH_AudioDevice* dev, MH_AudioInputCallback cb, void* user_data) {
     if (!dev) return;
-    // Publish user_data before the callback pointer so the audio thread,
-    // which loads the callback with acquire ordering, sees a matching
-    // user_data once it observes a non-NULL callback (release store below).
+    // Unpublish, then wait out a callback that loaded the old pointer before
+    // the store. The wait lasts at most one input callback invocation.
+    mh_atomic_store_seqcst_ptr(&dev->input_callback, NULL);
+    while (mh_atomic_load_seqcst_long(&dev->input_callback_busy)) {
+        ma_sleep(1);
+    }
+    if (!cb) return;
+    // The audio thread reads user_data only after loading a non-NULL
+    // pointer, so the release below publishes it.
     dev->input_callback_user_data = user_data;
-    mh_atomic_store_release_ptr(&dev->input_callback, (void*)cb);
+    mh_atomic_store_seqcst_ptr(&dev->input_callback, (void*)cb);
 }
 
 double mh_audio_get_sample_rate(MH_AudioDevice* dev) {
@@ -1465,15 +1538,14 @@ static int transport_push(MH_AudioDevice* dev, const MH_TransportCommand* cmd) {
 
 int mh_audio_set_transport_enabled(MH_AudioDevice* dev, int enabled) {
     if (!dev) return 0;
-    // Read by the audio thread each block. A plain int store of 0 or 1 is the
-    // one case where tearing is not a concern, and gating it behind the
-    // command ring would mean the flag lags the commands that depend on it.
-    dev->transport_enabled = enabled ? 1 : 0;
+    // An atomic rather than a command: through the ring, the flag would lag
+    // the commands that depend on it.
+    mh_atomic_store_long(&dev->transport_enabled, enabled ? 1 : 0);
     return 1;
 }
 
 int mh_audio_get_transport_enabled(MH_AudioDevice* dev) {
-    return dev ? dev->transport_enabled : 0;
+    return dev ? (int)mh_atomic_load_long(&dev->transport_enabled) : 0;
 }
 
 int mh_audio_transport_play(MH_AudioDevice* dev) {
@@ -1534,12 +1606,8 @@ int mh_audio_transport_set_recording(MH_AudioDevice* dev, int recording) {
 }
 
 int mh_audio_get_transport(MH_AudioDevice* dev, MH_TransportInfo* out) {
-    if (!dev || !out || !dev->transport_enabled) return 0;
-    MH_TransportInfo* published =
-        (MH_TransportInfo*)mh_atomic_load_acquire_ptr(&dev->transport_pub_current);
-    if (!published) return 0;
-    *out = *published;
-    return 1;
+    if (!dev || !out || !mh_atomic_load_long(&dev->transport_enabled)) return 0;
+    return mh_transport_snapshot_read(dev->transport_pub, out);
 }
 
 // An acceptable slot name: alphanumeric, starting with a letter, non-empty and
@@ -1655,7 +1723,8 @@ static void audio_ringbuffer_input_callback(float* const* buffer, int nframes, v
 int mh_audio_enable_input(MH_AudioDevice* dev, int capacity_frames) {
     if (!dev) return 0;
 
-    // Free existing buffer if any
+    // Detach the reader before freeing the ring it reads.
+    mh_audio_set_input_callback(dev, NULL, NULL);
     if (dev->audio_in_buffer) {
         mh_audio_ringbuffer_free(dev->audio_in_buffer);
         dev->audio_in_buffer = NULL;
@@ -1672,10 +1741,10 @@ int mh_audio_enable_input(MH_AudioDevice* dev, int capacity_frames) {
 void mh_audio_disable_input(MH_AudioDevice* dev) {
     if (!dev) return;
 
-    // Clear the input callback first (audio thread will see NULL and zero buffers)
+    // Returns only once the audio thread has left the callback, so the ring
+    // can be freed.
     mh_audio_set_input_callback(dev, NULL, NULL);
 
-    // Then free the ring buffer
     if (dev->audio_in_buffer) {
         mh_audio_ringbuffer_free(dev->audio_in_buffer);
         dev->audio_in_buffer = NULL;

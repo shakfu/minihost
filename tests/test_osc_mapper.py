@@ -319,6 +319,25 @@ def test_bind_all_numbers_duplicate_names():
     assert set(mapper.addresses) == {"/mh/param/bypass", "/mh/param/bypass2"}
 
 
+def test_bind_all_numbering_skips_an_independently_named_slug():
+    """Numbering only duplicates of one slug gave Foo, Foo, Foo2 the
+    addresses foo, foo2, foo2, and the third binding replaced the second."""
+    plugin = _make_plugin({"a": 0, "b": 1, "c": 2})
+    names = ["Foo", "Foo", "Foo2"]
+    plugin.get_param_info = MagicMock(
+        side_effect=lambda i: {"name": names[i], "is_automatable": True}
+    )
+
+    mapper = OscMapper(plugin)
+    assert mapper.bind_all(numeric=False) == 3
+
+    assert mapper.feedback_addresses() == {
+        "/mh/param/foo": 0,
+        "/mh/param/foo3": 1,
+        "/mh/param/foo2": 2,
+    }
+
+
 # -- slug ---------------------------------------------------------------------
 
 

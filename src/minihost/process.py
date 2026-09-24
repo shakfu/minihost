@@ -308,7 +308,9 @@ def _prepare_render(
         sc_channels=sc_channels,
         midi_events=midi_events,
         has_midi=bool(midi_events),
-        auto_list=list(param_changes) if param_changes else [],
+        # _slice_block_events walks the list once, so it must be in sample
+        # order. Stable, so same-sample changes keep the caller's order.
+        auto_list=sorted(param_changes, key=lambda c: c[0]) if param_changes else [],
         has_auto=bool(param_changes),
         has_sidechain=sc_buf is not None,
         out_frames=out_frames,

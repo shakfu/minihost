@@ -20,6 +20,7 @@ the C ABI -- see tests/test_api_version.py.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -112,15 +113,23 @@ def test_python_cli_reports_the_release_version():
 # rather than fail, quietly losing the coverage on the one platform where the
 # build layout differs.
 _NATIVE_CLIS = [
-    ("minihost_c", find_cli_binary("minihost_c", "MINIHOST_C_BIN")),
-    ("minihost_cpp", find_cli_binary("minihost_cpp", "MINIHOST_CPP_BIN")),
+    ("minihost_c", "MINIHOST_C_BIN"),
+    ("minihost_cpp", "MINIHOST_CPP_BIN"),
 ]
 
 
-@pytest.mark.parametrize("name,binary", _NATIVE_CLIS, ids=[n for n, _ in _NATIVE_CLIS])
-def test_native_cli_reports_the_release_version(name: str, binary: str | None):
+@pytest.mark.parametrize("name,env_var", _NATIVE_CLIS, ids=[n for n, _ in _NATIVE_CLIS])
+def test_native_cli_reports_the_release_version(name: str, env_var: str):
+    binary = find_cli_binary(name, env_var)
     if binary is None:
         pytest.skip(f"{name} not built (standalone cmake build only)")
+    # CMake reconfigures when pyproject.toml changes (CMAKE_CONFIGURE_DEPENDS),
+    # so only a binary older than it can carry an outdated version. A binary
+    # named by the env var is what the caller just built and is always checked.
+    if binary != os.environ.get(env_var) and (
+        Path(binary).stat().st_mtime < PYPROJECT.stat().st_mtime
+    ):
+        pytest.skip(f"{binary} predates pyproject.toml; rebuild with `make cli`")
     result = subprocess.run([binary, "--version"], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert f"minihost {_pyproject_version()}" in result.stdout

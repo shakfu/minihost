@@ -236,10 +236,14 @@ def midi_file_to_events(
     only playable channel-voice messages are kept. This is the same
     conversion :class:`MidiRenderer` performs internally, exposed for
     callers (e.g. the project loader) that drive a graph block by block.
+
+    Raises:
+        RuntimeError: ``midi_file`` is a path that cannot be loaded.
     """
     if isinstance(midi_file, str):
         mf = MidiFile()
-        mf.load(midi_file)
+        if not mf.load(midi_file):
+            raise RuntimeError(f"Failed to load MIDI file: {midi_file}")
     else:
         mf = midi_file
 

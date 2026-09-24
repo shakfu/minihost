@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `mh_audio_get_transport` could copy a snapshot slot while the audio thread rewrote it. The four rotating slots bounded the race but did not prevent it. Snapshots now go through the existing `TransportSeqlock`.
+
+- `transport_enabled` was a plain `int` written by the caller and read by the audio thread, which is a data race in C. It is now accessed atomically.
+
+- `mh_audio_disable_input` freed the input ring while an audio callback could still be reading it. `mh_audio_set_input_callback` now waits for any in-flight call to the old callback before returning. `mh_audio_enable_input` detaches the reader before freeing the old ring.
+
+- The `.vstpreset` reader decoded int64 fields by left-shifting a signed value, which is undefined once the top byte has its high bit set. It now decodes to unsigned and range-checks. Covered under UBSan by `tests/native/vstpreset_malformed.cpp`.
+
+- `load_project` leaked already-opened plugins when a later plugin failed to open, restore state, or join the graph. It now closes them.
+
+- `process_audio` applied unsorted `param_changes` late: the block slicer stopped at the first change past the block end. Changes are now sorted by sample.
+
+- `midi_file_to_events` returned an empty list for a missing or malformed file. It now raises `RuntimeError`, as `process_audio` already did.
+
+- `load_project` rejects non-positive `sample_rate`, `block_size` and channel counts, negative `duration_seconds` and `num_inputs`, and non-numeric mix `gains`.
+
+- `OscMapper.bind_all` and `touch.collect_parameters` gave parameters named `Foo`, `Foo`, `Foo2` the addresses `foo`, `foo2`, `foo2`, so the third replaced the second. Numbering now skips taken slugs: `foo`, `foo3`, `foo2`.
+
+- The audio device rejects a period above 2^20 frames. `buffer_frames * 2` could overflow `int` before allocation.
+
+- `test_native_cli_reports_the_release_version` failed on CLI binaries left in `build/` from an earlier version. It now skips discovered binaries older than `pyproject.toml`. Binaries named by `MINIHOST_C_BIN` / `MINIHOST_CPP_BIN` are always checked.
+
 ## [0.8.2]
 
 ### Added

@@ -82,7 +82,7 @@ jobs:
       # toolchain without a UBSan runtime fails at link rather than reporting
       # anything useful.
       - name: Build and run the native harnesses under UBSan
-        run: make native-tests CXX=clang++
+        run: make native-tests CC=clang CXX=clang++
 
   debug:
     name: Debug build (${{ matrix.os }})

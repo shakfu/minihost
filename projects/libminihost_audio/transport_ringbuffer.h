@@ -19,6 +19,8 @@
 //
 #pragma once
 
+#include "minihost.h"  // MH_TransportInfo
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -57,6 +59,25 @@ int mh_transport_ringbuffer_push(MH_TransportRingBuffer* rb,
 // Pop everything pending (consumer/audio thread). Returns the count.
 int mh_transport_ringbuffer_pop_all(MH_TransportRingBuffer* rb,
                                     MH_TransportCommand* out, int max_out);
+
+// Published playhead snapshot: the audio thread writes one per block, any
+// thread reads it back. A C wrapper over minihost::TransportSeqlock
+// (transport_seqlock.h), so readers never copy a slot the writer is reusing.
+//
+// Thread Safety:
+//   - write(): one writer thread only (the audio thread)
+//   - read(): any thread; retries while a write is in flight
+typedef struct MH_TransportSnapshot MH_TransportSnapshot;
+
+MH_TransportSnapshot* mh_transport_snapshot_create(void);
+void mh_transport_snapshot_free(MH_TransportSnapshot* snap);
+
+void mh_transport_snapshot_write(MH_TransportSnapshot* snap,
+                                 const MH_TransportInfo* info);
+
+// Returns 1 and fills *out, or 0 if nothing has been written yet.
+int mh_transport_snapshot_read(const MH_TransportSnapshot* snap,
+                               MH_TransportInfo* out);
 
 #ifdef __cplusplus
 }

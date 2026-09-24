@@ -2,6 +2,7 @@
 // Lock-free SPSC command ring for the host playhead
 
 #include "transport_ringbuffer.h"
+#include "transport_seqlock.h"
 
 #include <atomic>
 #include <cstdlib>
@@ -95,6 +96,54 @@ int mh_transport_ringbuffer_pop_all(MH_TransportRingBuffer* rb,
         rb->read_pos.store(read, std::memory_order_release);
     }
     return count;
+}
+
+struct MH_TransportSnapshot {
+    minihost::TransportSeqlock seqlock;
+};
+
+MH_TransportSnapshot* mh_transport_snapshot_create(void) {
+    return new (std::nothrow) MH_TransportSnapshot();
+}
+
+void mh_transport_snapshot_free(MH_TransportSnapshot* snap) {
+    delete snap;
+}
+
+void mh_transport_snapshot_write(MH_TransportSnapshot* snap,
+                                 const MH_TransportInfo* info) {
+    if (!snap || !info) return;
+    minihost::TransportState s;
+    s.hasTransport = true;  // marks "published at least once"
+    s.bpm = info->bpm;
+    s.timeSigNum = info->time_sig_numerator;
+    s.timeSigDenom = info->time_sig_denominator;
+    s.positionSamples = info->position_samples;
+    s.positionBeats = info->position_beats;
+    s.isPlaying = info->is_playing != 0;
+    s.isRecording = info->is_recording != 0;
+    s.isLooping = info->is_looping != 0;
+    s.loopStartSamples = info->loop_start_samples;
+    s.loopEndSamples = info->loop_end_samples;
+    snap->seqlock.write(s);
+}
+
+int mh_transport_snapshot_read(const MH_TransportSnapshot* snap,
+                               MH_TransportInfo* out) {
+    if (!snap || !out) return 0;
+    const minihost::TransportState s = snap->seqlock.read();
+    if (!s.hasTransport) return 0;
+    out->bpm = s.bpm;
+    out->time_sig_numerator = s.timeSigNum;
+    out->time_sig_denominator = s.timeSigDenom;
+    out->position_samples = s.positionSamples;
+    out->position_beats = s.positionBeats;
+    out->is_playing = s.isPlaying ? 1 : 0;
+    out->is_recording = s.isRecording ? 1 : 0;
+    out->is_looping = s.isLooping ? 1 : 0;
+    out->loop_start_samples = s.loopStartSamples;
+    out->loop_end_samples = s.loopEndSamples;
+    return 1;
 }
 
 }  // extern "C"

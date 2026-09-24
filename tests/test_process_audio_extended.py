@@ -89,6 +89,37 @@ def test_slice_block_events_clamps_offset_to_block_size():
     assert idx == 1
 
 
+class _RecordingPlugin:
+    """Duck-typed Plugin that records the automation handed to each block."""
+
+    sample_rate = 48000
+    num_input_channels = 1
+    num_output_channels = 1
+    latency_samples = 0
+    max_block_size = 256
+    sidechain_channels = 0
+
+    def __init__(self):
+        self.blocks: list[list[tuple]] = []
+
+    def process_auto(self, pin, pout, midi, auto):
+        self.blocks.append(list(auto))
+
+
+def test_unsorted_param_changes_land_in_their_own_block():
+    # Unsorted, the sample-600 change stopped the slicer before the
+    # sample-0 change, which then landed in block 2 instead of block 0.
+    plugin = _RecordingPlugin()
+    minihost.process_audio(
+        plugin,
+        minihost.AudioBuffer(1, 1024),
+        param_changes=[(600, 0, 1.0), (0, 0, 0.0)],
+        block_size=256,
+        compensate_latency=False,
+    )
+    assert plugin.blocks == [[(0, 0, 0.0)], [], [(88, 0, 1.0)], []]
+
+
 # ---------------------------------------------------------------------------
 # Validation (no plugin needed for the rejection paths)
 # ---------------------------------------------------------------------------

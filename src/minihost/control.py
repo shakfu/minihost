@@ -32,6 +32,7 @@ import time
 from typing import Any, Callable, Optional
 
 from minihost._core import Plugin, osc_address_matches, osc_is_valid_address
+from minihost.touch import unique_slugs
 
 # Names match common DAW (Bitwig / Live / Reaper) conventions:
 #   linear -- straight 1:1 mapping
@@ -693,10 +694,12 @@ class OscMapper(_ParamWriter):
         address from the parameter name by the same rule, so no table has to
         be written down or kept in step.
 
-        Duplicate names are numbered (``bypass``, ``bypass2``, ...) exactly as
-        ``py2tosc.surface.unique`` does, because real plugins repeat names --
-        a compressor with three parameters called "Bypass" is ordinary -- and
-        two parameters sharing one address would make the second unreachable.
+        Duplicate names are numbered (``bypass``, ``bypass2``, ...) by
+        :func:`minihost.touch.unique_slugs`, because real plugins repeat names
+        -- a compressor with three parameters called "Bypass" is ordinary --
+        and two parameters sharing one address would make the second
+        unreachable. A number that would reuse another parameter's slug is
+        skipped.
 
         Args:
             prefix: Address prefix. Each parameter is bound at
@@ -718,18 +721,16 @@ class OscMapper(_ParamWriter):
         _validate_curve(curve)
         prefix = prefix.rstrip("/")
 
-        seen: dict[str, int] = {}
-        bound = 0
+        rows: list[tuple[int, dict]] = []
         for index in range(self._plugin.num_params):
             info = self._plugin.get_param_info(index)
             if automatable_only and not info.get("is_automatable", True):
                 continue
+            rows.append((index, info))
+        names = unique_slugs([slug(info["name"]) for _, info in rows])
 
-            name = slug(info["name"])
-            seen[name] = seen.get(name, 0) + 1
-            if seen[name] > 1:
-                name = f"{name}{seen[name]}"
-
+        bound = 0
+        for (index, info), name in zip(rows, names):
             addresses = [f"{prefix}/{name}"]
             if numeric:
                 addresses.append(f"{prefix}/{index}")

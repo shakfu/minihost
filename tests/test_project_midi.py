@@ -220,6 +220,35 @@ def test_project_midi_input_missing_source_raises(tmp_path):
         )
 
 
+def test_midi_file_to_events_missing_file_raises(tmp_path):
+    with pytest.raises(RuntimeError, match="Failed to load MIDI file"):
+        midi_file_to_events(str(tmp_path / "nope.mid"), SR)
+
+
+def test_midi_file_to_events_malformed_file_raises(tmp_path):
+    bad = tmp_path / "bad.mid"
+    bad.write_bytes(b"not a midi file")
+    with pytest.raises(RuntimeError, match="Failed to load MIDI file"):
+        midi_file_to_events(str(bad), SR)
+
+
+def test_project_midi_input_malformed_source_raises(tmp_path):
+    # Used to load as an empty event list and render silence.
+    from minihost.project import ProjectError
+
+    bad = tmp_path / "bad.mid"
+    bad.write_bytes(b"not a midi file")
+    with pytest.raises(ProjectError, match="failed to read"):
+        _render(
+            tmp_path,
+            midi_nodes=[
+                {"id": "mi", "kind": "midi_input", "source": str(bad)},
+                {"id": "mo", "kind": "midi_output"},
+            ],
+            midi_edges=[{"src": "mi", "dst": "mo", "kind": "midi"}],
+        )
+
+
 def test_project_unknown_edge_kind_raises(tmp_path):
     from minihost.project import ProjectError
 

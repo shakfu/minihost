@@ -569,3 +569,119 @@ def test_relative_input_and_sink_resolve_against_the_project_dir(tmp_path, monke
 
     assert (proj_dir / "out.wav").exists()
     assert not (elsewhere / "out.wav").exists()
+
+
+# -------------------------------------------------------------------- #
+# Partial-failure cleanup: a failed load closes every plugin it opened. #
+# -------------------------------------------------------------------- #
+
+
+class _FakePlugin:
+    """Stands in for minihost.Plugin; opening or restoring state can fail."""
+
+    instances: list["_FakePlugin"] = []
+
+    def __init__(self, path, sample_rate, max_block_size):
+        if "bad" in Path(path).name:
+            raise RuntimeError("cannot open")
+        self.path = path
+        self.closed = False
+        _FakePlugin.instances.append(self)
+
+    def set_state(self, data):
+        if data == b"bad":
+            raise RuntimeError("cannot restore")
+
+    def close(self):
+        self.closed = True
+
+
+def _two_plugin_project(tmp_path: Path, second: dict) -> Path:
+    for name in ("a.vst3", "bad.vst3"):
+        (tmp_path / name).mkdir()
+    doc = {
+        "minihost_project_version": 1,
+        "sample_rate": 48000,
+        "block_size": 256,
+        "duration_seconds": 0.1,
+        "nodes": [
+            {"id": "p1", "kind": "plugin", "path": "a.vst3"},
+            {"id": "p2", "kind": "plugin", **second},
+            {"id": "out", "kind": "output", "channels": 2, "sink": "out.wav"},
+        ],
+        "edges": [{"src": "p2", "dst": "out"}],
+    }
+    proj = tmp_path / "project.json"
+    proj.write_text(json.dumps(doc))
+    return proj
+
+
+@pytest.mark.parametrize(
+    "second, match",
+    [
+        ({"path": "bad.vst3"}, "failed to open"),
+        # base64 of b"bad"
+        ({"path": "a.vst3", "state_b64": "YmFk"}, "cannot restore"),
+    ],
+    ids=["second-open-fails", "state-restore-fails"],
+)
+def test_failed_load_closes_opened_plugins(tmp_path, monkeypatch, second, match):
+    monkeypatch.setattr(_FakePlugin, "instances", [])
+    monkeypatch.setattr(minihost, "Plugin", _FakePlugin)
+    proj = _two_plugin_project(tmp_path, second)
+
+    with pytest.raises(Exception, match=match):
+        minihost.load_project(proj)
+
+    assert _FakePlugin.instances
+    assert all(p.closed for p in _FakePlugin.instances)
+
+
+# -------------------------------------------------------------------- #
+# Render geometry: rejected at the schema boundary, not in the graph.   #
+# -------------------------------------------------------------------- #
+
+
+def _patched_identity_project(tmp_path: Path, patch) -> Path:
+    proj, _, _ = _identity_project(tmp_path)
+    doc = json.loads(proj.read_text())
+    patch(doc)
+    proj.write_text(json.dumps(doc))
+    return proj
+
+
+def _add_mix(doc, **fields):
+    doc["nodes"].append({"id": "mx", "kind": "mix", "channels": 2, **fields})
+
+
+@pytest.mark.parametrize(
+    "patch, match",
+    [
+        (lambda d: d.update(sample_rate=0), "sample_rate"),
+        (lambda d: d.update(sample_rate=-48000), "sample_rate"),
+        (lambda d: d.update(block_size=0), "block_size"),
+        (lambda d: d.update(block_size=-256), "block_size"),
+        (lambda d: d.update(duration_seconds=-1.0), "duration_seconds"),
+        (lambda d: d["nodes"][0].update(channels=0), "channels"),
+        (lambda d: d["nodes"][1].update(channels=-2), "channels"),
+        (lambda d: _add_mix(d, num_inputs=-1), "num_inputs"),
+        (lambda d: _add_mix(d, num_inputs=2, gains=[1.0]), "gains length"),
+        (lambda d: _add_mix(d, num_inputs=2, gains="ab"), "gains must be"),
+    ],
+    ids=[
+        "zero-sr",
+        "negative-sr",
+        "zero-block",
+        "negative-block",
+        "negative-duration",
+        "zero-input-channels",
+        "negative-output-channels",
+        "negative-mix-inputs",
+        "short-gains",
+        "string-gains",
+    ],
+)
+def test_invalid_render_geometry_is_rejected(tmp_path, patch, match):
+    proj = _patched_identity_project(tmp_path, patch)
+    with pytest.raises(minihost.ProjectError, match=match):
+        minihost.load_project(proj)

@@ -40,10 +40,12 @@ static int read_le_i32(const unsigned char* src) {
                  | ((unsigned)src[3] << 24));
 }
 
-static long long read_le_i64(const unsigned char* src) {
-    long long v = 0;
+// Unsigned: shifting a high final byte into a signed type is undefined.
+// Callers range-check before converting to a signed offset or size.
+static unsigned long long read_le_u64(const unsigned char* src) {
+    unsigned long long v = 0;
     for (int i = 0; i < 8; i++) {
-        v |= ((long long)src[i]) << (8 * i);
+        v |= ((unsigned long long)src[i]) << (8 * i);
     }
     return v;
 }
@@ -141,14 +143,16 @@ int mh_vstpreset_read(const char* path, MH_VstPreset* out,
         break;
     }
 
-    long long list_offset = read_le_i64(data + 40);
-    if (list_offset < HEADER_SIZE || list_offset >= flen) {
+    unsigned long long raw_list_offset = read_le_u64(data + 40);
+    if (raw_list_offset < HEADER_SIZE ||
+        raw_list_offset >= (unsigned long long)flen) {
         free(data);
         set_errf(err_buf, err_buf_size,
                  "Invalid chunk list offset: %lld (file size: %lld)",
-                 list_offset, (long long)flen);
+                 (long long)raw_list_offset, (long long)flen);
         return 0;
     }
+    long long list_offset = (long long)raw_list_offset;
     if (list_offset + 8 > flen) {
         free(data);
         set_err(err_buf, err_buf_size, "Chunk list header truncated");
@@ -179,10 +183,13 @@ int mh_vstpreset_read(const char* path, MH_VstPreset* out,
 
     for (int i = 0; i < entry_count; i++) {
         const unsigned char* entry = data + entries_start + (long long)i * ENTRY_SIZE;
-        long long chunk_offset = read_le_i64(entry + 4);
-        long long chunk_size = read_le_i64(entry + 12);
+        unsigned long long raw_offset = read_le_u64(entry + 4);
+        unsigned long long raw_size = read_le_u64(entry + 12);
 
-        if (chunk_offset < 0 || chunk_size < 0) continue;
+        // Top bit set: negative as int64. Skipped, like an unknown chunk.
+        if (raw_offset > LLONG_MAX || raw_size > LLONG_MAX) continue;
+        long long chunk_offset = (long long)raw_offset;
+        long long chunk_size = (long long)raw_size;
         // Both values come straight out of the file as int64, so the bounds
         // check is written as a subtraction: chunk_offset + chunk_size
         // overflows for offsets and sizes near INT64_MAX, wraps negative, and

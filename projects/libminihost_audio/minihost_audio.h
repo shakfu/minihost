@@ -32,7 +32,7 @@ typedef struct MH_AudioDevice MH_AudioDevice;
 
 typedef struct MH_AudioConfig {
     double sample_rate;      // 0 = use device default
-    int buffer_frames;       // 0 = auto (~256-512 depending on platform)
+    int buffer_frames;       // 0 = auto (~256-512 depending on platform); max 1 << 20
     int output_channels;     // 0 = use plugin's output channel count
     int midi_input_port;     // -1 = none, >= 0 = MIDI input port index
     int midi_output_port;    // -1 = none, >= 0 = MIDI output port index
@@ -101,6 +101,9 @@ int mh_audio_is_playing(MH_AudioDevice* dev);
 // Set input callback for effect plugins
 // The callback will be called from the audio thread to get input audio
 // Pass NULL to clear the callback (silence input)
+// Blocks until the audio thread has finished any call to the previous
+// callback, so its user_data may be freed on return. Do not call from the
+// callback itself.
 void mh_audio_set_input_callback(MH_AudioDevice* dev, MH_AudioInputCallback cb, void* user_data);
 
 // Get the actual sample rate (may differ from requested)
@@ -228,11 +231,8 @@ int mh_audio_transport_set_recording(MH_AudioDevice* dev, int recording);
 // Read the current transport back.
 //
 // The audio thread publishes a snapshot each block and this copies the most
-// recently published one. Rotating buffers make a torn read require the
-// reader to be descheduled for several audio callbacks in the middle of a
-// struct copy; that is not a proof of atomicity, and the bound is stated
-// rather than hidden. Returns 1 on success, 0 if transport is disabled or
-// nothing has been published yet.
+// recent one through a seqlock, so the copy is never torn. Returns 1 on
+// success, 0 if transport is disabled or nothing has been published yet.
 int mh_audio_get_transport(MH_AudioDevice* dev, MH_TransportInfo* out);
 
 // Listen for OSC on a UDP port and drive parameters from it directly.

@@ -74,6 +74,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -237,12 +238,20 @@ def load_project(project_path: str | Path) -> LoadedProject:
         )
 
     sr = _require_field(doc, "sample_rate", (int, float))
-    block = _require_field(doc, "block_size", int)
+    if not (math.isfinite(sr) and sr > 0):
+        raise ProjectError(f"sample_rate must be positive, got {sr}")
+    block = _require_int_at_least(doc, "block_size", 1)
     nodes_raw = _require_field(doc, "nodes", list)
     edges_raw = _require_field(doc, "edges", list)
     duration_seconds = doc.get("duration_seconds")
     if duration_seconds is not None and not isinstance(duration_seconds, (int, float)):
         raise ProjectError("duration_seconds must be a number")
+    if duration_seconds is not None and not (
+        math.isfinite(duration_seconds) and duration_seconds >= 0
+    ):
+        raise ProjectError(
+            f"duration_seconds must be non-negative, got {duration_seconds}"
+        )
 
     project_dir = project_path.parent
 
@@ -265,7 +274,7 @@ def load_project(project_path: str | Path) -> LoadedProject:
         if kind == "input":
             in_node = _InputNode(
                 id=nid,
-                channels=_require_field(raw, "channels", int),
+                channels=_require_int_at_least(raw, "channels", 1),
                 source=_resolve(project_dir, _require_field(raw, "source", str)),
                 resample=bool(raw.get("resample", False)),
             )
@@ -274,7 +283,7 @@ def load_project(project_path: str | Path) -> LoadedProject:
         elif kind == "output":
             out_node = _OutputNode(
                 id=nid,
-                channels=_require_field(raw, "channels", int),
+                channels=_require_int_at_least(raw, "channels", 1),
                 sink=_resolve(project_dir, _require_field(raw, "sink", str)),
                 bit_depth=int(raw.get("bit_depth", 24)),
             )
@@ -300,12 +309,17 @@ def load_project(project_path: str | Path) -> LoadedProject:
             plugins.append(pl_node)
             node_by_id[nid] = ("plugin", pl_node)
         elif kind == "mix":
-            num_inputs = _require_field(raw, "num_inputs", int)
+            num_inputs = _require_int_at_least(raw, "num_inputs", 0)
+            gains = raw.get("gains", [1.0] * num_inputs)
+            if not isinstance(gains, list) or not all(
+                isinstance(gv, (int, float)) and math.isfinite(gv) for gv in gains
+            ):
+                raise ProjectError(f"mix node {nid!r}: gains must be a list of numbers")
             mn = _MixNode(
                 id=nid,
                 num_inputs=num_inputs,
-                channels=_require_field(raw, "channels", int),
-                gains=list(raw.get("gains", [1.0] * num_inputs)),
+                channels=_require_int_at_least(raw, "channels", 1),
+                gains=gains,
             )
             if len(mn.gains) != num_inputs:
                 raise ProjectError(
@@ -363,7 +377,7 @@ def load_project(project_path: str | Path) -> LoadedProject:
             midi_procs.append(mp)
             node_by_id[nid] = ("midi_processor", mp)
         elif kind == "midi_merge":
-            num_inputs = _require_field(raw, "num_inputs", int)
+            num_inputs = _require_int_at_least(raw, "num_inputs", 0)
             mm = _MidiMergeNode(id=nid, num_inputs=num_inputs)
             midi_merges.append(mm)
             node_by_id[nid] = ("midi_merge", mm)
@@ -422,82 +436,96 @@ def load_project(project_path: str | Path) -> LoadedProject:
                 f"midi_input {mi.id!r}: failed to read {mi.source}: {exc}"
             ) from exc
 
-    # Open plugin instances. Descriptor-based nodes (AudioUnits, which have
-    # no file path) open via Plugin.from_descriptor; path-based nodes open by
-    # path.
-    for pl in plugins:
-        try:
-            if pl.descriptor:
-                pd_xml = base64.b64decode(pl.descriptor).decode("utf-8")
-                pl.plugin = minihost.Plugin.from_descriptor(
-                    pd_xml,
-                    sample_rate=int(sr),
-                    max_block_size=block,
-                )
+    # A failure anywhere below closes what this load opened; on success the
+    # returned LoadedProject owns the instances.
+    opened: list[Any] = []
+    g = None
+    try:
+        # Open plugin instances. Descriptor-based nodes (AudioUnits, which have
+        # no file path) open via Plugin.from_descriptor; path-based nodes open by
+        # path.
+        for pl in plugins:
+            try:
+                if pl.descriptor:
+                    pd_xml = base64.b64decode(pl.descriptor).decode("utf-8")
+                    pl.plugin = minihost.Plugin.from_descriptor(
+                        pd_xml,
+                        sample_rate=int(sr),
+                        max_block_size=block,
+                    )
+                else:
+                    if pl.path is None or not pl.path.exists():
+                        raise ProjectError(f"plugin path not found: {pl.path}")
+                    pl.plugin = minihost.Plugin(
+                        str(pl.path),
+                        sample_rate=int(sr),
+                        max_block_size=block,
+                    )
+            except ProjectError:
+                raise
+            except Exception as exc:
+                raise ProjectError(f"plugin {pl.id!r} failed to open: {exc}") from exc
+            opened.append(pl.plugin)
+            if pl.state_b64:
+                pl.plugin.set_state(base64.b64decode(pl.state_b64))
+
+        # Build the graph.
+        g = minihost.PluginGraph(block, float(sr))
+        id_to_nodeid: dict[str, int] = {}
+        for inp in inputs:
+            id_to_nodeid[inp.id] = g.add_input(inp.channels)
+        for pl in plugins:
+            id_to_nodeid[pl.id] = g.add_plugin(pl.plugin)  # type: ignore[arg-type]
+        for mx in mixes:
+            nid = g.add_mix(mx.num_inputs, mx.channels)
+            for i, gv in enumerate(mx.gains):
+                g.set_mix_gain(nid, i, float(gv))
+            id_to_nodeid[mx.id] = nid
+        for out in outputs:
+            id_to_nodeid[out.id] = g.add_output(out.channels)
+        for mi in midi_inputs:
+            mi.node_id = g.add_midi_input()
+            id_to_nodeid[mi.id] = mi.node_id
+        for mp in midi_procs:
+            id_to_nodeid[mp.id] = g.add_midi_processor(mp.params)
+        for mm in midi_merges:
+            id_to_nodeid[mm.id] = g.add_midi_merge(mm.num_inputs)
+        for mo in midi_outputs:
+            mo.node_id = g.add_midi_output()
+            id_to_nodeid[mo.id] = mo.node_id
+
+        # Nodes that take MIDI on numbered ports (only midi_merge does); MIDI
+        # edges to anything else use the implicit port 0.
+        midi_merge_ids = {mm.id for mm in midi_merges}
+
+        for e in edges_raw:
+            src = _require_field(e, "src", str)
+            dst = _require_field(e, "dst", str)
+            dst_port = int(e.get("dst_port", 0))
+            ekind = e.get("kind", "audio")
+            if src not in id_to_nodeid:
+                raise ProjectError(f"edge references unknown src id {src!r}")
+            if dst not in id_to_nodeid:
+                raise ProjectError(f"edge references unknown dst id {dst!r}")
+            if ekind == "audio":
+                g.connect(id_to_nodeid[src], id_to_nodeid[dst], dst_port=dst_port)
+            elif ekind == "midi":
+                if dst in midi_merge_ids:
+                    g.connect_midi_port(id_to_nodeid[src], id_to_nodeid[dst], dst_port)
+                else:
+                    g.connect_midi(id_to_nodeid[src], id_to_nodeid[dst])
             else:
-                if pl.path is None or not pl.path.exists():
-                    raise ProjectError(f"plugin path not found: {pl.path}")
-                pl.plugin = minihost.Plugin(
-                    str(pl.path),
-                    sample_rate=int(sr),
-                    max_block_size=block,
+                raise ProjectError(
+                    f'edge kind must be "audio" or "midi", got {ekind!r}'
                 )
-        except ProjectError:
-            raise
-        except Exception as exc:
-            raise ProjectError(f"plugin {pl.id!r} failed to open: {exc}") from exc
-        if pl.state_b64:
-            pl.plugin.set_state(base64.b64decode(pl.state_b64))
 
-    # Build the graph.
-    g = minihost.PluginGraph(block, float(sr))
-    id_to_nodeid: dict[str, int] = {}
-    for inp in inputs:
-        id_to_nodeid[inp.id] = g.add_input(inp.channels)
-    for pl in plugins:
-        id_to_nodeid[pl.id] = g.add_plugin(pl.plugin)  # type: ignore[arg-type]
-    for mx in mixes:
-        nid = g.add_mix(mx.num_inputs, mx.channels)
-        for i, gv in enumerate(mx.gains):
-            g.set_mix_gain(nid, i, float(gv))
-        id_to_nodeid[mx.id] = nid
-    for out in outputs:
-        id_to_nodeid[out.id] = g.add_output(out.channels)
-    for mi in midi_inputs:
-        mi.node_id = g.add_midi_input()
-        id_to_nodeid[mi.id] = mi.node_id
-    for mp in midi_procs:
-        id_to_nodeid[mp.id] = g.add_midi_processor(mp.params)
-    for mm in midi_merges:
-        id_to_nodeid[mm.id] = g.add_midi_merge(mm.num_inputs)
-    for mo in midi_outputs:
-        mo.node_id = g.add_midi_output()
-        id_to_nodeid[mo.id] = mo.node_id
-
-    # Nodes that take MIDI on numbered ports (only midi_merge does); MIDI
-    # edges to anything else use the implicit port 0.
-    midi_merge_ids = {mm.id for mm in midi_merges}
-
-    for e in edges_raw:
-        src = _require_field(e, "src", str)
-        dst = _require_field(e, "dst", str)
-        dst_port = int(e.get("dst_port", 0))
-        ekind = e.get("kind", "audio")
-        if src not in id_to_nodeid:
-            raise ProjectError(f"edge references unknown src id {src!r}")
-        if dst not in id_to_nodeid:
-            raise ProjectError(f"edge references unknown dst id {dst!r}")
-        if ekind == "audio":
-            g.connect(id_to_nodeid[src], id_to_nodeid[dst], dst_port=dst_port)
-        elif ekind == "midi":
-            if dst in midi_merge_ids:
-                g.connect_midi_port(id_to_nodeid[src], id_to_nodeid[dst], dst_port)
-            else:
-                g.connect_midi(id_to_nodeid[src], id_to_nodeid[dst])
-        else:
-            raise ProjectError(f'edge kind must be "audio" or "midi", got {ekind!r}')
-
-    g.compile()
+        g.compile()
+    except BaseException:
+        if g is not None:
+            g.close()
+        for inst in opened:
+            inst.close()
+        raise
 
     # Parse optional layout. Unknown ids are dropped silently;
     # missing-or-malformed entries become auto-layout fallbacks.
@@ -738,6 +766,13 @@ def _resolve(project_dir: Path, value: str) -> Path:
     returned as given.
     """
     return (project_dir / value).resolve()
+
+
+def _require_int_at_least(d: dict, key: str, minimum: int) -> int:
+    val = _require_field(d, key, int)
+    if val < minimum:
+        raise ProjectError(f"field {key!r} must be >= {minimum}, got {val}")
+    return val
 
 
 def _require_field(d: dict, key: str, expected_type) -> Any:

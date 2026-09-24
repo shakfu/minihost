@@ -15,9 +15,9 @@
 // is caught as a functional failure too.
 //
 // Build + run:  make tsan        (see tests/tsan/README.md)
-// Scope:        the ring buffers only. The audio-callback input_callback path
-//               needs a live audio device and is not reachable headlessly; its
-//               fix is a single atomic pointer validated by inspection.
+// Scope:        the ring buffers and transport snapshots. The input-callback
+//               handshake in minihost_audio.c needs a live audio device and
+//               is not reachable headlessly.
 //
 // Exit code: non-zero on a functional failure. Run with
 //   TSAN_OPTIONS=halt_on_error=1 to also abort on the first data race.
@@ -462,6 +462,93 @@ long stress_seqlock(long N) {
     return fails.load(std::memory_order_relaxed);
 }
 
+// --- transport snapshot: the C API minihost_audio.c publishes the playhead
+// through. The audio thread writes one per block; any thread reads it back.
+MH_TransportInfo encode_transport_info(long seq) {
+    const minihost::TransportState s = encode_transport(seq);
+    MH_TransportInfo t;
+    t.bpm = s.bpm;
+    t.time_sig_numerator = s.timeSigNum;
+    t.time_sig_denominator = s.timeSigDenom;
+    t.position_samples = s.positionSamples;
+    t.position_beats = s.positionBeats;
+    t.is_playing = s.isPlaying;
+    t.is_recording = s.isRecording;
+    t.is_looping = s.isLooping;
+    t.loop_start_samples = s.loopStartSamples;
+    t.loop_end_samples = s.loopEndSamples;
+    return t;
+}
+
+bool transport_info_consistent(const MH_TransportInfo& t) {
+    const MH_TransportInfo want = encode_transport_info((long) t.position_samples);
+    // Field by field: memcmp would also compare the struct's padding.
+    return t.bpm == want.bpm &&
+           t.time_sig_numerator == want.time_sig_numerator &&
+           t.time_sig_denominator == want.time_sig_denominator &&
+           t.position_beats == want.position_beats &&
+           t.is_playing == want.is_playing &&
+           t.is_recording == want.is_recording &&
+           t.is_looping == want.is_looping &&
+           t.loop_start_samples == want.loop_start_samples &&
+           t.loop_end_samples == want.loop_end_samples;
+}
+
+long stress_transport_snapshot(long N) {
+    MH_TransportSnapshot* snap = mh_transport_snapshot_create();
+    long fails = 0;
+    MH_TransportInfo out;
+    if (mh_transport_snapshot_read(snap, &out)) {
+        std::fprintf(stderr, "FAIL: snapshot readable before first write\n");
+        ++fails;
+    }
+
+    std::atomic<bool> done{false};
+    std::atomic<long> reader_fails{0};
+
+    std::thread writer([&] {
+        for (long i = 0; i <= N; ++i) {
+            const MH_TransportInfo t = encode_transport_info(i);
+            mh_transport_snapshot_write(snap, &t);
+        }
+        done.store(true, std::memory_order_release);
+    });
+
+    auto reader = [&] {
+        long local = 0;
+        long long last = -1;
+        while (!done.load(std::memory_order_acquire)) {
+            MH_TransportInfo t;
+            if (!mh_transport_snapshot_read(snap, &t)) continue;
+            if (!transport_info_consistent(t) || t.position_samples < last) {
+                if (local < 10) {
+                    std::fprintf(stderr,
+                        "FAIL: snapshot torn or backwards at %lld\n",
+                        t.position_samples);
+                }
+                ++local;
+            }
+            last = t.position_samples;
+        }
+        reader_fails.fetch_add(local, std::memory_order_relaxed);
+    };
+
+    std::thread r1(reader);
+    std::thread r2(reader);
+    writer.join();
+    r1.join();
+    r2.join();
+
+    if (!mh_transport_snapshot_read(snap, &out) ||
+        out.position_samples != (long long) N ||
+        !transport_info_consistent(out)) {
+        std::fprintf(stderr, "FAIL: snapshot final value wrong\n");
+        ++fails;
+    }
+    mh_transport_snapshot_free(snap);
+    return fails + reader_fails.load(std::memory_order_relaxed);
+}
+
 int main() {
     const long N = stress_count();
     std::printf("TSan ring-buffer stress: N=%ld events/frames per test\n", N);
@@ -489,6 +576,10 @@ int main() {
 
     std::printf("  seqlock.........."); std::fflush(stdout);
     f = stress_seqlock(N);         fails += f;
+    std::printf(" %s\n", f ? "FAIL" : "ok");
+
+    std::printf("  snapshot........."); std::fflush(stdout);
+    f = stress_transport_snapshot(N); fails += f;
     std::printf(" %s\n", f ? "FAIL" : "ok");
 
     if (fails) {

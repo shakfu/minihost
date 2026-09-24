@@ -38,7 +38,14 @@ import json
 import re
 from typing import Any, Optional
 
-__all__ = ["Parameter", "build_layout", "build_map", "collect_parameters", "slugify"]
+__all__ = [
+    "Parameter",
+    "build_layout",
+    "build_map",
+    "collect_parameters",
+    "slugify",
+    "unique_slugs",
+]
 
 #: MIDI has 128 controller numbers. A plugin can have far more parameters;
 #: those past the end go out over OSC alone.
@@ -64,6 +71,28 @@ def slugify(text: str) -> str:
     if not words:
         return "parameter"
     return words[0].lower() + "".join(word.capitalize() for word in words[1:])
+
+
+def unique_slugs(bases: list[str]) -> list[str]:
+    """Number repeated slugs: ``bypass``, ``bypass2``, ``bypass3``.
+
+    A number that would reuse another slug is skipped, so ``Foo``, ``Foo``,
+    ``Foo2`` give ``foo``, ``foo3``, ``foo2``. Shared with
+    :meth:`minihost.OscMapper.bind_all` so a layout and the mapper agree.
+    """
+    taken = set(bases)
+    counts: dict[str, int] = {}
+    out: list[str] = []
+    for base in bases:
+        n = counts.get(base, 0) + 1
+        name = base if n == 1 else f"{base}{n}"
+        while n > 1 and name in taken:
+            n += 1
+            name = f"{base}{n}"
+        counts[base] = n
+        taken.add(name)
+        out.append(name)
+    return out
 
 
 class Parameter:
@@ -115,20 +144,18 @@ def collect_parameters(
     """
     chosen = indices if indices is not None else range(plugin.num_params)
 
-    seen: dict[str, int] = {}
-    params: list[Parameter] = []
-    next_cc = 0
-
+    rows: list[tuple[int, dict, str]] = []
     for index in chosen:
         info = plugin.get_param_info(index)
         if automatable_only and not info.get("is_automatable", True):
             continue
+        rows.append((index, info, info.get("name", f"param{index}")))
+    slugs = unique_slugs([slugify(name) for _, _, name in rows])
 
-        name = info.get("name", f"param{index}")
-        base = slugify(name)
-        seen[base] = seen.get(base, 0) + 1
-        unique = base if seen[base] == 1 else f"{base}{seen[base]}"
+    params: list[Parameter] = []
+    next_cc = 0
 
+    for (index, info, name), unique in zip(rows, slugs):
         steps = int(info.get("num_steps") or 0)
         if info.get("is_boolean"):
             kind, steps = "toggle", 0
