@@ -2129,7 +2129,9 @@ private:
     // Dismissal is asynchronous -- setVisible(false) only marks the modal
     // item cancelled and posts to the manager, which deletes on a later
     // message-loop pass -- so the steps run off a timer, one per tick, with
-    // the loop free to run in between. Asserts:
+    // the loop free to run in between. A loaded runner can deliver that pass
+    // after the next tick, so dismissal checks re-poll for ~3 s before
+    // failing. Asserts:
     //   1. opening creates a window;
     //   2. re-requesting while open reuses it (no second window stacked);
     //   3. after dismissal the tracking pointer reads null (not dangling);
@@ -2159,9 +2161,23 @@ private:
         // it is NOT reused across a dismissal (see step 3).
         auto first = std::make_shared<juce::Component*>(nullptr);
         auto step  = std::make_shared<int>(0);
+        auto waits = std::make_shared<int>(0);
+
+        // True while a dismissed window is still tracked and retries remain;
+        // the current step then re-runs on the next tick.
+        auto awaiting_delete = [this, step, waits]() {
+            if (plugin_browser_window_.getComponent() != nullptr
+                && ++*waits < 25)
+            {
+                --*step;
+                return true;
+            }
+            *waits = 0;
+            return false;
+        };
 
         selftest_timer_ = std::make_unique<CallbackTimer>(
-            [this, fail, first, step]() {
+            [this, fail, first, step, awaiting_delete]() {
                 switch ((*step)++)
                 {
                 case 0:
@@ -2186,6 +2202,7 @@ private:
                     // The manager owns the dismissed window and deletes it on
                     // a later pass; the tracking pointer must have gone null
                     // on its own rather than been left dangling.
+                    if (awaiting_delete()) return;
                     if (plugin_browser_window_.getComponent() != nullptr)
                         return fail("window still tracked after dismissal -- "
                                     "pointer is dangling or delete never ran");
@@ -2219,6 +2236,7 @@ private:
                     return;
 
                 case 4:
+                    if (awaiting_delete()) return;
                     if (plugin_browser_window_.getComponent() != nullptr)
                         return fail("second dismissal left the window "
                                     "tracked");
@@ -2231,6 +2249,7 @@ private:
                     return;
 
                 default:
+                    if (awaiting_delete()) return;
                     if (plugin_browser_window_.getComponent() != nullptr)
                         return fail("third dismissal left the window "
                                     "tracked");

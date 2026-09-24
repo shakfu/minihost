@@ -26,6 +26,8 @@
 
 - `test_native_cli_reports_the_release_version` failed on CLI binaries left in `build/` from an earlier version. It now skips discovered binaries older than `pyproject.toml`. Binaries named by `MINIHOST_C_BIN` / `MINIHOST_CPP_BIN` are always checked.
 
+- `minihost_desktop --plugin-browser-selftest` failed intermittently on Linux CI. JUCE deletes a dismissed dialog on a later message-loop pass, and on a loaded runner that pass can come after the next 120 ms tick. Dismissal checks now re-poll for up to about 3 s before failing.
+
 ## [0.8.2]
 
 ### Added
