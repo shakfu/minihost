@@ -18,8 +18,8 @@ minihost [-r SAMPLE_RATE] [-b BLOCK_SIZE] <command> [options]
 
 ```console
 $ minihost --version
-minihost 0.7.1
-libminihost ABI 2.8.0
+minihost 0.8.2
+libminihost ABI 2.9.0
 ```
 
 ## Commands

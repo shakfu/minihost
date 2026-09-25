@@ -150,9 +150,11 @@ def test_two_params_both_arrive():
 def test_negative_indices_are_refused():
     plugin = _plugin()
     with minihost.AudioDevice(plugin, sample_rate=48000, buffer_frames=256) as audio:
-        with pytest.raises(RuntimeError):
+        # Checked on the caller's thread against the plugin, so the error names
+        # the argument; the queue itself only ever refused negative indices.
+        with pytest.raises(ValueError, match="param_index"):
             audio.send_param(-1, 0.5)
-        with pytest.raises(RuntimeError):
+        with pytest.raises(ValueError, match="plugin_index"):
             audio.send_param(0, 0.5, plugin_index=-1)
 
 

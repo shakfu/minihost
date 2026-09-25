@@ -28,6 +28,7 @@ import pytest
 
 import minihost
 from minihost import _core
+from minihost.vstpreset import read_class_id_from_bundle
 
 PLUGIN = (
     os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
@@ -37,6 +38,18 @@ skip_if_no_plugin = pytest.mark.skipif(
     not os.path.exists(PLUGIN),
     reason=f"test plugin not found at {PLUGIN}",
 )
+
+
+def _class_id():
+    """The plugin's own class id, as any host writing a preset for it would.
+
+    load_vstpreset refuses a preset whose class id differs from the plugin's.
+    A plugin without moduleinfo.json cannot be checked, so a placeholder does.
+    """
+    try:
+        return read_class_id_from_bundle(PLUGIN)
+    except (ValueError, RuntimeError, FileNotFoundError):
+        return "A" * 32
 
 
 def _open():
@@ -280,7 +293,7 @@ def test_foreign_style_preset_loads(tmp_path):
         # Exactly what a foreign host writes: the raw IComponent chunk.
         component, controller = _core.vst3_state_split(plugin.get_state())
         path = tmp_path / "foreign.vstpreset"
-        minihost.write_vstpreset(path, "A" * 32, component, controller)
+        minihost.write_vstpreset(path, _class_id(), component, controller)
 
         plugin.set_param(idx, 0.5 if want != 0.5 else 0.1)
         assert plugin.get_param(idx) != pytest.approx(want, abs=1e-4)
@@ -308,7 +321,7 @@ def test_legacy_minihost_preset_still_loads(tmp_path):
         want = plugin.get_param(idx)
 
         path = tmp_path / "legacy.vstpreset"
-        minihost.write_vstpreset(path, "A" * 32, plugin.get_state())
+        minihost.write_vstpreset(path, _class_id(), plugin.get_state())
 
         plugin.set_param(idx, 0.5 if want != 0.5 else 0.1)
         minihost.load_vstpreset(path, plugin)
@@ -334,7 +347,7 @@ def test_loading_a_corrupt_preset_raises_rather_than_silently_doing_nothing(tmp_
                 "plugin accepts any state chunk, so it cannot report a bad preset"
             )
         path = tmp_path / "corrupt.vstpreset"
-        minihost.write_vstpreset(path, "A" * 32, b"definitely not component state")
+        minihost.write_vstpreset(path, _class_id(), b"definitely not component state")
 
         with pytest.raises(RuntimeError):
             minihost.load_vstpreset(path, plugin)

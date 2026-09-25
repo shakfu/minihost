@@ -16,6 +16,7 @@ in another process.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -422,3 +423,43 @@ def test_windows_command_split_keeps_backslashes(command, expected):
 )
 def test_posix_command_split(command, expected):
     assert plugincache._split_command(command, windows=False) == expected
+
+
+# A damaged cache used to break every call until deleted by hand: a non-UTF-8
+# file raised UnicodeDecodeError, and a malformed entry AttributeError or
+# ValueError from each reader. Now the file reads as empty, or loses only the
+# malformed entries.
+_GOOD = {"status": "ok", "desc": {"name": "Good", "num_inputs": 2, "num_outputs": 2}}
+
+
+def _write_cache(entries: dict) -> None:
+    f = plugincache.cache_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps({"schema": plugincache.SCHEMA_VERSION, "entries": entries}))
+
+
+def _readers_survive() -> list:
+    plugincache.stats()
+    plugincache.all_entries()
+    return [d.get("name") for d in plugincache.query()]
+
+
+def test_non_utf8_cache_reads_as_empty(cache_env):
+    f = plugincache.cache_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_bytes(b"\xff\xfe not utf-8 \x80")
+    assert _readers_survive() == []
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "not an entry",
+        {"status": "ok", "desc": ["x"]},
+        {"status": "ok", "desc": {"name": "B", "num_inputs": "two"}},
+    ],
+    ids=["string-entry", "desc-list", "num-inputs-str"],
+)
+def test_malformed_entries_are_dropped(cache_env, bad):
+    _write_cache({"/good.vst3": _GOOD, "/bad.vst3": bad})
+    assert _readers_survive() == ["Good"]

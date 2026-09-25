@@ -28,7 +28,10 @@ MH_AudioData* mh_audio_read(const char* path, char* err, size_t err_size);
 void mh_audio_data_free(MH_AudioData* data);
 
 // Write interleaved float32 data to an audio file (WAV or FLAC).
-// bit_depth: 16, 24, or 32 (32 = IEEE float).
+// bit_depth: 16, 24, or 32 (32 = IEEE float). 16- and 24-bit output is
+// rounded, not dithered, so the same data always writes the same bytes; NaN
+// is written as 0. Channels: 1-254 for WAV, 1-8 for FLAC; FLAC sample rates
+// up to 655350.
 // Returns 1 on success, 0 on error.
 int mh_audio_write(const char* path, const float* data,
                    unsigned int channels, unsigned int frames,
@@ -69,8 +72,9 @@ typedef struct {
     double duration;
 } MH_AudioFileInfo;
 
-// Get audio file metadata without decoding.
-// Returns 1 on success, 0 on error.
+// Get audio file metadata without decoding. `frames` and `duration` are what
+// the header claims; a damaged file can decode to fewer frames, or none.
+// Returns 1 on success, 0 on error, including a header of 0 channels or 0 Hz.
 int mh_audio_get_file_info(const char* path, MH_AudioFileInfo* info,
                            char* err, size_t err_size);
 

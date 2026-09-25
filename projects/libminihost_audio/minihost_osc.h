@@ -43,9 +43,11 @@ typedef struct MH_OscClient MH_OscClient;
 // address: the full OSC address pattern, NUL-terminated, valid for the
 //   duration of the call only.
 // args: the message's numeric arguments. float32 arrives as itself and int32
-//   is converted; any other type (string, blob, time tag, ...) is reported as
-//   0.0f rather than skipped, so argument positions stay aligned with what the
-//   sender wrote. num_args is the message's full argument count.
+//   is converted; any other type (string, blob, ...) is reported as NaN rather
+//   than skipped, so argument positions stay aligned with what the sender
+//   wrote. num_args is the message's full argument count. A packet with a type
+//   JUCE cannot parse (d, T, F, h, ...) is dropped and counted; see
+//   mh_osc_server_get_format_errors.
 //
 // Must not block: the socket thread is the only reader, so a slow callback
 // costs incoming messages. The intended shape is a push onto a lock-free ring
@@ -62,13 +64,20 @@ typedef void (*MH_OscCallback)(const char* address, const float* args,
 MH_OscServer* mh_osc_server_open(int port, MH_OscCallback callback, void* user_data,
                                  char* err_buf, size_t err_buf_size);
 
-// Stop listening and free the server. Blocks until the socket thread has
-// stopped, so the callback is guaranteed not to be running on return.
+// Stop listening and free the server. No callback starts after the call.
+// Blocks until a running callback returns and the socket thread has stopped,
+// however long that takes, so the callback is not running on return. Called
+// from inside the server's own callback it cannot wait for itself: it returns
+// at once and the server is freed once that callback returns.
 void mh_osc_server_close(MH_OscServer* server);
 
 // The port the server is actually bound to. Useful after opening on port 0.
 // Returns -1 if unknown.
 int mh_osc_server_get_port(MH_OscServer* server);
+
+// Packets dropped because they could not be parsed, including those using a
+// type tag JUCE does not support. 0 for a NULL server.
+int mh_osc_server_get_format_errors(MH_OscServer* server);
 
 // Open a sender aimed at host:port.
 //

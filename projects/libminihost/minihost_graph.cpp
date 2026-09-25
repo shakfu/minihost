@@ -95,6 +95,26 @@ int mh_bus_add_branch(MH_PluginBus* graph,
         setErr(err_buf, err_buf_size, "chain is NULL");
         return -1;
     }
+    // Every branch processes each block, so a plugin reachable from two
+    // branches would advance twice per block.
+    for (auto* other : graph->branches)
+    {
+        for (int i = 0; i < mh_chain_get_num_plugins(chain); ++i)
+        {
+            MH_Plugin* p = mh_chain_get_plugin(chain, i);
+            for (int j = 0; j < mh_chain_get_num_plugins(other); ++j)
+            {
+                if (mh_chain_get_plugin(other, j) == p)
+                {
+                    setErr(err_buf, err_buf_size,
+                           other == chain
+                               ? "chain is already a branch of this bus"
+                               : "a plugin in this chain is already in another branch");
+                    return -1;
+                }
+            }
+        }
+    }
 
     int br_in = mh_chain_get_num_input_channels(chain);
     int br_out = mh_chain_get_num_output_channels(chain);
@@ -133,6 +153,19 @@ int mh_bus_add_branch(MH_PluginBus* graph,
                       "Branch sample rate (%.1f) does not match graph "
                       "sample rate (%.1f)",
                       br_sr, graph->sample_rate);
+        setErr(err_buf, err_buf_size, msg);
+        return -1;
+    }
+
+    // The bus hands each branch its full block; a chain that cannot take one
+    // failed every process call with a bare "Bus process failed".
+    const int br_block = mh_chain_get_max_block_size(chain);
+    if (br_block < graph->max_block_size)
+    {
+        char msg[256];
+        std::snprintf(msg, sizeof(msg),
+                      "Branch max block size (%d) is smaller than the bus's (%d)",
+                      br_block, graph->max_block_size);
         setErr(err_buf, err_buf_size, msg);
         return -1;
     }
@@ -226,28 +259,32 @@ static int graph_process_impl(MH_PluginBus* graph,
     for (int b = 0; b < n_branches; ++b)
     {
         float gain = graph->gains[b];
-        if (gain == 0.0f)
-            continue;  // muted branch -- skip processing entirely
+        // A muted branch is still processed, only not summed: skipping it
+        // froze its plugins, so a note-off sent while muted never arrived
+        // (stuck note) and delays resumed with stale history on unmute. Its
+        // MIDI output stays out of the merge, as before.
+        const bool muted = (gain == 0.0f);
+        const bool collect_here = collect_midi && !muted;
 
         float* const* branch_out = graph->branch_ptrs[b].data();
         int r;
-        if (have_midi || collect_midi)
+        if (have_midi || collect_here)
         {
             // Fan the same MIDI to every branch. When collecting, append
             // this branch's MIDI output into the remaining tail of the
             // caller's buffer; mh_chain_process_midi_io caps writes at the
             // capacity we hand it, so the buffer never overflows.
             MH_MidiEvent* branch_midi_out =
-                collect_midi ? (midi_out + total_midi_out) : nullptr;
+                collect_here ? (midi_out + total_midi_out) : nullptr;
             int branch_cap =
-                collect_midi ? (midi_out_capacity - total_midi_out) : 0;
+                collect_here ? (midi_out_capacity - total_midi_out) : 0;
             int branch_count = 0;
             r = mh_chain_process_midi_io(graph->branches[b], inputs,
                                          branch_out, nframes,
                                          midi_in, num_midi_in,
                                          branch_midi_out, branch_cap,
-                                         collect_midi ? &branch_count : nullptr);
-            if (collect_midi)
+                                         collect_here ? &branch_count : nullptr);
+            if (collect_here)
             {
                 total_midi_out += branch_count;
                 // The chain filled all the room we gave it: this branch (or
@@ -255,6 +292,13 @@ static int graph_process_impl(MH_PluginBus* graph,
                 if (branch_count == branch_cap &&
                     total_midi_out == midi_out_capacity &&
                     midi_out_overflow)
+                {
+                    *midi_out_overflow = 1;
+                }
+                // Drops inside the chain, between its plugins, never show
+                // in the buffer above; the flag missed them.
+                if (midi_out_overflow &&
+                    mh_chain_get_midi_dropped(graph->branches[b]) > 0)
                 {
                     *midi_out_overflow = 1;
                 }
@@ -266,6 +310,7 @@ static int graph_process_impl(MH_PluginBus* graph,
                                  branch_out, nframes);
         }
         if (!r) return 0;
+        if (muted) continue;
 
         // Sum branch_out * gain into outputs.
         for (int c = 0; c < out_ch; ++c)

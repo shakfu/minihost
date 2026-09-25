@@ -81,6 +81,22 @@ extern "C" {
 #endif
 
 // API version components. Bump per the policy described above.
+// 2.9.0: added mh_graph_get_midi_output_dropped. MIDI output, processor
+//   and merge nodes drop events past MH_GRAPH_MIDI_OUTPUT_CAPACITY per
+//   block, and callers had no reliable way to learn of it. Consequently
+//   mh_graph_get_midi_output_events' *num_events_out now counts the events
+//   the node holds, not the total produced; the old total could exceed what
+//   was stored, and callers read past the buffer. Also: mh_set_param,
+//   mh_set_param_rt and the morph functions return 0 for a non-finite value;
+//   mh_process_auto clamps MIDI offsets as mh_process_midi_io does; MIDI
+//   processor params are range-checked for the fields their op uses. Added
+//   mh_get_midi_out_dropped and mh_chain_get_midi_dropped: MIDI dropped past
+//   a capacity is now counted everywhere it happens, and the chain's
+//   inter-plugin stage holds 4096 events rather than 256. Added
+//   mh_get_latency_samples_rt, a lock-free latency read for the audio
+//   thread, which chain dry/wet mix uses to delay its dry path. Added
+//   mh_osc_server_get_format_errors; a non-numeric OSC argument now arrives
+//   as NaN rather than 0.0.
 // 2.8.0: added supervised scanning -- mh_plugin_cache_scan_supervised and
 //   mh_plugin_scan_worker_main. Probing loads a plugin, and a plugin that
 //   hangs or crashes takes the scanning process with it, so an in-process
@@ -126,7 +142,7 @@ extern "C" {
 //   mh_graph_* (parallel bus) -> mh_bus_* / MH_PluginGraph -> MH_PluginBus,
 //   and mh_graph_v2_* (DAG) -> mh_graph_* / MH_GraphV2 -> MH_PluginGraph.
 #define MH_API_VERSION_MAJOR 2
-#define MH_API_VERSION_MINOR 8
+#define MH_API_VERSION_MINOR 9
 #define MH_API_VERSION_PATCH 0
 
 // Single packed integer for compile-time comparison.
@@ -298,7 +314,8 @@ typedef struct MH_BusInfo {
 } MH_BusInfo;
 
 // plugin_path: .vst3 bundle on macOS, .vst3 folder on Win/Linux, .component for AU (mac)
-// returns NULL on failure
+// returns NULL on failure. Every open function rejects a sample_rate that is
+// not finite and > 0, and a max_block_size outside [1, 2^20].
 MH_Plugin* mh_open(const char* plugin_path,
                    double sample_rate,
                    int max_block_size,
@@ -369,13 +386,16 @@ int mh_process_midi_io(MH_Plugin* p,
 // Params by index (JUCE parameter ordering)
 int   mh_get_num_params(MH_Plugin* p);
 float mh_get_param(MH_Plugin* p, int index);
+// Values are clamped to [0, 1]. Returns 0 for a bad index or a non-finite
+// value (NaN, inf), which the clamp would otherwise pass to the plugin.
 int   mh_set_param(MH_Plugin* p, int index, float normalized_0_1);
 
 // Audio-thread parameter write. Takes no lock and notifies no listener, so
 // it is safe from the audio callback; mh_set_param is not (it takes the
 // state mutex and runs listeners synchronously). The value reaches the
 // plugin's processor; host-side value/gesture callbacks do not fire, so a
-// GUI does not follow writes made through this entry point.
+// GUI does not follow writes made through this entry point. Rejects the
+// same values as mh_set_param.
 int   mh_set_param_rt(MH_Plugin* p, int index, float normalized_0_1);
 
 // Get parameter metadata (returns 1 on success, 0 on failure)
@@ -402,15 +422,15 @@ int mh_morph_capture(MH_Plugin* p, float* out_values, int capacity);
 
 // Apply a snapshot: set every parameter from values[i], clamped to [0, 1].
 // count must equal mh_get_num_params(p). Returns 1 on success, 0 on failure
-// (NULL args or count mismatch).
+// (NULL args, count mismatch, or a non-finite value; nothing is applied).
 int mh_morph_apply(MH_Plugin* p, const float* values, int count);
 
 // Linearly interpolate two snapshots with one blend amount t:
 //   out[i] = clamp01(a[i] + (b[i] - a[i]) * t)
 // t=0 yields a, t=1 yields b; results are clamped so an extrapolated t (outside
 // [0, 1]) still yields valid normalized values. Pure array math, no plugin
-// access; out may alias a or b. Returns 1 on success, 0 on failure (NULL args
-// or negative count).
+// access; out may alias a or b. Returns 1 on success, 0 on failure (NULL args,
+// negative count, or a non-finite input).
 int mh_morph_lerp(const float* a, const float* b, float* out, int count, float t);
 
 // Per-parameter interpolation: out[i] = clamp01(a[i] + (b[i]-a[i]) * t[i]).
@@ -463,11 +483,18 @@ int mh_set_bypass(MH_Plugin* p, int bypass);        // Set bypass state (1 = byp
 // Note: Latency may change after parameter changes - re-query if needed
 int mh_get_latency_samples(MH_Plugin* p);
 
+// The same without taking the plugin's state mutex, for the audio thread.
+// The value may lag a change the plugin is reporting by one block.
+int mh_get_latency_samples_rt(MH_Plugin* p);
+
 // Process with sample-accurate parameter automation
 // param_changes: array of parameter changes sorted by sample_offset
 // num_param_changes: number of parameter changes
 // Splits processing at change points for sample-accurate automation
-// Also supports MIDI I/O (pass NULL/0 to ignore)
+// A change at or past nframes is applied after the block, taking effect from
+// the next one. Also supports MIDI I/O (pass NULL/0 to ignore). midi_in must be sorted by
+// sample_offset too: events behind the current chunk are dropped. Offsets
+// are clamped to [0, nframes-1], as in mh_process_midi_io.
 int mh_process_auto(MH_Plugin* p,
                     const float* const* inputs,
                     float* const* outputs,
@@ -479,6 +506,11 @@ int mh_process_auto(MH_Plugin* p,
                     int* num_midi_out,
                     const MH_ParamChange* param_changes,
                     int num_param_changes);
+
+// MIDI output events the last mh_process_midi_io or mh_process_auto call on
+// this plugin produced beyond midi_out_capacity, and so dropped. 0 when that
+// call passed no midi_out buffer. Call from the thread that processes.
+int mh_get_midi_out_dropped(MH_Plugin* p);
 
 // Reset plugin internal state (clears delay lines, reverb tails, filter states)
 // Call between unrelated audio segments to avoid artifacts

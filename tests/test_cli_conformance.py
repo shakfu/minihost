@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from cli_helpers import find_cli_binary
+from cli_helpers import find_cli_binary, find_test_plugin
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -60,10 +60,11 @@ skip_if_no_audio = pytest.mark.skipif(
 # The effect fixture, whose input bus is stereo and whose unity gain is
 # bit-exact pass-through. Exact assertions need a plugin specified to the
 # sample; MINIHOST_TEST_PLUGIN is whatever the machine happens to have.
-FX = os.environ.get("MINIHOST_TEST_PLUGIN_FX")
+FX = find_test_plugin("MinihostTestFx", "MINIHOST_TEST_PLUGIN_FX")
 skip_if_no_fx = pytest.mark.skipif(
     not FX or not os.path.exists(FX),
-    reason="set MINIHOST_TEST_PLUGIN_FX to the MinihostTestFx build",
+    reason="MinihostTestFx not built; set MINIHOST_TEST_PLUGIN_FX or build "
+    "with -DMINIHOST_BUILD_TEST_PLUGIN=ON",
 )
 
 

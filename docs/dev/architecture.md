@@ -98,7 +98,7 @@ Two versions run on independent schedules and should not be confused.
 
 All three CLIs answer `--version` with the release version and the linked library's ABI version. The long form is used everywhere because `-V` is already `--verbose` in `minihost_c`.
 
-**The C ABI version** is `MH_API_VERSION_{MAJOR,MINOR,PATCH}` in `projects/libminihost/minihost.h`, currently 2.8.0 against a 0.7.1 release. It moves when struct layouts or entry points change, which is what lets a wheel detect a mismatched separately-installed library. Tying it to the release version would force an ABI bump on every release and a release on every ABI bump, so the two are kept apart.
+**The C ABI version** is `MH_API_VERSION_{MAJOR,MINOR,PATCH}` in `projects/libminihost/minihost.h`, currently 2.9.0 against a 0.8.2 release. It moves when struct layouts or entry points change, which is what lets a wheel detect a mismatched separately-installed library. Tying it to the release version would force an ABI bump on every release and a release on every ABI bump, so the two are kept apart.
 
 ### Bumping a release
 

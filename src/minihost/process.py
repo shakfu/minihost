@@ -26,11 +26,14 @@ when the caller passes a numpy array).
 
 from __future__ import annotations
 
+import math
+import operator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Sequence, Union, cast
 
 from minihost._core import AudioBuffer, MidiFile, Plugin, PluginChain
+from minihost._core import _message_thread_poll
 from minihost.audio_io import read_audio, resample, write_audio
 
 if TYPE_CHECKING:
@@ -46,6 +49,18 @@ ParamChangeChain = tuple[int, int, int, float]  # (sample, plugin_idx, param_idx
 MidiInput = Union[str, Path, MidiFile, Sequence[MidiEvent]]
 
 
+def _check_tail_seconds(tail_seconds: Any) -> float:
+    """Return ``tail_seconds`` as a float, or raise ValueError.
+
+    Shared by process_audio, the MIDI renderer and Compose, which handled a
+    negative value three ways: clamped, truncated the render, raised.
+    """
+    ts = float(tail_seconds)
+    if not (math.isfinite(ts) and ts >= 0.0):
+        raise ValueError(f"tail_seconds must be >= 0 and finite, got {tail_seconds!r}")
+    return ts
+
+
 def _normalize_peak(buf: AudioBuffer, target_dbfs: float) -> None:
     """Peak-normalize ``buf`` in place to ``target_dbfs`` dBFS.
 
@@ -53,6 +68,8 @@ def _normalize_peak(buf: AudioBuffer, target_dbfs: float) -> None:
     Silent buffers are left untouched.
     """
     peak = buf.magnitude()
+    if not math.isfinite(peak):
+        raise ValueError("cannot peak-normalize audio containing NaN or inf samples")
     if peak <= 0.0:
         return
     target_linear = 10.0 ** (target_dbfs / 20.0)
@@ -65,14 +82,23 @@ _DEFAULT_BLOCK_SIZE = 512
 def _resolve_block_size(block_size: int | None, plugin_or_chain: Any = None) -> int:
     """Block size for the internal process loop.
 
-    An explicit value wins. Otherwise use the processor's own limit, capped at
-    a sane default so a plugin opened with a huge max_block_size does not make
-    every render allocate proportionally. Falls back to the default if the
-    processor cannot report one.
+    An explicit value wins, if it lies in ``[1, max_block_size]``. Otherwise
+    use the processor's own limit, capped at a sane default so a plugin opened
+    with a huge max_block_size does not make every render allocate
+    proportionally. Falls back to the default if the processor cannot report
+    one.
     """
-    if block_size is not None:
-        return int(block_size)
     limit = getattr(plugin_or_chain, "max_block_size", 0) or 0
+    if block_size is not None:
+        block_size = operator.index(block_size)
+        if block_size < 1:
+            raise ValueError(f"block_size must be >= 1, got {block_size}")
+        if limit > 0 and block_size > limit:
+            raise ValueError(
+                f"block_size {block_size} exceeds the processor's "
+                f"max_block_size {limit}"
+            )
+        return block_size
     if limit > 0:
         return min(int(limit), _DEFAULT_BLOCK_SIZE)
     return _DEFAULT_BLOCK_SIZE
@@ -96,6 +122,28 @@ def _to_audiobuffer(audio: Any, in_ch_required: int) -> AudioBuffer:
     return buf
 
 
+def _check_midi_event(ev: Any) -> None:
+    """Raise ValueError unless ``ev`` is a valid (offset, status, d1, d2) tuple.
+
+    Offsets are checked here because `_slice_block_events` clamps a negative
+    one to 0 before the native parser sees it.
+    """
+    if not (isinstance(ev, tuple) and len(ev) == 4):
+        raise ValueError(
+            "MIDI events must be 4-tuples of (sample_offset, status, data1, data2)."
+        )
+    try:
+        offset, status, d1, d2 = (operator.index(v) for v in ev)
+    except TypeError:
+        raise ValueError(f"MIDI event {ev!r}: fields must be integers") from None
+    if offset < 0:
+        raise ValueError(f"MIDI event {ev!r}: sample_offset must be >= 0")
+    if not 0x80 <= status <= 0xFF:
+        raise ValueError(f"MIDI event {ev!r}: status must be in 0x80-0xFF")
+    if not (0 <= d1 <= 0x7F and 0 <= d2 <= 0x7F):
+        raise ValueError(f"MIDI event {ev!r}: data bytes must be in 0-127")
+
+
 def _load_midi_events(
     midi: MidiInput,
     sample_rate: float,
@@ -111,11 +159,7 @@ def _load_midi_events(
     ):
         events = list(midi)
         for ev in events:
-            if not (isinstance(ev, tuple) and len(ev) == 4):
-                raise ValueError(
-                    "MIDI events must be 4-tuples of "
-                    "(sample_offset, status, data1, data2)."
-                )
+            _check_midi_event(ev)
         events.sort(key=lambda e: e[0])
         return events, (events[-1][0] if events else 0)
 
@@ -232,6 +276,7 @@ def _prepare_render(
     transport when ``bpm`` is given.
     """
     block = _resolve_block_size(block_size, plugin_or_chain)
+    tail_seconds = _check_tail_seconds(tail_seconds)
     sample_rate = float(plugin_or_chain.sample_rate)
     in_ch_required = plugin_or_chain.num_input_channels
     out_ch = plugin_or_chain.num_output_channels
@@ -289,6 +334,10 @@ def _prepare_render(
     base_frames = max(src_frames, midi_max_sample + 1 if midi_events else 0)
     out_frames = base_frames + tail_frames
 
+    # A latency change the plugin reported (after a parameter or preset
+    # change, say) reaches the host only when JUCE's queue is pumped, which
+    # on macOS nothing does unless asked; compensation would use the old value.
+    _message_thread_poll()
     latency = int(plugin_or_chain.latency_samples) if compensate_latency else 0
     if latency < 0:
         latency = 0
@@ -507,6 +556,7 @@ def process_audio(
         tail_seconds: Extra silent input rendered after the source so
             reverb / delay tails are captured.
         block_size: Audio block size used for the internal process loop.
+            Must be in ``[1, max_block_size]``; ``ValueError`` otherwise.
         compensate_latency: When True (default), render
             ``plugin.latency_samples`` extra frames at the end and discard
             the matching number of frames from the start.

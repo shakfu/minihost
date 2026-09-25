@@ -62,8 +62,9 @@ tsan:
 # Native unit tests for the C layers no Python path can reach: the ring-buffer
 # constructors (every in-tree caller passes a constant), the MIDI
 # message-length table (asserting what reaches a port needs a real device) and
-# the .vstpreset int64 decoder (only UBSan sees its signed-shift UB).
-# Built with UBSan and
+# the .vstpreset int64 decoder (only UBSan sees its signed-shift UB), and the
+# graph's and chain's MIDI buffers (only ASan sees an overread Python returns
+# as garbage; the plugin calls are stubbed). Built with UBSan and
 # -fno-sanitize-recover, because the capacity-rounding bug it covers is signed
 # overflow that calloc then masks: without the sanitizer the constructor
 # returns NULL either way and the test cannot tell the two apart. Run in CI by
@@ -91,6 +92,16 @@ native-tests:
 		-Iprojects/libminihost tests/native/vstpreset_malformed.cpp \
 		build/minihost_vstpreset_ubsan.o -o build/vstpreset_malformed
 	@./build/vstpreset_malformed build
+	@$(CXX) -std=c++17 -O1 -g -fsanitize=address,undefined \
+		-fno-sanitize-recover=all -fno-omit-frame-pointer \
+		-Iprojects/libminihost tests/native/graph_midi_bounds.cpp \
+		projects/libminihost/minihost_graph_v2.cpp -o build/graph_midi_bounds
+	@./build/graph_midi_bounds
+	@$(CXX) -std=c++17 -O1 -g -fsanitize=address,undefined \
+		-fno-sanitize-recover=all -fno-omit-frame-pointer \
+		-Iprojects/libminihost tests/native/chain_midi_bounds.cpp \
+		projects/libminihost/minihost_chain.cpp -o build/chain_midi_bounds
+	@./build/chain_midi_bounds
 
 # The two native CLI binaries built in configurations the Release build in CI
 # does not exercise. Both use their own build dir so the Release build/ tree

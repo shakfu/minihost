@@ -5,6 +5,7 @@
 #include "miniaudio.h"
 #include "tflac.h"
 #include <limits.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,6 +34,15 @@ MH_AudioData* mh_audio_read(const char* path, char* err, size_t err_size) {
     // actual values from the decoded file (via ma_decoder__full_decode_and_uninit).
     unsigned int channels = config.channels;
     unsigned int sample_rate = config.sampleRate;
+    // A FLAC header claiming rate 0 decoded "successfully"; only a later
+    // resample noticed.
+    if (channels == 0 || sample_rate == 0) {
+        ma_free(frames, NULL);
+        if (err && err_size > 0)
+            snprintf(err, err_size, "%s declares %u channels at %u Hz",
+                     path, channels, sample_rate);
+        return NULL;
+    }
 
     if (frame_count > UINT_MAX) {
         ma_free(frames, NULL);
@@ -65,6 +75,41 @@ void mh_audio_data_free(MH_AudioData* data) {
         ma_free(data->data, NULL);
     }
     free(data);
+}
+
+// f32 -> signed n-bit integer, n = 16 or 24, scaled by 2^(n-1) to match the
+// decoder, rounded and clamped to [-2^(n-1), 2^(n-1) - 1]. Samples already on
+// the n-bit grid survive a write and read exactly.
+//
+// This replaced miniaudio's conversion, which scaled by 2^(n-1) - 1 (every
+// on-grid value came back 1 LSB off) and applied triangle dither from a
+// global RNG (the same data wrote different bytes each time, and concurrent
+// writers raced on the generator). NaN becomes 0: converting it to an integer
+// is undefined; +-inf clamps to full scale.
+static int32_t f32_to_pcm(float x, int bits)
+{
+    const double full = (double)(1L << (bits - 1));
+    if (x != x) return 0;
+    double v = floor((double)x * full + 0.5);
+    if (v > full - 1.0) v = full - 1.0;
+    if (v < -full) v = -full;
+    return (int32_t)v;
+}
+
+static void f32_to_int(void* dst, const float* src, ma_uint64 n, ma_format fmt)
+{
+    if (fmt == ma_format_s16) {
+        int16_t* out = (int16_t*)dst;
+        for (ma_uint64 i = 0; i < n; i++) out[i] = (int16_t)f32_to_pcm(src[i], 16);
+    } else {  // packed little-endian s24
+        unsigned char* out = (unsigned char*)dst;
+        for (ma_uint64 i = 0; i < n; i++) {
+            const uint32_t v = (uint32_t)f32_to_pcm(src[i], 24);
+            out[3 * i + 0] = (unsigned char)(v & 0xFF);
+            out[3 * i + 1] = (unsigned char)((v >> 8) & 0xFF);
+            out[3 * i + 2] = (unsigned char)((v >> 16) & 0xFF);
+        }
+    }
 }
 
 static int write_wav(const char* path, const float* data,
@@ -116,11 +161,7 @@ static int write_wav(const char* path, const float* data,
             return 0;
         }
 
-        if (format == ma_format_s16) {
-            ma_pcm_f32_to_s16(converted, data, total_samples, ma_dither_mode_triangle);
-        } else if (format == ma_format_s24) {
-            ma_pcm_f32_to_s24(converted, data, total_samples, ma_dither_mode_triangle);
-        }
+        f32_to_int(converted, data, total_samples, format);
 
         result = ma_encoder_write_pcm_frames(&encoder, converted, frames, &written);
         free(converted);
@@ -244,22 +285,13 @@ static int write_flac(const char* path, const float* data,
 
         if (bit_depth == 16) {
             tflac_s16* s16_buf = (tflac_s16*)conv_buf;
-            ma_pcm_f32_to_s16(s16_buf, block_data, block_total, ma_dither_mode_triangle);
+            f32_to_int(s16_buf, block_data, block_total, ma_format_s16);
             r = tflac_encode_s16i(&t, block_frames, s16_buf, frame_buf, frame_buf_size, &used);
         } else {
-            // 24-bit: scale f32 to s32 range for 24-bit (shift into upper bits)
+            // 24-bit samples, held in s32
             tflac_s32* s32_buf = (tflac_s32*)conv_buf;
             for (ma_uint64 i = 0; i < block_total; i++) {
-                float s = block_data[i];
-                // Clamp to [-1, 1)
-                if (s > 1.0f) s = 1.0f;
-                if (s < -1.0f) s = -1.0f;
-                // Scale to 24-bit range
-                double scaled = (double)s * 8388607.0;
-                tflac_s32 v = (tflac_s32)scaled;
-                if (v > 8388607) v = 8388607;
-                if (v < -8388607) v = -8388607;
-                s32_buf[i] = v;
+                s32_buf[i] = f32_to_pcm(block_data[i], 24);
             }
             r = tflac_encode_s32i(&t, block_frames, s32_buf, frame_buf, frame_buf_size, &used);
         }
@@ -440,6 +472,25 @@ int mh_audio_write_bwf(const char* path, const float* data,
 
     const char* ext = get_extension(path);
     int is_wav = (strcasecmp_ext(ext, ".wav") == 0);
+    int is_flac = (strcasecmp_ext(ext, ".flac") == 0);
+
+    // Checked here so each failure names its cause. Before, a WAV at rate 0
+    // reported "Failed to open file", FLAC out of range only "tflac_validate
+    // failed", and a WAV of 300 channels wrote a file read_audio rejects.
+    const unsigned int max_ch = is_flac ? 8 : MA_MAX_CHANNELS;
+    if ((is_wav || is_flac) && (channels < 1 || channels > max_ch)) {
+        if (err && err_size > 0)
+            snprintf(err, err_size, "%s supports 1 to %u channels, got %u",
+                     is_flac ? "FLAC" : "WAV", max_ch, channels);
+        return 0;
+    }
+    const unsigned int max_sr = is_flac ? 655350 : UINT_MAX;
+    if ((is_wav || is_flac) && (sample_rate < 1 || sample_rate > max_sr)) {
+        if (err && err_size > 0)
+            snprintf(err, err_size, "%s sample rate must be 1 to %u, got %u",
+                     is_flac ? "FLAC" : "WAV", max_sr, sample_rate);
+        return 0;
+    }
 
     if (bwf && !is_wav) {
         if (err && err_size > 0)
@@ -455,7 +506,7 @@ int mh_audio_write_bwf(const char* path, const float* data,
             return 0;
         }
         return 1;
-    } else if (strcasecmp_ext(ext, ".flac") == 0) {
+    } else if (is_flac) {
         return write_flac(path, data, channels, frames, sample_rate, bit_depth, err, err_size);
     } else {
         if (err && err_size > 0)
@@ -493,6 +544,13 @@ int mh_audio_get_file_info(const char* path, MH_AudioFileInfo* info,
 
     info->channels = decoder.outputChannels;
     info->sample_rate = decoder.outputSampleRate;
+    if (info->channels == 0 || info->sample_rate == 0) {
+        ma_decoder_uninit(&decoder);
+        if (err && err_size > 0)
+            snprintf(err, err_size, "%s declares %u channels at %u Hz",
+                     path, info->channels, info->sample_rate);
+        return 0;
+    }
 
     ma_uint64 length = 0;
     result = ma_decoder_get_length_in_pcm_frames(&decoder, &length);

@@ -539,6 +539,9 @@ struct MH_Plugin
     AudioBuffer<float> processBuf;
     AudioBuffer<double> processBufD;   // mirror of processBuf for mh_process_double
     MidiBuffer midi;
+    // Output events the last mh_process_midi_io / mh_process_auto produced
+    // past midi_out_capacity. Written and read on the audio thread.
+    int midiOutDropped = 0;
 
     // Mutex for thread-safe access to plugin state from non-audio threads
     // Note: mh_process* functions do NOT lock (audio thread must not block)
@@ -788,16 +791,19 @@ extern "C" int mh_process_midi_io(MH_Plugin* p,
     // Extract MIDI output events
     if (num_midi_out)
         *num_midi_out = 0;
+    p->midiOutDropped = 0;
 
     if (midi_out && midi_out_capacity > 0)
     {
         int outIdx = 0;
         for (const auto metadata : p->midi)
         {
-            if (outIdx >= midi_out_capacity)
-                break;
-
             auto msg = metadata.getMessage();
+            if (msg.getRawDataSize() >= 1 && outIdx >= midi_out_capacity)
+            {
+                ++p->midiOutDropped;  // counted, not stored
+                continue;
+            }
             if (msg.getRawDataSize() >= 1)
             {
                 const auto* data = msg.getRawData();
@@ -855,6 +861,8 @@ extern "C" float mh_get_param(MH_Plugin* p, int index)
 extern "C" int mh_set_param(MH_Plugin* p, int index, float normalized_0_1)
 {
     if (!p || !p->inst) return 0;
+    // jlimit passes NaN through, and a plugin handed NaN may output NaN.
+    if (!std::isfinite(normalized_0_1)) return 0;
     std::lock_guard<std::mutex> lock(p->stateMutex);
     auto& params = p->inst->getParameters();
     if (index < 0 || index >= params.size()) return 0;
@@ -889,6 +897,9 @@ extern "C" int mh_morph_apply(MH_Plugin* p, const float* values, int count)
     if (!p || !p->inst || !values) return 0;
     const int n = mh_get_num_params(p);
     if (count != n) return 0;
+    // Checked up front so a bad snapshot is not half-applied.
+    for (int i = 0; i < n; ++i)
+        if (!std::isfinite(values[i])) return 0;
     for (int i = 0; i < n; ++i)
         mh_set_param(p, i, jlimit(0.0f, 1.0f, values[i]));
     return 1;
@@ -897,7 +908,9 @@ extern "C" int mh_morph_apply(MH_Plugin* p, const float* values, int count)
 extern "C" int mh_morph_lerp(const float* a, const float* b, float* out,
                              int count, float t)
 {
-    if (!a || !b || !out || count < 0) return 0;
+    if (!a || !b || !out || count < 0 || !std::isfinite(t)) return 0;
+    for (int i = 0; i < count; ++i)
+        if (!std::isfinite(a[i]) || !std::isfinite(b[i])) return 0;
     for (int i = 0; i < count; ++i)
         out[i] = jlimit(0.0f, 1.0f, a[i] + (b[i] - a[i]) * t);
     return 1;
@@ -907,6 +920,9 @@ extern "C" int mh_morph_lerp_per_param(const float* a, const float* b, float* ou
                                        int count, const float* t)
 {
     if (!a || !b || !out || !t || count < 0) return 0;
+    for (int i = 0; i < count; ++i)
+        if (!std::isfinite(a[i]) || !std::isfinite(b[i]) || !std::isfinite(t[i]))
+            return 0;
     for (int i = 0; i < count; ++i)
         out[i] = jlimit(0.0f, 1.0f, a[i] + (b[i] - a[i]) * t[i]);
     return 1;
@@ -1077,6 +1093,12 @@ extern "C" int mh_set_transport(MH_Plugin* p, const MH_TransportInfo* transport)
         return 1;
     }
 
+    // Handed to the plugin as-is: NaN tempo or position propagates into
+    // every tempo-synced computation.
+    if (!(std::isfinite(transport->bpm) && transport->bpm > 0.0)
+        || !std::isfinite(transport->position_beats))
+        return 0;
+
     MH_PlayHead::State s;
     s.hasTransport = true;
     s.bpm = transport->bpm;
@@ -1138,6 +1160,15 @@ extern "C" int mh_get_latency_samples(MH_Plugin* p)
     return p->inst->getLatencySamples();
 }
 
+extern "C" int mh_get_latency_samples_rt(MH_Plugin* p)
+{
+    // No lock: JUCE stores the latency as a plain int, set on the message
+    // thread. A torn read is not possible for an aligned int on the
+    // supported platforms, and a stale one is corrected next block.
+    if (!p || !p->inst) return 0;
+    return p->inst->getLatencySamples();
+}
+
 extern "C" int mh_process_auto(MH_Plugin* p,
                                const float* const* inputs,
                                float* const* outputs,
@@ -1157,6 +1188,7 @@ extern "C" int mh_process_auto(MH_Plugin* p,
     if (num_midi_out)
         *num_midi_out = 0;
     int midi_out_idx = 0;
+    p->midiOutDropped = 0;
 
     // If no param changes, just use regular processing
     if (!param_changes || num_param_changes <= 0)
@@ -1227,11 +1259,14 @@ extern "C" int mh_process_auto(MH_Plugin* p,
         while (midi_idx < num_midi_in)
         {
             const auto& ev = midi_in[midi_idx];
-            if (ev.sample_offset >= chunk_end)
+            // Clamped as mh_process_midi_io does; unclamped, an offset past
+            // the block matched no chunk and the event was dropped.
+            const int at = jlimit(0, nframes - 1, ev.sample_offset);
+            if (at >= chunk_end)
                 break;
-            if (ev.sample_offset >= current_sample)
+            if (at >= current_sample)
             {
-                int local_offset = ev.sample_offset - current_sample;
+                int local_offset = at - current_sample;
                 p->midi.addEvent(makeShortMidiMessage(ev.status, ev.data1, ev.data2), local_offset);
             }
             ++midi_idx;
@@ -1253,9 +1288,12 @@ extern "C" int mh_process_auto(MH_Plugin* p,
         {
             for (const auto metadata : p->midi)
             {
-                if (midi_out_idx >= midi_out_capacity)
-                    break;
                 auto msg = metadata.getMessage();
+                if (msg.getRawDataSize() >= 1 && midi_out_idx >= midi_out_capacity)
+                {
+                    ++p->midiOutDropped;
+                    continue;
+                }
                 if (msg.getRawDataSize() >= 1)
                 {
                     const auto* data = msg.getRawData();
@@ -1271,10 +1309,21 @@ extern "C" int mh_process_auto(MH_Plugin* p,
         current_sample = chunk_end;
     }
 
+    // Changes at or past the block end were never applied: the loop stops at
+    // nframes. They take effect now, so from the next block.
+    for (; param_idx < num_param_changes; ++param_idx)
+        mh_set_param_rt(p, param_changes[param_idx].param_index,
+                        param_changes[param_idx].value);
+
     if (num_midi_out)
         *num_midi_out = midi_out_idx;
 
     return 1;
+}
+
+extern "C" int mh_get_midi_out_dropped(MH_Plugin* p)
+{
+    return p ? p->midiOutDropped : 0;
 }
 
 extern "C" int mh_reset(MH_Plugin* p)
@@ -1418,7 +1467,7 @@ extern "C" int mh_probe(const char* plugin_path,
 
 extern "C" int mh_param_to_text(MH_Plugin* p, int index, float value, char* buf, size_t buf_size)
 {
-    if (!p || !p->inst || !buf || buf_size == 0) return 0;
+    if (!p || !p->inst || !buf || buf_size == 0 || !std::isfinite(value)) return 0;
     return runOnMsg([&]() -> int
     {
         std::lock_guard<std::mutex> lock(p->stateMutex);
@@ -1447,6 +1496,7 @@ extern "C" int mh_param_from_text(MH_Plugin* p, int index, const char* text, flo
         auto* param = params.getUnchecked(index);
         // getValueForText converts display string to normalized value.
         float value = param->getValueForText(String::fromUTF8(text));
+        if (!std::isfinite(value)) return 0;
         *out_value = jlimit(0.0f, 1.0f, value);
         return 1;
     });
@@ -1545,6 +1595,32 @@ extern "C" int mh_get_bus_info(MH_Plugin* p, int is_input, int bus_index, MH_Bus
 // deserialized descriptor). Consumes `p`: returns it released on success,
 // nullptr (with `p` freed) on failure. Format-agnostic -- createPluginInstance
 // does not consult a file path, so this works for AU descriptors as-is.
+// Largest max_block_size accepted at open. Buffers are sized from it up
+// front: 2**31-1 used to open and reserve about 34 GB. Matches the audio
+// device's period limit.
+static constexpr int kMaxBlockSizeLimit = 1 << 20;
+
+// Every open path ends in finishPluginFromDesc, so the checks live there.
+// A rate of 0 or NaN used to open and render NaN; a negative one rendered.
+static bool checkOpenArgs(double sample_rate, int max_block_size,
+                          char* err_buf, size_t err_buf_size)
+{
+    if (!(std::isfinite(sample_rate) && sample_rate > 0.0))
+    {
+        setErr(err_buf, err_buf_size,
+               "sample_rate must be a finite number > 0, got " + String(sample_rate));
+        return false;
+    }
+    if (max_block_size < 1 || max_block_size > kMaxBlockSizeLimit)
+    {
+        setErr(err_buf, err_buf_size,
+               "max_block_size must be in [1, " + String(kMaxBlockSizeLimit)
+               + "], got " + String(max_block_size));
+        return false;
+    }
+    return true;
+}
+
 static MH_Plugin* finishPluginFromDesc(AudioPluginFormatManager& fm,
                                        const PluginDescription& desc,
                                        std::unique_ptr<MH_Plugin> p,
@@ -1556,6 +1632,9 @@ static MH_Plugin* finishPluginFromDesc(AudioPluginFormatManager& fm,
                                        char* err_buf,
                                        size_t err_buf_size)
 {
+    if (!checkOpenArgs(sample_rate, max_block_size, err_buf, err_buf_size))
+        return nullptr;
+
     String createErr;
     std::unique_ptr<AudioPluginInstance> inst(
         fm.createPluginInstance(desc, sample_rate, max_block_size, createErr)
@@ -1893,6 +1972,7 @@ extern "C" int mh_set_change_callback(MH_Plugin* p, MH_ChangeCallback cb, void* 
 extern "C" int mh_set_param_rt(MH_Plugin* p, int index, float normalized_0_1)
 {
     if (!p || !p->inst) return 0;
+    if (!std::isfinite(normalized_0_1)) return 0;
     auto& params = p->inst->getParameters();
     if (index < 0 || index >= params.size()) return 0;
 
@@ -2013,8 +2093,8 @@ extern "C" int mh_set_sample_rate(MH_Plugin* p, double new_sample_rate)
     if (!p || !p->inst) return 0;
     // Reject obviously invalid rates up front; common SR range is 8000-384000.
     // We don't enforce a hard upper bound (some plugins support 768 kHz) but
-    // negative/zero/NaN must fail fast.
-    if (!(new_sample_rate > 0.0)) return 0;
+    // negative/zero/NaN/inf must fail fast.
+    if (!(std::isfinite(new_sample_rate) && new_sample_rate > 0.0)) return 0;
 
     return runOnMsg([&]() -> int
     {

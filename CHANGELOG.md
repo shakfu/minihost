@@ -4,6 +4,98 @@
 
 ### Fixed
 
+- Muting a bus branch (gain 0) skipped processing it entirely. Its plugins froze: a note-off sent while muted never arrived, so the note rang on after unmuting, and delays resumed with stale history. A muted branch is now processed but not summed; its MIDI output stays out of the merge, as before.
+
+- `mh_bus_add_branch` accepted a chain whose max block size was smaller than the bus's, and every process call then failed with a bare "Bus process failed". It now refuses the branch, naming both sizes.
+
+- `Plugin.sample_rate` could be changed while a chain, graph or device held the plugin. They check the rate when they take a plugin and cache it, so a chain of a 48 kHz and a 44.1 kHz plugin processed without error. The setter now raises while the plugin is in use.
+
+- `mh_chain_process*` crashed with a NULL output table, which the header allows, when a plugin's mix was below 1.0.
+
+- A chain's `tail_seconds` was the largest of its plugins' tails. In series they add: a 2 s delay into a 3 s reverb rings for about 5 s, so tail-sized renders were cut short. It is now the sum; a bus keeps the maximum across branches.
+
+- An automation change at or past the block end was never applied: `mh_process_auto` and `mh_chain_process_auto` stop at the block end. `Plugin.process_auto` and `PluginChain.process_auto` now reject such offsets. The C functions apply them after the block, so graph automation, staged before the block length is known, takes effect from the next block.
+
+- `minihost touch` mapped duplicate parameter names to the first one. The map file keyed each mapping by name, and the loader took the first match, so with names Bypass, Threshold, Bypass, Bypass the CCs wrote parameters 0, 1, 0, 0. The map now also records `param_index`, which `--map-file` binds by, and `MidiMapper` / `OscMapper` accept an index wherever they took a name.
+
+- `load_vstpreset` loaded a preset saved from another plugin without complaint, writing foreign state into this one. It now compares the preset's class id with the plugin's and raises `ValueError` on a mismatch. The check runs where the plugin's id can be read from its bundle (VST3 SDK 3.7.5+).
+
+- A damaged plugin cache broke every `plugincache` call until deleted by hand: a non-UTF-8 file raised `UnicodeDecodeError`, and a malformed entry `AttributeError` or `ValueError`. It now reads as empty, or loses only the malformed entries.
+
+- `load_project` leaked raw exceptions and accepted wrong types. Invalid `state_b64` raised `binascii.Error`, a rejected state `RuntimeError`, graph wiring and compile errors `RuntimeError`; `dst_port: 1.9` was truncated to 1, and `block_size: true` was accepted as 1. All now raise `ProjectError` naming the field or node. `save_project` refuses NaN, which `json` wrote as a bare `NaN`.
+
+- MIDI file timing edge cases. Delta ticks summing past `INT_MAX` wrapped to negative event times; such files now fail to load. A tempo meta of 0 us made every later event land at one instant; it is now skipped, keeping the prior tempo, in both the renderer's tempo map and `duration_seconds`. A division of 0 loaded and then divided by zero in rendering. An SMPTE division was stored by midifile as ticks per second and then treated as ticks per quarter, so a 1 s note played at 0.5 s. Both divisions are now refused at load, and the `ticks_per_quarter` setter requires 1-32767. A failed `load()` no longer leaves half of the rejected file in the object.
+
+- `MidiFile.add_pitch_bend` wrote the wrong value: the documented 0-16383 integer went straight into midifile's -1..1 amount, so 0 (full down) was written as centre and 8192 (centre) as full up. Code that passed 0 for centre, as one test assumed, must now pass 8192. The `add_*` methods also silently masked out-of-range arguments, so channel 20 became 4 and pitch 300 became 44; they now raise `ValueError` naming the argument.
+
+- OSC input accepted non-finite values and misread non-numeric arguments. `/mh/transport/bpm` NaN reached plugins as their tempo, and `/mh/transport/position 3e38` overflowed a cast to `long long`, which is undefined. `AudioDevice.transport_set_bpm` and `Plugin.set_transport` accepted NaN too, since `bpm <= 0.0` lets it through. Transport values must now be finite, and positions are clamped before the cast. A string or blob argument arrived as 0.0, which a bound fader took as a write to 0; it now arrives as NaN, keeping its position, and every parameter path drops it. Packets with a type tag JUCE cannot parse (`d`, `T`, `F`, `h`) are still dropped, but now counted in `OscServer.format_errors`.
+
+- 16- and 24-bit writes were dithered and slightly off-scale. miniaudio's conversion added triangle dither from a global random generator, so two writes of the same data produced different bytes and concurrent writers raced on the generator. It also scaled by 2^(n-1) - 1 while the reader divides by 2^(n-1), so even undithered input came back 1 LSB short. Writes are now rounded at the reader's scale: audio already on the 16- or 24-bit grid round-trips exactly, WAV and FLAC alike. NaN is written as 0; converting it to an integer was undefined behaviour. Dither was the alternative for reducing higher-resolution audio, but it costs reproducibility, and an opt-in can be added if wanted.
+
+- Audio writes now check channels (1-254 for WAV, 1-8 for FLAC) and sample rate before encoding, with messages that name the problem. Before, a 300-channel WAV wrote a file `read_audio` rejects, and a WAV at 0 Hz reported "Failed to open file". Bad `bwf` input raised a bare `std::bad_cast`, and a misspelled key was ignored; both now raise errors naming the key. `read_audio` and `get_audio_info` reject a header declaring 0 channels or 0 Hz. `get_audio_info`'s frame count is documented as the header's claim.
+
+- `AudioBuffer.magnitude()` skipped NaN, so a buffer with NaN at frame 0 reported 0.0 and `process_audio(normalize=...)` silently did nothing. It now returns NaN, and peak normalisation raises on it.
+
+- A negative `tail_seconds` was handled three ways: `render_midi` truncated the MIDI by it, `process_audio` clamped it to 0, `Compose` raised. All three now raise `ValueError` on a negative or non-finite value.
+
+- Most `Plugin` methods succeeded after `close()`, contrary to its docstring. The C calls return defaults on a null plugin, so `get_state()` returned `b''`, which made a save of a closed plugin lose its state silently. `get_param` returned 0.0 and the metadata properties returned zeros. The `process*` methods ignored `mh_get_info`'s result and read an uninitialised `MH_Info`, raising an error with a garbage channel count. Every method that reaches the plugin now raises `RuntimeError("Plugin is closed")`.
+
+- On macOS, a latency change a plugin reported just before a render was ignored, so `process_audio` compensated with the old value: a plugin set to 256 samples of latency returned its output 256 samples late. A reported change reaches the host only when the main thread pumps JUCE's message queue, and minihost never did so itself. `minihost play` likewise delivered no latency, parameter-info or program change for a whole session. `process_audio`, the MIDI renderer and the `play` loop now pump before reading the latency. It is a no-op on Linux and Windows, where the plugin thread pumps for itself.
+
+- One plugin instance could be placed twice in a chain, in two branches of a bus, or in two graph nodes. It was then processed twice per block, so its state advanced twice: `PluginChain([p, p])` with a 100-sample delay reported 200 samples but differed from two separate instances by up to 1.51 on a sine. `mh_chain_create`, `mh_bus_add_branch` and `mh_graph_add_plugin` now reject it. An instance shared between separate containers is not detected.
+
+- A chain's dry/wet mix comb-filtered on a plugin with latency: the dry path was not delayed. An impulse through 100 samples of latency at mix 0.5 came out at 0 and at 100. At mix 0 the chain still reported 100 samples of latency it no longer applied, so `process_audio(compensate_latency=True)` shifted the output wrongly. The dry path is now delayed by the plugin's current latency, read each block through new `mh_get_latency_samples_rt`, so the blend lines up at any mix. The first mix below 1.0 allocates the delay line, up to 1 s at the chain's rate; a mix is refused for a plugin whose latency already exceeds that. Refusing any mix on a plugin with latency was the alternative. It missed a latency reported after `set_mix`, and the test fixture reports its latency only after the next block.
+
+- Chains dropped MIDI past 256 events per block, silently. The inter-plugin stage buffers held 256 events on every path, whatever `midi_out_capacity` the caller passed. In `[fx, synth]` a note-on at event 300 never reached the synth, and a bus reported no overflow, because its flag tested only its own output buffer. The stage now holds 4096 events. Every drop is counted: new `mh_get_midi_out_dropped` covers a plugin's output past capacity, and new `mh_chain_get_midi_dropped` covers a chain, including drops between its plugins (`Plugin.midi_out_dropped` and `PluginChain.midi_dropped` in Python). The bus sets its overflow flag from those counts. The graph now counts a plugin node's own output overflow too, closing the gap `mh_graph_get_midi_output_dropped` documented. The chain's automation path also stops growing its chunk input past its reserve, which allocated on the audio thread; it counts those events as dropped instead.
+
+- One OSC packet could stall parameter control for seconds. JUCE's pattern matcher backtracks: each `*` retries every split point, so a 32-byte address with 12 stars cost 4.46 s per bound parameter, and an `OscMapper` held its lock for the whole scan. `osc_address_matches` now tracks the set of reachable positions instead, linear per pattern token: the same pattern takes 0.004 ms. It reproduces JUCE's semantics, including its quirks. `tests/test_osc_pattern_parity.py` checks 4381 recorded JUCE answers. Capping the number of `*` was the alternative, but it only lowers the exponent.
+
+- `OscServer.close()` while a callback ran longer than 10 s crashed the process. JUCE's `disconnect()` gives up waiting for the socket thread after 10 s, so the server was freed under the running callback. `close()` from inside the server's own callback hung forever, because the socket thread waited for itself, and leaked the server. `close()` now stops new callbacks and waits for a running one to return before disconnecting, however long it takes. Called from the callback itself, it returns at once and the server is freed when that callback returns.
+
+- `Plugin` opened with any sample rate and block size. At 0 or NaN it rendered NaN, at -48000 it rendered sound, a block size of 0 opened a plugin every `process` call rejected, and 2**31-1 reserved about 34 GB. Every open path now requires a finite rate above 0 and a block size in [1, 2^20], the audio device's period limit. The `sample_rate` setter now also rejects `inf`.
+
+- `Plugin.poll_callbacks` cleared its queue before dispatching, so a callback that raised lost every event after it in the batch. A `poll_callbacks()` from inside a callback overwrote the buffer the outer call was iterating: events were lost, others delivered twice, and the outer call returned the wrong count. Undelivered events now go back to the front of the queue before the exception propagates. A nested call returns 0 rather than raising, since the outer call is already delivering in order.
+
+- `AudioBuffer` DSP ops ignored data written through an alias after `clear()`. JUCE's `clear()` sets an `isClear` flag that makes `magnitude`, `get_rms_level`, `apply_gain`, `reverse` and `add_from` skip the data, and only JUCE's own write accessors reset it. Writes through `as_ndarray()`, `np.asarray`, DLPack or a `channel_view` bypass those, so the ops returned 0.0 or did nothing. `process_audio(normalize=...)` and render auto-tail read `magnitude()`. The wrapper now drops the flag whenever an op reaches the JUCE buffer.
+
+- Writing FLAC hung on silence in clang builds, which includes macOS: about 1.35 s per exact-zero sample in the first block. Four zeros took 5.5 s, and a render starting with 4096 silent stereo frames would have taken hours. Vendored tflac read the subframe bit depth before setting it, so its first-block wasted-bits scan got 0 bits. GCC and MSVC builds use an intrinsic that returns 0 for that; clang reports itself as GCC 4.2, so it took the portable loop, where `--bits` wrapped to `UINT_MAX`. tflac now sets the bit depth first, uses the intrinsic under clang, and guards the loop. `audio_write` also releases the GIL while encoding.
+
+- Closing a `Plugin` or `PluginChain` that a chain, bus, graph or `AudioDevice` still used freed the native object under it. The container then processed freed memory; in one run a chain processed through an unrelated plugin that reused the allocation. The native object is now reference-counted: `close()` releases the caller's reference, and the object is freed when its last user lets go. Making `close()` raise while the object is in use was the alternative, but it would raise from `__exit__` and from the cycle collector, which closes objects in no fixed order. A closed plugin still cannot be added to a new container.
+
+- `close()` from another thread during a GIL-released `process`, `render_block` or `Session.open` freed the object mid-call. Each wrapper now has a lock that native calls running without the GIL hold, so `close()` waits for them.
+
+- A `MidiIn` callback that raised terminated the process: the exception escaped into the libremidi thread. An `OscServer` callback that raised silently ended its receive thread. Both now report the exception as unraisable and keep delivering.
+
+- One UDP datagram of about 2000 nested OSC bundles overflowed the socket thread's stack. JUCE's OSC parser recurses once per bundle with no limit. `scripts/download_juce.py` now patches it to reject nesting deeper than 16.
+
+- `MidiFile.duration_seconds` segfaulted when any track was empty, including on a new `MidiFile()` and after loading a file that declares no tracks: vendored `midifile` called `back()` on the empty track. `MidiFile.add_*` wrote out of bounds for a track index outside `[0, num_tracks)`; it now raises `IndexError`.
+
+- Array shapes and frame counts were cast to `int` unchecked. `AudioBuffer.from_numpy` crashed on `(1, 2**31)` and silently returned `(1, 10)` for `(1, 2**32 + 10)`. The `process*` bindings pointed channel 1 at channel 0's data. `audio_read` and `resample` overflowed the heap past `INT_MAX` frames. Every dimension is now checked. A resample that could not fit is refused before any work is done, instead of after about 40 s.
+
+- `mh_graph_get_midi_output_events` read past the end of a MIDI output node's 1024-event buffer when a MIDI input fed it more events than that in one block. Its `*num_events_out` was the full upstream count, which the node records but does not store. It is now the stored count (C ABI 2.9.0).
+
+  Events dropped at a MIDI output, processor or merge node were also invisible downstream: a merge or processor overflow reached the output as a full buffer with no loss recorded. Each node now adds its own drops to its sources', through plugins too. New `mh_graph_get_midi_output_dropped` reports the total, and `PluginGraph.get_midi_output_events` issues a `RuntimeWarning` when it is non-zero. It is a separate call because a combined count cannot tell a caller how many events were written once a filter shrinks the stream below the limit. Overflow of a plugin's own MIDI output is still not counted: `mh_process_midi_io` stops at capacity without a total.
+
+- `Plugin.process_auto` and `PluginChain.process_auto` segfaulted on an automation tuple shorter than expected, e.g. `(100, 0)`. The tuple was indexed past its end without a length check. This was reachable from `process_audio(param_changes=...)`. Automation tuples are now parsed once, for plugins, chains and graphs: exact length, integer offsets and indices, finite values. A parameter or chain-slot index out of range now raises; before, the audio thread ignored it.
+
+- NaN parameter values reached the plugin, because `jlimit` passes NaN through its clamp. `mh_set_param`, `mh_set_param_rt`, the morph functions and `mh_param_to_text` now reject non-finite values. The Python setters raise `ValueError`.
+
+- `process_auto` applied out-of-order automation late, and dropped out-of-order MIDI once automation split the block. MIDI past the block end was moved to the last sample without automation, but dropped with it. The bindings now stable-sort automation and MIDI by offset, including graph staging. `mh_process_auto` clamps offsets as `mh_process_midi_io` does. Sorting in the host rather than rejecting keeps unsorted MIDI working, as it already did without automation.
+
+- `AudioDevice.send_midi` narrowed each argument to a byte without checking, so `0x190` was sent as `0x90`. `send_param` and `send_param_control` queued any non-negative index, and the audio thread then ignored a bad one without reporting it. Both are now checked on the caller's thread and raise `ValueError`; a negative `send_param` index used to raise `RuntimeError`. The MIDI mapper and the CLI MIDI forwarder run on receive threads, so they drop a rejected write rather than raise.
+
+- MIDI processor params were not range-checked. `min_note=200, max_note=-5` filtered out everything, and an unknown `op` set after `add` dropped every event. `mh_graph_add_midi_processor` and `mh_graph_set_midi_processor_params` now check the fields the op uses. An out-of-range `op` is read as a raw integer, since reading it through the C++ enum type is undefined.
+
+- `midi_out_capacity` had no upper bound, and each call allocates that many events up front. It is now capped at 65536.
+
+- `PluginGraph.set_node_automation`, `set_midi_input_events` and `set_node_midi` cleared the scratch buffer the graph points into before parsing the new list. A parse error then left the graph pointing at freed or half-filled memory until the next render. They now parse into a local buffer first.
+
+- `process_audio` accepted any `block_size`. A negative value returned silence with no error; zero or a value above `max_block_size` failed with an unrelated message. It now raises `ValueError` before rendering.
+
+- MIDI event tuples are range-checked: `sample_offset >= 0`, status `0x80`-`0xFF`, data bytes `0`-`127`. Before, data bytes 128-255 and status bytes below `0x80` reached the plugin, and other bad values raised a bare `std::bad_cast`.
+
+- `load_project` coerced optional fields. `"resample": "false"` enabled resampling, and `bit_depth` and the MIDI processor fields accepted any value `int()` or `float()` would take. These fields are now type-checked. `bit_depth` and the sink format are validated at load time, not when the output is written.
+
 - `mh_audio_get_transport` could copy a snapshot slot while the audio thread rewrote it. The four rotating slots bounded the race but did not prevent it. Snapshots now go through the existing `TransportSeqlock`.
 
 - `transport_enabled` was a plain `int` written by the caller and read by the audio thread, which is a data race in C. It is now accessed atomically.

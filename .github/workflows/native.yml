@@ -19,7 +19,7 @@ name: Native CLI
 #     the same pytest files build-cli runs, so gating those paths costs one
 #     compile and catches an assertion regression at review time.
 #   - the native unit tests gate the same paths. They compile the harnesses in
-#     tests/native/ under UBSan with no JUCE and no Python, so a run is
+#     tests/native/ under UBSan (ASan too for the graph) with no JUCE and no Python, so a run is
 #     seconds; they run on the weekly cron too, where a toolchain update is
 #     what breaks them.
 #   - the sanitizer job is weekly and on demand only. It is a full

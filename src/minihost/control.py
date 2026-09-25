@@ -26,6 +26,7 @@ is not quantized at all.
 
 from __future__ import annotations
 
+import math
 import re
 import threading
 import time
@@ -155,6 +156,21 @@ class _ParamWriter:
         # that just sent it fights the finger during a drag.
         self._last_write: dict[int, float] = {}
 
+    def _resolve_param(self, param: "str | int") -> tuple[int, str]:
+        """Return ``(index, name)`` for a parameter given by name or index.
+
+        An index is exact where a name is not: a plugin can repeat a name, and
+        ``find_param`` resolves to the first match.
+        """
+        if isinstance(param, int) and not isinstance(param, bool):
+            if not 0 <= param < self._plugin.num_params:
+                raise ValueError(
+                    f"parameter index {param} out of range "
+                    f"(plugin has {self._plugin.num_params})"
+                )
+            return param, self._plugin.get_param_info(param)["name"]
+        return self._plugin.find_param(str(param)), str(param)
+
     def bind_device(self, device: Optional[Any], plugin_index: int = 0) -> None:
         """Route parameter writes through an :class:`AudioDevice`.
 
@@ -186,8 +202,12 @@ class _ParamWriter:
         A full control queue is dropped rather than raised: this runs on a
         receive thread (MIDI input or OSC socket), where an exception would
         escape into a C callback, and the value it carries is superseded by
-        the next turn of the fader anyway.
+        the next turn of the fader anyway. A non-finite value (an OSC float
+        can carry NaN) and a target the device rejects are dropped for the
+        same reason.
         """
+        if not math.isfinite(value):
+            return
         self._last_write[param_idx] = time.monotonic()
 
         device = self._device
@@ -196,7 +216,7 @@ class _ParamWriter:
             return
         try:
             device.send_param_control(param_idx, value, self._plugin_index)
-        except RuntimeError:
+        except (RuntimeError, ValueError):
             pass
 
     def wrote_recently(self, param_idx: int, within: float) -> bool:
@@ -288,7 +308,7 @@ class MidiMapper(_ParamWriter):
         self,
         channel: int,
         cc: int,
-        param: str,
+        param: "str | int",
         value_range: tuple[float, float] = (0.0, 1.0),
         curve: str = "linear",
     ) -> None:
@@ -298,8 +318,8 @@ class MidiMapper(_ParamWriter):
             channel: MIDI channel (0-15).
             cc: CC number (0-127).
             param: Plugin parameter name (case-insensitive lookup via
-                :meth:`Plugin.find_param`). Resolved immediately;
-                ``ValueError`` if not found.
+                :meth:`Plugin.find_param`, first match) or index. Resolved
+                immediately; ``ValueError`` if not found.
             value_range: ``(low, high)`` tuple. The 0..127 CC value is
                 rescaled into this range. Defaults to ``(0.0, 1.0)``
                 which matches the plugin's normalized parameter convention.
@@ -320,7 +340,7 @@ class MidiMapper(_ParamWriter):
 
         # Resolve the parameter name now -- fail fast if it's wrong, before
         # the user opens the MIDI port and starts receiving events.
-        param_idx = self._plugin.find_param(param)
+        param_idx, param = self._resolve_param(param)
         with self._lock:
             self._reject_cc_conflict(channel, cc)
             self._cc[(channel, cc)] = _Binding(
@@ -334,7 +354,7 @@ class MidiMapper(_ParamWriter):
         self,
         channel: int,
         cc: int,
-        param: str,
+        param: "str | int",
         value_range: tuple[float, float] = (0.0, 1.0),
         curve: str = "linear",
     ) -> None:
@@ -371,7 +391,7 @@ class MidiMapper(_ParamWriter):
         _validate_curve(curve)
         value_range = _validate_range(value_range)
 
-        param_idx = self._plugin.find_param(param)
+        param_idx, param = self._resolve_param(param)
         with self._lock:
             self._reject_cc14_conflict(channel, cc)
             self._cc14[(channel, cc)] = _Binding(
@@ -640,7 +660,7 @@ class OscMapper(_ParamWriter):
     def map_address(
         self,
         address: str,
-        param: str,
+        param: "str | int",
         value_range: tuple[float, float] = (0.0, 1.0),
         curve: str = "linear",
     ) -> None:
@@ -652,8 +672,8 @@ class OscMapper(_ParamWriter):
                 alternative failure is silent, a control that simply never
                 arrives with nothing logged at either end.
             param: Plugin parameter name (case-insensitive lookup via
-                :meth:`Plugin.find_param`). Resolved immediately;
-                ``ValueError`` if not found.
+                :meth:`Plugin.find_param`, first match) or index. Resolved
+                immediately; ``ValueError`` if not found.
             value_range: ``(low, high)``. The incoming 0..1 float is rescaled
                 into this range. Defaults to ``(0.0, 1.0)``, which matches the
                 plugin's own normalized convention.
@@ -672,7 +692,7 @@ class OscMapper(_ParamWriter):
         _validate_curve(curve)
         value_range = _validate_range(value_range)
 
-        param_idx = self._plugin.find_param(param)
+        param_idx, param = self._resolve_param(param)
         with self._lock:
             self._by_address[address] = _Binding(
                 param_name=param,

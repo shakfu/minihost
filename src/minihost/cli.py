@@ -993,7 +993,9 @@ def _load_map_file(path: str, mapper) -> int:
     ``cc`` so there is one key to read and no invalid combination to
     validate -- an entry cannot claim to be both.
     Optional fields: ``value_range`` (default ``[0.0, 1.0]``), ``curve``
-    (default ``"linear"``; one of ``linear``, ``exp``, ``log``).
+    (default ``"linear"``; one of ``linear``, ``exp``, ``log``), and
+    ``param_index``, which binds by index and takes precedence over ``param``
+    (a plugin can repeat a name; ``minihost touch`` writes both).
 
     Returns the number of mappings loaded. Raises ``ValueError`` on a
     malformed file or unknown parameter name.
@@ -1046,12 +1048,23 @@ def _load_map_file(path: str, mapper) -> int:
 
         curve = entry.get("curve", "linear")
 
+        # An index is exact; a name resolves to its first match.
+        target = param
+        if "param_index" in entry:
+            target = entry["param_index"]
+            if not isinstance(target, int) or isinstance(target, bool):
+                raise ValueError(
+                    f"--map-file {path!r}: mappings[{i}].param_index must be an integer"
+                )
+        else:
+            target = str(param)
+
         # Delegates channel/cc/curve/param-existence validation to the mapper.
         bind = mapper.map_cc14 if has_cc14 else mapper.map_cc
         bind(
             channel=int(channel),
             cc=int(cc),
-            param=str(param),
+            param=target,
             value_range=value_range,
             curve=str(curve),
         )
@@ -1412,13 +1425,19 @@ def cmd_play(args: argparse.Namespace) -> int:
     if midi_mapper is not None:
 
         def _forward_unmapped(data: bytes) -> None:
+            # Runs on the MIDI receive thread, where an exception would
+            # escape into a C callback: drop a full queue or a malformed
+            # message instead.
             n = len(data)
-            if n >= 3:
-                audio.send_midi(data[0], data[1], data[2])
-            elif n == 2:
-                audio.send_midi(data[0], data[1], 0)
-            elif n == 1:
-                audio.send_midi(data[0], 0, 0)
+            try:
+                if n >= 3:
+                    audio.send_midi(data[0], data[1], data[2])
+                elif n == 2:
+                    audio.send_midi(data[0], data[1], 0)
+                elif n == 1:
+                    audio.send_midi(data[0], 0, 0)
+            except (RuntimeError, ValueError):
+                pass
 
         midi_mapper.set_on_unmapped(_forward_unmapped)
 
@@ -1556,6 +1575,10 @@ def cmd_play(args: argparse.Namespace) -> int:
     try:
         while running:
             time.sleep(0.1)
+            # On macOS a plugin's latency, parameter-info and program changes
+            # reach the host only when the main thread pumps JUCE's queue;
+            # without this a whole session delivered none of them.
+            plugin.poll_callbacks()
     except KeyboardInterrupt:
         pass
 

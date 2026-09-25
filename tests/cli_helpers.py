@@ -39,3 +39,19 @@ def find_cli_binary(name: str, env_var: str) -> str | None:
     if not existing:
         return None
     return str(max(existing, key=lambda p: p.stat().st_mtime))
+
+
+def find_test_plugin(name: str, env_var: str) -> str | None:
+    """Locate a `projects/test_plugin` VST3 build via env var or build trees.
+
+    Globs every build directory and config, so a Debug or multi-config tree
+    is found as well as `build/`. The most recently built one wins.
+    """
+    env = os.environ.get(env_var)
+    if env:
+        return env
+    pattern = f"build*/projects/test_plugin/{name}_artefacts/*/VST3/{name}.vst3"
+    existing = list(_REPO_ROOT.glob(pattern))
+    if not existing:
+        return None
+    return str(max(existing, key=lambda p: p.stat().st_mtime))

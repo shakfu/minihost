@@ -7,6 +7,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -27,7 +28,7 @@ struct MidiEdge {
 };
 
 // Per-plugin midi-out capture buffer (events).
-constexpr int kMidiBufCapacity = 1024;
+constexpr int kMidiBufCapacity = MH_GRAPH_MIDI_OUTPUT_CAPACITY;
 
 struct Node {
     MH_NodeKind kind;
@@ -97,10 +98,12 @@ struct Node {
     //    by mh_process_midi_io; MIDI_OUTPUT: copy of upstream events,
     //    drained by get_midi_output_events).
     //  - midi_out_count: number of valid events in midi_out_buf.
-    //  - midi_out_truncated_count: full count even when truncated.
+    //  - midi_dropped: events lost this block at this node or any MIDI
+    //    source upstream of it. Summed per path, so a source reached
+    //    twice counts twice, as its events would have.
     std::vector<MH_MidiEvent> midi_out_buf;
     int                       midi_out_count = 0;
-    int                       midi_out_truncated_count = 0;
+    int                       midi_dropped   = 0;
 
     // For MIDI_INPUT only: borrowed pointer / count staged by caller
     // before render_block; cleared after each render_block.
@@ -172,6 +175,51 @@ void setErrf(char* buf, size_t n, const char* fmt, ...)
 
 bool inRange(MH_NodeId id, int sz) { return id >= 0 && id < sz; }
 
+// Checks the fields `op` uses; the others may be left zero. An unknown op
+// made the processor drop every event.
+bool checkProcessorParams(const MH_MidiProcessorParams& p,
+                          char* err, size_t n)
+{
+    // A C caller can store any int in op; reading an out-of-range value
+    // through the C++ enum type is undefined, so read the raw integer.
+    std::underlying_type<MH_MidiOp>::type op;
+    std::memcpy(&op, &p.op, sizeof op);
+    switch (op)
+    {
+    case MH_MIDI_OP_FILTER:
+        if (p.min_note < 0 || p.max_note > 127 || p.min_note > p.max_note)
+        {
+            setErrf(err, n, "filter needs 0 <= min_note <= max_note <= 127, "
+                            "got %d..%d", p.min_note, p.max_note);
+            return false;
+        }
+        if (p.channel_mask < 0 || p.channel_mask > 0xFFFF)
+        {
+            setErrf(err, n, "channel_mask must be in [0, 0xFFFF], got %d",
+                    p.channel_mask);
+            return false;
+        }
+        return true;
+    case MH_MIDI_OP_TRANSPOSE:
+        if (p.transpose_semitones < -127 || p.transpose_semitones > 127)
+        {
+            setErrf(err, n, "transpose_semitones must be in [-127, 127], got %d",
+                    p.transpose_semitones);
+            return false;
+        }
+        return true;
+    case MH_MIDI_OP_VELOCITY_CURVE:
+        if (!std::isfinite(p.velocity_gamma) || p.velocity_gamma <= 0.0f)
+        {
+            setErr(err, n, "velocity_gamma must be a finite number > 0");
+            return false;
+        }
+        return true;
+    }
+    setErr(err, n, "invalid MH_MidiOp");
+    return false;
+}
+
 // Find the edge whose (dst_node, dst_port) matches key. Returns -1
 // if none. Linear scan; v1 graphs are small.
 int findEdge(const std::vector<Edge>& edges, MH_NodeId dst, int port)
@@ -224,6 +272,17 @@ extern "C" MH_NodeId mh_graph_add_plugin(MH_PluginGraph* g, MH_Plugin* p,
         setErr(err_buf, err_buf_size,
                "graph already compiled; add_plugin not permitted");
         return -1;
+    }
+    // Every node processes each block, so one instance in two nodes would
+    // advance its state twice per block.
+    for (const auto& other : g->nodes)
+    {
+        if (other.kind == MH_NODE_PLUGIN && other.plugin == p)
+        {
+            setErr(err_buf, err_buf_size,
+                   "plugin is already a node of this graph");
+            return -1;
+        }
     }
     MH_Info info{};
     if (!mh_get_info(p, &info))
@@ -448,13 +507,7 @@ extern "C" MH_NodeId mh_graph_add_midi_processor(
     if (g == nullptr) { setErr(err_buf, err_buf_size, "null graph"); return -1; }
     if (g->compiled)  { setErr(err_buf, err_buf_size,
                                "graph already compiled"); return -1; }
-    if (params.op != MH_MIDI_OP_FILTER
-        && params.op != MH_MIDI_OP_TRANSPOSE
-        && params.op != MH_MIDI_OP_VELOCITY_CURVE)
-    {
-        setErr(err_buf, err_buf_size, "invalid MH_MidiOp");
-        return -1;
-    }
+    if (!checkProcessorParams(params, err_buf, err_buf_size)) return -1;
     Node n;
     n.kind                  = MH_NODE_MIDI_PROCESSOR;
     n.accepts_midi          = true;
@@ -473,6 +526,7 @@ extern "C" int mh_graph_set_midi_processor_params(
     if (!inRange(node, (int) g->nodes.size())) return 0;
     auto& n = g->nodes[(size_t) node];
     if (n.kind != MH_NODE_MIDI_PROCESSOR) return 0;
+    if (!checkProcessorParams(params, nullptr, 0)) return 0;
     n.midi_processor_params = params;
     return 1;
 }
@@ -909,14 +963,27 @@ extern "C" int mh_graph_get_midi_output_events(MH_PluginGraph* g, MH_NodeId node
     if (!inRange(node, (int) g->nodes.size())) return 0;
     auto& n = g->nodes[(size_t) node];
     if (n.kind != MH_NODE_MIDI_OUTPUT) return 0;
-    const int total = n.midi_out_truncated_count;
-    if (num_events_out) *num_events_out = total;
+    const int stored = n.midi_out_count;
+    if (num_events_out) *num_events_out = stored;
     if (out_buf != nullptr && capacity > 0)
     {
-        const int to_copy = total < capacity ? total : capacity;
+        const int to_copy = stored < capacity ? stored : capacity;
         for (int i = 0; i < to_copy; ++i)
             out_buf[i] = n.midi_out_buf[(size_t) i];
     }
+    return 1;
+}
+
+extern "C" int mh_graph_get_midi_output_dropped(MH_PluginGraph* g,
+                                                   MH_NodeId node,
+                                                   int* dropped_out)
+{
+    if (g == nullptr) return 0;
+    if (!g->compiled) return 0;
+    if (!inRange(node, (int) g->nodes.size())) return 0;
+    const auto& n = g->nodes[(size_t) node];
+    if (n.kind != MH_NODE_MIDI_OUTPUT) return 0;
+    if (dropped_out) *dropped_out = n.midi_dropped;
     return 1;
 }
 
@@ -1034,9 +1101,13 @@ extern "C" int mh_graph_render_block(MH_PluginGraph* g,
             int                 midi_in_n    = 0;
             const MH_NodeId midi_src0
                 = (!n.midi_srcs.empty()) ? n.midi_srcs[0] : -1;
+            // Input lost upstream is reported downstream, and so is overflow
+            // of the plugin's own output (added after processing).
+            n.midi_dropped = 0;
             if (midi_src0 >= 0)
             {
                 const Node& s = g->nodes[(size_t) midi_src0];
+                n.midi_dropped = s.midi_dropped;
                 if (s.kind == MH_NODE_MIDI_INPUT)
                 {
                     midi_in_evts = s.staged_midi_events;
@@ -1097,8 +1168,8 @@ extern "C" int mh_graph_render_block(MH_PluginGraph* g,
                 // mh_process_midi_io / mh_process_auto write up to
                 // capacity; we store the (possibly truncated) count
                 // and treat n.midi_out_buf[0..count) as live events.
-                n.midi_out_count           = midi_out_n;
-                n.midi_out_truncated_count = midi_out_n;
+                n.midi_out_count = midi_out_n;
+                n.midi_dropped += mh_get_midi_out_dropped(n.plugin);
             }
             break;
         }
@@ -1112,8 +1183,8 @@ extern "C" int mh_graph_render_block(MH_PluginGraph* g,
         {
             // Copy from upstream MIDI source into our buffer for
             // caller retrieval via get_midi_output_events.
-            n.midi_out_count           = 0;
-            n.midi_out_truncated_count = 0;
+            n.midi_out_count = 0;
+            n.midi_dropped   = 0;
             const MH_NodeId src_id
                 = (!n.midi_srcs.empty()) ? n.midi_srcs[0] : -1;
             if (src_id < 0) break;
@@ -1131,19 +1202,19 @@ extern "C" int mh_graph_render_block(MH_PluginGraph* g,
                                ? nullptr : s.midi_out_buf.data();
                 src_n    = s.midi_out_count;
             }
-            n.midi_out_truncated_count = src_n;
             const int cap = (int) n.midi_out_buf.size();
             const int to_copy = src_n < cap ? src_n : cap;
             for (int i = 0; i < to_copy; ++i)
                 n.midi_out_buf[(size_t) i] = src_evts[i];
             n.midi_out_count = to_copy;
+            n.midi_dropped   = s.midi_dropped + (src_n - to_copy);
             break;
         }
 
         case MH_NODE_MIDI_PROCESSOR:
         {
-            n.midi_out_count           = 0;
-            n.midi_out_truncated_count = 0;
+            n.midi_out_count = 0;
+            n.midi_dropped   = 0;
             // Resolve upstream events (port 0).
             const MH_NodeId src_id
                 = (!n.midi_srcs.empty()) ? n.midi_srcs[0] : -1;
@@ -1224,15 +1295,15 @@ extern "C" int mh_graph_render_block(MH_PluginGraph* g,
                 }
                 }
             }
-            n.midi_out_count           = (w < cap) ? w : cap;
-            n.midi_out_truncated_count = w;
+            n.midi_out_count = (w < cap) ? w : cap;
+            n.midi_dropped   = s.midi_dropped + (w - n.midi_out_count);
             break;
         }
 
         case MH_NODE_MIDI_MERGE:
         {
-            n.midi_out_count           = 0;
-            n.midi_out_truncated_count = 0;
+            n.midi_out_count = 0;
+            n.midi_dropped   = 0;
             if (!n.has_outgoing_midi_edge) break;
             const int cap = (int) n.midi_out_buf.size();
             int w = 0;
@@ -1244,6 +1315,7 @@ extern "C" int mh_graph_render_block(MH_PluginGraph* g,
                 const MH_NodeId src_id = n.midi_srcs[(size_t) port];
                 if (src_id < 0) continue;
                 const Node& s = g->nodes[(size_t) src_id];
+                n.midi_dropped += s.midi_dropped;
                 const MH_MidiEvent* src_evts = nullptr;
                 int src_n = 0;
                 if (s.kind == MH_NODE_MIDI_INPUT)
@@ -1278,8 +1350,8 @@ extern "C" int mh_graph_render_block(MH_PluginGraph* g,
                 }
                 n.midi_out_buf[(size_t) (j + 1)] = x;
             }
-            n.midi_out_count           = kept;
-            n.midi_out_truncated_count = w;
+            n.midi_out_count = kept;
+            n.midi_dropped  += w - kept;
             break;
         }
 

@@ -251,3 +251,70 @@ def test_reverse_bounds():
         buf.reverse_channel(5)
     with pytest.raises(ValueError, match="out of bounds"):
         buf.reverse_channel(0, 95, 10)
+
+
+# -- writes through an alias after clear() -----------------------------
+#
+# clear() set JUCE's isClear flag, which only JUCE's own write accessors
+# reset. Data written afterwards through as_ndarray, np.asarray or a channel
+# view was then ignored: magnitude and RMS read 0.0, apply_gain and
+# reverse did nothing, add_from added nothing.
+
+
+def _cleared_then_written(value=1.0, frames=8):
+    buf = AudioBuffer(2, frames)
+    view = buf.as_ndarray()
+    buf.clear()
+    view[:] = value
+    return buf, view
+
+
+def test_levels_see_data_written_after_clear():
+    buf, _ = _cleared_then_written()
+    assert buf.magnitude() == 1.0
+    assert buf.get_rms_level(0, 0) == pytest.approx(1.0)
+
+
+def test_apply_gain_after_clear():
+    buf, view = _cleared_then_written()
+    buf.apply_gain(0.5)
+    assert np.all(view == 0.5)
+
+
+def test_reverse_after_clear():
+    buf = AudioBuffer(1, 4)
+    view = buf.as_ndarray()
+    buf.clear()
+    view[0] = [1.0, 2.0, 3.0, 4.0]
+    buf.reverse()
+    assert view[0].tolist() == [4.0, 3.0, 2.0, 1.0]
+
+
+def test_add_from_a_source_written_after_clear():
+    src, _ = _cleared_then_written()
+    dst = AudioBuffer(2, 8)
+    dst.add_from(
+        dest_channel=0,
+        dest_start=0,
+        source=src,
+        source_channel=0,
+        source_start=0,
+        count=8,
+    )
+    assert np.all(np.asarray(dst)[0] == 1.0)
+
+
+def test_channel_view_sees_parent_writes_after_its_clear():
+    parent = AudioBuffer(2, 8)
+    view = parent.channel_view(0, 1)
+    view.clear()
+    parent.as_ndarray()[0:1, :] = 1.0
+    assert view.magnitude() == 1.0
+
+
+def test_asarray_writes_after_clear():
+    buf = AudioBuffer(2, 8)
+    arr = np.asarray(buf)
+    buf.clear()
+    arr[:] = 2.0
+    assert buf.magnitude() == 2.0

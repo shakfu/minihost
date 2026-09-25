@@ -65,7 +65,8 @@ void mh_bus_close(MH_PluginBus* graph);
 //
 // Returns the branch index (>= 0) on success, or -1 on failure (e.g.,
 // NULL chain, channel-count mismatch with the graph, sample-rate
-// mismatch).
+// mismatch, or a chain or plugin already in another branch, which would be
+// processed twice per block).
 int mh_bus_add_branch(MH_PluginBus* graph,
                          MH_PluginChain* chain,
                          float gain,

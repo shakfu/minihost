@@ -685,3 +685,90 @@ def test_invalid_render_geometry_is_rejected(tmp_path, patch, match):
     proj = _patched_identity_project(tmp_path, patch)
     with pytest.raises(minihost.ProjectError, match=match):
         minihost.load_project(proj)
+
+
+# -------------------------------------------------------------------- #
+# Optional fields: type-checked, not coerced.                           #
+# -------------------------------------------------------------------- #
+
+
+def _add_midi_node(doc, kind, **fields):
+    doc["nodes"].append({"id": "m", "kind": kind, **fields})
+
+
+@pytest.mark.parametrize(
+    "patch, match",
+    [
+        # bool("false") is True: the old coercion enabled resampling.
+        (lambda d: d["nodes"][0].update(resample="false"), "resample"),
+        (lambda d: d["nodes"][0].update(resample=1), "resample"),
+        (lambda d: d["nodes"][1].update(bit_depth=12), "bit_depth"),
+        (lambda d: d["nodes"][1].update(bit_depth=24.9), "bit_depth"),
+        (lambda d: d["nodes"][1].update(bit_depth="abc"), "bit_depth"),
+        (
+            lambda d: d["nodes"][1].update(sink="out.flac", bit_depth=32),
+            "FLAC",
+        ),
+        (lambda d: d["nodes"][1].update(sink="out.mp3"), "sink format"),
+        (lambda d: _add_midi_node(d, "midi_filter", min_note="36"), "min_note"),
+        (lambda d: _add_midi_node(d, "midi_transpose", semitones=1.5), "semitones"),
+        (lambda d: _add_midi_node(d, "midi_velocity_curve", gamma="2"), "gamma"),
+    ],
+    ids=[
+        "string-resample",
+        "int-resample",
+        "unsupported-bit-depth",
+        "float-bit-depth",
+        "string-bit-depth",
+        "flac-32-bit",
+        "unsupported-sink",
+        "string-min-note",
+        "float-semitones",
+        "string-gamma",
+    ],
+)
+def test_invalid_optional_field_is_rejected_at_load(tmp_path, patch, match):
+    proj = _patched_identity_project(tmp_path, patch)
+    with pytest.raises(minihost.ProjectError, match=match):
+        minihost.load_project(proj)
+
+
+def test_optional_fields_default_when_absent(tmp_path):
+    def strip(d):
+        del d["nodes"][1]["bit_depth"]
+
+    p = minihost.load_project(_patched_identity_project(tmp_path, strip))
+    assert p.inputs[0].resample is False
+    assert p.outputs[0].bit_depth == 24
+
+
+# load_project leaked raw exceptions (binascii.Error, RuntimeError,
+# ValueError) and truncated or accepted wrong types.
+@pytest.mark.parametrize(
+    "patch, match",
+    [
+        (lambda d: d["edges"][0].update(dst_port="x"), "dst_port"),
+        (lambda d: d["edges"][0].update(dst_port=1.9), "dst_port"),
+        (lambda d: d.update(block_size=True), "block_size"),
+    ],
+    ids=["str-port", "float-port", "bool-block-size"],
+)
+def test_wrong_types_raise_project_error(tmp_path, patch, match):
+    proj = _patched_identity_project(tmp_path, patch)
+    with pytest.raises(minihost.ProjectError, match=match):
+        minihost.load_project(proj)
+
+
+def test_save_project_refuses_nan(tmp_path):
+    # json writes NaN as a bare `NaN`, which is not JSON.
+    with pytest.raises(minihost.ProjectError, match="non-finite"):
+        minihost.save_project(
+            tmp_path / "p.json",
+            sample_rate=48000,
+            block_size=256,
+            input_nodes=[],
+            output_nodes=[{"id": "out", "channels": 2, "sink": "out.wav"}],
+            plugin_nodes=[],
+            edges=[],
+            layout={"out": (float("nan"), 1.0)},
+        )

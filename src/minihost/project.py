@@ -73,6 +73,7 @@ docs/dev/desktop_app_todo.md).
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import math
 from dataclasses import dataclass, field
@@ -276,7 +277,7 @@ def load_project(project_path: str | Path) -> LoadedProject:
                 id=nid,
                 channels=_require_int_at_least(raw, "channels", 1),
                 source=_resolve(project_dir, _require_field(raw, "source", str)),
-                resample=bool(raw.get("resample", False)),
+                resample=_optional_field(raw, "resample", bool, False),
             )
             inputs.append(in_node)
             node_by_id[nid] = ("input", in_node)
@@ -285,8 +286,9 @@ def load_project(project_path: str | Path) -> LoadedProject:
                 id=nid,
                 channels=_require_int_at_least(raw, "channels", 1),
                 sink=_resolve(project_dir, _require_field(raw, "sink", str)),
-                bit_depth=int(raw.get("bit_depth", 24)),
+                bit_depth=_optional_field(raw, "bit_depth", int, 24),
             )
+            _check_output_format(out_node)
             outputs.append(out_node)
             node_by_id[nid] = ("output", out_node)
         elif kind == "plugin":
@@ -297,14 +299,14 @@ def load_project(project_path: str | Path) -> LoadedProject:
                 pl_node = _PluginNode(
                     id=nid,
                     path=_resolve(project_dir, path_val) if path_val else None,
-                    state_b64=raw.get("state_b64"),
+                    state_b64=_optional_field(raw, "state_b64", str, None),
                     descriptor=descriptor,
                 )
             else:
                 pl_node = _PluginNode(
                     id=nid,
                     path=_resolve(project_dir, _require_field(raw, "path", str)),
-                    state_b64=raw.get("state_b64"),
+                    state_b64=_optional_field(raw, "state_b64", str, None),
                 )
             plugins.append(pl_node)
             node_by_id[nid] = ("plugin", pl_node)
@@ -349,9 +351,9 @@ def load_project(project_path: str | Path) -> LoadedProject:
                 id=nid,
                 params={
                     "op": 0,  # MH_MIDI_OP_FILTER
-                    "min_note": int(raw.get("min_note", 0)),
-                    "max_note": int(raw.get("max_note", 127)),
-                    "channel_mask": int(raw.get("channel_mask", 0xFFFF)),
+                    "min_note": _optional_field(raw, "min_note", int, 0),
+                    "max_note": _optional_field(raw, "max_note", int, 127),
+                    "channel_mask": _optional_field(raw, "channel_mask", int, 0xFFFF),
                 },
             )
             midi_procs.append(mp)
@@ -361,7 +363,7 @@ def load_project(project_path: str | Path) -> LoadedProject:
                 id=nid,
                 params={
                     "op": 1,  # MH_MIDI_OP_TRANSPOSE
-                    "transpose_semitones": int(raw.get("semitones", 0)),
+                    "transpose_semitones": _optional_field(raw, "semitones", int, 0),
                 },
             )
             midi_procs.append(mp)
@@ -371,7 +373,9 @@ def load_project(project_path: str | Path) -> LoadedProject:
                 id=nid,
                 params={
                     "op": 2,  # MH_MIDI_OP_VELOCITY_CURVE
-                    "velocity_gamma": float(raw.get("gamma", 1.0)),
+                    "velocity_gamma": float(
+                        _optional_field(raw, "gamma", (int, float), 1.0)
+                    ),
                 },
             )
             midi_procs.append(mp)
@@ -467,7 +471,18 @@ def load_project(project_path: str | Path) -> LoadedProject:
                 raise ProjectError(f"plugin {pl.id!r} failed to open: {exc}") from exc
             opened.append(pl.plugin)
             if pl.state_b64:
-                pl.plugin.set_state(base64.b64decode(pl.state_b64))
+                try:
+                    state = base64.b64decode(pl.state_b64, validate=True)
+                except (binascii.Error, ValueError) as exc:
+                    raise ProjectError(
+                        f"plugin {pl.id!r}: state_b64 is not valid base64"
+                    ) from exc
+                try:
+                    pl.plugin.set_state(state)
+                except RuntimeError as exc:
+                    raise ProjectError(
+                        f"plugin {pl.id!r}: state rejected: {exc}"
+                    ) from exc
 
         # Build the graph.
         g = minihost.PluginGraph(block, float(sr))
@@ -487,7 +502,10 @@ def load_project(project_path: str | Path) -> LoadedProject:
             mi.node_id = g.add_midi_input()
             id_to_nodeid[mi.id] = mi.node_id
         for mp in midi_procs:
-            id_to_nodeid[mp.id] = g.add_midi_processor(mp.params)
+            try:
+                id_to_nodeid[mp.id] = g.add_midi_processor(mp.params)
+            except (RuntimeError, ValueError) as exc:
+                raise ProjectError(f"node {mp.id!r}: {exc}") from exc
         for mm in midi_merges:
             id_to_nodeid[mm.id] = g.add_midi_merge(mm.num_inputs)
         for mo in midi_outputs:
@@ -501,25 +519,30 @@ def load_project(project_path: str | Path) -> LoadedProject:
         for e in edges_raw:
             src = _require_field(e, "src", str)
             dst = _require_field(e, "dst", str)
-            dst_port = int(e.get("dst_port", 0))
+            dst_port = _optional_field(e, "dst_port", int, 0)
             ekind = e.get("kind", "audio")
             if src not in id_to_nodeid:
                 raise ProjectError(f"edge references unknown src id {src!r}")
             if dst not in id_to_nodeid:
                 raise ProjectError(f"edge references unknown dst id {dst!r}")
-            if ekind == "audio":
-                g.connect(id_to_nodeid[src], id_to_nodeid[dst], dst_port=dst_port)
-            elif ekind == "midi":
-                if dst in midi_merge_ids:
-                    g.connect_midi_port(id_to_nodeid[src], id_to_nodeid[dst], dst_port)
-                else:
-                    g.connect_midi(id_to_nodeid[src], id_to_nodeid[dst])
-            else:
+            if ekind not in ("audio", "midi"):
                 raise ProjectError(
                     f'edge kind must be "audio" or "midi", got {ekind!r}'
                 )
+            try:
+                if ekind == "audio":
+                    g.connect(id_to_nodeid[src], id_to_nodeid[dst], dst_port=dst_port)
+                elif dst in midi_merge_ids:
+                    g.connect_midi_port(id_to_nodeid[src], id_to_nodeid[dst], dst_port)
+                else:
+                    g.connect_midi(id_to_nodeid[src], id_to_nodeid[dst])
+            except RuntimeError as exc:
+                raise ProjectError(f"edge {src!r} -> {dst!r}: {exc}") from exc
 
-        g.compile()
+        try:
+            g.compile()
+        except RuntimeError as exc:
+            raise ProjectError(f"graph does not compile: {exc}") from exc
     except BaseException:
         if g is not None:
             g.close()
@@ -618,7 +641,13 @@ def save_project(
 
     project_path = Path(project_path)
     tmp = project_path.with_suffix(project_path.suffix + ".tmp")
-    tmp.write_text(json.dumps(doc, indent=2) + "\n")
+    # allow_nan=False: json writes NaN as a bare `NaN`, which is not JSON and
+    # which stricter readers refuse.
+    try:
+        text = json.dumps(doc, indent=2, allow_nan=False)
+    except ValueError as exc:
+        raise ProjectError(f"cannot save a non-finite number: {exc}") from exc
+    tmp.write_text(text + "\n")
     tmp.replace(project_path)
 
 
@@ -775,10 +804,36 @@ def _require_int_at_least(d: dict, key: str, minimum: int) -> int:
     return val
 
 
+def _optional_field(d: dict, key: str, expected_type, default: Any) -> Any:
+    """Like `_require_field`, but returns `default` when `key` is absent."""
+    if key not in d:
+        return default
+    return _require_field(d, key, expected_type)
+
+
+def _check_output_format(node: _OutputNode) -> None:
+    """Reject a sink `audio_io.write_audio` would refuse, before rendering."""
+    ext = node.sink.suffix.lower()
+    if ext not in audio_io._WRITE_EXTENSIONS:
+        raise ProjectError(f"output {node.id!r}: unsupported sink format {ext!r}")
+    if node.bit_depth not in audio_io._VALID_BIT_DEPTHS:
+        raise ProjectError(
+            f"output {node.id!r}: bit_depth must be 16, 24, or 32, got {node.bit_depth}"
+        )
+    if ext == ".flac" and node.bit_depth == 32:
+        raise ProjectError(f"output {node.id!r}: FLAC does not support 32-bit")
+
+
 def _require_field(d: dict, key: str, expected_type) -> Any:
     if not isinstance(d, dict) or key not in d:
         raise ProjectError(f"missing required field {key!r}")
     val = d[key]
+    # bool is an int subclass; `"block_size": true` was accepted as 1.
+    wants = expected_type if isinstance(expected_type, tuple) else (expected_type,)
+    if isinstance(val, bool) and bool not in wants:
+        raise ProjectError(
+            f"field {key!r} has wrong type (expected {expected_type}, got bool)"
+        )
     if expected_type is not None and not isinstance(val, expected_type):
         raise ProjectError(
             f"field {key!r} has wrong type "

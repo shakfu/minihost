@@ -45,42 +45,74 @@ JUCE_DIR = Path(os.environ.get("JUCE_DIR", PROJECT_ROOT / "thirdparty" / "JUCE")
 # a library call. The patch adds the source to a private mode as well, holding
 # nothing else, and projects/libminihost/minihost_pump_mac.cpp runs only that.
 #
-# MINIHOST_PUMP_MODE marks a patched file, which makes this idempotent. An
+# JUCE's OSC parser recurses once per nested bundle with no limit, so a single
+# 40 KB datagram of 2000 nested bundles overflowed the socket thread's stack.
+# The patch caps the depth; a deeper packet raises OSCFormatError, which the
+# receiver already catches and drops.
+#
+# Each file's marker shows it is patched, which makes this idempotent. An
 # anchor that no longer matches is a hard error: that is how a JUCE bump which
 # moves the code gets noticed rather than silently dropping the patch.
 PUMP_MODE = "net.minihost.pump"
-PATCH_MARKER = "MINIHOST_PUMP_MODE"
+OSC_MAX_BUNDLE_DEPTH = 16
 
+# path -> (marker, [(anchor, replacement), ...])
 JUCE_PATCHES = {
-    "modules/juce_events/native/juce_MessageQueue_mac.h": [
-        (
-            "        CFRunLoopAddSource (runLoop, runLoopSource.get(), kCFRunLoopCommonModes);\n",
-            "        CFRunLoopAddSource (runLoop, runLoopSource.get(), kCFRunLoopCommonModes);\n"
-            "        // MINIHOST_PUMP_MODE: patched in by scripts/download_juce.py. A private\n"
-            "        // mode this source is the only member of, so a headless host can deliver\n"
-            "        // these without running the rest of the main loop. See\n"
-            "        // projects/libminihost/minihost_pump_mac.cpp.\n"
-            f'        CFRunLoopAddSource (runLoop, runLoopSource.get(), CFSTR ("{PUMP_MODE}"));\n',
-        ),
-        (
-            "        CFRunLoopRemoveSource (runLoop, runLoopSource.get(), kCFRunLoopCommonModes);\n",
-            "        CFRunLoopRemoveSource (runLoop, runLoopSource.get(), kCFRunLoopCommonModes);\n"
-            f'        CFRunLoopRemoveSource (runLoop, runLoopSource.get(), CFSTR ("{PUMP_MODE}"));  // MINIHOST_PUMP_MODE\n',
-        ),
-    ],
+    "modules/juce_events/native/juce_MessageQueue_mac.h": (
+        "MINIHOST_PUMP_MODE",
+        [
+            (
+                "        CFRunLoopAddSource (runLoop, runLoopSource.get(), kCFRunLoopCommonModes);\n",
+                "        CFRunLoopAddSource (runLoop, runLoopSource.get(), kCFRunLoopCommonModes);\n"
+                "        // MINIHOST_PUMP_MODE: patched in by scripts/download_juce.py. A private\n"
+                "        // mode this source is the only member of, so a headless host can deliver\n"
+                "        // these without running the rest of the main loop. See\n"
+                "        // projects/libminihost/minihost_pump_mac.cpp.\n"
+                f'        CFRunLoopAddSource (runLoop, runLoopSource.get(), CFSTR ("{PUMP_MODE}"));\n',
+            ),
+            (
+                "        CFRunLoopRemoveSource (runLoop, runLoopSource.get(), kCFRunLoopCommonModes);\n",
+                "        CFRunLoopRemoveSource (runLoop, runLoopSource.get(), kCFRunLoopCommonModes);\n"
+                f'        CFRunLoopRemoveSource (runLoop, runLoopSource.get(), CFSTR ("{PUMP_MODE}"));  // MINIHOST_PUMP_MODE\n',
+            ),
+        ],
+    ),
+    "modules/juce_osc/osc/juce_OSCReceiver.cpp": (
+        "MINIHOST_OSC_DEPTH",
+        [
+            (
+                '            checkBytesAvailable (16, "OSC input stream exhausted while reading bundle");\n',
+                "            // MINIHOST_OSC_DEPTH: patched in by scripts/download_juce.py. Each nested\n"
+                "            // bundle recurses once; without a cap one datagram overflows the stack.\n"
+                "            if (bundleDepth >= maxBundleDepth)\n"
+                '                throw OSCFormatError ("OSC input stream format error: bundles nested too deeply");\n'
+                "\n"
+                "            ++bundleDepth;\n"
+                "            const ScopeGuard depthGuard { [this] { --bundleDepth; } };\n"
+                "\n"
+                '            checkBytesAvailable (16, "OSC input stream exhausted while reading bundle");\n',
+            ),
+            (
+                "        MemoryInputStream input;\n",
+                "        MemoryInputStream input;\n"
+                f"        static constexpr int maxBundleDepth = {OSC_MAX_BUNDLE_DEPTH};  // MINIHOST_OSC_DEPTH\n"
+                "        int bundleDepth = 0;\n",
+            ),
+        ],
+    ),
 }
 
 
 def apply_patches(juce_dir: Path) -> int:
     """Apply the minihost patches above. Idempotent; returns 0 on success."""
-    for rel, edits in JUCE_PATCHES.items():
+    for rel, (marker, edits) in JUCE_PATCHES.items():
         path = juce_dir / rel
         if not path.exists():
             print(f"Error: cannot patch {path}: no such file", file=sys.stderr)
             return 1
 
         src = path.read_text(encoding="utf-8")
-        if PATCH_MARKER in src:
+        if marker in src:
             continue
 
         for anchor, replacement in edits:
@@ -132,9 +164,7 @@ def main() -> int:
         print(f"Downloading JUCE {JUCE_VERSION} (by tag, NOT SHA-pinned)...")
         archive_ref = JUCE_VERSION
         extracted_name = f"JUCE-{JUCE_VERSION}"
-        archive_url = (
-            f"https://github.com/juce-framework/JUCE/archive/refs/tags/{archive_ref}.tar.gz"
-        )
+        archive_url = f"https://github.com/juce-framework/JUCE/archive/refs/tags/{archive_ref}.tar.gz"
     else:
         print(f"Downloading JUCE {JUCE_VERSION} (SHA {JUCE_PINNED_SHA[:12]})...")
         archive_ref = JUCE_PINNED_SHA
@@ -166,7 +196,9 @@ def main() -> int:
         # Move to destination
         extracted_dir = tmpdir_path / extracted_name
         if not extracted_dir.exists():
-            print(f"Error: Expected directory {extracted_dir} not found", file=sys.stderr)
+            print(
+                f"Error: Expected directory {extracted_dir} not found", file=sys.stderr
+            )
             return 1
 
         # Ensure parent directory exists

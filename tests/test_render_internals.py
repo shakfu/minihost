@@ -273,11 +273,11 @@ class TestCollectMidiEvents:
         assert events[0]["program"] == 5
 
     def test_pitch_bend_included(self):
-        """Pitch bend center value. JUCE's addPitchBend treats the input as a
-        signed offset (-8192..+8191) mapped to 0..16383, so input 0 -> stored 8192."""
+        """Pitch bend centre. add_pitch_bend takes the documented 14-bit value
+        (0..16383, centre 8192), the same scale get_events reports."""
         mf = _make_midi()
         t = mf.add_track()
-        mf.add_pitch_bend(t, 0, 0, 0)  # center position
+        mf.add_pitch_bend(t, 0, 0, 8192)  # center position
         events = _collect_midi_events(mf)
         assert len(events) == 1
         assert events[0]["type"] == "pitch_bend"

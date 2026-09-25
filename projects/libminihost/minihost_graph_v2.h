@@ -109,7 +109,8 @@ void mh_graph_close(MH_PluginGraph* g);
 // it alive until after mh_graph_close. Plugin's input + output
 // channel counts (from mh_get_info) drive edge validation.
 //
-// Returns the new node id (>= 0) or -1 on failure.
+// Returns the new node id (>= 0) or -1 on failure, including when p is
+// already a node of this graph (it would be processed twice per block).
 MH_NodeId mh_graph_add_plugin(MH_PluginGraph* g, MH_Plugin* p,
                                  char* err_buf, size_t err_buf_size);
 
@@ -168,7 +169,8 @@ MH_NodeId mh_graph_add_midi_processor(MH_PluginGraph* g,
 // thread reads params each block; updating from another thread
 // while render_block is in flight is undefined (callers should
 // serialize, e.g. via LiveEngine's start/stop or message-thread
-// cadence).
+// cadence). Returns 0 for a bad node, or for params add_midi_processor
+// would reject.
 int mh_graph_set_midi_processor_params(MH_PluginGraph* g, MH_NodeId node,
                                           MH_MidiProcessorParams params);
 
@@ -319,10 +321,15 @@ int mh_graph_set_midi_input_events(MH_PluginGraph* g, MH_NodeId node,
                                       const MH_MidiEvent* events,
                                       int num_events);
 
+// Events a MIDI output, processor, merge or MIDI-producing plugin node
+// retains per block; later events are dropped.
+#define MH_GRAPH_MIDI_OUTPUT_CAPACITY 1024
+
 // After render_block, drain the events that flowed into a MIDI_OUTPUT
-// node. Writes up to `capacity` events into `out_buf`; on return,
-// *num_events_out is the total event count produced this block (may
-// exceed capacity, in which case events were truncated).
+// node. On return, *num_events_out is the number of events the node
+// holds (at most MH_GRAPH_MIDI_OUTPUT_CAPACITY); min(that, capacity) are
+// written into `out_buf`. Events already dropped are reported by
+// mh_graph_get_midi_output_dropped.
 //
 // Must be called after render_block returns and before the next
 // render_block call. Pass out_buf=NULL with capacity=0 to query the
@@ -334,6 +341,15 @@ int mh_graph_get_midi_output_events(MH_PluginGraph* g, MH_NodeId node,
                                        MH_MidiEvent* out_buf,
                                        int capacity,
                                        int* num_events_out);
+
+// Events dropped this block at a MIDI_OUTPUT node or any MIDI node
+// upstream of it, plugins included, because a node held
+// MH_GRAPH_MIDI_OUTPUT_CAPACITY already.
+//
+// Same call window as mh_graph_get_midi_output_events. Returns 1 on
+// success, 0 if node is not a MIDI_OUTPUT or out of range.
+int mh_graph_get_midi_output_dropped(MH_PluginGraph* g, MH_NodeId node,
+                                        int* dropped_out);
 
 // Introspection.
 int mh_graph_num_nodes(MH_PluginGraph* g);

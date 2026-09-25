@@ -9,10 +9,15 @@ from __future__ import annotations
 
 import os
 
+import numpy as np
 import pytest
 
 import minihost
-from minihost.process import _load_midi_events, _slice_block_events
+from minihost.process import (
+    _load_midi_events,
+    _resolve_block_size,
+    _slice_block_events,
+)
 
 PLUGIN = (
     os.environ.get("MINIHOST_TEST_PLUGIN") or "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
@@ -51,6 +56,59 @@ def test_load_midi_events_sorts_unsorted_input():
 def test_load_midi_events_rejects_malformed_tuple():
     with pytest.raises(ValueError, match="4-tuples"):
         _load_midi_events([(0, 0x90, 60)], sample_rate=48000.0)
+
+
+@pytest.mark.parametrize(
+    "event, match",
+    [
+        ((-5, 0x90, 60, 100), "sample_offset"),
+        ((0, 0x40, 60, 100), "status"),
+        ((0, 0x100, 60, 100), "status"),
+        ((0, 0x90, 128, 100), "data bytes"),
+        ((0, 0x90, 60, -1), "data bytes"),
+        ((0.5, 0x90, 60, 100), "integers"),
+        (("0", 0x90, 60, 100), "integers"),
+    ],
+)
+def test_load_midi_events_rejects_out_of_range_values(event, match):
+    with pytest.raises(ValueError, match=match):
+        _load_midi_events([(10, 0x80, 60, 0), event], sample_rate=48000.0)
+
+
+def test_load_midi_events_accepts_numpy_integers():
+    ev = (np.int64(5), np.uint8(0x90), np.int32(60), np.int16(100))
+    out, _ = _load_midi_events([ev], sample_rate=48000.0)
+    assert out == [ev]
+
+
+class _Limit:
+    max_block_size = 256
+
+
+@pytest.mark.parametrize("block_size", [0, -64, 257])
+def test_resolve_block_size_rejects_out_of_range(block_size):
+    with pytest.raises(ValueError, match="block_size"):
+        _resolve_block_size(block_size, _Limit())
+
+
+def test_resolve_block_size_rejects_non_integer():
+    with pytest.raises(TypeError):
+        _resolve_block_size(128.0, _Limit())
+
+
+def test_resolve_block_size_accepts_the_limit():
+    assert _resolve_block_size(256, _Limit()) == 256
+    assert _resolve_block_size(None, _Limit()) == 256
+
+
+@skip_if_no_plugin
+def test_process_audio_rejects_negative_block_size():
+    # A negative step made the block loop empty: silence, no error.
+    plugin = minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=256)
+    with pytest.raises(ValueError, match="block_size"):
+        minihost.process_audio(
+            plugin, None, midi=[(0, 0x90, 60, 100)], block_size=-64, tail_seconds=0.1
+        )
 
 
 def test_load_midi_events_rejects_wrong_type():

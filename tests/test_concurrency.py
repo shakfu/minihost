@@ -132,6 +132,54 @@ def test_callback_queue_dispatches_in_order():
 
 
 @skip_if_no_plugin
+def test_raising_callback_keeps_the_rest_of_the_batch():
+    # The queue was cleared before dispatch, so an exception on the first
+    # event lost every event after it.
+    plugin = minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=512)
+    if plugin.num_params == 0:
+        pytest.skip("plugin has no parameters")
+    received: list[float] = []
+
+    def cb(idx: int, value: float):
+        received.append(round(value, 3))
+        if len(received) == 1:
+            raise ValueError("boom")
+
+    plugin.set_param_value_callback(cb)
+    for v in (0.1, 0.2, 0.3):
+        plugin.set_param(0, v)
+    with pytest.raises(ValueError, match="boom"):
+        plugin.poll_callbacks()
+    assert plugin.poll_callbacks() == 2
+    assert received == [0.1, 0.2, 0.3]
+
+
+@skip_if_no_plugin
+def test_poll_from_inside_a_callback_delivers_each_event_once():
+    # The nested call overwrote the buffer the outer loop was iterating:
+    # events were lost, others delivered twice, and the outer call returned
+    # the nested batch's size.
+    plugin = minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=512)
+    if plugin.num_params == 0:
+        pytest.skip("plugin has no parameters")
+    received: list[float] = []
+
+    def cb(idx: int, value: float):
+        received.append(round(value, 3))
+        if len(received) == 1:
+            plugin.set_param(0, 0.9)
+            assert plugin.poll_callbacks() == 0
+
+    plugin.set_param_value_callback(cb)
+    for v in (0.1, 0.2, 0.3):
+        plugin.set_param(0, v)
+    assert plugin.poll_callbacks() == 3
+    assert received == [0.1, 0.2, 0.3]
+    assert plugin.poll_callbacks() == 1
+    assert received == [0.1, 0.2, 0.3, 0.9]
+
+
+@skip_if_no_plugin
 def test_callback_queue_overflow_is_reported_not_silent():
     plugin = minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=512)
     if plugin.num_params == 0:

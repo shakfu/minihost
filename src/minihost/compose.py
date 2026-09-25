@@ -267,10 +267,9 @@ class Compose:
             if ts != "auto":
                 raise ValueError(f"tail_seconds string must be 'auto', got {ts!r}.")
             return int(self.max_tail_seconds * sr), True
-        ts = float(ts)
-        if ts < 0:
-            raise ValueError(f"tail_seconds must be >= 0, got {ts}.")
-        return int(ts * sr), False
+        from minihost.process import _check_tail_seconds
+
+        return int(_check_tail_seconds(ts) * sr), False
 
     @staticmethod
     def _pad(buf: AudioBuffer, tail_frames: int) -> AudioBuffer:

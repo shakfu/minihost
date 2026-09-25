@@ -4,6 +4,7 @@
 #define MA_NO_GENERATION
 #define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
+#include <math.h>
 
 #include "minihost_audio.h"
 #include "minihost_midi.h"
@@ -1469,6 +1470,9 @@ static int handle_transport_address(MH_AudioDevice* dev, const char* address,
     // A surface's button sends 1.0 on press and 0.0 on release; treating the
     // release as a command would make every press a press-and-undo.
     float value = (num_args >= 1 && args) ? args[0] : 1.0f;
+    // Non-finite covers a non-numeric argument, which arrives as NaN. NaN
+    // reached plugins as bpm and position, and NaN != 0 would count as a press.
+    if (!isfinite(value)) return 1;
 
     if (strcmp(what, "play") == 0) {
         if (value != 0.0f) mh_audio_transport_play(dev);
@@ -1489,9 +1493,11 @@ static int handle_transport_address(MH_AudioDevice* dev, const char* address,
             double bpm = dev->transport.bpm > 0.0 ? dev->transport.bpm : 120.0;
             double sr = dev->sample_rate > 0 ? dev->sample_rate : 48000.0;
             double seconds = ((double)value) * (60.0 / bpm);
-            long long samples = (long long)(seconds * sr);
-            if (samples < 0) samples = 0;
-            mh_audio_transport_set_position(dev, samples);
+            // Clamped before the cast: 3e38 beats overflowed long long (UB).
+            double samples = seconds * sr;
+            if (samples < 0.0) samples = 0.0;
+            if (samples > 4.0e18) samples = 4.0e18;
+            mh_audio_transport_set_position(dev, (long long)samples);
         }
         return 1;
     }
@@ -1561,7 +1567,7 @@ int mh_audio_transport_stop(MH_AudioDevice* dev) {
 }
 
 int mh_audio_transport_set_bpm(MH_AudioDevice* dev, double bpm) {
-    if (bpm <= 0.0) return 0;
+    if (!(isfinite(bpm) && bpm > 0.0)) return 0;  // `bpm <= 0.0` let NaN through
     MH_TransportCommand cmd = {0};
     cmd.type = MH_TRANSPORT_CMD_SET_BPM;
     cmd.dvalue = bpm;

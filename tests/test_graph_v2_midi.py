@@ -401,3 +401,62 @@ def test_plugin_to_plugin_midi_edge_drives_an_instrument():
         pytest.skip(f"MIDI effect emitted nothing across {blocks} blocks")
     assert np.max(np.abs(by_hand)) > 1e-6, "hand-routed reference is silent"
     assert np.allclose(through_graph, by_hand, atol=1e-5)
+
+
+def _midi_passthrough_graph():
+    g = minihost.PluginGraph(64, 48000.0)
+    mi = g.add_midi_input()
+    mo = g.add_midi_output()
+    g.connect_midi(mi, mo)
+    a_in = g.add_input(1)
+    a_out = g.add_output(1)
+    g.connect(a_in, a_out)
+    g.compile()
+    return g, mi, mo
+
+
+def _render(g):
+    g.render_block(
+        [np.zeros((1, 8), dtype=np.float32)], [np.zeros((1, 8), dtype=np.float32)], 8
+    )
+
+
+def test_midi_output_over_capacity_returns_only_stored_events():
+    # Retrieval used to copy the full upstream count out of the 1024-slot
+    # buffer, returning heap contents past the end.
+    g, mi, mo = _midi_passthrough_graph()
+    events = [(i * 8 // 3000, 0x90, i % 128, 100) for i in range(3000)]
+    g.set_midi_input_events(mi, events)
+    _render(g)
+    with pytest.warns(RuntimeWarning, match="1976 events dropped"):
+        drained = g.get_midi_output_events(mo)
+    assert drained == events[:1024]
+
+
+def test_midi_output_at_capacity_does_not_warn(recwarn):
+    g, mi, mo = _midi_passthrough_graph()
+    events = [(0, 0x90, i % 128, 100) for i in range(1024)]
+    g.set_midi_input_events(mi, events)
+    _render(g)
+    assert g.get_midi_output_events(mo) == events
+    assert not [w for w in recwarn if issubclass(w.category, RuntimeWarning)]
+
+
+@pytest.mark.parametrize(
+    "event, match",
+    [
+        ((-1, 0x90, 60, 100), "sample_offset"),
+        ((2**40, 0x90, 60, 100), "sample_offset"),
+        ((0, 0x7F, 60, 100), "status"),
+        ((0, 256, 60, 100), "status"),
+        ((0, 0x90, 200, 100), "data1"),
+        ((0, 0x90, 60, 128), "data2"),
+        ((0, 144.0, 60, 100), "status"),
+    ],
+)
+def test_staged_midi_values_are_range_checked(event, match):
+    # nb::cast alone rejected only values outside unsigned char, with a
+    # bare std::bad_cast, and let data bytes 128-255 through.
+    g, mi, _ = _midi_passthrough_graph()
+    with pytest.raises(ValueError, match=match):
+        g.set_midi_input_events(mi, [event])

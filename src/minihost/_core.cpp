@@ -11,6 +11,10 @@
 #include <mutex>
 #include <functional>
 #include <cstdint>
+#include <climits>
+#include <fstream>
+#include <algorithm>
+#include <cmath>
 #include <memory>
 
 #include <juce_core/juce_core.h>
@@ -139,11 +143,16 @@ public:
     T*       data()       { return buf_.getWritePointer(0); }
     const T* data() const { return buf_.getReadPointer(0); }
 
-    juce::AudioBuffer<T>&       juce()       { return buf_; }
-    const juce::AudioBuffer<T>& juce() const { return buf_; }
+    // JUCE's isClear flag lets clear() make later ops (magnitude, applyGain,
+    // addFrom, reverse, ...) skip the data, and only JUCE's own write
+    // accessors reset it. Writes through as_ndarray, DLPack or a channel view
+    // bypass those, so after b.clear() the ops ignored data written that
+    // way. The flag is dropped on every access instead.
+    juce::AudioBuffer<T>&       juce()       { buf_.setNotClear(); return buf_; }
+    const juce::AudioBuffer<T>& juce() const { buf_.setNotClear(); return buf_; }
 
 private:
-    juce::AudioBuffer<T> buf_;
+    mutable juce::AudioBuffer<T> buf_;  // mutable only for setNotClear
 };
 
 // Back-compat alias: existing float code paths refer to MhAudioBuffer.
@@ -224,29 +233,119 @@ using DoubleAudioArray = nb::ndarray<double, nb::shape<-1, -1>, nb::c_contig, nb
 // equal to the capacity means output may have been truncated).
 static constexpr int MIDI_OUT_CAPACITY = 256;
 
-// Validate a caller-supplied MIDI-out capacity (>= 1).
+// Array dimensions arrive as size_t; every buffer here is int-indexed. An
+// unchecked cast wraps: a (1, 2**32+10) array became (1, 10), and a frame
+// count past INT_MAX went negative and sized a later memcpy near 2**64.
+static int checked_dim(size_t n) {
+    if (n > (size_t) INT_MAX)
+        throw nb::value_error(("array dimension " + std::to_string(n)
+                               + " exceeds " + std::to_string(INT_MAX)).c_str());
+    return (int) n;
+}
+
+// Largest midi_out_capacity accepted. Each call allocates that many events
+// up front, so an unbounded value is an unbounded allocation.
+static constexpr int MAX_MIDI_OUT_CAPACITY = 65536;
+
 static int check_midi_capacity(int cap) {
-    if (cap < 1) {
-        throw nb::value_error("midi_out_capacity must be >= 1");
+    if (cap < 1 || cap > MAX_MIDI_OUT_CAPACITY) {
+        throw nb::value_error(
+            ("midi_out_capacity must be in [1, "
+             + std::to_string(MAX_MIDI_OUT_CAPACITY) + "]").c_str());
     }
     return cap;
 }
 
-// Parse a Python MIDI event tuple (sample_offset, status, data1, data2) into MH_MidiEvent.
-// Validates that the tuple has exactly 4 elements before indexing.
+// Checks for the event and automation tuples callers pass in. nb::cast alone
+// rejects only values outside the C type, with a bare std::bad_cast, and
+// indexing a short nb::tuple reads past its end.
+
+[[noreturn]] static void field_error(const std::string& where,
+                                     const char* name, int lo, int hi) {
+    throw nb::value_error((where + ": " + name + " must be an integer in ["
+                           + std::to_string(lo) + ", " + std::to_string(hi)
+                           + "]").c_str());
+}
+
+static std::string describe(const char* what, nb::handle t) {
+    return std::string(what) + " " + nb::repr(t).c_str();
+}
+
+static nb::tuple require_tuple(nb::handle item, size_t n, const char* what,
+                               const char* shape) {
+    if (!PyTuple_Check(item.ptr()) || (size_t) PyTuple_GET_SIZE(item.ptr()) != n)
+        throw nb::value_error(
+            (std::string(what) + " must be a tuple " + shape).c_str());
+    return nb::borrow<nb::tuple>(item);
+}
+
+static int tuple_int(const nb::tuple& t, size_t i, const char* what,
+                     const char* name, int lo, int hi) {
+    int v = 0;
+    if (!nb::try_cast<int>(t[i], v) || v < lo || v > hi)
+        field_error(describe(what, t), name, lo, hi);
+    return v;
+}
+
+static float tuple_finite_float(const nb::tuple& t, size_t i,
+                                const char* what, const char* name) {
+    float v = 0.0f;
+    if (!nb::try_cast<float>(t[i], v) || !std::isfinite(v))
+        throw nb::value_error(
+            (describe(what, t) + ": " + name + " must be a finite number").c_str());
+    return v;
+}
+
+// The C setters reject NaN too, but only with a bare 0.
+static float require_finite(float v, const char* name) {
+    if (!std::isfinite(v))
+        throw nb::value_error((std::string(name) + " must be a finite number").c_str());
+    return v;
+}
+
+static unsigned char midi_byte(int v, const char* name, int lo, int hi) {
+    if (v < lo || v > hi) field_error("MIDI message", name, lo, hi);
+    return (unsigned char) v;
+}
+
+// Parse a Python MIDI event tuple (sample_offset, status, data1, data2).
 static MH_MidiEvent parse_midi_event(nb::handle item) {
-    nb::tuple ev = nb::cast<nb::tuple>(item);
-    if (nb::len(ev) < 4) {
-        throw std::runtime_error(
-            "MIDI event must be a tuple of 4 elements: "
-            "(sample_offset, status, data1, data2)");
-    }
+    const char* what = "MIDI event";
+    nb::tuple ev = require_tuple(item, 4, what,
+                                 "(sample_offset, status, data1, data2)");
     MH_MidiEvent e;
-    e.sample_offset = nb::cast<int>(ev[0]);
-    e.status = nb::cast<unsigned char>(ev[1]);
-    e.data1 = nb::cast<unsigned char>(ev[2]);
-    e.data2 = nb::cast<unsigned char>(ev[3]);
+    e.sample_offset = tuple_int(ev, 0, what, "sample_offset", 0, INT_MAX);
+    e.status = (unsigned char) tuple_int(ev, 1, what, "status", 0x80, 0xFF);
+    e.data1 = (unsigned char) tuple_int(ev, 2, what, "data1", 0, 0x7F);
+    e.data2 = (unsigned char) tuple_int(ev, 3, what, "data2", 0, 0x7F);
     return e;
+}
+
+// Parse (sample_offset, param_index, value) for a plugin with num_params
+// parameters. mh_set_param_rt ignores a bad index, so it is caught here.
+// max_offset: the last sample of the block when the caller knows it. A change
+// past it was never applied; the graph stages before it knows the block, so
+// it passes INT_MAX and the C layer applies such changes after the block.
+static MH_ParamChange parse_param_change(nb::handle item, int num_params,
+                                         int max_offset = INT_MAX) {
+    const char* what = "automation entry";
+    nb::tuple t = require_tuple(item, 3, what,
+                                "(sample_offset, param_index, value)");
+    MH_ParamChange c;
+    c.sample_offset = tuple_int(t, 0, what, "sample_offset", 0, max_offset);
+    c.param_index = tuple_int(t, 1, what, "param_index", 0, num_params - 1);
+    c.value = tuple_finite_float(t, 2, what, "value");
+    return c;
+}
+
+// mh_process_auto walks automation and MIDI in one pass by sample offset, so
+// out-of-order input is applied late or dropped. Stable: equal offsets keep
+// the caller's order.
+template <typename T>
+static void sort_by_offset(std::vector<T>& v) {
+    std::stable_sort(v.begin(), v.end(), [](const T& a, const T& b) {
+        return a.sample_offset < b.sample_offset;
+    });
 }
 
 // Convert planar float audio [ch0_s0,ch0_s1,...,ch1_s0,ch1_s1,...] to interleaved
@@ -322,6 +421,33 @@ struct CallbackEvent {
     float float_val; // new_value (ParamValue only)
 };
 
+// A native plugin, shared by its Plugin wrapper and every chain, graph and
+// device built on it. Plugin.close() drops only the wrapper's reference, so
+// a container still processing through the plugin keeps it alive; the last
+// user to let go frees it. Containers used to hold a raw MH_Plugin* that
+// close() freed underneath them.
+struct PluginHandle {
+    MH_Plugin* const p;
+    explicit PluginHandle(MH_Plugin* plugin) : p(plugin) {}
+    ~PluginHandle() { mh_close(p); }
+    PluginHandle(const PluginHandle&) = delete;
+    PluginHandle& operator=(const PluginHandle&) = delete;
+};
+using PluginRef = std::shared_ptr<PluginHandle>;
+
+// The same for a native chain. It holds its plugins' handles, which are
+// released after mh_chain_close in the destructor body.
+struct ChainHandle {
+    MH_PluginChain* const c;
+    const std::vector<PluginRef> plugins;
+    ChainHandle(MH_PluginChain* chain, std::vector<PluginRef> members)
+        : c(chain), plugins(std::move(members)) {}
+    ~ChainHandle() { mh_chain_close(c); }
+    ChainHandle(const ChainHandle&) = delete;
+    ChainHandle& operator=(const ChainHandle&) = delete;
+};
+using ChainRef = std::shared_ptr<ChainHandle>;
+
 // Python wrapper class for MH_Plugin
 class Plugin {
 public:
@@ -342,11 +468,7 @@ public:
         if (!plugin_) {
             throw std::runtime_error(std::string("Failed to open plugin: ") + err);
         }
-        // Pre-allocate the callback queues so the audio-thread trampoline
-        // never has to allocate. capacity is preserved across poll_callbacks
-        // by using clear() rather than swap() to drain.
-        cb_queue_.reserve(CB_QUEUE_CAPACITY);
-        dispatch_buffer_.reserve(CB_QUEUE_CAPACITY);
+        adopt_native();
     }
 
     // Session-bound constructor: load via the session's shared
@@ -367,8 +489,7 @@ public:
             throw std::runtime_error(
                 std::string("Failed to open plugin via session: ") + err);
         }
-        cb_queue_.reserve(CB_QUEUE_CAPACITY);
-        dispatch_buffer_.reserve(CB_QUEUE_CAPACITY);
+        adopt_native();
     }
 
     // Descriptor-based construction: open a plugin from a serialized
@@ -388,8 +509,7 @@ public:
             throw std::runtime_error(
                 std::string("Failed to open plugin from descriptor: ") + err);
         }
-        cb_queue_.reserve(CB_QUEUE_CAPACITY);
-        dispatch_buffer_.reserve(CB_QUEUE_CAPACITY);
+        adopt_native();
     }
 
     // Session + descriptor: the AudioUnit path through a shared format
@@ -411,8 +531,7 @@ public:
                 std::string("Failed to open plugin from descriptor via session: ")
                 + err);
         }
-        cb_queue_.reserve(CB_QUEUE_CAPACITY);
-        dispatch_buffer_.reserve(CB_QUEUE_CAPACITY);
+        adopt_native();
     }
 
     static Plugin* from_descriptor(const std::string& pd_xml,
@@ -426,120 +545,140 @@ public:
         close();
     }
 
-    // Explicit close. Idempotent. Subsequent operations on this Plugin
-    // raise a clear RuntimeError via the underlying C API's null-checks.
+    // Explicit close. Idempotent. Releases this wrapper's reference; the
+    // native plugin is freed once no chain, graph or device still uses it.
+    // Waits for a native call running without the GIL on another thread.
     void close() {
+        std::lock_guard<std::mutex> busy(busy_);
         if (plugin_) {
-            // Clear callbacks before closing to avoid dangling pointers
+            // The trampolines point at this wrapper, which may now die
+            // before the native plugin does.
             mh_set_change_callback(plugin_, nullptr, nullptr);
             mh_set_param_value_callback(plugin_, nullptr, nullptr);
             mh_set_param_gesture_callback(plugin_, nullptr, nullptr);
-            mh_close(plugin_);
             plugin_ = nullptr;
+            handle_.reset();
         }
+    }
+
+    // The native plugin, or a RuntimeError once closed. The C calls return
+    // defaults on a null pointer, so a closed plugin used to answer 0.0,
+    // b'' or garbage instead of raising.
+    MH_Plugin* live() const {
+        if (!plugin_) throw std::runtime_error("Plugin is closed");
+        return plugin_;
+    }
+
+    MH_Info info_checked() const {
+        MH_Info info{};
+        if (!mh_get_info(live(), &info))
+            throw std::runtime_error("mh_get_info failed");
+        return info;
+    }
+
+    // This plugin's native handle, for a container that will process
+    // through it. Raises if the plugin is closed.
+    PluginRef share(const char* what) const {
+        if (!handle_)
+            throw std::runtime_error(std::string(what) + ": plugin is closed");
+        return handle_;
     }
 
     Plugin& enter() { return *this; }
     void exit(nb::object, nb::object, nb::object) { close(); }
 
-    // Disable copy
+    // Not copyable or movable: the C-layer callback trampolines hold `this`.
     Plugin(const Plugin&) = delete;
     Plugin& operator=(const Plugin&) = delete;
-
-    // Enable move
-    Plugin(Plugin&& other) noexcept
-        : plugin_(other.plugin_), sample_rate_(other.sample_rate_),
-          max_block_size_(other.max_block_size_)
-    {
-        other.plugin_ = nullptr;
-    }
-
-    Plugin& operator=(Plugin&& other) noexcept {
-        if (this != &other) {
-            if (plugin_) mh_close(plugin_);
-            plugin_ = other.plugin_;
-            sample_rate_ = other.sample_rate_;
-            max_block_size_ = other.max_block_size_;
-            other.plugin_ = nullptr;
-        }
-        return *this;
-    }
+    Plugin(Plugin&&) = delete;
+    Plugin& operator=(Plugin&&) = delete;
 
     // Properties
     std::string path() const {
-        const char* p = mh_get_path(plugin_);
+        const char* p = mh_get_path(live());
         return p ? std::string(p) : std::string();
     }
 
     int num_params() const {
-        return mh_get_num_params(plugin_);
+        return mh_get_num_params(live());
     }
 
     int num_input_channels() const {
         MH_Info info;
-        if (mh_get_info(plugin_, &info))
+        if (mh_get_info(live(), &info))
             return info.num_input_ch;
         return 0;
     }
 
     int num_output_channels() const {
         MH_Info info;
-        if (mh_get_info(plugin_, &info))
+        if (mh_get_info(live(), &info))
             return info.num_output_ch;
         return 0;
     }
 
     int latency_samples() const {
-        return mh_get_latency_samples(plugin_);
+        return mh_get_latency_samples(live());
+    }
+
+    int midi_out_dropped() const {
+        return mh_get_midi_out_dropped(live());
     }
 
     double tail_seconds() const {
-        return mh_get_tail_seconds(plugin_);
+        return mh_get_tail_seconds(live());
     }
 
     int sidechain_channels() const {
-        return mh_get_sidechain_channels(plugin_);
+        return mh_get_sidechain_channels(live());
     }
 
     int max_block_size() const {
-        return mh_get_max_block_size(plugin_);
+        return mh_get_max_block_size(live());
     }
 
     bool accepts_midi() const {
         MH_Info info;
-        if (mh_get_info(plugin_, &info))
+        if (mh_get_info(live(), &info))
             return info.accepts_midi != 0;
         return false;
     }
 
     bool produces_midi() const {
         MH_Info info;
-        if (mh_get_info(plugin_, &info))
+        if (mh_get_info(live(), &info))
             return info.produces_midi != 0;
         return false;
     }
 
     bool is_midi_effect() const {
         MH_Info info;
-        if (mh_get_info(plugin_, &info))
+        if (mh_get_info(live(), &info))
             return info.is_midi_effect != 0;
         return false;
     }
 
     bool supports_mpe() const {
         MH_Info info;
-        if (mh_get_info(plugin_, &info))
+        if (mh_get_info(live(), &info))
             return info.supports_mpe != 0;
         return false;
     }
 
     // Sample rate
     double get_sample_rate() const {
-        return mh_get_sample_rate(plugin_);
+        return mh_get_sample_rate(live());
     }
 
     void set_sample_rate(double new_rate) {
-        if (!mh_set_sample_rate(plugin_, new_rate)) {
+        // A chain, graph or device checked the rate when it took the plugin
+        // and caches it; changing it underneath desynchronised them (a chain
+        // of 48k and 44.1k plugins processed without error).
+        if (handle_ && handle_.use_count() > 1)
+            throw std::runtime_error(
+                "Cannot change the sample rate of a plugin in use by a chain, "
+                "graph or audio device; close those first");
+        if (!mh_set_sample_rate(live(), new_rate)) {
             throw std::runtime_error("Failed to set sample rate");
         }
         sample_rate_ = new_rate;
@@ -547,16 +686,16 @@ public:
 
     // Bus layout queries
     int num_input_buses() const {
-        return mh_get_num_buses(plugin_, 1);
+        return mh_get_num_buses(live(), 1);
     }
 
     int num_output_buses() const {
-        return mh_get_num_buses(plugin_, 0);
+        return mh_get_num_buses(live(), 0);
     }
 
     nb::dict get_bus_info(bool is_input, int bus_index) const {
         MH_BusInfo info;
-        if (!mh_get_bus_info(plugin_, is_input ? 1 : 0, bus_index, &info)) {
+        if (!mh_get_bus_info(live(), is_input ? 1 : 0, bus_index, &info)) {
             throw std::runtime_error("Failed to get bus info");
         }
 
@@ -570,18 +709,18 @@ public:
 
     // Parameter access
     float get_param(int index) const {
-        return mh_get_param(plugin_, index);
+        return mh_get_param(live(), index);
     }
 
     void set_param(int index, float value) {
-        if (!mh_set_param(plugin_, index, value)) {
+        if (!mh_set_param(live(), index, require_finite(value, "value"))) {
             throw std::runtime_error("Failed to set parameter");
         }
     }
 
     nb::dict get_param_info(int index) const {
         MH_ParamInfo info;
-        if (!mh_get_param_info(plugin_, index, &info)) {
+        if (!mh_get_param_info(live(), index, &info)) {
             throw std::runtime_error("Failed to get parameter info");
         }
 
@@ -602,14 +741,14 @@ public:
 
     // Find parameter index by name (case-insensitive)
     int find_param(const std::string& name) const {
-        int n = mh_get_num_params(plugin_);
+        int n = mh_get_num_params(live());
         // Convert search name to lowercase
         std::string name_lower = name;
         for (auto& c : name_lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
         for (int i = 0; i < n; ++i) {
             MH_ParamInfo info;
-            if (mh_get_param_info(plugin_, i, &info)) {
+            if (mh_get_param_info(live(), i, &info)) {
                 std::string pname(info.name);
                 for (auto& c : pname) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
                 if (pname == name_lower)
@@ -621,13 +760,13 @@ public:
 
     // Get parameter value by name
     float get_param_by_name(const std::string& name) const {
-        return mh_get_param(plugin_, find_param(name));
+        return mh_get_param(live(), find_param(name));
     }
 
     // Set parameter value by name
     void set_param_by_name(const std::string& name, float value) {
         int idx = find_param(name);
-        if (!mh_set_param(plugin_, idx, value)) {
+        if (!mh_set_param(live(), idx, require_finite(value, "value"))) {
             throw std::runtime_error("Failed to set parameter");
         }
     }
@@ -636,40 +775,44 @@ public:
     // Native bindings over the libminihost mh_morph_* C API. A snapshot is a
     // list of one normalized value per parameter.
     std::vector<float> morph_capture() const {
-        int n = mh_get_num_params(plugin_);
+        int n = mh_get_num_params(live());
         std::vector<float> out(static_cast<size_t>(n < 0 ? 0 : n));
-        if (n > 0 && mh_morph_capture(plugin_, out.data(), n) < 0) {
+        if (n > 0 && mh_morph_capture(live(), out.data(), n) < 0) {
             throw std::runtime_error("Failed to capture parameter snapshot");
         }
         return out;
     }
 
     void morph_apply(const std::vector<float>& values) {
-        int n = mh_get_num_params(plugin_);
+        int n = mh_get_num_params(live());
         if (static_cast<int>(values.size()) != n) {
             throw std::invalid_argument(
                 "snapshot has " + std::to_string(values.size()) +
                 " values but plugin has " + std::to_string(n) + " parameters");
         }
-        if (n > 0 && !mh_morph_apply(plugin_, values.data(), n)) {
+        for (float v : values) require_finite(v, "snapshot value");
+        if (n > 0 && !mh_morph_apply(live(), values.data(), n)) {
             throw std::runtime_error("Failed to apply parameter snapshot");
         }
     }
 
     std::vector<float> morph(const std::vector<float>& a,
                              const std::vector<float>& b, float t) {
-        int n = mh_get_num_params(plugin_);
+        int n = mh_get_num_params(live());
         if (static_cast<int>(a.size()) != n || static_cast<int>(b.size()) != n) {
             throw std::invalid_argument(
                 "snapshots must each have " + std::to_string(n) +
                 " values (plugin parameter count)");
         }
+        require_finite(t, "t");
+        for (float v : a) require_finite(v, "snapshot value");
+        for (float v : b) require_finite(v, "snapshot value");
         std::vector<float> out(static_cast<size_t>(n < 0 ? 0 : n));
         if (n > 0) {
             if (!mh_morph_lerp(a.data(), b.data(), out.data(), n, t)) {
                 throw std::runtime_error("Failed to interpolate snapshots");
             }
-            if (!mh_morph_apply(plugin_, out.data(), n)) {
+            if (!mh_morph_apply(live(), out.data(), n)) {
                 throw std::runtime_error("Failed to apply morphed snapshot");
             }
         }
@@ -679,7 +822,8 @@ public:
     // Parameter text conversion
     std::string param_to_text(int index, float value) const {
         char buf[256] = {0};
-        if (!mh_param_to_text(plugin_, index, value, buf, sizeof(buf))) {
+        if (!mh_param_to_text(live(), index, require_finite(value, "value"),
+                              buf, sizeof(buf))) {
             throw std::runtime_error("Failed to convert parameter to text");
         }
         return std::string(buf);
@@ -687,7 +831,7 @@ public:
 
     float param_from_text(int index, const std::string& text) const {
         float value = 0.0f;
-        if (!mh_param_from_text(plugin_, index, text.c_str(), &value)) {
+        if (!mh_param_from_text(live(), index, text.c_str(), &value)) {
             throw std::runtime_error("Failed to convert text to parameter value");
         }
         return value;
@@ -695,23 +839,23 @@ public:
 
     // Factory presets (programs)
     int num_programs() const {
-        return mh_get_num_programs(plugin_);
+        return mh_get_num_programs(live());
     }
 
     std::string get_program_name(int index) const {
         char buf[256] = {0};
-        if (!mh_get_program_name(plugin_, index, buf, sizeof(buf))) {
+        if (!mh_get_program_name(live(), index, buf, sizeof(buf))) {
             throw std::runtime_error("Failed to get program name");
         }
         return std::string(buf);
     }
 
     int get_program() const {
-        return mh_get_program(plugin_);
+        return mh_get_program(live());
     }
 
     void set_program(int index) {
-        if (!mh_set_program(plugin_, index)) {
+        if (!mh_set_program(live(), index)) {
             throw std::runtime_error("Failed to set program");
         }
     }
@@ -724,10 +868,11 @@ public:
         bool ok = true;
         {
             nb::gil_scoped_release nogil;
-            size = mh_get_state_size(plugin_);
+            std::lock_guard<std::mutex> busy(busy_);
+            size = mh_get_state_size(live());
             if (size > 0) {
                 buffer.resize((size_t) size);
-                ok = mh_get_state(plugin_, buffer.data(), size) != 0;
+                ok = mh_get_state(live(), buffer.data(), size) != 0;
             }
         }
         if (size <= 0) {
@@ -747,7 +892,8 @@ public:
         bool ok;
         {
             nb::gil_scoped_release nogil;
-            ok = mh_set_state(plugin_, ptr, size) != 0;
+            std::lock_guard<std::mutex> busy(busy_);
+            ok = mh_set_state(live(), ptr, size) != 0;
         }
         if (!ok) {
             throw std::runtime_error("Failed to set plugin state");
@@ -756,11 +902,11 @@ public:
 
     // Bypass
     bool get_bypass() const {
-        return mh_get_bypass(plugin_) != 0;
+        return mh_get_bypass(live()) != 0;
     }
 
     bool set_bypass(bool bypass) {
-        return mh_set_bypass(plugin_, bypass ? 1 : 0) != 0;
+        return mh_set_bypass(live(), bypass ? 1 : 0) != 0;
     }
 
     // Transport
@@ -781,16 +927,20 @@ public:
         transport.is_looping = is_looping ? 1 : 0;
         transport.loop_start_samples = loop_start;
         transport.loop_end_samples = loop_end;
-        mh_set_transport(plugin_, &transport);
+        if (!mh_set_transport(live(), &transport))
+            throw nb::value_error("bpm must be a finite number greater than 0, "
+                                  "and position_beats finite");
     }
 
     void clear_transport() {
-        mh_set_transport(plugin_, nullptr);
+        mh_set_transport(live(), nullptr);
     }
 
     // Reset internal state
     void reset() {
-        if (!mh_reset(plugin_)) {
+        // Bound with the GIL released for the whole call.
+        std::lock_guard<std::mutex> busy(busy_);
+        if (!mh_reset(live())) {
             throw std::runtime_error("Failed to reset plugin");
         }
     }
@@ -798,11 +948,12 @@ public:
     // Non-realtime mode
     bool get_non_realtime() const {
         // Note: JUCE doesn't provide a getter, so we track it ourselves
+        live();  // raises once closed, like every other accessor
         return non_realtime_;
     }
 
     void set_non_realtime(bool non_realtime) {
-        if (!mh_set_non_realtime(plugin_, non_realtime ? 1 : 0)) {
+        if (!mh_set_non_realtime(live(), non_realtime ? 1 : 0)) {
             throw std::runtime_error("Failed to set non-realtime mode");
         }
         non_realtime_ = non_realtime;
@@ -810,13 +961,14 @@ public:
 
     // Process audio (simple version - no MIDI)
     void process(AudioArray input, AudioArray output) {
-        int in_channels = static_cast<int>(input.shape(0));
-        int out_channels = static_cast<int>(output.shape(0));
-        int in_frames = static_cast<int>(input.shape(1));
-        int out_frames = static_cast<int>(output.shape(1));
+        // Bound with the GIL released for the whole call.
+        std::lock_guard<std::mutex> busy(busy_);
+        int in_channels = checked_dim(input.shape(0));
+        int out_channels = checked_dim(output.shape(0));
+        int in_frames = checked_dim(input.shape(1));
+        int out_frames = checked_dim(output.shape(1));
 
-        MH_Info info;
-        mh_get_info(plugin_, &info);
+        const MH_Info info = info_checked();
         validate_process_shape(in_channels, out_channels, in_frames, out_frames,
                                info.num_input_ch, info.num_output_ch, max_block_size_);
 
@@ -831,7 +983,7 @@ public:
             out_ptrs[ch] = output.data() + ch * out_frames;
         }
 
-        if (!mh_process(plugin_, in_ptrs.data(), out_ptrs.data(), in_frames)) {
+        if (!mh_process(live(), in_ptrs.data(), out_ptrs.data(), in_frames)) {
             throw std::runtime_error("Process failed");
         }
     }
@@ -841,13 +993,12 @@ public:
                           nb::list midi_in, int midi_out_capacity)
     {
         check_midi_capacity(midi_out_capacity);
-        int in_channels = static_cast<int>(input.shape(0));
-        int out_channels = static_cast<int>(output.shape(0));
-        int in_frames = static_cast<int>(input.shape(1));
-        int out_frames = static_cast<int>(output.shape(1));
+        int in_channels = checked_dim(input.shape(0));
+        int out_channels = checked_dim(output.shape(0));
+        int in_frames = checked_dim(input.shape(1));
+        int out_frames = checked_dim(output.shape(1));
 
-        MH_Info info;
-        mh_get_info(plugin_, &info);
+        const MH_Info info = info_checked();
         validate_process_shape(in_channels, out_channels, in_frames, out_frames,
                                info.num_input_ch, info.num_output_ch, max_block_size_);
 
@@ -878,7 +1029,8 @@ public:
         bool ok;
         {
             nb::gil_scoped_release nogil;
-            ok = mh_process_midi_io(plugin_, in_ptrs.data(), out_ptrs.data(), in_frames,
+            std::lock_guard<std::mutex> busy(busy_);
+            ok = mh_process_midi_io(live(), in_ptrs.data(), out_ptrs.data(), in_frames,
                                     midi_events.data(), static_cast<int>(midi_events.size()),
                                     midi_out.data(), midi_out_capacity, &num_midi_out) != 0;
         }
@@ -905,13 +1057,12 @@ public:
                           int midi_out_capacity)
     {
         check_midi_capacity(midi_out_capacity);
-        int in_channels = static_cast<int>(input.shape(0));
-        int out_channels = static_cast<int>(output.shape(0));
-        int in_frames = static_cast<int>(input.shape(1));
-        int out_frames = static_cast<int>(output.shape(1));
+        int in_channels = checked_dim(input.shape(0));
+        int out_channels = checked_dim(output.shape(0));
+        int in_frames = checked_dim(input.shape(1));
+        int out_frames = checked_dim(output.shape(1));
 
-        MH_Info info;
-        mh_get_info(plugin_, &info);
+        const MH_Info info = info_checked();
         validate_process_shape(in_channels, out_channels, in_frames, out_frames,
                                info.num_input_ch, info.num_output_ch, max_block_size_);
 
@@ -922,15 +1073,13 @@ public:
         }
 
         // Convert param changes
+        const int num_params = mh_get_num_params(live());
         std::vector<MH_ParamChange> changes;
         for (size_t i = 0; i < nb::len(param_changes); ++i) {
-            nb::tuple pc = nb::cast<nb::tuple>(param_changes[i]);
-            MH_ParamChange c;
-            c.sample_offset = nb::cast<int>(pc[0]);
-            c.param_index = nb::cast<int>(pc[1]);
-            c.value = nb::cast<float>(pc[2]);
-            changes.push_back(c);
+            changes.push_back(parse_param_change(param_changes[i], num_params, in_frames - 1));
         }
+        sort_by_offset(midi_events);
+        sort_by_offset(changes);
 
         // Set up channel pointers
         std::vector<const float*> in_ptrs(in_channels);
@@ -953,7 +1102,8 @@ public:
         bool ok;
         {
             nb::gil_scoped_release nogil;
-            ok = mh_process_auto(plugin_, in_ptrs.data(), out_ptrs.data(), in_frames,
+            std::lock_guard<std::mutex> busy(busy_);
+            ok = mh_process_auto(live(), in_ptrs.data(), out_ptrs.data(), in_frames,
                                  midi_events.data(), static_cast<int>(midi_events.size()),
                                  midi_out.data(), midi_out_capacity, &num_midi_out,
                                  changes.data(), static_cast<int>(changes.size())) != 0;
@@ -979,12 +1129,14 @@ public:
     void process_sidechain(AudioArray main_in, AudioArray main_out,
                            nb::ndarray<float, nb::shape<-1, -1>, nb::c_contig, nb::device::cpu> sidechain_in)
     {
-        int main_in_ch = static_cast<int>(main_in.shape(0));
-        int main_out_ch = static_cast<int>(main_out.shape(0));
-        int main_in_frames = static_cast<int>(main_in.shape(1));
-        int main_out_frames = static_cast<int>(main_out.shape(1));
-        int sc_ch = static_cast<int>(sidechain_in.shape(0));
-        int sc_frames = static_cast<int>(sidechain_in.shape(1));
+        // Bound with the GIL released for the whole call.
+        std::lock_guard<std::mutex> busy(busy_);
+        int main_in_ch = checked_dim(main_in.shape(0));
+        int main_out_ch = checked_dim(main_out.shape(0));
+        int main_in_frames = checked_dim(main_in.shape(1));
+        int main_out_frames = checked_dim(main_out.shape(1));
+        int sc_ch = checked_dim(sidechain_in.shape(0));
+        int sc_frames = checked_dim(sidechain_in.shape(1));
 
         if (main_in_frames != main_out_frames || main_in_frames != sc_frames) {
             throw std::runtime_error("All buffer frame counts must match");
@@ -993,9 +1145,8 @@ public:
             throw std::runtime_error("Frame count exceeds max block size");
         }
 
-        MH_Info info;
-        mh_get_info(plugin_, &info);
-        int required_sc = mh_get_sidechain_channels(plugin_);
+        const MH_Info info = info_checked();
+        int required_sc = mh_get_sidechain_channels(live());
         if (main_in_ch < info.num_input_ch) {
             throw std::runtime_error(
                 "Main input has " + std::to_string(main_in_ch) +
@@ -1035,7 +1186,7 @@ public:
             sc_ptrs[ch] = sidechain_in.data() + ch * nframes;
         }
 
-        if (!mh_process_sidechain(plugin_,
+        if (!mh_process_sidechain(live(),
                                   main_in_ptrs.data(),
                                   main_out_ptrs.data(),
                                   sc_ptrs.data(),
@@ -1046,18 +1197,19 @@ public:
 
     // Double precision support
     bool supports_double() const {
-        return mh_supports_double(plugin_) != 0;
+        return mh_supports_double(live()) != 0;
     }
 
     // Process audio with double precision
     void process_double(DoubleAudioArray input, DoubleAudioArray output) {
-        int in_channels = static_cast<int>(input.shape(0));
-        int out_channels = static_cast<int>(output.shape(0));
-        int in_frames = static_cast<int>(input.shape(1));
-        int out_frames = static_cast<int>(output.shape(1));
+        // Bound with the GIL released for the whole call.
+        std::lock_guard<std::mutex> busy(busy_);
+        int in_channels = checked_dim(input.shape(0));
+        int out_channels = checked_dim(output.shape(0));
+        int in_frames = checked_dim(input.shape(1));
+        int out_frames = checked_dim(output.shape(1));
 
-        MH_Info info;
-        mh_get_info(plugin_, &info);
+        const MH_Info info = info_checked();
         validate_process_shape(in_channels, out_channels, in_frames, out_frames,
                                info.num_input_ch, info.num_output_ch, max_block_size_);
 
@@ -1072,18 +1224,18 @@ public:
             out_ptrs[ch] = output.data() + ch * out_frames;
         }
 
-        if (!mh_process_double(plugin_, in_ptrs.data(), out_ptrs.data(), in_frames)) {
+        if (!mh_process_double(live(), in_ptrs.data(), out_ptrs.data(), in_frames)) {
             throw std::runtime_error("Process (double) failed");
         }
     }
 
     // Processing precision
     int get_processing_precision() const {
-        return mh_get_processing_precision(plugin_);
+        return mh_get_processing_precision(live());
     }
 
     void set_processing_precision(int precision) {
-        if (!mh_set_processing_precision(plugin_, precision)) {
+        if (!mh_set_processing_precision(live(), precision)) {
             if (precision == MH_PRECISION_DOUBLE)
                 throw std::runtime_error("Failed to set double precision (plugin may not support it)");
             else
@@ -1096,7 +1248,7 @@ public:
         const char* name_ptr = name.has_value() ? name->c_str() : nullptr;
         int has_colour = colour.has_value() ? 1 : 0;
         unsigned int colour_val = colour.value_or(0);
-        if (!mh_set_track_properties(plugin_, name_ptr, has_colour, colour_val)) {
+        if (!mh_set_track_properties(live(), name_ptr, has_colour, colour_val)) {
             throw std::runtime_error("Failed to set track properties");
         }
     }
@@ -1111,26 +1263,26 @@ public:
 
     // Parameter gestures (host -> plugin)
     void begin_param_gesture(int index) {
-        if (!mh_begin_param_gesture(plugin_, index)) {
+        if (!mh_begin_param_gesture(live(), index)) {
             throw std::runtime_error("Failed to begin parameter gesture");
         }
     }
 
     void end_param_gesture(int index) {
-        if (!mh_end_param_gesture(plugin_, index)) {
+        if (!mh_end_param_gesture(live(), index)) {
             throw std::runtime_error("Failed to end parameter gesture");
         }
     }
 
     // Current program state (lighter-weight per-program state)
     nb::bytes get_program_state() const {
-        int size = mh_get_program_state_size(plugin_);
+        int size = mh_get_program_state_size(live());
         if (size <= 0) {
             return nb::bytes(nullptr, 0);
         }
 
         std::vector<char> buffer(size);
-        if (!mh_get_program_state(plugin_, buffer.data(), size)) {
+        if (!mh_get_program_state(live(), buffer.data(), size)) {
             throw std::runtime_error("Failed to get program state");
         }
 
@@ -1143,7 +1295,8 @@ public:
         bool ok;
         {
             nb::gil_scoped_release nogil;
-            ok = mh_set_program_state(plugin_, ptr, size) != 0;
+            std::lock_guard<std::mutex> busy(busy_);
+            ok = mh_set_program_state(live(), ptr, size) != 0;
         }
         if (!ok) {
             throw std::runtime_error("Failed to set program state");
@@ -1154,30 +1307,30 @@ public:
     void set_change_callback(nb::handle cb) {
         if (cb.is_none()) {
             change_callback_ = nb::object();
-            mh_set_change_callback(plugin_, nullptr, nullptr);
+            mh_set_change_callback(live(), nullptr, nullptr);
         } else {
             change_callback_ = nb::borrow<nb::object>(cb);
-            mh_set_change_callback(plugin_, &Plugin::change_callback_trampoline, this);
+            mh_set_change_callback(live(), &Plugin::change_callback_trampoline, this);
         }
     }
 
     void set_param_value_callback(nb::handle cb) {
         if (cb.is_none()) {
             param_value_callback_ = nb::object();
-            mh_set_param_value_callback(plugin_, nullptr, nullptr);
+            mh_set_param_value_callback(live(), nullptr, nullptr);
         } else {
             param_value_callback_ = nb::borrow<nb::object>(cb);
-            mh_set_param_value_callback(plugin_, &Plugin::param_value_callback_trampoline, this);
+            mh_set_param_value_callback(live(), &Plugin::param_value_callback_trampoline, this);
         }
     }
 
     void set_param_gesture_callback(nb::handle cb) {
         if (cb.is_none()) {
             param_gesture_callback_ = nb::object();
-            mh_set_param_gesture_callback(plugin_, nullptr, nullptr);
+            mh_set_param_gesture_callback(live(), nullptr, nullptr);
         } else {
             param_gesture_callback_ = nb::borrow<nb::object>(cb);
-            mh_set_param_gesture_callback(plugin_, &Plugin::param_gesture_callback_trampoline, this);
+            mh_set_param_gesture_callback(live(), &Plugin::param_gesture_callback_trampoline, this);
         }
     }
 
@@ -1195,6 +1348,13 @@ public:
         // pumps for itself.
         mh_message_thread_poll();
 
+        // A callback that polls again would overwrite dispatch_buffer_ while
+        // the loop below iterates it. The outer call is already delivering in
+        // order, so a nested one has nothing to do.
+        if (dispatching_) return 0;
+        dispatching_ = true;
+        struct Reset { bool& f; ~Reset() { f = false; } } reset{dispatching_};
+
         // Copy out events under the lock; clear() preserves capacity so the
         // producer side never has to reallocate inside the trampoline. The
         // local `dispatch_buffer_` is reused across calls for the same
@@ -1207,27 +1367,42 @@ public:
             cb_queue_.clear();
         }
 
-        for (const auto& ev : dispatch_buffer_) {
-            switch (ev.type) {
-                case CallbackEvent::Change:
-                    if (change_callback_.is_valid() && !change_callback_.is_none())
-                        change_callback_(ev.int_val);
-                    break;
-                case CallbackEvent::ParamValue:
-                    if (param_value_callback_.is_valid() && !param_value_callback_.is_none())
-                        param_value_callback_(ev.int_val, ev.float_val);
-                    break;
-                case CallbackEvent::GestureBegin:
-                    if (param_gesture_callback_.is_valid() && !param_gesture_callback_.is_none())
-                        param_gesture_callback_(ev.int_val, true);
-                    break;
-                case CallbackEvent::GestureEnd:
-                    if (param_gesture_callback_.is_valid() && !param_gesture_callback_.is_none())
-                        param_gesture_callback_(ev.int_val, false);
-                    break;
+        size_t delivered = 0;
+        try {
+            for (; delivered < dispatch_buffer_.size(); ++delivered) {
+                dispatch_one(dispatch_buffer_[delivered]);
             }
+        } catch (...) {
+            // Put the undelivered tail back ahead of anything queued since,
+            // so the next poll resumes in order; the queue was cleared above.
+            std::lock_guard<std::mutex> lock(cb_queue_mutex_);
+            cb_queue_.insert(cb_queue_.begin(),
+                             dispatch_buffer_.begin() + (std::ptrdiff_t)(delivered + 1),
+                             dispatch_buffer_.end());
+            throw;
         }
-        return static_cast<int>(dispatch_buffer_.size());
+        return static_cast<int>(delivered);
+    }
+
+    void dispatch_one(const CallbackEvent& ev) {
+        switch (ev.type) {
+            case CallbackEvent::Change:
+                if (change_callback_.is_valid() && !change_callback_.is_none())
+                    change_callback_(ev.int_val);
+                break;
+            case CallbackEvent::ParamValue:
+                if (param_value_callback_.is_valid() && !param_value_callback_.is_none())
+                    param_value_callback_(ev.int_val, ev.float_val);
+                break;
+            case CallbackEvent::GestureBegin:
+                if (param_gesture_callback_.is_valid() && !param_gesture_callback_.is_none())
+                    param_gesture_callback_(ev.int_val, true);
+                break;
+            case CallbackEvent::GestureEnd:
+                if (param_gesture_callback_.is_valid() && !param_gesture_callback_.is_none())
+                    param_gesture_callback_(ev.int_val, false);
+                break;
+        }
     }
 
     // Number of callback events dropped because the bounded queue was full.
@@ -1281,9 +1456,22 @@ public:
     }
 
 private:
-    MH_Plugin* plugin_ = nullptr;
+    MH_Plugin* plugin_ = nullptr;  // handle_->p while open; nullptr after close
+    PluginRef handle_;
+    // Held by native calls that run without the GIL, and by close(), so a
+    // close() from another thread waits rather than freeing mid-call.
+    mutable std::mutex busy_;
     double sample_rate_;
     int max_block_size_;
+
+    // Take ownership of plugin_ after a successful open, and pre-allocate
+    // the callback queues so the audio-thread trampoline never has to
+    // allocate (clear() rather than swap() keeps the capacity).
+    void adopt_native() {
+        handle_ = std::make_shared<PluginHandle>(plugin_);
+        cb_queue_.reserve(CB_QUEUE_CAPACITY);
+        dispatch_buffer_.reserve(CB_QUEUE_CAPACITY);
+    }
     bool non_realtime_ = false;
 
     // Python callback holders (prevent GC). Reachable by the collector
@@ -1308,6 +1496,7 @@ private:
     std::mutex cb_queue_mutex_;
     std::vector<CallbackEvent> cb_queue_;
     std::vector<CallbackEvent> dispatch_buffer_;   // owned by poll_callbacks
+    bool dispatching_ = false;                     // poll_callbacks in progress
     std::atomic<int> cb_queue_dropped_{0};
 
     // Push helper: returns true if pushed, false if dropped (queue full).
@@ -1376,16 +1565,14 @@ public:
             throw std::runtime_error("Plugin chain must contain at least one plugin");
         }
 
-        // Extract raw plugin pointers and keep references to prevent GC
+        // Share each plugin's native handle: the chain keeps it alive even
+        // if the Plugin is closed first.
         std::vector<MH_Plugin*> raw_ptrs;
+        std::vector<PluginRef> handles;
         for (size_t i = 0; i < nb::len(plugins); ++i) {
             Plugin& p = nb::cast<Plugin&>(plugins[i]);
-            if (!p.plugin_) {
-                throw std::runtime_error(
-                    "Plugin at index " + std::to_string(i) +
-                    " is invalid (null internal pointer -- was it moved from?)");
-            }
-            raw_ptrs.push_back(p.plugin_);
+            handles.push_back(p.share(("PluginChain: plugin " + std::to_string(i)).c_str()));
+            raw_ptrs.push_back(handles.back()->p);
             plugin_refs_.push_back(&p);
         }
 
@@ -1401,42 +1588,34 @@ public:
         if (!chain_) {
             throw std::runtime_error(std::string("Failed to create plugin chain: ") + err);
         }
+        handle_ = std::make_shared<ChainHandle>(chain_, std::move(handles));
     }
 
     ~PluginChain() {
         close();
     }
 
+    // Releases this wrapper's reference; a bus or device still using the
+    // chain keeps it alive. Waits for a process call on another thread.
     void close() {
-        if (chain_) {
-            mh_chain_close(chain_);
-            chain_ = nullptr;
-        }
+        std::lock_guard<std::mutex> busy(busy_);
+        chain_ = nullptr;
+        handle_.reset();
+    }
+
+    ChainRef share(const char* what) const {
+        if (!handle_)
+            throw std::runtime_error(std::string(what) + ": chain is closed");
+        return handle_;
     }
 
     PluginChain& enter() { return *this; }
     void exit(nb::object, nb::object, nb::object) { close(); }
 
-    // Disable copy
     PluginChain(const PluginChain&) = delete;
     PluginChain& operator=(const PluginChain&) = delete;
-
-    // Enable move
-    PluginChain(PluginChain&& other) noexcept
-        : chain_(other.chain_), plugin_refs_(std::move(other.plugin_refs_))
-    {
-        other.chain_ = nullptr;
-    }
-
-    PluginChain& operator=(PluginChain&& other) noexcept {
-        if (this != &other) {
-            if (chain_) mh_chain_close(chain_);
-            chain_ = other.chain_;
-            plugin_refs_ = std::move(other.plugin_refs_);
-            other.chain_ = nullptr;
-        }
-        return *this;
-    }
+    PluginChain(PluginChain&&) = delete;
+    PluginChain& operator=(PluginChain&&) = delete;
 
     // Properties
     int num_plugins() const {
@@ -1445,6 +1624,10 @@ public:
 
     int latency_samples() const {
         return mh_chain_get_latency_samples(chain_);
+    }
+
+    int midi_dropped() const {
+        return mh_chain_get_midi_dropped(chain_);
     }
 
     int num_input_channels() const {
@@ -1499,6 +1682,12 @@ public:
             throw std::runtime_error("mix must be in [0.0, 1.0]");
         }
         if (!mh_chain_set_mix(chain_, plugin_index, mix)) {
+            const int latency =
+                mh_get_latency_samples(mh_chain_get_plugin(chain_, plugin_index));
+            if (mix < 1.0f && latency > mh_chain_get_sample_rate(chain_))
+                throw std::runtime_error(
+                    "Plugin reports " + std::to_string(latency) + " samples of "
+                    "latency, more than the 1 s the dry path can be delayed to match.");
             throw std::runtime_error(
                 "Plugin's input and output channel counts must match for "
                 "dry/wet mix to be enabled.");
@@ -1519,10 +1708,12 @@ public:
 
     // Process audio (no MIDI)
     void process(AudioArray input, AudioArray output) {
-        int in_channels = static_cast<int>(input.shape(0));
-        int out_channels = static_cast<int>(output.shape(0));
-        int in_frames = static_cast<int>(input.shape(1));
-        int out_frames = static_cast<int>(output.shape(1));
+        // Bound with the GIL released for the whole call.
+        std::lock_guard<std::mutex> busy(busy_);
+        int in_channels = checked_dim(input.shape(0));
+        int out_channels = checked_dim(output.shape(0));
+        int in_frames = checked_dim(input.shape(1));
+        int out_frames = checked_dim(output.shape(1));
 
         validate_process_shape(in_channels, out_channels, in_frames, out_frames,
                                mh_chain_get_num_input_channels(chain_),
@@ -1549,10 +1740,10 @@ public:
                           int midi_out_capacity)
     {
         check_midi_capacity(midi_out_capacity);
-        int in_channels = static_cast<int>(input.shape(0));
-        int out_channels = static_cast<int>(output.shape(0));
-        int in_frames = static_cast<int>(input.shape(1));
-        int out_frames = static_cast<int>(output.shape(1));
+        int in_channels = checked_dim(input.shape(0));
+        int out_channels = checked_dim(output.shape(0));
+        int in_frames = checked_dim(input.shape(1));
+        int out_frames = checked_dim(output.shape(1));
 
         validate_process_shape(in_channels, out_channels, in_frames, out_frames,
                                mh_chain_get_num_input_channels(chain_),
@@ -1585,6 +1776,7 @@ public:
         bool ok;
         {
             nb::gil_scoped_release nogil;
+            std::lock_guard<std::mutex> busy(busy_);
             ok = mh_chain_process_midi_io(chain_, in_ptrs.data(), out_ptrs.data(), in_frames,
                                           midi_events.data(), static_cast<int>(midi_events.size()),
                                           midi_out.data(), midi_out_capacity, &num_midi_out) != 0;
@@ -1607,15 +1799,31 @@ public:
     }
 
     // Process with sample-accurate automation
+    // num_params[i]: parameter count of chain slot i.
+    static MH_ChainParamChange parse_chain_param_change(
+            nb::handle item, const std::vector<int>& num_params, int max_offset) {
+        const char* what = "automation entry";
+        nb::tuple t = require_tuple(
+            item, 4, what, "(sample_offset, plugin_index, param_index, value)");
+        MH_ChainParamChange c;
+        c.sample_offset = tuple_int(t, 0, what, "sample_offset", 0, max_offset);
+        c.plugin_index = tuple_int(t, 1, what, "plugin_index", 0,
+                                   (int) num_params.size() - 1);
+        c.param_index = tuple_int(t, 2, what, "param_index", 0,
+                                  num_params[(size_t) c.plugin_index] - 1);
+        c.value = tuple_finite_float(t, 3, what, "value");
+        return c;
+    }
+
     nb::list process_auto(AudioArray input, AudioArray output,
                           nb::list midi_in, nb::list param_changes,
                           int midi_out_capacity)
     {
         check_midi_capacity(midi_out_capacity);
-        int in_channels = static_cast<int>(input.shape(0));
-        int out_channels = static_cast<int>(output.shape(0));
-        int in_frames = static_cast<int>(input.shape(1));
-        int out_frames = static_cast<int>(output.shape(1));
+        int in_channels = checked_dim(input.shape(0));
+        int out_channels = checked_dim(output.shape(0));
+        int in_frames = checked_dim(input.shape(1));
+        int out_frames = checked_dim(output.shape(1));
 
         validate_process_shape(in_channels, out_channels, in_frames, out_frames,
                                mh_chain_get_num_input_channels(chain_),
@@ -1629,16 +1837,15 @@ public:
         }
 
         // Convert param changes (4-tuples: sample_offset, plugin_index, param_index, value)
+        std::vector<int> num_params((size_t) mh_chain_get_num_plugins(chain_));
+        for (size_t k = 0; k < num_params.size(); ++k)
+            num_params[k] = mh_get_num_params(mh_chain_get_plugin(chain_, (int) k));
         std::vector<MH_ChainParamChange> changes;
         for (size_t i = 0; i < nb::len(param_changes); ++i) {
-            nb::tuple pc = nb::cast<nb::tuple>(param_changes[i]);
-            MH_ChainParamChange c;
-            c.sample_offset = nb::cast<int>(pc[0]);
-            c.plugin_index = nb::cast<int>(pc[1]);
-            c.param_index = nb::cast<int>(pc[2]);
-            c.value = nb::cast<float>(pc[3]);
-            changes.push_back(c);
+            changes.push_back(parse_chain_param_change(param_changes[i], num_params, in_frames - 1));
         }
+        sort_by_offset(midi_events);
+        sort_by_offset(changes);
 
         // Set up channel pointers
         std::vector<const float*> in_ptrs(in_channels);
@@ -1661,6 +1868,7 @@ public:
         bool ok;
         {
             nb::gil_scoped_release nogil;
+            std::lock_guard<std::mutex> busy(busy_);
             ok = mh_chain_process_auto(chain_, in_ptrs.data(), out_ptrs.data(), in_frames,
                                        midi_events.data(), static_cast<int>(midi_events.size()),
                                        midi_out.data(), midi_out_capacity, &num_midi_out,
@@ -1684,7 +1892,9 @@ public:
     }
 
 private:
-    MH_PluginChain* chain_ = nullptr;
+    MH_PluginChain* chain_ = nullptr;  // handle_->c while open; nullptr after close
+    ChainRef handle_;
+    mutable std::mutex busy_;  // see Plugin::busy_
     std::vector<Plugin*> plugin_refs_;  // Keep references to prevent plugins from being GC'd
     // The caller's list, holding the Plugin objects plugin_refs_ points at.
     // Reachable by the collector through tp_traverse above; see the note at
@@ -1737,10 +1947,12 @@ public:
     ~PluginBus() { close(); }
 
     void close() {
+        std::lock_guard<std::mutex> busy(busy_);
         if (graph_) {
             mh_bus_close(graph_);
             graph_ = nullptr;
         }
+        branch_handles_.clear();  // after the bus that processes through them
     }
 
     PluginBus(const PluginBus&) = delete;
@@ -1750,14 +1962,18 @@ public:
     void exit(nb::object, nb::object, nb::object) { close(); }
 
     int add_branch(PluginChain& chain, float gain) {
+        // mh_bus_add_branch reallocates the branch table a process call reads.
+        std::lock_guard<std::mutex> busy(busy_);
+        ChainRef handle = chain.share("add_branch");
         char err[256] = {0};
-        int idx = mh_bus_add_branch(graph_, chain.chain_, gain,
+        int idx = mh_bus_add_branch(graph_, handle->c, gain,
                                        err, sizeof(err));
         if (idx < 0) {
             throw std::runtime_error(
                 std::string("Failed to add graph branch: ") + err);
         }
         branch_refs_.push_back(&chain);
+        branch_handles_.push_back(std::move(handle));
         // Held here rather than by nb::keep_alive so the collector can see it.
         if (!owner_.is_valid())
             owner_ = nb::list();
@@ -1808,10 +2024,12 @@ public:
     }
 
     void process(AudioArray input, AudioArray output) {
-        int in_ch = static_cast<int>(input.shape(0));
-        int out_ch = static_cast<int>(output.shape(0));
-        int in_fr = static_cast<int>(input.shape(1));
-        int out_fr = static_cast<int>(output.shape(1));
+        // Bound with the GIL released for the whole call.
+        std::lock_guard<std::mutex> busy(busy_);
+        int in_ch = checked_dim(input.shape(0));
+        int out_ch = checked_dim(output.shape(0));
+        int in_fr = checked_dim(input.shape(1));
+        int out_fr = checked_dim(output.shape(1));
 
         validate_process_shape(in_ch, out_ch, in_fr, out_fr,
                                mh_bus_get_num_input_channels(graph_),
@@ -1840,10 +2058,10 @@ public:
     nb::tuple process_midi(AudioArray input, AudioArray output,
                            nb::list midi_in, int midi_out_capacity) {
         check_midi_capacity(midi_out_capacity);
-        int in_ch = static_cast<int>(input.shape(0));
-        int out_ch = static_cast<int>(output.shape(0));
-        int in_fr = static_cast<int>(input.shape(1));
-        int out_fr = static_cast<int>(output.shape(1));
+        int in_ch = checked_dim(input.shape(0));
+        int out_ch = checked_dim(output.shape(0));
+        int in_fr = checked_dim(input.shape(1));
+        int out_fr = checked_dim(output.shape(1));
 
         validate_process_shape(in_ch, out_ch, in_fr, out_fr,
                                mh_bus_get_num_input_channels(graph_),
@@ -1873,6 +2091,7 @@ public:
         bool ok;
         {
             nb::gil_scoped_release nogil;
+            std::lock_guard<std::mutex> busy(busy_);
             ok = mh_bus_process_midi_io(graph_, in_ptrs.data(), out_ptrs.data(),
                                         in_fr, midi_events.data(),
                                         static_cast<int>(midi_events.size()),
@@ -1897,6 +2116,8 @@ public:
 
 private:
     MH_PluginBus* graph_ = nullptr;
+    std::vector<ChainRef> branch_handles_;  // native chains, alive while the bus is
+    std::mutex busy_;  // see Plugin::busy_
     std::vector<PluginChain*> branch_refs_;  // keep branches alive
     nb::object owner_;  // list of the branch Python objects; see tp_traverse
 
@@ -1942,10 +2163,12 @@ public:
     ~PluginGraph() { close(); }
 
     void close() {
+        std::lock_guard<std::mutex> busy(busy_);
         if (graph_) {
             mh_graph_close(graph_);
             graph_ = nullptr;
         }
+        node_plugins_.clear();  // after the graph that processes through them
     }
 
     PluginGraph(const PluginGraph&) = delete;
@@ -1955,13 +2178,15 @@ public:
     void exit(nb::object, nb::object, nb::object) { close(); }
 
     int add_plugin(Plugin& p) {
+        PluginRef handle = p.share("add_plugin");
         char err[256] = {0};
-        int id = mh_graph_add_plugin(graph_, p.plugin_,
+        int id = mh_graph_add_plugin(graph_, handle->p,
                                         err, sizeof(err));
         if (id < 0)
             throw std::runtime_error(
                 std::string("add_plugin failed: ") + err);
         plugin_refs_.push_back(&p);
+        node_plugins_[id] = std::move(handle);
         // Held here rather than by nb::keep_alive so the collector can see it.
         if (!owner_.is_valid())
             owner_ = nb::list();
@@ -2030,14 +2255,30 @@ public:
         out.channel_mask        = 0xFFFF;
         out.transpose_semitones = 0;
         out.velocity_gamma      = 1.0f;
+        // Ranges are checked by the C layer; this only rejects non-numbers,
+        // which nb::cast reported as a bare std::bad_cast.
+        auto num = [](nb::handle v, const std::string& k, auto& dst) {
+            if (!nb::try_cast(v, dst))
+                throw nb::value_error(
+                    ("MIDI processor param " + k + " must be a number in range, got "
+                     + nb::repr(v).c_str()).c_str());
+        };
         for (auto item : p) {
             auto k = nb::cast<std::string>(item.first);
-            if      (k == "op")            out.op = (MH_MidiOp) nb::cast<int>(item.second);
-            else if (k == "min_note")      out.min_note = nb::cast<int>(item.second);
-            else if (k == "max_note")      out.max_note = nb::cast<int>(item.second);
-            else if (k == "channel_mask")  out.channel_mask = nb::cast<int>(item.second);
-            else if (k == "transpose_semitones") out.transpose_semitones = nb::cast<int>(item.second);
-            else if (k == "velocity_gamma")      out.velocity_gamma = nb::cast<float>(item.second);
+            if (k == "op") {
+                int op = 0;
+                num(item.second, k, op);
+                // Casting an int outside the enum's range is undefined.
+                if (op < MH_MIDI_OP_FILTER || op > MH_MIDI_OP_VELOCITY_CURVE)
+                    throw nb::value_error(
+                        ("invalid MH_MidiOp " + std::to_string(op)).c_str());
+                out.op = (MH_MidiOp) op;
+            }
+            else if (k == "min_note")      num(item.second, k, out.min_note);
+            else if (k == "max_note")      num(item.second, k, out.max_note);
+            else if (k == "channel_mask")  num(item.second, k, out.channel_mask);
+            else if (k == "transpose_semitones") num(item.second, k, out.transpose_semitones);
+            else if (k == "velocity_gamma")      num(item.second, k, out.velocity_gamma);
             else throw std::runtime_error(
                 std::string("unknown MIDI processor param: ") + k);
         }
@@ -2059,7 +2300,8 @@ public:
         const auto cp = parse_processor_params(params);
         if (!mh_graph_set_midi_processor_params(graph_, node_id, cp))
             throw std::runtime_error(
-                "set_midi_processor_params failed (bad node id or kind)");
+                "set_midi_processor_params failed (bad node id or kind, "
+                "or params out of range)");
     }
 
     int add_midi_merge(int num_inputs) {
@@ -2114,10 +2356,22 @@ public:
                 std::string("connect_midi failed: ") + err);
     }
 
+    // The graph keeps a pointer into each scratch slot until the next
+    // render_block. Parse into a local first, so a throw mid-parse cannot
+    // leave that pointer on a freed or half-filled buffer.
+    static std::vector<MH_MidiEvent> parse_midi_list(nb::list events) {
+        std::vector<MH_MidiEvent> out;
+        for (auto item : events) out.push_back(parse_midi_event(item));
+        sort_by_offset(out);
+        return out;
+    }
+
     void set_midi_input_events(int node_id, nb::list events) {
+        // render_block reads the scratch slot this replaces.
+        std::lock_guard<std::mutex> busy(busy_);
+        auto parsed = parse_midi_list(events);
         auto& buf = midi_in_scratch_[node_id];
-        buf.clear();
-        for (auto item : events) buf.push_back(parse_midi_event(item));
+        buf.swap(parsed);
         if (!mh_graph_set_midi_input_events(
                 graph_, node_id,
                 buf.empty() ? nullptr : buf.data(),
@@ -2131,9 +2385,11 @@ public:
     // for graphs that drive a plugin directly rather than wiring a MIDI
     // topology.
     void set_node_midi(int node_id, nb::list events) {
+        // render_block reads the scratch slot this replaces.
+        std::lock_guard<std::mutex> busy(busy_);
+        auto parsed = parse_midi_list(events);
         auto& buf = midi_in_scratch_[node_id];
-        buf.clear();
-        for (auto item : events) buf.push_back(parse_midi_event(item));
+        buf.swap(parsed);
         if (!mh_graph_set_node_midi(
                 graph_, node_id,
                 buf.empty() ? nullptr : buf.data(),
@@ -2155,6 +2411,14 @@ public:
                                                buf.data(), total, &n);
             buf.resize((size_t) n);
         }
+        int dropped = 0;
+        mh_graph_get_midi_output_dropped(graph_, node_id, &dropped);
+        if (dropped > 0
+            && PyErr_WarnFormat(PyExc_RuntimeWarning, 1,
+                    "MIDI output node %d: %d events dropped this block at "
+                    "it or upstream (per-node limit %d)", node_id, dropped,
+                    MH_GRAPH_MIDI_OUTPUT_CAPACITY) < 0)
+            throw nb::python_error();
         nb::list out;
         for (const auto& e : buf) {
             out.append(nb::make_tuple(e.sample_offset,
@@ -2182,22 +2446,21 @@ public:
     // list of (sample_offset, param_index, value) tuples; cleared
     // after the next render_block call.
     void set_node_automation(int node_id, nb::list changes) {
+        // render_block reads the scratch slot this replaces.
+        std::lock_guard<std::mutex> busy(busy_);
+        auto node = node_plugins_.find(node_id);
+        if (node == node_plugins_.end())
+            throw std::runtime_error(
+                "set_node_automation failed (bad node id)");
+        const int num_params = mh_get_num_params(node->second->p);
+        std::vector<MH_ParamChange> parsed;
+        for (auto item : changes)
+            parsed.push_back(parse_param_change(item, num_params));
+        sort_by_offset(parsed);
         // Copy into a scratch vector that outlives this Python call;
         // the graph reads it during the next render_block.
         auto& buf = autos_scratch_[node_id];
-        buf.clear();
-        for (auto item : changes) {
-            auto t = nb::cast<nb::tuple>(item);
-            if (t.size() != 3)
-                throw std::runtime_error(
-                    "automation entry must be a 3-tuple "
-                    "(sample_offset, param_index, value)");
-            MH_ParamChange c{};
-            c.sample_offset = nb::cast<int>  (t[0]);
-            c.param_index   = nb::cast<int>  (t[1]);
-            c.value         = nb::cast<float>(t[2]);
-            buf.push_back(c);
-        }
+        buf.swap(parsed);
         if (!mh_graph_set_node_automation(
                 graph_, node_id,
                 buf.empty() ? nullptr : buf.data(),
@@ -2232,8 +2495,8 @@ public:
 
         for (int i = 0; i < num_in; ++i) {
             auto arr = nb::cast<AudioArray>(inputs[i]);
-            const int ch = static_cast<int>(arr.shape(0));
-            const int fr = static_cast<int>(arr.shape(1));
+            const int ch = checked_dim(arr.shape(0));
+            const int fr = checked_dim(arr.shape(1));
             if (fr < nframes)
                 throw std::runtime_error(
                     "input array has fewer frames than nframes");
@@ -2244,8 +2507,8 @@ public:
         }
         for (int i = 0; i < num_out; ++i) {
             auto arr = nb::cast<AudioArray>(outputs[i]);
-            const int ch = static_cast<int>(arr.shape(0));
-            const int fr = static_cast<int>(arr.shape(1));
+            const int ch = checked_dim(arr.shape(0));
+            const int fr = checked_dim(arr.shape(1));
             if (fr < nframes)
                 throw std::runtime_error(
                     "output array has fewer frames than nframes");
@@ -2260,6 +2523,7 @@ public:
             // Native render only; the pointer tables above were built from
             // Python lists and must not be touched without the GIL.
             nb::gil_scoped_release nogil;
+            std::lock_guard<std::mutex> busy(busy_);
             ok = mh_graph_render_block(graph_,
                                        in_top.data(),  num_in,
                                        out_top.data(), num_out,
@@ -2277,6 +2541,9 @@ public:
 private:
     MH_PluginGraph* graph_ = nullptr;
     std::vector<Plugin*> plugin_refs_;
+    // Plugin node id -> native plugin, kept alive while the graph is.
+    std::unordered_map<int, PluginRef> node_plugins_;
+    std::mutex busy_;  // see Plugin::busy_
     nb::object owner_;  // list of the node Python objects; see tp_traverse
     // Per-node automation scratch buffers that outlive Python call
     // boundaries (the graph borrows pointers during render_block).
@@ -2307,10 +2574,19 @@ public:
     ~Session() { close(); }
 
     void close() {
+        std::lock_guard<std::mutex> busy(busy_);
         if (session_) {
             mh_session_close(session_);
             session_ = nullptr;
         }
+    }
+
+    // For the loaders that run without the GIL: holds off close() until the
+    // load returns, and raises if the session is already closed.
+    std::unique_lock<std::mutex> hold() {
+        std::unique_lock<std::mutex> busy(busy_);
+        if (!session_) throw std::runtime_error("Session is closed");
+        return busy;
     }
 
     Session(const Session&) = delete;
@@ -2323,6 +2599,7 @@ public:
 
 private:
     MH_Session* session_ = nullptr;
+    std::mutex busy_;  // see Plugin::busy_
 
     // See LiveEntry. Declared last on purpose.
     LiveEntry live_{ [this] { close(); } };
@@ -2337,7 +2614,7 @@ public:
                 int output_channels = 0, int midi_input_port = -1, int midi_output_port = -1,
                 bool capture = false, int playback_device_index = -1,
                 int capture_device_index = -1)
-        : plugin_ref_(&plugin), chain_ref_(nullptr)
+        : plugin_handle_(plugin.share("AudioDevice"))
     {
         MH_AudioConfig config;
         config.sample_rate = sample_rate;
@@ -2350,7 +2627,7 @@ public:
         config.capture_device_index = capture_device_index;
 
         char err[1024] = {0};
-        device_ = mh_audio_open(plugin.plugin_, &config, err, sizeof(err));
+        device_ = mh_audio_open(plugin_handle_->p, &config, err, sizeof(err));
         if (!device_) {
             throw std::runtime_error(std::string("Failed to open audio device: ") + err);
         }
@@ -2361,7 +2638,7 @@ public:
                 int output_channels = 0, int midi_input_port = -1, int midi_output_port = -1,
                 bool capture = false, int playback_device_index = -1,
                 int capture_device_index = -1)
-        : plugin_ref_(nullptr), chain_ref_(&chain)
+        : chain_handle_(chain.share("AudioDevice"))
     {
         MH_AudioConfig config;
         config.sample_rate = sample_rate;
@@ -2374,7 +2651,7 @@ public:
         config.capture_device_index = capture_device_index;
 
         char err[1024] = {0};
-        device_ = mh_audio_open_chain(chain.chain_, &config, err, sizeof(err));
+        device_ = mh_audio_open_chain(chain_handle_->c, &config, err, sizeof(err));
         if (!device_) {
             throw std::runtime_error(std::string("Failed to open audio device with chain: ") + err);
         }
@@ -2387,31 +2664,10 @@ public:
         }
     }
 
-    // Disable copy
     AudioDevice(const AudioDevice&) = delete;
     AudioDevice& operator=(const AudioDevice&) = delete;
-
-    // Enable move
-    AudioDevice(AudioDevice&& other) noexcept
-        : device_(other.device_), plugin_ref_(other.plugin_ref_), chain_ref_(other.chain_ref_)
-    {
-        other.device_ = nullptr;
-        other.plugin_ref_ = nullptr;
-        other.chain_ref_ = nullptr;
-    }
-
-    AudioDevice& operator=(AudioDevice&& other) noexcept {
-        if (this != &other) {
-            if (device_) mh_audio_close(device_);
-            device_ = other.device_;
-            plugin_ref_ = other.plugin_ref_;
-            chain_ref_ = other.chain_ref_;
-            other.device_ = nullptr;
-            other.plugin_ref_ = nullptr;
-            other.chain_ref_ = nullptr;
-        }
-        return *this;
-    }
+    AudioDevice(AudioDevice&&) = delete;
+    AudioDevice& operator=(AudioDevice&&) = delete;
 
     void start() {
         if (!mh_audio_start(device_)) {
@@ -2494,9 +2750,9 @@ public:
     // Send MIDI event programmatically
     void send_midi(int status, int data1, int data2) {
         if (!mh_audio_send_midi(device_,
-                                static_cast<unsigned char>(status),
-                                static_cast<unsigned char>(data1),
-                                static_cast<unsigned char>(data2))) {
+                                midi_byte(status, "status", 0x80, 0xFF),
+                                midi_byte(data1, "data1", 0, 0x7F),
+                                midi_byte(data2, "data2", 0, 0x7F))) {
             throw std::runtime_error("Failed to send MIDI (queue may be full)");
         }
     }
@@ -2519,7 +2775,7 @@ public:
 
     void transport_set_bpm(double bpm) {
         if (!mh_audio_transport_set_bpm(device_, bpm))
-            throw nb::value_error("bpm must be greater than 0");
+            throw nb::value_error("bpm must be a finite number greater than 0");
     }
 
     void transport_set_time_sig(int numerator, int denominator) {
@@ -2604,7 +2860,28 @@ public:
     // Send a parameter change programmatically. Goes through the ring the
     // audio thread drains, so the write lands at a defined point in the block
     // instead of racing processBlock through Plugin.set_param's mutex.
+    // The audio thread skips a change it cannot apply without reporting it,
+    // so the target and value are checked here, on the caller's thread.
+    void check_param_target(int plugin_index, int param_index, float value) const {
+        require_finite(value, "value");
+        MH_Plugin* p = nullptr;
+        if (chain_handle_) {
+            const int n = mh_chain_get_num_plugins(chain_handle_->c);
+            if (plugin_index < 0 || plugin_index >= n)
+                field_error("send_param", "plugin_index", 0, n - 1);
+            p = mh_chain_get_plugin(chain_handle_->c, plugin_index);
+        } else {
+            if (plugin_index != 0)
+                field_error("send_param on a single-plugin device", "plugin_index", 0, 0);
+            p = plugin_handle_->p;
+        }
+        const int n = mh_get_num_params(p);
+        if (param_index < 0 || param_index >= n)
+            field_error("send_param", "param_index", 0, n - 1);
+    }
+
     void send_param(int param_index, float value, int plugin_index) {
+        check_param_target(plugin_index, param_index, value);
         if (!mh_audio_send_param(device_, plugin_index, param_index, value)) {
             throw std::runtime_error("Failed to send parameter (queue may be full)");
         }
@@ -2613,6 +2890,7 @@ public:
     // Same, from a control-surface thread. Its own ring, so a surface and
     // application code are never two producers on one.
     void send_param_control(int param_index, float value, int plugin_index) {
+        check_param_target(plugin_index, param_index, value);
         if (!mh_audio_send_param_control(device_, plugin_index, param_index, value)) {
             throw std::runtime_error("Failed to send parameter (queue may be full)");
         }
@@ -2635,8 +2913,8 @@ public:
     }
 
     int write_input(AudioArray data) {
-        int channels = static_cast<int>(data.shape(0));
-        int frames = static_cast<int>(data.shape(1));
+        int channels = checked_dim(data.shape(0));
+        int frames = checked_dim(data.shape(1));
         int dev_channels = mh_audio_get_channels(device_);
 
         // Interleave: numpy is [channels, frames] row-major, ring buffer wants interleaved
@@ -2708,9 +2986,11 @@ private:
     // to tp_traverse below, and keeps the lifetime guarantee identical.
     nb::object owner_;
 
+    // What the audio thread processes through. Declared before device_, so
+    // destroyed after it: the destructor closes the device first.
+    PluginRef plugin_handle_;
+    ChainRef chain_handle_;
     MH_AudioDevice* device_ = nullptr;
-    Plugin* plugin_ref_ = nullptr;        // Keep reference to prevent plugin from being GC'd
-    PluginChain* chain_ref_ = nullptr;    // Keep reference to prevent chain from being GC'd
 
     // Last member: constructed after everything its closer touches, and
     // destroyed (unregistered) before them. See LiveEntry.
@@ -2837,12 +3117,26 @@ public:
     MidiFile() = default;
 
     // Load from file
+    // Parsed into a temporary so a failed load leaves this file untouched;
+    // it used to keep half of the rejected file.
     bool load(const std::string& path) {
-        if (!file_.read(path)) {
+        // midifile turns an SMPTE division into ticks per second and drops
+        // the flag, so the renderer applied tempo to it (a 1 s note played at
+        // 0.5 s). A division of 0 divided by zero later. Both are refused.
+        {
+            std::ifstream in(path, std::ios::binary);
+            unsigned char hdr[14] = {};
+            if (!in.read(reinterpret_cast<char*>(hdr), sizeof hdr)) return false;
+            const int division = (hdr[12] << 8) | hdr[13];
+            if (division == 0 || (division & 0x8000)) return false;
+        }
+        smf::MidiFile parsed;
+        if (!parsed.read(path)) {
             return false;
         }
-        file_.doTimeAnalysis();
-        file_.linkNotePairs();
+        parsed.doTimeAnalysis();
+        parsed.linkNotePairs();
+        file_ = std::move(parsed);
         return true;
     }
 
@@ -2863,6 +3157,9 @@ public:
 
     // Set ticks per quarter note
     void set_ticks_per_quarter(int tpq) {
+        // 0 divided by zero in rendering; the high bit means SMPTE.
+        if (tpq < 1 || tpq > 0x7FFF)
+            throw nb::value_error("ticks_per_quarter must be in [1, 32767]");
         file_.setTicksPerQuarterNote(tpq);
     }
 
@@ -2877,34 +3174,78 @@ public:
         return file_.addTrack();
     }
 
+    // midifile indexes its track list unchecked, so a bad index writes
+    // out of bounds.
+    void check_track(int track) const {
+        if (track < 0 || track >= file_.getTrackCount())
+            throw nb::index_error(("track " + std::to_string(track)
+                                   + " out of range [0, "
+                                   + std::to_string(file_.getTrackCount())
+                                   + ")").c_str());
+    }
+
     // Add a tempo event (BPM)
+    // midifile masks out-of-range values silently: channel 20 became 4,
+    // pitch 300 became 44, bpm 0 became 3.58.
+    static void check_range(int v, int lo, int hi, const char* name) {
+        if (v < lo || v > hi)
+            throw nb::value_error((std::string(name) + " must be in [" + std::to_string(lo)
+                                   + ", " + std::to_string(hi) + "], got "
+                                   + std::to_string(v)).c_str());
+    }
+
+    void check_event(int track, int tick, int channel) const {
+        check_track(track);
+        check_range(tick, 0, INT_MAX, "tick");
+        check_range(channel, 0, 15, "channel");
+    }
+
     void add_tempo(int track, int tick, double bpm) {
+        check_track(track);
+        check_range(tick, 0, INT_MAX, "tick");
+        if (!(std::isfinite(bpm) && bpm > 0.0))
+            throw nb::value_error("bpm must be a finite number greater than 0");
         file_.addTempo(track, tick, bpm);
     }
 
     // Add a note on event
     void add_note_on(int track, int tick, int channel, int pitch, int velocity) {
+        check_event(track, tick, channel);
+        check_range(pitch, 0, 127, "pitch");
+        check_range(velocity, 0, 127, "velocity");
         file_.addNoteOn(track, tick, channel, pitch, velocity);
     }
 
     // Add a note off event
     void add_note_off(int track, int tick, int channel, int pitch, int velocity = 0) {
+        check_event(track, tick, channel);
+        check_range(pitch, 0, 127, "pitch");
+        check_range(velocity, 0, 127, "velocity");
         file_.addNoteOff(track, tick, channel, pitch, velocity);
     }
 
     // Add a control change event
     void add_control_change(int track, int tick, int channel, int controller, int value) {
+        check_event(track, tick, channel);
+        check_range(controller, 0, 127, "controller");
+        check_range(value, 0, 127, "value");
         file_.addController(track, tick, channel, controller, value);
     }
 
     // Add a program change event
     void add_program_change(int track, int tick, int channel, int program) {
+        check_event(track, tick, channel);
+        check_range(program, 0, 127, "program");
         file_.addPatchChange(track, tick, channel, program);
     }
 
     // Add a pitch bend event
     void add_pitch_bend(int track, int tick, int channel, int value) {
-        file_.addPitchBend(track, tick, channel, value);
+        check_event(track, tick, channel);
+        check_range(value, 0, 16383, "value");
+        // midifile takes -1..1; the int was passed straight in, so 0 (full
+        // down) was written as centre and 8192 (centre) as full up.
+        file_.addPitchBend(track, tick, channel, (value - 8192) / 8192.0);
     }
 
     // Get all events from a track as a list of dicts
@@ -3091,7 +3432,13 @@ private:
         nb::gil_scoped_acquire gil;
         auto* self = static_cast<MidiIn*>(user_data);
         if (self->callback_.is_valid() && !self->callback_.is_none()) {
-            self->callback_(nb::bytes(reinterpret_cast<const char*>(data), len));
+            // An exception escaping into the libremidi thread terminates the
+            // process; report it as unraisable, like a failing __del__.
+            try {
+                self->callback_(nb::bytes(reinterpret_cast<const char*>(data), len));
+            } catch (nb::python_error& e) {
+                e.discard_as_unraisable("MidiIn callback");
+            }
         }
     }
 };
@@ -3144,6 +3491,7 @@ public:
     }
 
     int port() const { return handle_ ? mh_osc_server_get_port(handle_) : -1; }
+    int format_errors() const { return handle_ ? mh_osc_server_get_format_errors(handle_) : 0; }
 
     OscServer& enter() { return *this; }
     void exit(nb::object, nb::object, nb::object) { close(); }
@@ -3183,7 +3531,13 @@ private:
             nb::list py_args;
             for (int i = 0; i < num_args; ++i)
                 py_args.append(args[i]);
-            self->callback_(nb::str(address), py_args);
+            // Uncaught, the exception silently ended the socket thread and
+            // every later message was dropped.
+            try {
+                self->callback_(nb::str(address), py_args);
+            } catch (nb::python_error& e) {
+                e.discard_as_unraisable("OscServer callback");
+            }
         }
     }
 };
@@ -3330,7 +3684,8 @@ NB_MODULE(_core, m) {
               std::vector<float> out(a.size());
               if (!a.empty() && !mh_morph_lerp(a.data(), b.data(), out.data(),
                                                (int) a.size(), t))
-                  throw std::runtime_error("mh_morph_lerp failed");
+                  throw nb::value_error(
+                      "mh_morph_lerp failed (non-finite snapshot value or t)");
               return out;
           },
           nb::arg("a"), nb::arg("b"), nb::arg("t"),
@@ -3349,7 +3704,8 @@ NB_MODULE(_core, m) {
               if (!a.empty() && !mh_morph_lerp_per_param(a.data(), b.data(),
                                                          out.data(),
                                                          (int) a.size(), t.data()))
-                  throw std::runtime_error("mh_morph_lerp_per_param failed");
+                  throw nb::value_error(
+                      "mh_morph_lerp_per_param failed (non-finite snapshot value or t)");
               return out;
           },
           nb::arg("a"), nb::arg("b"), nb::arg("t"),
@@ -3369,6 +3725,7 @@ NB_MODULE(_core, m) {
                 double sample_rate, int max_block_size,
                 int in_channels, int out_channels,
                 int sidechain_channels) {
+                 auto busy = self.hold();
                  return new Plugin(self.raw(), path, sample_rate,
                                     max_block_size, in_channels,
                                     out_channels, sidechain_channels);
@@ -3395,6 +3752,7 @@ NB_MODULE(_core, m) {
              [](Session& self, const std::string& pd_xml,
                 double sample_rate, int max_block_size,
                 int in_channels, int out_channels) {
+                 auto busy = self.hold();
                  return new Plugin(Plugin::SessionDescriptorTag{}, self.raw(),
                                    pd_xml, sample_rate, max_block_size,
                                    in_channels, out_channels);
@@ -3796,8 +4154,8 @@ NB_MODULE(_core, m) {
                          "scalar (broadcast) or a 2D c-contiguous buffer of "
                          "matching dtype (AudioBuffer / numpy ndarray / similar).");
                  }
-                 if ((int)src.shape(0) != ch_count
-                     || (int)src.shape(1) != fr_count) {
+                 if (checked_dim(src.shape(0)) != ch_count
+                     || checked_dim(src.shape(1)) != fr_count) {
                      throw nb::value_error(
                          ("Source shape " + std::to_string(src.shape(0)) + "x"
                           + std::to_string(src.shape(1)) +
@@ -3842,11 +4200,22 @@ NB_MODULE(_core, m) {
                  if (s < 0 || n < 0 || s + n > self.frames()) {
                      throw nb::value_error("magnitude range out of bounds");
                  }
-                 return self.juce().getMagnitude(s, n);
+                 // JUCE's min/max scan skips NaN, so a buffer with NaN at
+                 // frame 0 reported 0.0 and normalisation silently did nothing.
+                 const auto& buf = self.juce();
+                 using Sample = std::decay_t<decltype(*buf.getReadPointer(0))>;
+                 for (int c = 0; c < buf.getNumChannels(); ++c) {
+                     const Sample* x = buf.getReadPointer(c);
+                     for (int i = s; i < s + n; ++i)
+                         if (std::isnan(x[i]))
+                             return std::numeric_limits<Sample>::quiet_NaN();
+                 }
+                 return buf.getMagnitude(s, n);
              },
              "start"_a = nb::none(), "count"_a = nb::none(),
              "Return the peak absolute sample value across all channels in "
-             "the range [start, start+count). Defaults to the whole buffer.")
+             "the range [start, start+count). Defaults to the whole buffer. "
+             "NaN if the range contains NaN.")
         .def("copy",
              [](const MhAudioBuffer& self) {
                  auto* out = new MhAudioBuffer(self.channels(),
@@ -4093,8 +4462,8 @@ NB_MODULE(_core, m) {
         .def_static("from_numpy",
              [](nb::ndarray<const T, nb::shape<-1, -1>, nb::c_contig,
                             nb::device::cpu> arr) {
-                 int channels = (int)arr.shape(0);
-                 int frames = (int)arr.shape(1);
+                 int channels = checked_dim(arr.shape(0));
+                 int frames = checked_dim(arr.shape(1));
                  auto* buf = new MhAudioBuffer(channels, frames);
                  std::memcpy(buf->data(), arr.data(),
                              (size_t)channels * frames * sizeof(T));
@@ -4180,6 +4549,10 @@ NB_MODULE(_core, m) {
                      "Number of output channels")
         .def_prop_ro("latency_samples", &Plugin::latency_samples,
                      "Plugin latency in samples")
+        .def_prop_ro("midi_out_dropped",
+                     &Plugin::midi_out_dropped,
+                     "MIDI output events the last process_midi / process_auto call "
+                     "produced beyond midi_out_capacity, and so dropped.")
         .def_prop_ro("tail_seconds", &Plugin::tail_seconds,
                      "Plugin tail length in seconds")
         .def_prop_ro("sidechain_channels", &Plugin::sidechain_channels,
@@ -4373,7 +4746,9 @@ NB_MODULE(_core, m) {
         .def("poll_callbacks", &Plugin::poll_callbacks,
              "Drain pending callback events and dispatch to registered Python callbacks. "
              "Call this periodically from your main/UI thread to receive change, "
-             "parameter value, and gesture notifications. Returns the number of events dispatched.")
+             "parameter value, and gesture notifications. Returns the number of events dispatched. "
+             "If a callback raises, the exception propagates and the undelivered events stay "
+             "queued for the next call. Called from inside a callback, it returns 0.")
         .def("callback_events_dropped", &Plugin::callback_events_dropped,
              "Return (and reset) the count of callback events dropped because "
              "the bounded queue (capacity 1024) was full. Non-zero values "
@@ -4413,6 +4788,10 @@ NB_MODULE(_core, m) {
                      "Number of plugins in the chain")
         .def_prop_ro("latency_samples", &PluginChain::latency_samples,
                      "Total latency in samples (sum of all plugin latencies)")
+        .def_prop_ro("midi_dropped",
+                     &PluginChain::midi_dropped,
+                     "MIDI events the last process_midi / process_auto call dropped: "
+                     "between plugins past 4096 per block, or past midi_out_capacity.")
         .def_prop_ro("num_input_channels", &PluginChain::num_input_channels,
                      "Number of input channels (from first plugin)")
         .def_prop_ro("num_output_channels", &PluginChain::num_output_channels,
@@ -4420,7 +4799,8 @@ NB_MODULE(_core, m) {
         .def_prop_ro("sample_rate", &PluginChain::get_sample_rate,
                      "Sample rate (all plugins have the same rate)")
         .def_prop_ro("tail_seconds", &PluginChain::tail_seconds,
-                     "Maximum tail length in seconds (for reverbs, delays)")
+                     "Tail length in seconds: the sum of the plugins' tails, "
+                     "since in series each rings on the tail of the one before.")
         .def_prop_ro("max_block_size", &PluginChain::max_block_size,
                      "Largest block (frames) the chain can process -- the "
                      "minimum across its plugins.")
@@ -4985,6 +5365,9 @@ NB_MODULE(_core, m) {
              "converted; any other OSC type (string, blob) is reported as 0.0 "
              "rather than dropped, so positions stay aligned with what the "
              "sender wrote.")
+        .def_prop_ro("format_errors", &OscServer::format_errors,
+                     "Packets dropped because they could not be parsed, "
+                     "including OSC type tags JUCE does not support (d, T, F, h).")
         .def_prop_ro("port", &OscServer::port,
              "The UDP port actually bound. Meaningful after opening on port 0.")
         .def("close", &OscServer::close,
@@ -5093,8 +5476,14 @@ NB_MODULE(_core, m) {
                 sample_rate = data->sample_rate;
                 // De-interleave directly into a fresh AudioBuffer. Avoids the
                 // numpy detour: this binding does not require numpy at all.
-                buf = new MhAudioBuffer((int)channels, (int)frames);
-                interleaved_to_planar(data->data, buf->data(), channels, frames);
+                if (channels > (unsigned) INT_MAX || frames > (unsigned) INT_MAX) {
+                    std::snprintf(err, sizeof(err),
+                                  "%s: %u frames exceeds the %d a buffer can hold",
+                                  path.c_str(), frames, INT_MAX);
+                } else {
+                    buf = new MhAudioBuffer((int)channels, (int)frames);
+                    interleaved_to_planar(data->data, buf->data(), channels, frames);
+                }
                 mh_audio_data_free(data);
             }
         }
@@ -5114,8 +5503,8 @@ NB_MODULE(_core, m) {
                             unsigned int sample_rate,
                             int bit_depth,
                             nb::object bwf) {
-        size_t channels = data.shape(0);
-        size_t frames = data.shape(1);
+        size_t channels = (size_t) checked_dim(data.shape(0));
+        size_t frames = (size_t) checked_dim(data.shape(1));
 
         // Interleave planar numpy data for the C API
         std::vector<float> interleaved(channels * frames);
@@ -5123,15 +5512,33 @@ NB_MODULE(_core, m) {
 
         char err[1024] = {0};
         int ok;
+        // The encode touches no Python objects; holding the GIL through it
+        // stalled every other thread for the length of the write.
         if (bwf.is_none()) {
+            nb::gil_scoped_release nogil;
             ok = mh_audio_write(path.c_str(), interleaved.data(),
                                 (unsigned int)channels, (unsigned int)frames,
                                 sample_rate, bit_depth, err, sizeof(err));
         } else {
-            nb::dict d = nb::cast<nb::dict>(bwf);
+            // Checked key by key: a wrong type used to surface as a bare
+            // std::bad_cast, and a misspelled key was silently ignored.
+            if (!PyDict_Check(bwf.ptr()))
+                throw nb::type_error("bwf must be a dict");
+            nb::dict d = nb::borrow<nb::dict>(bwf);
+            static const char* const kKeys[] = {
+                "description", "originator", "originator_reference",
+                "origination_date", "origination_time", "time_reference"};
+            for (auto item : d) {
+                const std::string k = nb::str(item.first).c_str();
+                if (std::find(std::begin(kKeys), std::end(kKeys), k) == std::end(kKeys))
+                    throw nb::value_error(("unknown bwf key: " + k).c_str());
+            }
             auto get_str = [&](const char* key) -> std::string {
-                return d.contains(key) ? nb::cast<std::string>(d[key])
-                                       : std::string();
+                if (!d.contains(key)) return std::string();
+                std::string v;
+                if (!nb::try_cast<std::string>(d[key], v))
+                    throw nb::type_error((std::string("bwf['") + key + "'] must be a str").c_str());
+                return v;
             };
             // Keep the backing strings alive for the duration of the C call;
             // MH_BwfMetadata holds borrowed const char* pointers.
@@ -5142,7 +5549,11 @@ NB_MODULE(_core, m) {
             std::string time    = get_str("origination_time");
             unsigned long long tref = 0;
             if (d.contains("time_reference")) {
-                tref = nb::cast<unsigned long long>(d["time_reference"]);
+                nb::handle v = d["time_reference"];
+                if (PyBool_Check(v.ptr()) || !PyLong_Check(v.ptr())
+                    || !nb::try_cast<unsigned long long>(v, tref))
+                    throw nb::value_error(
+                        "bwf['time_reference'] must be an int in [0, 2**64)");
             }
             MH_BwfMetadata meta;
             meta.description          = desc.empty()    ? nullptr : desc.c_str();
@@ -5151,6 +5562,7 @@ NB_MODULE(_core, m) {
             meta.origination_date     = date.empty()    ? nullptr : date.c_str();
             meta.origination_time     = time.empty()    ? nullptr : time.c_str();
             meta.time_reference       = tref;
+            nb::gil_scoped_release nogil;
             ok = mh_audio_write_bwf(path.c_str(), interleaved.data(),
                                     (unsigned int)channels, (unsigned int)frames,
                                     sample_rate, bit_depth, &meta,
@@ -5172,8 +5584,15 @@ NB_MODULE(_core, m) {
                 nb::ndarray<const float, nb::shape<-1, -1>, nb::c_contig, nb::device::cpu> data,
                 unsigned int sample_rate_in,
                 unsigned int sample_rate_out) {
-        size_t channels = data.shape(0);
-        size_t frames_in = data.shape(1);
+        size_t channels = (size_t) checked_dim(data.shape(0));
+        size_t frames_in = (size_t) checked_dim(data.shape(1));
+        // Reject before resampling rather than after: the result must fit an
+        // int-indexed buffer.
+        if (sample_rate_in > 0
+            && (double) frames_in * sample_rate_out / sample_rate_in > (double) INT_MAX)
+            throw std::runtime_error(
+                "resampled length exceeds the maximum output length "
+                "(INT_MAX frames per buffer)");
 
         // Accept any 2D float32 c-contiguous buffer-protocol producer
         // (numpy ndarray, AudioBuffer via DLPack, memoryview, ...).
@@ -5193,9 +5612,15 @@ NB_MODULE(_core, m) {
                 err, sizeof(err));
             if (result) {
                 // De-interleave directly into a fresh AudioBuffer. No numpy required.
-                buf = new MhAudioBuffer((int)result->channels, (int)result->frames);
-                interleaved_to_planar(result->data, buf->data(),
-                                      result->channels, result->frames);
+                if (result->frames <= (unsigned) INT_MAX) {
+                    buf = new MhAudioBuffer((int)result->channels, (int)result->frames);
+                    interleaved_to_planar(result->data, buf->data(),
+                                          result->channels, result->frames);
+                } else {
+                    std::snprintf(err, sizeof(err),
+                                  "resampled length exceeds the maximum output length "
+                                  "(INT_MAX frames per buffer)");
+                }
                 mh_audio_data_free(result);
             }
         }

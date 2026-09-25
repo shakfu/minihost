@@ -1368,12 +1368,15 @@ tflac_u32 tflac_wasted_bits(tflac_s32 sample, tflac_u32 bits) {
     _BitScanForward(&index, (unsigned long) sample);
     return (tflac_u32)index;
 #endif
-#elif __GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 6)
+#elif defined(__clang__) || __GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 6)
+    /* minihost: clang reports __GNUC__ 4.2, so it took the loop below. */
     return (tflac_u32)__builtin_ctzll( (UINT64_C(0xFFFFFFFFFFFFFFFF) << bits) | (unsigned long long)sample);
 #else
     /* TODO optimize for other platforms? */
     tflac_u32 s = (tflac_u32)sample;
     tflac_u32 i = 0;
+    /* minihost: --bits wrapped to UINT_MAX, a ~4e9-step loop per zero sample. */
+    if(bits == 0) return 0;
     --bits;
     while(i < bits) {
         if(s >> i & 1) break;
@@ -1912,6 +1915,9 @@ TFLAC_PRIVATE void tflac_stereo_decorrelate_independent_int16(tflac* t, tflac_u3
     (void)channel;
     (void)nothing;
 
+    /* minihost: set before the loop, as the stereo paths do. It was set
+     * after, so the first block passed bits=0 to tflac_wasted_bits. */
+    t->subframe_bitdepth = t->bitdepth;
     while(i < t->cur_blocksize) {
         residuals_0[i] = (tflac_s32)samples[j];
 
@@ -1923,7 +1929,6 @@ TFLAC_PRIVATE void tflac_stereo_decorrelate_independent_int16(tflac* t, tflac_u3
         i++;
         j += stride;
     }
-    t->subframe_bitdepth = t->bitdepth;
     t->constant = !non_constant;
     t->wasted_bits %= t->subframe_bitdepth;
     t->residual_errors[0] = min_found ? TFLAC_U64_MAX : TFLAC_U64_ZERO;
@@ -1941,6 +1946,9 @@ TFLAC_PRIVATE void tflac_stereo_decorrelate_independent_int32(tflac* t, tflac_u3
     (void)channel;
     (void)nothing;
 
+    /* minihost: set before the loop, as the stereo paths do. It was set
+     * after, so the first block passed bits=0 to tflac_wasted_bits. */
+    t->subframe_bitdepth = t->bitdepth;
     while(i < t->cur_blocksize) {
         residuals_0[i] = samples[j];
 
@@ -1952,7 +1960,6 @@ TFLAC_PRIVATE void tflac_stereo_decorrelate_independent_int32(tflac* t, tflac_u3
         i++;
         j += stride;
     }
-    t->subframe_bitdepth = t->bitdepth;
     t->constant = !non_constant;
     t->wasted_bits %= t->subframe_bitdepth;
     t->residual_errors[0] = min_found ? TFLAC_U64_MAX : TFLAC_U64_ZERO;

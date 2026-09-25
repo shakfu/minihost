@@ -330,7 +330,11 @@ def build_map(params: list[Parameter], channel: int = 0) -> dict:
     for p in params:
         if p.cc is None:
             continue
-        mappings.append({"channel": channel, "cc": p.cc, "param": p.name})
+        # The index is what the loader binds by; the name is for reading. A
+        # plugin can repeat a name, and by name every repeat bound the first.
+        mappings.append(
+            {"channel": channel, "cc": p.cc, "param": p.name, "param_index": p.index}
+        )
     return {"mappings": mappings}
 
 

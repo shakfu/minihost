@@ -149,18 +149,42 @@ def _empty() -> dict:
     return {"schema": SCHEMA_VERSION, "entries": {}}
 
 
+def _valid_entry(entry: object) -> bool:
+    """True if ``entry`` has the shape the readers index into without checks."""
+    if not isinstance(entry, dict) or not isinstance(entry.get("status"), str):
+        return False
+    if entry["status"] != "ok":
+        return True
+    desc = entry.get("desc")
+    if not isinstance(desc, dict):
+        return False
+    for key in ("name", "vendor", "format"):
+        if key in desc and not isinstance(desc[key], str):
+            return False
+    for key in ("num_inputs", "num_outputs"):
+        v = desc.get(key, 0)
+        if not isinstance(v, int) or isinstance(v, bool):
+            return False
+    return True
+
+
 def _load_raw() -> dict:
+    # A damaged cache is treated as empty or pruned, never raised: it used to
+    # break every plugincache call (a non-UTF-8 file raised UnicodeDecodeError,
+    # a string entry AttributeError) until the file was deleted by hand.
     f = cache_file()
     if not f.exists():
         return _empty()
     try:
-        doc = json.loads(f.read_text())
-    except (json.JSONDecodeError, OSError):
+        doc = json.loads(f.read_text(encoding="utf-8"))
+    except (ValueError, OSError):  # ValueError covers JSON and UTF-8 errors
         return _empty()
     if not isinstance(doc, dict) or doc.get("schema") != SCHEMA_VERSION:
         return _empty()
-    if not isinstance(doc.get("entries"), dict):
-        doc["entries"] = {}
+    entries = doc.get("entries")
+    if not isinstance(entries, dict):
+        entries = {}
+    doc["entries"] = {k: v for k, v in entries.items() if _valid_entry(v)}
     return doc
 
 

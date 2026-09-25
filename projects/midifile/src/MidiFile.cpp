@@ -13,6 +13,7 @@
 //
 
 #include "MidiFile.h"
+#include <climits>
 #include "Binasc.h"
 
 #include <algorithm>
@@ -514,6 +515,11 @@ bool MidiFile::readSmf(std::istream& input) {
 		int absticks = 0;
 		while (!input.eof()) {
 			longdata = readVLValue(input);
+			// minihost: absticks is an int; summing deltas past INT_MAX wrapped
+			// it negative and produced negative event times.
+			if (longdata > (ulong)(INT_MAX - absticks)) {
+				m_rwstatus = false; return m_rwstatus;
+			}
 			absticks += longdata;
 			xstatus = extractMidiData(input, bytes, runningCommand);
 			if (xstatus == 0) {
@@ -1415,6 +1421,8 @@ int MidiFile::getFileDurationInTicks(void) {
 	const MidiFile& mf = *this;
 	int output = 0;
 	for (int i=0; i<mf.getTrackCount(); i++) {
+		// minihost: back() on an empty track is undefined (segfault).
+		if (mf[i].getEventCount() == 0) continue;
 		if (mf[i].back().tick > output) {
 			output = mf[i].back().tick;
 		}
@@ -1467,6 +1475,8 @@ double MidiFile::getFileDurationInSeconds(void) {
 	const MidiFile& mf = *this;
 	double output = 0.0;
 	for (int i=0; i<mf.getTrackCount(); i++) {
+		// minihost: back() on an empty track is undefined (segfault).
+		if (mf[i].getEventCount() == 0) continue;
 		if (mf[i].back().seconds > output) {
 			output = mf[i].back().seconds;
 		}
@@ -2797,7 +2807,9 @@ void MidiFile::buildTimeMap(void) {
 		}
 
 		// update the tempo if needed:
-		if (getEvent(0,i).isTempo()) {
+		// minihost: a tempo of 0 us per quarter gave 0 s per tick, collapsing
+		// every later event onto one instant. Skipped, keeping the prior tempo.
+		if (getEvent(0,i).isTempo() && getEvent(0,i).getTempoSPT(getTicksPerQuarterNote()) > 0.0) {
 			secondsPerTick = getEvent(0,i).getTempoSPT(getTicksPerQuarterNote());
 		}
 	}

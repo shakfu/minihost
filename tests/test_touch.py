@@ -295,10 +295,14 @@ def test_the_generated_map_loads_back_into_a_mapper(tmp_path):
     plugin = _fake_plugin([_info("Cutoff"), _info("Resonance")])
     params = touch.collect_parameters(plugin)
 
+    names = ["Cutoff", "Resonance"]
     mapper_plugin = MagicMock()
     mapper_plugin.find_param = MagicMock(
         side_effect=lambda n: {"cutoff": 0, "resonance": 1}[n.lower()]
     )
+    # The map binds by param_index, so the mapper resolves through these.
+    mapper_plugin.num_params = len(names)
+    mapper_plugin.get_param_info = MagicMock(side_effect=lambda i: {"name": names[i]})
     mapper = minihost.MidiMapper(mapper_plugin)
 
     path = tmp_path / "minihost_touch_map.json"
@@ -394,3 +398,24 @@ def test_a_real_plugin_end_to_end(tmp_path):
     out = tmp_path / "real.tosc"
     doc.save(out)
     assert out.stat().st_size > 0
+
+
+def test_duplicate_names_map_to_their_own_parameters(tmp_path):
+    # Mappings were keyed by name and the loader took the first match, so
+    # with names Bypass, Threshold, Bypass, Bypass the CCs wrote [0, 1, 0, 0].
+    from minihost.cli import _load_map_file
+
+    names = ["Bypass", "Threshold", "Bypass", "Bypass"]
+    params = touch.collect_parameters(_fake_plugin([_info(n) for n in names]))
+    doc = touch.build_map(params)
+    assert [m["param_index"] for m in doc["mappings"]] == [0, 1, 2, 3]
+
+    mapper_plugin = MagicMock()
+    mapper_plugin.find_param = MagicMock(side_effect=lambda n: names.index(n))
+    mapper_plugin.num_params = len(names)
+    mapper_plugin.get_param_info = MagicMock(side_effect=lambda i: {"name": names[i]})
+    mapper = minihost.MidiMapper(mapper_plugin)
+    path = tmp_path / "map.json"
+    path.write_text(json.dumps(doc))
+    _load_map_file(str(path), mapper)
+    assert sorted(b.param_idx for b in mapper._cc.values()) == [0, 1, 2, 3]

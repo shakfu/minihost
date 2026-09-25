@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     import numpy as np
 
 from minihost._core import AudioBuffer, Plugin, PluginChain, MidiFile
+from minihost._core import _message_thread_poll
 
 # Type alias for plugin or chain
 PluginOrChain = Union[Plugin, PluginChain]
@@ -80,6 +81,10 @@ def _build_tempo_map(midi_file: MidiFile) -> list[tuple[int, float]]:
         for event in events:
             if event.get("type") == "tempo":
                 bpm = event["bpm"]
+                # A tempo meta of 0 us reads as bpm inf: every event after it
+                # would land at one instant. Skipped, keeping the prior tempo.
+                if not (0.0 < bpm < float("inf")):
+                    continue
                 us_per_quarter = 60_000_000.0 / bpm
                 tempo_map.append((event["tick"], us_per_quarter))
 
@@ -543,7 +548,9 @@ class MidiRenderer:
             if effective_tail <= 0 or effective_tail > 30:
                 effective_tail = 2.0
         else:
-            effective_tail = float(tail_seconds)
+            from minihost.process import _check_tail_seconds
+
+            effective_tail = _check_tail_seconds(tail_seconds)
         self._tail_seconds = effective_tail
 
         # Build tempo map and collect events
@@ -578,6 +585,7 @@ class MidiRenderer:
         # progress) continue to report the user-visible duration. Internal
         # bookkeeping uses _render_samples for the loop bound.
         try:
+            _message_thread_poll()  # see process._prepare_render
             self._latency = int(plugin.latency_samples)
         except Exception:
             self._latency = 0

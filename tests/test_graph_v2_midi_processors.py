@@ -340,3 +340,80 @@ def test_processor_chain_filter_then_transpose():
         (1, 0x90, 48, 100),
         (2, 0x90, 53, 100),
     ]
+
+
+# -------------------------------------------------------------------- #
+# Dropped events: counted where they are lost, reported downstream.     #
+# -------------------------------------------------------------------- #
+
+CAP = 1024
+
+
+def _notes(note, n):
+    return [(0, 0x90, note, 100)] * n
+
+
+def _render_once(g, F, ch):
+    g.render_block(
+        [np.zeros((ch, F), dtype=np.float32)], [np.zeros((ch, F), dtype=np.float32)], F
+    )
+
+
+def _merge_graph(g, proc_params=None):
+    mi_a = g.add_midi_input()
+    mi_b = g.add_midi_input()
+    merge = g.add_midi_merge(num_inputs=2)
+    mo = g.add_midi_output()
+    g.connect_midi_port(mi_a, merge, 0)
+    g.connect_midi_port(mi_b, merge, 1)
+    if proc_params is None:
+        g.connect_midi(merge, mo)
+    else:
+        proc = g.add_midi_processor(proc_params)
+        g.connect_midi(merge, proc)
+        g.connect_midi(proc, mo)
+    g.compile()
+    return mi_a, mi_b, mo
+
+
+def test_merge_overflow_is_reported_at_the_output():
+    # The merge node recorded its full count, but the output read only the
+    # stored count, so these 176 events vanished without a trace.
+    g, F, ch = _setup()
+    mi_a, mi_b, mo = _merge_graph(g)
+    g.set_midi_input_events(mi_a, _notes(60, 600))
+    g.set_midi_input_events(mi_b, _notes(64, 600))
+    _render_once(g, F, ch)
+    with pytest.warns(RuntimeWarning, match="176 events dropped"):
+        drained = g.get_midi_output_events(mo)
+    assert len(drained) == CAP
+
+
+def test_processor_overflow_is_reported_at_the_output():
+    g, F, ch = _setup()
+    mi = g.add_midi_input()
+    proc = g.add_midi_processor(dict(op=OP_TRANSPOSE, transpose_semitones=0))
+    mo = g.add_midi_output()
+    g.connect_midi(mi, proc)
+    g.connect_midi(proc, mo)
+    g.compile()
+    g.set_midi_input_events(mi, _notes(60, 2000))
+    _render_once(g, F, ch)
+    with pytest.warns(RuntimeWarning, match="976 events dropped"):
+        drained = g.get_midi_output_events(mo)
+    assert drained == _notes(60, CAP)
+
+
+def test_drop_upstream_of_a_filter_returns_only_real_events():
+    # The output holds fewer than CAP events while upstream dropped some.
+    # A count of stored + dropped would pad the result with zero events.
+    g, F, ch = _setup()
+    mi_a, mi_b, mo = _merge_graph(
+        g, dict(op=OP_FILTER, min_note=60, max_note=60, channel_mask=0xFFFF)
+    )
+    g.set_midi_input_events(mi_a, _notes(60, 600))
+    g.set_midi_input_events(mi_b, _notes(30, 600))
+    _render_once(g, F, ch)
+    with pytest.warns(RuntimeWarning, match="176 events dropped"):
+        drained = g.get_midi_output_events(mo)
+    assert drained == _notes(60, 600)

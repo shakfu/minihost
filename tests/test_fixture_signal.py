@@ -2,8 +2,8 @@
 
 These are the checks the suite could not previously make: every assertion
 here is an exact value, because the fixture (``projects/test_plugin``) is
-specified to produce one. They need the effect build, pointed at by
-``MINIHOST_TEST_PLUGIN_FX``; CI builds it and sets the variable.
+specified to produce one. They need the effect build: ``MINIHOST_TEST_PLUGIN_FX``
+if set (CI sets it), else the newest one under ``build*/``.
 
 Parameter indices are the fixture's contract -- see TestPluginProcessor.h.
 """
@@ -17,13 +17,16 @@ import pytest
 
 import minihost
 
+from cli_helpers import find_test_plugin
+
 np = pytest.importorskip("numpy")
 
-FX = os.environ.get("MINIHOST_TEST_PLUGIN_FX")
+FX = find_test_plugin("MinihostTestFx", "MINIHOST_TEST_PLUGIN_FX")
 
 requires_fx = pytest.mark.skipif(
     not FX or not os.path.exists(FX),
-    reason="set MINIHOST_TEST_PLUGIN_FX to the MinihostTestFx build",
+    reason="MinihostTestFx not built; set MINIHOST_TEST_PLUGIN_FX or build "
+    "with -DMINIHOST_BUILD_TEST_PLUGIN=ON",
 )
 
 P_GAIN, P_LATENCY, P_SIDECHAIN = 0, 1, 2
@@ -199,5 +202,120 @@ def test_midi_passes_through_with_its_offsets_intact():
         got = plugin.process_midi(src, out, sent)
 
         assert [tuple(e) for e in got] == sent
+    finally:
+        plugin.close()
+
+
+@requires_fx
+def test_graph_reports_midi_dropped_upstream_of_a_plugin():
+    # MIDI input -> transpose (keeps 1024 of 2000) -> fx -> MIDI output.
+    # The loss happens before the plugin and must still reach the output.
+    plugin = _open()
+    try:
+        g = minihost.PluginGraph(BLOCK, SR)
+        a_in = g.add_input(2)
+        fx = g.add_plugin(plugin)
+        a_out = g.add_output(2)
+        g.connect(a_in, fx)
+        g.connect(fx, a_out)
+        mi = g.add_midi_input()
+        proc = g.add_midi_processor(dict(op=1, transpose_semitones=0))
+        mo = g.add_midi_output()
+        g.connect_midi(mi, proc)
+        g.connect_midi(proc, fx)
+        g.connect_midi(fx, mo)
+        g.compile()
+
+        g.set_midi_input_events(mi, [(0, 0x90, 60, 100)] * 2000)
+        src = np.zeros((2, BLOCK), dtype=np.float32)
+        g.render_block([src], [np.zeros_like(src)], BLOCK)
+        with pytest.warns(RuntimeWarning, match="976 events dropped"):
+            drained = g.get_midi_output_events(mo)
+        assert len(drained) == 1024
+    finally:
+        plugin.close()
+
+
+@requires_fx
+def test_chain_midi_passes_the_old_256_event_limit():
+    # A chain's inter-plugin MIDI buffers held 256 events, dropped silently:
+    # in [fx, synth] a note-on at event 300 never reached the synth.
+    plugin = _open()
+    try:
+        chain = minihost.PluginChain([plugin])
+        src = np.zeros((2, BLOCK), dtype=np.float32)
+        sent = [(i % BLOCK, 0x90, 60, 100) for i in range(300)]
+        got = chain.process_midi(src, np.zeros_like(src), sent, midi_out_capacity=4096)
+        assert len(got) == 300
+        assert chain.midi_dropped == 0
+    finally:
+        plugin.close()
+
+
+@requires_fx
+def test_midi_output_past_capacity_is_counted():
+    plugin = _open()
+    try:
+        src = np.zeros((2, BLOCK), dtype=np.float32)
+        sent = [(0, 0x90, 60, 100)] * 50
+        got = plugin.process_midi(src, np.zeros_like(src), sent, midi_out_capacity=10)
+        assert len(got) == 10
+        assert plugin.midi_out_dropped == 40
+
+        chain = minihost.PluginChain([plugin])
+        got = chain.process_midi(src, np.zeros_like(src), sent, midi_out_capacity=10)
+        assert len(got) == 10
+        assert chain.midi_dropped == 40
+        chain.process_midi(src, np.zeros_like(src), sent[:5], midi_out_capacity=10)
+        assert chain.midi_dropped == 0  # per call, not cumulative
+    finally:
+        plugin.close()
+
+
+@requires_fx
+@pytest.mark.parametrize("mix", [0.0, 0.5, 1.0])
+def test_chain_mix_is_latency_compensated(mix):
+    # The dry path was not delayed: an impulse through 100 samples of latency
+    # at mix 0.5 came out at 0 and 100, a comb filter, and at mix 0 the chain
+    # still reported 100 samples it no longer applied.
+    delay = 100
+    plugin = _open()
+    try:
+        chain = minihost.PluginChain([plugin])
+        chain.set_mix(0, mix)
+        plugin.set_param(P_LATENCY, delay / _LATENCY_MAX)
+        silence = np.zeros((2, BLOCK), dtype=np.float32)
+        chain.process(silence, np.zeros_like(silence))  # applies and reports it
+        assert _await_latency(plugin, delay)
+        assert chain.latency_samples == delay
+
+        src = np.zeros((2, BLOCK), dtype=np.float32)
+        src[:, 0] = 1.0
+        out = np.zeros_like(src)
+        chain.process(src, out)
+        expected = np.zeros_like(src)
+        expected[:, delay] = 1.0
+        assert np.allclose(out, expected, atol=1e-6)
+    finally:
+        plugin.close()
+
+
+@requires_fx
+def test_process_audio_sees_a_latency_reported_just_before():
+    # On macOS a reported latency reaches the host only when JUCE's queue is
+    # pumped, and nothing did before a render: compensation used the old
+    # value (0) and the output came back 256 samples late.
+    delay = 256
+    plugin = _open()
+    try:
+        plugin.set_param(P_LATENCY, delay / _LATENCY_MAX)
+        silence = np.zeros((2, BLOCK), dtype=np.float32)
+        plugin.process(silence, np.zeros_like(silence))  # applies and reports it
+
+        src = np.zeros((2, 4 * BLOCK), dtype=np.float32)
+        src[:, 100] = 1.0
+        out = np.asarray(minihost.process_audio(plugin, src))
+        assert plugin.latency_samples == delay
+        assert int(np.argmax(np.abs(out[0]))) == 100
     finally:
         plugin.close()

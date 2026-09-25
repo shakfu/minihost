@@ -5,19 +5,44 @@
 #include "minihost.h"
 
 #include <vector>
+#include <memory>
+#include <atomic>
 #include <cstring>
 #include <cstdio>
 #include <cmath>
 #include <algorithm>
 
 // Ceiling on the MIDI events one plugin can hand the next within a
-// single block. Matches the 256 the C API documents elsewhere; a
-// producing plugin that exceeds it has its excess dropped rather than
-// allocating on the audio thread.
-static constexpr int kChainMidiStageCapacity = 256;
+// single block. A producing plugin that exceeds it has its excess
+// dropped, and counted, rather than allocating on the audio thread.
+// It was 256, and the drop went unreported.
+static constexpr int kChainMidiStageCapacity = 4096;
+
+// Dry-path delay line for one plugin, so a dry/wet blend lines up with the
+// wet signal's latency. Allocated by the first mh_chain_set_mix below 1.0
+// and never replaced, so the audio thread can hold its pointer without a
+// lock. Planar ring of `size` frames per channel.
+struct DryDelay
+{
+    int size;
+    int write = 0;  // audio thread only
+    std::vector<float> data;
+    DryDelay(int channels, int frames)
+        : size(frames), data(static_cast<size_t>(channels) * frames, 0.0f) {}
+};
+
+// Longest plugin latency the dry path can match, in seconds.
+static constexpr double kMaxDryDelaySeconds = 1.0;
 
 struct MH_PluginChain
 {
+    ~MH_PluginChain()
+    {
+        if (dry_delay)
+            for (size_t i = 0; i < plugins.size(); ++i)
+                delete dry_delay[i].load();
+    }
+
     std::vector<MH_Plugin*> plugins;
 
     // Pre-allocated intermediate buffers (n-1 for n plugins)
@@ -49,6 +74,8 @@ struct MH_PluginChain
     std::vector<int> plugin_accepts_midi;
     std::vector<int> plugin_produces_midi;
     std::vector<MH_MidiEvent> midi_stage[2];
+    // Events the last process call dropped; see mh_chain_get_midi_dropped.
+    int midiDropped = 0;
 
     // Per-plugin dry/wet mix. Defaults to 1.0 (full wet).
     // dry_storage[i] is non-empty only for plugins where in_ch == out_ch;
@@ -58,6 +85,9 @@ struct MH_PluginChain
     std::vector<int> plugin_out_ch;
     std::vector<std::vector<float>> dry_storage;
     std::vector<std::vector<float*>> dry_ptrs;
+    // Per plugin; null until set_mix first asks for a blend.
+    std::unique_ptr<std::atomic<DryDelay*>[]> dry_delay;
+    int max_dry_delay = 0;  // frames: kMaxDryDelaySeconds at sample_rate
 };
 
 // Snapshot the per-plugin input into dry_storage[i] so the post-process
@@ -77,6 +107,26 @@ static void snapshotDry(MH_PluginChain* chain, int i,
     }
 }
 
+// Replace the dry snapshot with the input from `latency` frames ago, the
+// plugin's current latency, so it lines up with the wet output. Runs every
+// block once the line exists, so a later mix change starts from history.
+static void delayDry(MH_PluginChain* chain, int i, DryDelay& d, int nframes)
+{
+    int latency = mh_get_latency_samples_rt(chain->plugins[i]);
+    latency = std::max(0, std::min(latency, d.size - nframes));
+    for (int c = 0; c < chain->plugin_in_ch[i]; ++c)
+    {
+        float* ring = d.data.data() + static_cast<size_t>(c) * d.size;
+        float* dry = chain->dry_ptrs[i][c];
+        for (int n = 0; n < nframes; ++n)
+        {
+            ring[(d.write + n) % d.size] = dry[n];
+            dry[n] = ring[(d.write + n - latency + d.size) % d.size];
+        }
+    }
+    d.write = (d.write + nframes) % d.size;
+}
+
 // Blend the plugin's wet output with its dry snapshot:
 //   out[c][n] = mix * out[c][n] + (1 - mix) * dry[c][n]
 // Skipped when mix is at its full-wet default or the plugin is
@@ -84,9 +134,12 @@ static void snapshotDry(MH_PluginChain* chain, int i,
 static void applyMix(MH_PluginChain* chain, int i,
                       float* const* outputs, int nframes)
 {
+    if (chain->dry_storage[i].empty()) return;
+    if (DryDelay* d = chain->dry_delay[i].load(std::memory_order_acquire))
+        delayDry(chain, i, *d, nframes);
     float mix = chain->mixes[i];
     if (mix >= 1.0f) return;
-    if (chain->dry_storage[i].empty()) return;
+    if (!outputs) return;  // a NULL table is allowed: output is discarded
     int ch = chain->plugin_out_ch[i];
     float dry_gain = 1.0f - mix;
     for (int c = 0; c < ch; ++c)
@@ -123,6 +176,19 @@ MH_PluginChain* mh_chain_create(MH_Plugin** plugins, int num_plugins,
             std::snprintf(msg, sizeof(msg), "Plugin at index %d is null", i);
             setErr(err_buf, err_buf_size, msg);
             return nullptr;
+        }
+        // One instance twice would advance its state twice per block.
+        for (int j = 0; j < i; ++j)
+        {
+            if (plugins[j] == plugins[i])
+            {
+                char msg[256];
+                std::snprintf(msg, sizeof(msg),
+                              "Plugin at index %d is the same instance as index %d",
+                              i, j);
+                setErr(err_buf, err_buf_size, msg);
+                return nullptr;
+            }
         }
     }
 
@@ -207,8 +273,8 @@ MH_PluginChain* mh_chain_create(MH_Plugin** plugins, int num_plugins,
     // a generous MIDI-event ceiling matching the C API's documented limit.
     chain->autoChunkIn.resize(chain->num_input_channels);
     chain->autoChunkOut.resize(chain->num_output_channels);
-    chain->autoChunkMidiIn.reserve(256);
-    chain->autoChunkMidiOut.resize(256);
+    chain->autoChunkMidiIn.reserve(kChainMidiStageCapacity);
+    chain->autoChunkMidiOut.resize(kChainMidiStageCapacity);
 
     // Cached MIDI capabilities and the inter-stage MIDI buffers.
     chain->plugin_accepts_midi.resize(num_plugins);
@@ -225,6 +291,11 @@ MH_PluginChain* mh_chain_create(MH_Plugin** plugins, int num_plugins,
     // for plugins where in_ch == out_ch (the eligibility rule for mix);
     // all others stay at full-wet mix=1.0 forever.
     chain->mixes.assign(num_plugins, 1.0f);
+    chain->dry_delay.reset(new std::atomic<DryDelay*>[num_plugins]);
+    for (int i = 0; i < num_plugins; ++i)
+        chain->dry_delay[i].store(nullptr);
+    chain->max_dry_delay =
+        static_cast<int>(std::ceil(kMaxDryDelaySeconds * chain->sample_rate));
     chain->plugin_in_ch.resize(num_plugins);
     chain->plugin_out_ch.resize(num_plugins);
     chain->dry_storage.resize(num_plugins);
@@ -312,6 +383,7 @@ int mh_chain_process_midi_io(MH_PluginChain* chain,
     // stated it emits nothing, so leftovers are the input it neglected
     // to clear. Forwarding those would retrigger a downstream
     // instrument with notes the upstream one already played.
+    chain->midiDropped = 0;
     const MH_MidiEvent* stream = (num_midi_in > 0) ? midi_in : nullptr;
     int stream_count = (midi_in != nullptr) ? num_midi_in : 0;
     int stage = 0;   // which midi_stage buffer currently holds the stream
@@ -370,6 +442,9 @@ int mh_chain_process_midi_io(MH_PluginChain* chain,
 
         if (makes_midi)
         {
+            // Lost even when the caller wants no MIDI out: a later plugin
+            // never sees these events.
+            chain->midiDropped += mh_get_midi_out_dropped(chain->plugins[i]);
             stage ^= 1;
             stream = chain->midi_stage[stage].data();
             stream_count = produced;
@@ -388,6 +463,7 @@ int mh_chain_process_midi_io(MH_PluginChain* chain,
         std::memcpy(midi_out, stream, sizeof(MH_MidiEvent) * static_cast<size_t>(n));
         if (num_midi_out)
             *num_midi_out = n;
+        chain->midiDropped += stream_count - n;
     }
     return 1;
 }
@@ -495,6 +571,7 @@ int mh_chain_process_auto(MH_PluginChain* chain,
     int midi_out_idx = 0;
     int current_sample = 0;
     int midi_idx = 0;
+    int dropped = 0;  // chain->midiDropped is reset by each chunk's call
     int param_idx = 0;
 
     int in_ch = chain->num_input_channels;
@@ -556,20 +633,28 @@ int mh_chain_process_auto(MH_PluginChain* chain,
             (outputs && !chunk_outputs.empty()) ? chunk_outputs.data() : nullptr;
 
         // Collect MIDI events for this chunk (adjust offsets to chunk-local).
-        // clear() preserves capacity, so push_back stays allocation-free
-        // after the first warm-up call where capacity was reserved.
+        // clear() preserves the capacity reserved at construction; events
+        // past it are dropped and counted, since growing the vector would
+        // allocate on the audio thread.
         auto& chunk_midi = chain->autoChunkMidiIn;
         chunk_midi.clear();
         while (midi_idx < num_midi_in)
         {
             const auto& ev = midi_in[midi_idx];
-            if (ev.sample_offset >= chunk_end)
+            // Clamped as mh_process_midi_io does; see mh_process_auto.
+            const int at = ev.sample_offset < 0 ? 0
+                         : ev.sample_offset >= nframes ? nframes - 1
+                         : ev.sample_offset;
+            if (at >= chunk_end)
                 break;
-            if (ev.sample_offset >= current_sample)
+            if (at >= current_sample)
             {
                 MH_MidiEvent local_ev = ev;
-                local_ev.sample_offset = ev.sample_offset - current_sample;
-                chunk_midi.push_back(local_ev);
+                local_ev.sample_offset = at - current_sample;
+                if (chunk_midi.size() < chunk_midi.capacity())
+                    chunk_midi.push_back(local_ev);
+                else
+                    ++dropped;
             }
             ++midi_idx;
         }
@@ -586,10 +671,11 @@ int mh_chain_process_auto(MH_PluginChain* chain,
             chunk_midi.empty() ? nullptr : chunk_midi.data(),
             static_cast<int>(chunk_midi.size()),
             midi_out ? chunk_midi_out.data() : nullptr,
-            midi_out ? 256 : 0,
+            midi_out ? static_cast<int>(chunk_midi_out.size()) : 0,
             midi_out ? &chunk_num_midi_out : nullptr);
 
         if (!result) return 0;
+        dropped += chain->midiDropped;
 
         // Collect MIDI output with globally-adjusted offsets
         if (midi_out && midi_out_capacity > 0)
@@ -597,7 +683,10 @@ int mh_chain_process_auto(MH_PluginChain* chain,
             for (int i = 0; i < chunk_num_midi_out; ++i)
             {
                 if (midi_out_idx >= midi_out_capacity)
+                {
+                    dropped += chunk_num_midi_out - i;
                     break;
+                }
                 midi_out[midi_out_idx] = chunk_midi_out[i];
                 midi_out[midi_out_idx].sample_offset += current_sample;
                 ++midi_out_idx;
@@ -607,24 +696,40 @@ int mh_chain_process_auto(MH_PluginChain* chain,
         current_sample = chunk_end;
     }
 
+    // Changes at or past the block end; see mh_process_auto.
+    for (; param_idx < num_param_changes; ++param_idx)
+    {
+        const auto& pc = param_changes[param_idx];
+        if (MH_Plugin* plugin = mh_chain_get_plugin(chain, pc.plugin_index))
+            mh_set_param_rt(plugin, pc.param_index, pc.value);
+    }
+
     if (num_midi_out)
         *num_midi_out = midi_out_idx;
+    chain->midiDropped = dropped;
 
     return 1;
+}
+
+int mh_chain_get_midi_dropped(MH_PluginChain* chain)
+{
+    return chain ? chain->midiDropped : 0;
 }
 
 double mh_chain_get_tail_seconds(MH_PluginChain* chain)
 {
     if (chain == nullptr) return 0.0;
 
-    double max_tail = 0.0;
+    // Plugins run in series, so their tails add: a 2 s delay into a 3 s
+    // reverb rings for about 5 s. The max cut tail-sized renders short.
+    double total = 0.0;
     for (auto* plugin : chain->plugins)
     {
-        double tail = mh_get_tail_seconds(plugin);
-        if (tail > max_tail)
-            max_tail = tail;
+        const double tail = mh_get_tail_seconds(plugin);
+        if (tail > 0.0 && std::isfinite(tail))
+            total += tail;
     }
-    return max_tail;
+    return total;
 }
 
 int mh_chain_set_mix(MH_PluginChain* chain, int plugin_index, float mix)
@@ -639,6 +744,22 @@ int mh_chain_set_mix(MH_PluginChain* chain, int plugin_index, float mix)
         return 0;
     if (mix < 0.0f) mix = 0.0f;
     if (mix > 1.0f) mix = 1.0f;
+    if (mix < 1.0f)
+    {
+        // An undelayed dry path comb-filtered against a plugin's latency, and
+        // the chain's reported latency ignored the mix. The line is published
+        // before the mix, and never replaced.
+        if (mh_get_latency_samples(chain->plugins[plugin_index]) > chain->max_dry_delay)
+            return 0;
+        if (!chain->dry_delay[plugin_index].load())
+        {
+            auto* d = new DryDelay(chain->plugin_in_ch[plugin_index],
+                                   chain->max_dry_delay + chain->max_block_size);
+            DryDelay* none = nullptr;
+            if (!chain->dry_delay[plugin_index].compare_exchange_strong(none, d))
+                delete d;
+        }
+    }
     chain->mixes[plugin_index] = mix;
     return 1;
 }

@@ -12,6 +12,7 @@ machine.
 
 from __future__ import annotations
 
+import math
 import os
 import threading
 
@@ -133,12 +134,14 @@ def test_several_floats_arrive_in_order():
     assert args == pytest.approx([0.1, 0.9], abs=1e-6)
 
 
-def test_a_string_argument_holds_its_position_as_zero():
+def test_a_string_argument_holds_its_position_as_nan():
     """Documented behaviour, and the reason it is not simply dropped.
 
     Skipping a non-numeric argument would shift every later index, so a
     surface sending (label, value) would deliver its value at index 0 to one
-    receiver and index 1 to another. Reporting 0.0 keeps positions stable.
+    receiver and index 1 to another. Reporting a placeholder keeps positions
+    stable. It is NaN, not 0.0: a bound fader took 0.0 as a write to 0, and
+    every parameter path drops NaN.
     """
     collector = Collector()
     with minihost.OscServer.open(0, collector) as server:
@@ -146,7 +149,9 @@ def test_a_string_argument_holds_its_position_as_zero():
             client.send("/mh/name", "hello")
             assert collector.wait()
 
-    assert collector.messages[0] == ("/mh/name", [0.0])
+    address, args = collector.messages[0]
+    assert address == "/mh/name"
+    assert len(args) == 1 and math.isnan(args[0])
 
 
 def test_messages_arrive_in_send_order():

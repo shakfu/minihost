@@ -36,7 +36,9 @@ typedef struct MH_ChainParamChange {
 // err_buf: buffer to receive error message on failure
 // err_buf_size: size of error buffer
 //
-// Returns NULL on failure (e.g., empty array, sample rate mismatch)
+// Returns NULL on failure (e.g., empty array, sample rate mismatch, the same
+// plugin twice: it would be processed twice per block). A plugin shared
+// with another chain or graph is not detected.
 MH_PluginChain* mh_chain_create(MH_Plugin** plugins, int num_plugins,
                                  char* err_buf, size_t err_buf_size);
 
@@ -78,9 +80,9 @@ int mh_chain_process(MH_PluginChain* chain,
 // that makes audio sense anyway. A plugin with accepts_midi=0 is handed
 // no MIDI regardless.
 //
-// At most 256 events carry from one plugin to the next in a block;
+// At most 4096 events carry from one plugin to the next in a block;
 // beyond that the excess is dropped rather than allocating on the audio
-// thread.
+// thread. mh_chain_get_midi_dropped reports how many.
 //
 // inputs: input audio buffers (can be NULL)
 // outputs: output audio buffers (can be NULL)
@@ -102,6 +104,11 @@ int mh_chain_process_midi_io(MH_PluginChain* chain,
                              MH_MidiEvent* midi_out,
                              int midi_out_capacity,
                              int* num_midi_out);
+
+// MIDI events the last mh_chain_process_midi_io / mh_chain_process_auto call
+// dropped: between plugins past the 4096-event stage capacity, or past the
+// caller's midi_out_capacity. Call from the thread that processes.
+int mh_chain_get_midi_dropped(MH_PluginChain* chain);
 
 // Get total latency of the chain in samples (sum of all plugin latencies).
 int mh_chain_get_latency_samples(MH_PluginChain* chain);
@@ -153,8 +160,9 @@ int mh_chain_process_auto(MH_PluginChain* chain,
                            const MH_ChainParamChange* param_changes,
                            int num_param_changes);
 
-// Get total tail length of the chain in seconds (maximum of all plugin tails).
-// Note: This is the max, not sum, since tails overlap temporally.
+// Get total tail length of the chain in seconds: the sum of its plugins'
+// tails. In series each plugin rings on the tail of the one before it, so a
+// 2 s delay into a 3 s reverb decays over about 5 s.
 double mh_chain_get_tail_seconds(MH_PluginChain* chain);
 
 // Per-plugin dry/wet mix.
@@ -172,8 +180,14 @@ double mh_chain_get_tail_seconds(MH_PluginChain* chain);
 // Applied to all chain process variants (mh_chain_process,
 // mh_chain_process_midi_io, mh_chain_process_auto).
 //
+// The dry path is delayed by the plugin's current latency, read each
+// block, so the blend does not comb-filter and the chain's latency is the
+// same at any mix. The first mix below 1.0 allocates the delay line, up to
+// 1 s at the chain's sample rate; a plugin whose latency exceeds that is
+// refused, and one that grows past it later is matched only up to it.
+//
 // Returns 1 on success, 0 on failure (NULL chain, index out of range,
-// non-matching channel counts).
+// non-matching channel counts, or latency over 1 s with mix below 1.0).
 int mh_chain_set_mix(MH_PluginChain* chain, int plugin_index, float mix);
 
 // Get the current mix value for a plugin in the chain.

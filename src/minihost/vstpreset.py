@@ -99,7 +99,9 @@ def load_vstpreset(path: str | Path, plugin) -> None:
 
     Raises:
         FileNotFoundError: If the file does not exist.
-        ValueError: If the file is not a valid .vstpreset or has no state.
+        ValueError: If the file is not a valid .vstpreset, has no state, or
+            was saved from a different plugin (checked when the plugin's
+            class id can be read from its bundle).
         RuntimeError: If set_state() fails (including the plugin rejecting it).
     """
     from . import _core
@@ -108,6 +110,20 @@ def load_vstpreset(path: str | Path, plugin) -> None:
 
     if preset.component_state is None:
         raise ValueError(f"Preset file has no component state ('Comp' chunk): {path}")
+
+    # A preset for another plugin used to load without complaint, writing
+    # foreign state into this one. Checked only where the plugin's class id
+    # can be read (VST3 SDK 3.7.5+ bundles ship moduleinfo.json).
+    plugin_path = str(getattr(plugin, "path", "") or "")
+    if plugin_path.lower().rstrip("/").endswith(".vst3"):
+        try:
+            own = read_class_id_from_bundle(plugin_path)
+        except (FileNotFoundError, ValueError, RuntimeError):
+            own = None
+        if own is not None and own.upper() != preset.class_id.upper():
+            raise ValueError(
+                f"Preset {path} is for class {preset.class_id}, but the plugin is {own}"
+            )
 
     if _is_juce_host_state(preset.component_state):
         # Legacy minihost-written preset: the chunk is already a JUCE blob.
