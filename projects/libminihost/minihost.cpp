@@ -346,7 +346,15 @@ extern "C" void mh_message_thread_shutdown(void)
 
 extern "C" int mh_message_thread_poll(void)
 {
+   #if JUCE_MAC || JUCE_IOS
     return pumpJuceMessages();
+   #else
+    // Pump on the worker and wait: its own pump runs up to kPumpIntervalMs
+    // later, so a latency reported by the last block was not yet visible.
+    int n = 0;
+    MinihostMessageThread::instance().run([&n] { n = pumpJuceMessages(); });
+    return n;
+   #endif
 }
 
 // Run a callable on the JUCE plugin thread and return its result (or void).

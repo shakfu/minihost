@@ -198,9 +198,9 @@ void mh_message_thread_shutdown(void);
 // restartComponent notifications that carry a latency, parameter-info,
 // program or I/O change back to the host. Returns how many were delivered.
 //
-// On Linux and Windows the plugin thread does this by itself and this is a
-// no-op from anywhere else; call it only when the plugin thread is disabled
-// (MINIHOST_MESSAGE_THREAD=0), where the caller's thread owns the queue.
+// On Linux and Windows the plugin thread also does this by itself, every
+// 10 ms. This call runs a pump there and waits for it, so a change reported
+// by the last process call is visible when it returns.
 //
 // On macOS it is NOT automatic and this call is the only delivery path: JUCE
 // binds its message queue to the process's main run loop, which a headless

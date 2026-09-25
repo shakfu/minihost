@@ -136,9 +136,9 @@ def _await_latency(plugin, want, timeout=5.0):
 
     A VST3 reports one by calling restartComponent, which JUCE's host side
     defers to the message thread, so it arrives after the block that caused
-    it rather than during. `poll_callbacks` is what delivers it on macOS,
-    where JUCE binds its queue to the main run loop; on Linux and Windows
-    the plugin thread has already done it and the call is a no-op.
+    it rather than during. `poll_callbacks` delivers it: on macOS JUCE binds
+    its queue to the main run loop, and on Linux and Windows the plugin
+    thread would otherwise pump only every 10 ms.
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -302,9 +302,9 @@ def test_chain_mix_is_latency_compensated(mix):
 
 @requires_fx
 def test_process_audio_sees_a_latency_reported_just_before():
-    # On macOS a reported latency reaches the host only when JUCE's queue is
-    # pumped, and nothing did before a render: compensation used the old
-    # value (0) and the output came back 256 samples late.
+    # A reported latency reaches the host only when JUCE's queue is pumped.
+    # Nothing did before a render on macOS, and on Linux the plugin thread's
+    # 10 ms pump had not run yet: compensation used the old value (0).
     delay = 256
     plugin = _open()
     try:

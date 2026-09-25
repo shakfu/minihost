@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- On Linux and Windows, `process_audio` and `Plugin.poll_callbacks()` could miss a latency reported by the previous process call. `mh_message_thread_poll` returned without pumping there. The plugin thread pumps only every 10 ms, so the change often arrived too late. The poll now runs a pump on the plugin thread and waits for it.
+
 ## [0.9.0]
 
 A correctness and robustness release, from a review of the Python-to-native boundary and a follow-up audit.

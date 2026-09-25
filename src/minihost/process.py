@@ -335,8 +335,9 @@ def _prepare_render(
     out_frames = base_frames + tail_frames
 
     # A latency change the plugin reported (after a parameter or preset
-    # change, say) reaches the host only when JUCE's queue is pumped, which
-    # on macOS nothing does unless asked; compensation would use the old value.
+    # change, say) reaches the host only when JUCE's queue is pumped: never
+    # on macOS unless asked, and only every 10 ms elsewhere. Without this,
+    # compensation would use the old value.
     _message_thread_poll()
     latency = int(plugin_or_chain.latency_samples) if compensate_latency else 0
     if latency < 0:

@@ -1344,8 +1344,8 @@ public:
         // loop, which a headless host never runs), and the events it
         // generates -- a latency or parameter-info change -- land in the
         // queue drained just below, so they arrive on this poll rather than
-        // the next. A no-op on Linux and Windows, where the plugin thread
-        // pumps for itself.
+        // the next. On Linux and Windows it flushes the plugin thread's
+        // queue rather than waiting for its next 10 ms pump.
         mh_message_thread_poll();
 
         // A callback that polls again would overwrite dispatch_buffer_ while
@@ -3634,8 +3634,9 @@ NB_MODULE(_core, m) {
     // the background thread deadlocks process exit on Linux.
     m.def("_message_thread_poll", &mh_message_thread_poll,
           "Deliver JUCE messages a plugin has queued and return how many. "
-          "Automatic on Linux/Windows; on macOS this is the only delivery "
-          "path and must come from the main thread.");
+          "Automatic on Linux/Windows every 10 ms; this call flushes it now. "
+          "On macOS this is the only delivery path and must come from the "
+          "main thread.");
 
     m.def("_message_thread_shutdown", []() {
               // Close what is still open first. The plugin thread and the

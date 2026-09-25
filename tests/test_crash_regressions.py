@@ -95,32 +95,44 @@ def test_midifile_add_rejects_track_out_of_range(track):
 # -------------------------------------------------------------------- #
 
 
+# Zero-filled float32 arrays backed by untouched pages. np.zeros is not
+# enough: Linux's default overcommit heuristic refuses a single allocation
+# larger than RAM plus swap, which 2 x 2**32 floats is on a CI runner.
+_HUGE_ZEROS = """
+import mmap
+import numpy as np
+def huge_zeros(shape):
+    if not hasattr(mmap, "MAP_PRIVATE"):  # Windows
+        return np.zeros(shape, np.float32)
+    flags = mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS | getattr(mmap, "MAP_NORESERVE", 0)
+    buf = mmap.mmap(-1, 4 * int(np.prod(shape)), flags=flags)
+    return np.frombuffer(buf, np.float32).reshape(shape)
+"""
+
+
 @pytest.mark.parametrize("frames", [2**31, 2**32 + 10])
 def test_from_numpy_rejects_dimension_above_int_max(frames):
-    # np.zeros is lazily allocated, so this costs no memory.
-    out = run_isolated(f"""
-        import numpy as np
+    out = run_isolated(_HUGE_ZEROS + textwrap.dedent(f"""
         try:
-            b = minihost.AudioBuffer.from_numpy(np.zeros((1, {frames}), np.float32))
+            b = minihost.AudioBuffer.from_numpy(huge_zeros((1, {frames})))
             print("accepted", b.shape)
         except ValueError as e:
             print("ValueError")
-    """)
+    """))
     assert out.strip() == "ValueError"
 
 
 @pytest.mark.skipif(not FX or not os.path.exists(FX), reason="MinihostTestFx not built")
 def test_process_rejects_frames_above_int_max():
     # (int) 2**32+10 is 10: channel 1's pointer landed on channel 0's data.
-    out = run_isolated(f"""
-        import numpy as np
+    out = run_isolated(_HUGE_ZEROS + textwrap.dedent(f"""
         p = minihost.Plugin({FX!r}, sample_rate=48000.0, max_block_size=512)
-        x = np.zeros((2, 2**32 + 10), np.float32)
+        x = huge_zeros((2, 2**32 + 10))
         try:
-            p.process(x, np.zeros_like(x)); print("accepted")
+            p.process(x, huge_zeros(x.shape)); print("accepted")
         except ValueError:
             print("ValueError")
-    """)
+    """))
     assert out.strip() == "ValueError"
 
 
