@@ -20,6 +20,7 @@ of a fader drag would turn one block into hundreds of sub-blocks.
 from __future__ import annotations
 
 import os
+import time
 
 import pytest
 
@@ -33,6 +34,20 @@ requires_plugin = pytest.mark.skipif(not PLUGIN, reason="MINIHOST_TEST_PLUGIN no
 
 def _plugin():
     return minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=512)
+
+
+def _await_param(plugin, index, want, timeout=5.0):
+    """Wait for the audio thread to apply a queued write.
+
+    A fixed sleep assumes a callback runs within it; on a loaded CI runner
+    one did not within 200 ms.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if plugin.get_param(index) == pytest.approx(want, abs=1e-3):
+            return True
+        time.sleep(0.01)
+    return False
 
 
 # -- API shape ---------------------------------------------------------------
@@ -64,17 +79,11 @@ def test_repeated_writes_to_one_param_land_as_the_last_value():
     if plugin.num_params == 0:
         pytest.skip("plugin exposes no parameters")
 
+    plugin.set_param(0, 0.0)  # off the default, which may be the value sent
     with minihost.AudioDevice(plugin, sample_rate=48000, buffer_frames=256) as audio:
-        audio.start()
         for i in range(200):
             audio.send_param(0, i / 199.0)
-        # Let the audio thread run several blocks.
-        import time
-
-        time.sleep(0.2)
-        audio.stop()
-
-    assert plugin.get_param(0) == pytest.approx(1.0, abs=1e-3)
+        assert _await_param(plugin, 0, 1.0), plugin.get_param(0)
 
 
 @requires_plugin
@@ -101,8 +110,6 @@ def test_a_burst_of_writes_is_coalesced_before_the_processor_sees_it():
         audio.start()
         for i in range(writes):
             audio.send_param(0, i / (writes - 1.0))
-        import time
-
         time.sleep(0.3)
         audio.stop()
 
@@ -130,16 +137,10 @@ def test_two_params_both_arrive():
         pytest.skip("plugin exposes fewer than two parameters")
 
     with minihost.AudioDevice(plugin, sample_rate=48000, buffer_frames=256) as audio:
-        audio.start()
         audio.send_param(0, 0.25)
         audio.send_param(1, 0.75)
-        import time
-
-        time.sleep(0.2)
-        audio.stop()
-
-    assert plugin.get_param(0) == pytest.approx(0.25, abs=1e-3)
-    assert plugin.get_param(1) == pytest.approx(0.75, abs=1e-3)
+        assert _await_param(plugin, 0, 0.25), plugin.get_param(0)
+        assert _await_param(plugin, 1, 0.75), plugin.get_param(1)
 
 
 # -- argument validation -----------------------------------------------------
@@ -166,15 +167,16 @@ def test_a_write_before_start_is_applied_once_running():
     if plugin.num_params == 0:
         pytest.skip("plugin exposes no parameters")
 
-    with minihost.AudioDevice(plugin, sample_rate=48000, buffer_frames=256) as audio:
+    # Not a `with` block: __enter__ starts the device.
+    audio = minihost.AudioDevice(plugin, sample_rate=48000, buffer_frames=256)
+    try:
         audio.send_param(0, 0.6)
+        assert plugin.get_param(0) != pytest.approx(0.6, abs=1e-3)
         audio.start()
-        import time
-
-        time.sleep(0.2)
+        assert _await_param(plugin, 0, 0.6), plugin.get_param(0)
+    finally:
         audio.stop()
-
-    assert plugin.get_param(0) == pytest.approx(0.6, abs=1e-3)
+        del audio
 
 
 # -- mapper routing ----------------------------------------------------------
@@ -189,17 +191,12 @@ def test_bound_mapper_routes_through_the_device():
         pytest.skip("plugin exposes no parameters")
     name = plugin.get_param_info(0)["name"]
 
+    plugin.set_param(0, 0.0)  # off the default, which may be the value sent
     with minihost.AudioDevice(plugin, sample_rate=48000, buffer_frames=256) as audio:
         mapper = minihost.MidiMapper(plugin, device=audio)
         mapper.map_cc(channel=0, cc=7, param=name)
-        audio.start()
         mapper(bytes([0xB0, 7, 127]))
-        import time
-
-        time.sleep(0.2)
-        audio.stop()
-
-    assert plugin.get_param(0) == pytest.approx(1.0, abs=1e-3)
+        assert _await_param(plugin, 0, 1.0), plugin.get_param(0)
 
 
 @requires_plugin
