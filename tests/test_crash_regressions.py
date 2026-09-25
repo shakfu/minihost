@@ -98,11 +98,16 @@ def test_midifile_add_rejects_track_out_of_range(track):
 # Zero-filled float32 arrays mapped from a sparse temp file. On the Linux CI
 # runner neither np.zeros nor an anonymous MAP_NORESERVE mapping of 32 GiB
 # succeeds (ENOMEM); a shared file mapping is not charged to the commit limit.
+# NTFS zero-fills an extended file instead (16 GiB took over 120 s), so
+# Windows keeps np.zeros, which its CI runner commits.
 _HUGE_ZEROS = """
 import mmap
+import sys
 import tempfile
 import numpy as np
 def huge_zeros(shape):
+    if sys.platform == "win32":
+        return np.zeros(shape, np.float32)
     n = 4 * int(np.prod(shape))
     f = tempfile.TemporaryFile()
     f.truncate(n)
