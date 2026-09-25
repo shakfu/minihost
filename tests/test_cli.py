@@ -1810,3 +1810,24 @@ class TestMorphCommand:
             ret = cmd_morph(self._args())
         assert ret == 1
         assert "load failed" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["-b", "0", "info", "{fx}"],  # before the subcommand, as it always worked
+        ["info", "{fx}", "-b", "0"],  # after it: "unrecognized arguments" before
+        ["info", "{fx}", "--block-size", "0"],
+    ],
+)
+def test_block_size_is_accepted_on_either_side_of_the_subcommand(argv, capsys):
+    # -b 0 is refused at plugin open, so an error naming max_block_size shows
+    # the option reached the command whichever side it was given on.
+    from cli_helpers import find_test_plugin
+
+    fx = find_test_plugin("MinihostTestFx", "MINIHOST_TEST_PLUGIN_FX")
+    if not fx or not os.path.exists(fx):
+        pytest.skip("MinihostTestFx not built")
+    with patch("sys.argv", ["minihost"] + [a.format(fx=fx) for a in argv]):
+        assert main() == 1
+    assert "max_block_size must be in" in capsys.readouterr().err

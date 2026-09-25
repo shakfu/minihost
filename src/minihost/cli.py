@@ -2359,6 +2359,27 @@ Examples:
 
     subparsers = parser.add_subparsers(dest="command", help="Commands")
 
+    # The same two options on each subcommand that loads a plugin. They were
+    # top-level only, so `minihost process x.vst3 --block-size 1024` failed
+    # with "unrecognized arguments" and `process --help` never listed them.
+    # SUPPRESS keeps a value given before the subcommand from being reset to
+    # the default by the subparser.
+    def add_engine_opts(sub_p: argparse.ArgumentParser, rate_note: str = "") -> None:
+        sub_p.add_argument(
+            "-r",
+            "--sample-rate",
+            type=float,
+            default=argparse.SUPPRESS,
+            help=f"Sample rate in Hz (default: 48000){rate_note}",
+        )
+        sub_p.add_argument(
+            "-b",
+            "--block-size",
+            type=int,
+            default=argparse.SUPPRESS,
+            help="Block size in samples (default: 512)",
+        )
+
     # scan
     scan_p = subparsers.add_parser("scan", help="Scan directory for plugins")
     scan_p.add_argument("directory", help="Directory to scan")
@@ -2382,6 +2403,7 @@ Examples:
 
     # info
     info_p = subparsers.add_parser("info", help="Show plugin info")
+    add_engine_opts(info_p)
     info_p.add_argument("plugin", help="Path to plugin")
     info_p.add_argument("-j", "--json", action="store_true", help="Output as JSON")
     info_p.add_argument(
@@ -2426,6 +2448,7 @@ Examples:
 
     # params
     params_p = subparsers.add_parser("params", help="List plugin parameters")
+    add_engine_opts(params_p)
     params_p.add_argument("plugin", help="Path to plugin")
     params_p.add_argument("-j", "--json", action="store_true", help="Output as JSON")
     params_p.add_argument(
@@ -2545,6 +2568,7 @@ Examples:
   minihost presets /path/to/synth.vst3 --state state.bin --save out.vstpreset
 """,
     )
+    add_engine_opts(presets_p)
     presets_p.add_argument("plugin", help="Path to plugin")
     presets_p.add_argument("-j", "--json", action="store_true", help="Output as JSON")
     presets_p.add_argument(
@@ -2595,6 +2619,7 @@ Examples:
     --a-state a.state --b-state b.state -t 0.3 --save morphed.state
 """,
     )
+    add_engine_opts(morph_p)
     morph_p.add_argument("plugin", help="Path to plugin")
     morph_p.add_argument("-j", "--json", action="store_true", help="Output as JSON")
     morph_p.add_argument(
@@ -2629,6 +2654,7 @@ Examples:
 
     # play
     play_p = subparsers.add_parser("play", help="Play plugin with real-time audio/MIDI")
+    add_engine_opts(play_p)
     play_p.add_argument("plugin", help="Path to plugin")
     play_p.add_argument(
         "--osc-port",
@@ -2775,6 +2801,9 @@ Examples:
   # Sidechain processing (second -i is sidechain)
   minihost process /path/to/compressor.vst3 -i main.wav -i sidechain.wav -o output.wav
 """,
+    )
+    add_engine_opts(
+        process_p, "; with an input file the plugin runs at the file's rate instead"
     )
     process_p.add_argument(
         "plugin",

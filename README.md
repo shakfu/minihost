@@ -106,6 +106,8 @@ with (
 
 ## Library structure
 
+![minihost architecture: applications, the two libraries, vendored dependencies, and what they reach outside the process](docs/media/architecture.svg)
+
 minihost ships as two separate static libraries with a one-way dependency: `libminihost_audio` builds on `libminihost`, never the reverse.
 
 - **`libminihost`** -- the plugin host core (`projects/libminihost/`). Loads and runs VST3/AU/LV2 plugins and processes audio blocks you hand it: MIDI in/out, parameters, state save/restore, sample-accurate automation, sidechain, transport, bus layouts, and the routing abstractions (`PluginChain`, `PluginBus`, `PluginGraph`). Depends only on JUCE. C ABI prefix: `mh_*` (e.g. `mh_open`, `mh_process`, `mh_chain_*`, `mh_bus_*`, `mh_graph_*`). Header: `minihost.h`. Link this alone to load a plugin and feed it your own buffers -- the offline and embedded path, with no device or codec dependencies.

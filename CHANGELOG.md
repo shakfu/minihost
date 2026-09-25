@@ -2,7 +2,25 @@
 
 ## [Unreleased]
 
+## [0.9.0]
+
+A correctness and robustness release, from a review of the Python-to-native boundary and a follow-up audit.
+
+- Six crashes fixed: use-after-free on a closed plugin or chain, `close()` racing a process call, nested OSC bundles, `MidiFile` segfaults, unchecked array sizes, and a raising `MidiIn` callback.
+- A FLAC hang on silence and a graph MIDI buffer overread fixed.
+- On macOS, a reported latency now reaches `process_audio` and `minihost play`.
+- Input from callers, files and the network is validated rather than truncated or dropped.
+- Dropped MIDI is counted, and automation, mix and audio edge cases no longer lose data.
+- C ABI 2.9.0: `mh_graph_get_midi_output_events` reports the events it holds; new functions report dropped MIDI and read latency lock-free.
+- Behaviour changes: 16-bit writes are rounded, not dithered; `add_pitch_bend` takes 0-16383, centre 8192; a non-numeric OSC argument arrives as NaN; several arguments that were accepted now raise `ValueError`.
+
 ### Fixed
+
+- `Plugin.get_state` serialised the plugin's state twice: once for `mh_get_state_size`, then again for `mh_get_state`. That doubled the cost, megabytes and sometimes seconds per save, and let the state change between the two calls, so the data could outgrow the buffer sized for it. `mh_get_state_size` now keeps its snapshot, and the next `mh_get_state` returns that same snapshot.
+
+- MIDI port open failures discarded libremidi's returned error for a fixed "Failed to open MIDI input port". The reason is now appended.
+
+- The CLI's `-r/--sample-rate` and `-b/--block-size` were accepted only before the subcommand: `minihost process x.vst3 --block-size 1024` failed with "unrecognized arguments", and no subcommand's `--help` listed them. They are now accepted on either side, on every command that loads a plugin. `process --help` notes that with an input file the plugin runs at the file's rate.
 
 - Muting a bus branch (gain 0) skipped processing it entirely. Its plugins froze: a note-off sent while muted never arrived, so the note rang on after unmuting, and delays resumed with stale history. A muted branch is now processed but not summed; its MIDI output stays out of the merge, as before.
 

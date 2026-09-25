@@ -11,6 +11,7 @@
 #include <libremidi/libremidi.hpp>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 #include <mutex>
 #include <memory>
@@ -157,6 +158,21 @@ static void describe_current_exception(char* buf, size_t n) {
     }
 }
 
+// libremidi returns its open errors rather than throwing them; this keeps the
+// reason, which the open functions used to discard for a fixed string.
+static bool opened_ok(const stdx::error& rc, std::string& reason) {
+    if (rc == stdx::error{}) return true;
+    const auto msg = rc.message();
+    reason.assign(msg.data(), msg.size());
+    return false;
+}
+
+static void set_open_err(char* buf, size_t n, const char* what,
+                         const std::string& reason) {
+    set_err(buf, n, reason.empty() ? std::string(what).c_str()
+                                    : (std::string(what) + ": " + reason).c_str());
+}
+
 // MIDI input wrapper
 struct MH_MidiIn {
     std::unique_ptr<libremidi::midi_in> midi_in;
@@ -293,12 +309,13 @@ MH_MidiIn* mh_midi_in_open(int port_index, MH_MidiCallback callback, void* user_
 
         // Construct + open on an isolated thread -- open_port() pumps the
         // caller's run loop (see run_isolated).
+        std::string reason;
         const bool opened = run_isolated([&]() -> bool {
             midi_in->midi_in = std::make_unique<libremidi::midi_in>(config);
-            return midi_in->midi_in->open_port(ports[port_index]) == stdx::error{};
+            return opened_ok(midi_in->midi_in->open_port(ports[port_index]), reason);
         });
         if (!opened) {
-            set_err(err_buf, err_buf_size, "Failed to open MIDI input port");
+            set_open_err(err_buf, err_buf_size, "Failed to open MIDI input port", reason);
             delete midi_in;
             return nullptr;
         }
@@ -338,14 +355,14 @@ MH_MidiIn* mh_midi_in_open_virtual(const char* port_name, MH_MidiCallback callba
             }
         };
 
+        std::string reason;
         const bool opened = run_isolated([&]() -> bool {
             midi_in->midi_in = std::make_unique<libremidi::midi_in>(config);
-            return midi_in->midi_in->open_virtual_port(port_name) == stdx::error{};
+            return opened_ok(midi_in->midi_in->open_virtual_port(port_name), reason);
         });
         if (!opened) {
-            set_err(err_buf, err_buf_size,
-                    "Failed to open virtual MIDI input port "
-                    "(may not be supported on this platform)");
+            set_open_err(err_buf, err_buf_size, "Failed to open virtual MIDI input port "
+                    "(may not be supported on this platform)", reason);
             delete midi_in;
             return nullptr;
         }
@@ -378,12 +395,13 @@ MH_MidiOut* mh_midi_out_open(int port_index, char* err_buf, size_t err_buf_size)
         }
 
         auto* midi_out = new MH_MidiOut();
+        std::string reason;
         const bool opened = run_isolated([&]() -> bool {
             midi_out->midi_out = std::make_unique<libremidi::midi_out>();
-            return midi_out->midi_out->open_port(ports[port_index]) == stdx::error{};
+            return opened_ok(midi_out->midi_out->open_port(ports[port_index]), reason);
         });
         if (!opened) {
-            set_err(err_buf, err_buf_size, "Failed to open MIDI output port");
+            set_open_err(err_buf, err_buf_size, "Failed to open MIDI output port", reason);
             delete midi_out;
             return nullptr;
         }
@@ -405,14 +423,14 @@ MH_MidiOut* mh_midi_out_open_virtual(const char* port_name, char* err_buf, size_
 
     try {
         auto* midi_out = new MH_MidiOut();
+        std::string reason;
         const bool opened = run_isolated([&]() -> bool {
             midi_out->midi_out = std::make_unique<libremidi::midi_out>();
-            return midi_out->midi_out->open_virtual_port(port_name) == stdx::error{};
+            return opened_ok(midi_out->midi_out->open_virtual_port(port_name), reason);
         });
         if (!opened) {
-            set_err(err_buf, err_buf_size,
-                    "Failed to open virtual MIDI output port "
-                    "(may not be supported on this platform)");
+            set_open_err(err_buf, err_buf_size, "Failed to open virtual MIDI output port "
+                    "(may not be supported on this platform)", reason);
             delete midi_out;
             return nullptr;
         }

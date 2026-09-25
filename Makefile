@@ -4,7 +4,7 @@
 .PHONY: all juce cli sync build rebuild test wheel sdist clean distclean help \
 		check publish-test publish lint lint-fix format format-check \
 		typecheck qa docs docs-serve docs-deploy desktop run-desktop tsan \
-		native-tests cli-debug cli-asan
+		native-tests cli-debug cli-asan diagrams
 
 # Default target - build Python bindings
 all: build
@@ -242,6 +242,17 @@ publish: check
 docs:
 	@uv run --group docs mkdocs build
 
+# Architecture diagrams: every docs/media/*.d2 renders to an .svg beside it.
+# TALA is d2's layout engine for architecture diagrams. Needs d2 on PATH.
+D2 ?= d2
+DIAGRAMS := $(patsubst %.d2,%.svg,$(wildcard docs/media/*.d2))
+
+diagrams: $(DIAGRAMS)
+
+docs/media/%.svg: docs/media/%.d2
+	@$(D2) --layout=tala $< $@
+	@chmod 644 $@
+
 # Serve documentation locally (with live reload)
 docs-serve:
 	@uv run --group docs mkdocs serve
@@ -297,6 +308,7 @@ help:
 	@echo "  publish-test - Publish to TestPyPI"
 	@echo "  publish      - Publish to PyPI"
 	@echo "  docs         - Build documentation (mkdocs)"
+	@echo "  diagrams     - Render docs/media/*.d2 to SVG (d2, TALA layout)"
 	@echo "  docs-serve   - Serve docs locally with live reload"
 	@echo "  docs-deploy  - Deploy docs to GitHub Pages"
 	@echo "  desktop      - Build the desktop GUI app (build-desktop/)"

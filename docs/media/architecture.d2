@@ -1,0 +1,147 @@
+# minihost architecture: who links what, top to bottom.
+# Regenerate the SVG with `make diagrams`.
+
+direction: down
+
+vars: {
+  d2-config: {
+    layout-engine: tala
+  }
+}
+
+classes: {
+  group: {
+    style: {
+      fill: "#fafafa"
+      stroke: "#c8c8c8"
+      border-radius: 8
+      font-size: 22
+    }
+  }
+  app: {
+    style: {
+      fill: "#f3f0fa"
+      stroke: "#6a55a5"
+      border-radius: 6
+    }
+  }
+  lib: {
+    style: {
+      fill: "#eef4fb"
+      stroke: "#3b6ea5"
+      border-radius: 6
+      font-size: 18
+    }
+  }
+  header: {
+    style: {
+      fill: "#ffffff"
+      stroke: "#3b6ea5"
+      border-radius: 4
+    }
+  }
+  vendor: {
+    style: {
+      fill: "#f5f5f5"
+      stroke: "#8a8a8a"
+      stroke-dash: 3
+      border-radius: 6
+    }
+  }
+  ext: {
+    shape: cylinder
+    style: {
+      fill: "#fdf6e9"
+      stroke: "#b07d2b"
+    }
+  }
+}
+
+apps: "Applications" {
+  class: group
+
+  python: "Python package: minihost" {
+    class: app
+    modules: "Pure-Python modules\nprocess, render, compose: offline rendering\nproject: JSON project graphs\ncontrol, feedback, touch: MIDI and OSC surfaces\nvstpreset, plugincache, audio_io, cli" {
+      class: header
+      style.stroke: "#6a55a5"
+    }
+    core: "_core: nanobind extension" {
+      class: header
+      style.stroke: "#6a55a5"
+    }
+    modules -> core
+  }
+
+  c: "minihost_c\nC CLI" {class: app}
+  cpp: "minihost_cpp\nC++ CLI" {class: app}
+  desktop: "minihost_desktop\nJUCE GUI app" {class: app}
+}
+
+libs: "minihost libraries" {
+  class: group
+
+  audio: "libminihost_audio: mh_audio_*" {
+    class: lib
+    device: "minihost_audio.h\nreal-time device, ring buffers" {class: header}
+    file: "minihost_audiofile.h\naudio file read and write" {class: header}
+    midi: "minihost_midi.h\nMIDI ports" {class: header}
+    osc: "minihost_osc.h\nOSC server and client" {class: header}
+  }
+
+  core: "libminihost: mh_*" {
+    class: lib
+    plugin: "minihost.h\nPlugin: process, MIDI, parameters,\nstate, automation, sidechain, transport" {class: header}
+    chain: "minihost_chain.h\nPluginChain: serial" {class: header}
+    bus: "minihost_graph.h\nPluginBus: parallel" {class: header}
+    graph: "minihost_graph_v2.h\nPluginGraph: DAG" {class: header}
+    preset: "minihost_vstpreset.h\n.vstpreset read and write" {class: header}
+    bus -> chain
+    chain -> plugin
+    graph -> plugin
+  }
+
+  audio -> core: "drives a plugin or chain\nfrom the audio callback"
+}
+
+deps: "Vendored dependencies" {
+  class: group
+  juce: "JUCE\njuce_audio_processors_headless" {class: vendor}
+  juce_osc: "JUCE juce_osc" {class: vendor}
+  miniaudio: "miniaudio\ndevices, decoding, WAV" {class: vendor}
+  tflac: "tflac\nFLAC encoding" {class: vendor}
+  libremidi: "libremidi\nMIDI I/O" {class: vendor}
+  midifile: "midifile\nMIDI files" {class: vendor}
+}
+
+world: "Outside the process" {
+  class: group
+  plugins: "Plugins\nVST3, AudioUnit, LV2" {class: ext}
+  hardware: "Audio devices\nand MIDI hardware" {class: ext}
+  files: "Audio and\nMIDI files" {class: ext}
+  network: "OSC over UDP" {class: ext}
+}
+
+# Applications -> libraries
+apps.python.core -> libs.audio
+apps.c -> libs.audio
+apps.cpp -> libs.audio
+apps.desktop -> libs.audio: "GUI build"
+
+# Libraries -> vendored code
+apps.python.core -> deps.midifile
+apps.cpp -> deps.midifile
+libs.core -> deps.juce
+libs.audio -> deps.miniaudio
+libs.audio -> deps.tflac
+libs.audio -> deps.libremidi
+libs.audio -> deps.juce_osc
+
+# Vendored code -> outside world
+deps.juce -> world.plugins: "loads"
+deps.miniaudio -> world.hardware
+deps.libremidi -> world.hardware
+deps.miniaudio -> world.files
+deps.tflac -> world.files
+deps.midifile -> world.files
+deps.juce_osc -> world.network

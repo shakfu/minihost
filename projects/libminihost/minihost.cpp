@@ -539,6 +539,11 @@ struct MH_Plugin
     AudioBuffer<float> processBuf;
     AudioBuffer<double> processBufD;   // mirror of processBuf for mh_process_double
     MidiBuffer midi;
+    // The state mh_get_state_size serialised, handed out by the next
+    // mh_get_state. Guarded by stateMutex.
+    MemoryBlock stateSnapshot;
+    bool haveStateSnapshot = false;
+
     // Output events the last mh_process_midi_io / mh_process_auto produced
     // past midi_out_capacity. Written and read on the audio thread.
     int midiOutDropped = 0;
@@ -992,10 +997,15 @@ extern "C" int mh_get_state_size(MH_Plugin* p)
     if (!p || !p->inst) return 0;
     return runOnMsg([&]() -> int
     {
+        // Kept for mh_get_state: callers ask for the size, then the data,
+        // and serialising twice doubled the cost (megabytes, sometimes
+        // seconds) and let the state change between the two, so the second
+        // dump could outgrow the buffer sized by the first.
         std::lock_guard<std::mutex> lock(p->stateMutex);
-        MemoryBlock mb;
-        p->inst->getStateInformation(mb);
-        return (int) mb.getSize();
+        p->stateSnapshot.reset();
+        p->inst->getStateInformation(p->stateSnapshot);
+        p->haveStateSnapshot = true;
+        return (int) p->stateSnapshot.getSize();
     });
 }
 
@@ -1006,7 +1016,11 @@ extern "C" int mh_get_state(MH_Plugin* p, void* buffer, int buffer_size)
     {
         std::lock_guard<std::mutex> lock(p->stateMutex);
         MemoryBlock mb;
-        p->inst->getStateInformation(mb);
+        if (p->haveStateSnapshot)
+            mb.swapWith(p->stateSnapshot);
+        else
+            p->inst->getStateInformation(mb);
+        p->haveStateSnapshot = false;
 
         if ((int) mb.getSize() > buffer_size)
             return 0;
@@ -1066,6 +1080,8 @@ extern "C" int mh_set_state(MH_Plugin* p, const void* data, int data_size)
     return runOnMsg([&]() -> int
     {
         std::lock_guard<std::mutex> lock(p->stateMutex);
+        p->haveStateSnapshot = false;  // no longer the plugin's state
+        p->stateSnapshot.reset();
 
         auto& params = p->inst->getParameters();
         std::vector<float> paramsBefore((size_t) params.size());

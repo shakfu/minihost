@@ -444,11 +444,15 @@ int mh_morph_lerp_per_param(const float* a, const float* b, float* out,
 int mh_morph(MH_Plugin* p, const float* a, const float* b, int count, float t);
 
 // State save/load (for presets and session recall)
-// Returns size in bytes needed to store state, or 0 on error
+// Returns size in bytes needed to store state, or 0 on error. Serialises the
+// state once and keeps it: the next mh_get_state copies that same snapshot,
+// so size and data always agree and the state is not serialised twice.
 int mh_get_state_size(MH_Plugin* p);
 
 // Copy state into buffer. Returns 1 on success, 0 on failure.
-// buffer must be at least mh_get_state_size() bytes
+// buffer must be at least mh_get_state_size() bytes. Returns the snapshot
+// mh_get_state_size took, if one is pending (mh_set_state discards it);
+// otherwise serialises the state now.
 int mh_get_state(MH_Plugin* p, void* buffer, int buffer_size);
 
 // Restore state from buffer. Returns 1 on success, 0 on failure.

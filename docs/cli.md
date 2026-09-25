@@ -14,11 +14,13 @@ minihost [-r SAMPLE_RATE] [-b BLOCK_SIZE] <command> [options]
 | `-b, --block-size` | 512 | Block size in samples |
 | `--version` | | Print the release version and exit |
 
+`-r` and `-b` can also follow the subcommand, on the commands that load a plugin: `info`, `params`, `presets`, `morph`, `play` and `process`. With an input file, `process` runs the plugin at the file's sample rate, so `-r` applies to MIDI-only renders.
+
 `--version` reports two independent things: the minihost release version, and the C ABI version of the `libminihost` the binary is linked against. Quote both when filing a bug. It is spelled the same way in all three CLIs -- long form only, since `-V` is already `--verbose` in `minihost_c`.
 
 ```console
 $ minihost --version
-minihost 0.8.2
+minihost 0.9.0
 libminihost ABI 2.9.0
 ```
 

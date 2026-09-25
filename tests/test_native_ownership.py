@@ -202,3 +202,38 @@ def test_closed_plugin_raises_instead_of_answering_defaults():
     # The wrapper's own queue and close() stay usable.
     assert p.poll_callbacks() == 0
     p.close()
+
+
+@requires_fx
+def test_state_size_and_data_come_from_one_snapshot():
+    # mh_get_state_size and mh_get_state each serialised the state: twice the
+    # cost, and a change between the calls could make the second dump outgrow
+    # the buffer sized by the first. The data now is the snapshot the size
+    # call took. Driven through the C API, since Python makes both calls at once.
+    out = run_isolated("""
+        import ctypes
+        import minihost._core as core
+        L = ctypes.CDLL(core.__file__)
+        L.mh_open.restype = ctypes.c_void_p
+        L.mh_open.argtypes = [ctypes.c_char_p, ctypes.c_double, ctypes.c_int,
+                              ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_size_t]
+        for name, args in [("mh_get_state_size", [ctypes.c_void_p]),
+                           ("mh_get_state", [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]),
+                           ("mh_set_param", [ctypes.c_void_p, ctypes.c_int, ctypes.c_float]),
+                           ("mh_close", [ctypes.c_void_p])]:
+            getattr(L, name).argtypes = args
+        err = ctypes.create_string_buffer(512)
+        h = L.mh_open(FX.encode(), 48000.0, 512, 2, 2, err, 512)
+        L.mh_set_param(h, 0, 0.3)
+        size = L.mh_get_state_size(h)
+        L.mh_set_param(h, 0, 0.8)  # after the size call
+        buf = ctypes.create_string_buffer(size)
+        assert L.mh_get_state(h, buf, size)
+        snapshot = buf.raw
+        fresh = ctypes.create_string_buffer(size * 2)
+        assert L.mh_get_state(h, fresh, size * 2)  # no snapshot pending: now
+        L.mh_close(h)
+        p = fx(); p.set_state(snapshot); print(round(p.get_param(0), 3))
+        p.set_state(fresh.raw[:len(p.get_state())]); print(round(p.get_param(0), 3))
+    """)
+    assert out.split() == ["0.3", "0.8"]
