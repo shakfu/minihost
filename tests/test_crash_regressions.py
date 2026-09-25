@@ -95,44 +95,50 @@ def test_midifile_add_rejects_track_out_of_range(track):
 # -------------------------------------------------------------------- #
 
 
-# Zero-filled float32 arrays backed by untouched pages. np.zeros is not
-# enough: Linux's default overcommit heuristic refuses a single allocation
-# larger than RAM plus swap, which 2 x 2**32 floats is on a CI runner.
+# Zero-filled float32 arrays mapped from a sparse temp file. On the Linux CI
+# runner neither np.zeros nor an anonymous MAP_NORESERVE mapping of 32 GiB
+# succeeds (ENOMEM); a shared file mapping is not charged to the commit limit.
 _HUGE_ZEROS = """
 import mmap
+import tempfile
 import numpy as np
 def huge_zeros(shape):
-    if not hasattr(mmap, "MAP_PRIVATE"):  # Windows
-        return np.zeros(shape, np.float32)
-    flags = mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS | getattr(mmap, "MAP_NORESERVE", 0)
-    buf = mmap.mmap(-1, 4 * int(np.prod(shape)), flags=flags)
-    return np.frombuffer(buf, np.float32).reshape(shape)
+    n = 4 * int(np.prod(shape))
+    f = tempfile.TemporaryFile()
+    f.truncate(n)
+    return np.frombuffer(mmap.mmap(f.fileno(), n), np.float32).reshape(shape)
 """
 
 
 @pytest.mark.parametrize("frames", [2**31, 2**32 + 10])
 def test_from_numpy_rejects_dimension_above_int_max(frames):
-    out = run_isolated(_HUGE_ZEROS + textwrap.dedent(f"""
+    out = run_isolated(
+        _HUGE_ZEROS
+        + textwrap.dedent(f"""
         try:
             b = minihost.AudioBuffer.from_numpy(huge_zeros((1, {frames})))
             print("accepted", b.shape)
         except ValueError as e:
             print("ValueError")
-    """))
+    """)
+    )
     assert out.strip() == "ValueError"
 
 
 @pytest.mark.skipif(not FX or not os.path.exists(FX), reason="MinihostTestFx not built")
 def test_process_rejects_frames_above_int_max():
     # (int) 2**32+10 is 10: channel 1's pointer landed on channel 0's data.
-    out = run_isolated(_HUGE_ZEROS + textwrap.dedent(f"""
+    out = run_isolated(
+        _HUGE_ZEROS
+        + textwrap.dedent(f"""
         p = minihost.Plugin({FX!r}, sample_rate=48000.0, max_block_size=512)
         x = huge_zeros((2, 2**32 + 10))
         try:
             p.process(x, huge_zeros(x.shape)); print("accepted")
         except ValueError:
             print("ValueError")
-    """))
+    """)
+    )
     assert out.strip() == "ValueError"
 
 
