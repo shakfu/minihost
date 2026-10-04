@@ -193,6 +193,44 @@ def test_sidechain_bus_reaches_the_plugin():
 
 
 @requires_fx
+def test_sidechain_and_midi_both_reach_the_plugin():
+    plugin = _open(sidechain_channels=2)
+    try:
+        if plugin.sidechain_channels != 2:
+            pytest.skip("sidechain bus not enabled on this build")
+        plugin.set_param(P_SIDECHAIN, 1.0)
+
+        main = np.zeros((2, BLOCK), dtype=np.float32)
+        side = _ramp()
+        out = np.zeros_like(main)
+        sent = [(0, 0x90, 60, 100), (128, 0x80, 60, 0), (400, 0xC0, 5, 0)]
+        got = plugin.process_sidechain_midi(main, out, side, sent)
+
+        assert np.allclose(out, side, atol=1e-6)
+        assert [tuple(e) for e in got] == sent
+    finally:
+        plugin.close()
+
+
+@requires_fx
+def test_process_audio_combines_sidechain_and_midi():
+    # process_audio used to reject the pair: mh_process_sidechain had no MIDI.
+    plugin = _open(sidechain_channels=2)
+    try:
+        if plugin.sidechain_channels != 2:
+            pytest.skip("sidechain bus not enabled on this build")
+        plugin.set_param(P_SIDECHAIN, 1.0)
+        main = minihost.AudioBuffer(2, 2 * BLOCK)
+        side = minihost.AudioBuffer.from_numpy(_ramp(frames=2 * BLOCK))
+        out = minihost.process_audio(
+            plugin, main, midi=[(0, 0x90, 60, 100)], sidechain=side
+        )
+        assert np.allclose(np.asarray(out), _ramp(frames=2 * BLOCK), atol=1e-6)
+    finally:
+        plugin.close()
+
+
+@requires_fx
 def test_midi_passes_through_with_its_offsets_intact():
     plugin = _open()
     try:

@@ -33,6 +33,9 @@ public:
     using std::runtime_error::runtime_error;
 };
 
+// MH_ResampleQuality for "best", "medium" or "fastest"; -1 for anything else.
+int resampleQualityFromName(const juce::String& name);
+
 // A pre-recorded audio file (WAV/FLAC/MP3/Vorbis) read at project
 // load time and fed into the graph per-block during file rendering.
 // During live playback the file is NOT replayed; live audio sources
@@ -47,6 +50,9 @@ struct InputNodeSpec {
     // otherwise strict about input rates. Mirrors _InputNode.resample in
     // src/minihost/project.py so the two loaders stay in parity.
     bool         resample = false;
+    // "best", "medium" or "fastest": the converter when resample is on.
+    // Mirrors _InputNode.resample_quality.
+    juce::String resample_quality = "best";
 };
 
 // A file-sink: receives audio from the graph and writes it to disk

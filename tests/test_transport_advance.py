@@ -17,9 +17,6 @@ nothing reads it back out -- so these tests assert on what minihost *sends*, by
 recording the `set_transport` calls, plus a real end-to-end render to prove the
 wiring is actually exercised.
 
-H6: `midi` and `sidechain` together used to collect MIDI events and then drop
-them, because `mh_process_sidechain` is the only process entry point with no
-MIDI parameter. That combination is now rejected.
 """
 
 from __future__ import annotations
@@ -199,30 +196,5 @@ def test_midi_renderer_uses_the_files_tempo(tmp_path):
         for call in spy.calls:
             expected = (call["position_samples"] / 48000.0) * 1.5
             assert call["position_beats"] == pytest.approx(expected, rel=1e-3, abs=1e-6)
-    finally:
-        plugin.close()
-
-
-# --- H6: MIDI + sidechain ---------------------------------------------- #
-
-
-@skip_if_no_plugin
-def test_midi_with_sidechain_is_rejected_not_silently_dropped():
-    """`mh_process_sidechain` has no MIDI parameter, so the sidechain block
-    loop collected the events and then discarded them.
-    """
-    plugin = minihost.Plugin(
-        PLUGIN, sample_rate=48000, max_block_size=512, sidechain_channels=2
-    )
-    try:
-        audio = minihost.AudioBuffer(max(plugin.num_input_channels, 1), 1024)
-        sidechain = minihost.AudioBuffer(max(plugin.sidechain_channels, 1), 1024)
-        with pytest.raises(ValueError, match="midi and sidechain cannot be combined"):
-            minihost.process_audio(
-                plugin,
-                audio,
-                midi=[(0, 0x90, 60, 100)],
-                sidechain=sidechain,
-            )
     finally:
         plugin.close()

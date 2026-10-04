@@ -36,6 +36,7 @@ extern "C" {
 // Parsed preset contents.
 //
 // class_id is NUL-terminated (up to 32 non-NUL chars followed by a NUL).
+// mh_vstpreset_read rejects a class ID that is not printable ASCII.
 // component_state / controller_state are heap-allocated buffers owned by this
 // struct. Sizes are the number of bytes in each buffer.
 // If a chunk was not present in the file, the pointer is NULL and size is 0.

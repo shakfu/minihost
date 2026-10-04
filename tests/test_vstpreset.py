@@ -197,6 +197,17 @@ class TestMalformedVstPreset:
         path.write_bytes(data)
         return read_vstpreset(path)
 
+    @pytest.mark.parametrize("bad", [b"\xf5", b"\x01", b"\x7f"])
+    def test_non_ascii_class_id_is_rejected_with_a_clear_error(self, tmp_path, bad):
+        data = bytearray(_build_vstpreset(class_id="A" * 32))
+        data[8 + 5] = bad[0]
+        with pytest.raises(ValueError, match="not printable ASCII"):
+            self._read(tmp_path, bytes(data))
+
+    def test_legacy_minihost_class_id_still_reads(self, tmp_path):
+        preset = self._read(tmp_path, _build_vstpreset(class_id="minihost_unknown"))
+        assert preset.class_id == "minihost_unknown"
+
     def test_offset_plus_size_wraps_past_int64_max(self, tmp_path):
         # offset + size is 1<<63, which wraps to INT64_MIN. A check written as
         # `offset + size > flen` passes here and hands memcpy a wild source;
@@ -726,3 +737,67 @@ class TestReadClassIdFromBundle:
             read_class_id_from_bundle(str(bundle) + "/")
             == "ABCDEF0123456789ABCDEF0123456789"
         )
+
+
+_FUZZ_SEED_FILE = _build_vstpreset(
+    class_id="0123456789ABCDEF0123456789ABCDEF",
+    component_state=bytes(range(256)) * 2,
+    controller_state=b"controller-state-bytes",
+)
+# Offsets of every integer field: version, list offset, entry count, and each
+# entry's offset and size.
+_FUZZ_LIST = struct.unpack_from("<q", _FUZZ_SEED_FILE, 40)[0]
+_FUZZ_INT_FIELDS = [(4, "<i"), (40, "<q"), (_FUZZ_LIST + 4, "<i")] + [
+    (_FUZZ_LIST + 8 + 20 * i + k, "<q") for i in range(2) for k in (4, 12)
+]
+_FUZZ_EDGE_VALUES = [0, 1, -1, 47, 48, len(_FUZZ_SEED_FILE) - 1,
+                     len(_FUZZ_SEED_FILE), len(_FUZZ_SEED_FILE) + 1,
+                     2**31 - 1, -(2**31)]
+
+
+class TestFuzzReadVstPreset:
+    """Seeded mutations of a valid preset. Each read must return chunks that
+    are slices of the file, or raise ValueError; anything else (a crash, a
+    different exception, bytes from outside the file) is a parser bug."""
+
+    def _mutate(self, rng):
+        data = bytearray(_FUZZ_SEED_FILE)
+        for _ in range(rng.randint(1, 4)):
+            op = rng.randrange(5)
+            if op == 0 and data:
+                data[rng.randrange(len(data))] = rng.randrange(256)
+            elif op == 1:
+                del data[rng.randrange(len(data) + 1):]
+            elif op == 2:
+                pos = rng.randrange(len(data) + 1)
+                data[pos:pos] = rng.randbytes(rng.randint(1, 16))
+            else:
+                off, fmt = rng.choice(_FUZZ_INT_FIELDS)
+                if off + struct.calcsize(fmt) <= len(data):
+                    vals = _FUZZ_EDGE_VALUES + ([2**63 - 1, -(2**63)] if fmt == "<q" else [])
+                    struct.pack_into(fmt, data, off, rng.choice(vals))
+        return bytes(data)
+
+    def test_mutated_presets_read_in_bounds_or_raise_value_error(self, tmp_path):
+        import random
+
+        rng = random.Random(0x5EED)
+        path = tmp_path / "fuzz.vstpreset"
+        parsed = 0
+        for i in range(3000):
+            data = self._mutate(rng)
+            path.write_bytes(data)
+            try:
+                preset = read_vstpreset(path)
+            except ValueError as e:
+                # Exactly ValueError: a subclass such as UnicodeDecodeError
+                # means an error escaped the parser's own checks.
+                assert type(e) is ValueError, f"case {i}: {e!r}"
+                continue
+            parsed += 1
+            for chunk in (preset.component_state, preset.controller_state):
+                if chunk:
+                    assert chunk in data, f"case {i}: chunk not from the file"
+        # Some mutations (e.g. a flipped state byte) leave the file valid; if
+        # none parse, the mutator is producing only garbage.
+        assert parsed > 0

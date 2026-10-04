@@ -82,6 +82,12 @@ native-tests:
 	@./build/ringbuffer_bounds
 	@$(CXX) -std=c++17 -O1 -g -fsanitize=undefined -fno-sanitize-recover=all \
 		-Iprojects/libminihost_audio -Iprojects/libminihost \
+		tests/native/midi_timestamp.cpp \
+		projects/libminihost_audio/midi_ringbuffer.cpp \
+		-o build/midi_timestamp
+	@./build/midi_timestamp
+	@$(CXX) -std=c++17 -O1 -g -fsanitize=undefined -fno-sanitize-recover=all \
+		-Iprojects/libminihost_audio -Iprojects/libminihost \
 		tests/native/midi_message_length.cpp \
 		-o build/midi_message_length
 	@./build/midi_message_length

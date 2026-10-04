@@ -28,7 +28,7 @@ minihost provides a C API built on JUCE with Python bindings via nanobind. It bu
 
 - **Audio file I/O**: read WAV/FLAC/MP3/Vorbis, write WAV and FLAC
 
-- **Sample rate conversion**: built-in resampling via miniaudio
+- **Sample rate conversion**: band-limited sinc resampling via libsamplerate
 
 - **Batch processing**: glob patterns and directory output for processing multiple files
 
@@ -100,7 +100,7 @@ minihost resample input.wav -o output.wav -r 48000
 
 - JUCE 8.0.11+ (auto-downloaded)
 
-- Vendored C libraries: miniaudio, tflac, libremidi, midifile ([details](vendored.md))
+- Vendored C libraries: miniaudio, tflac, libremidi, midifile, libsamplerate ([details](vendored.md))
 
 - Python bindings: nanobind, scikit-build-core, uv
 

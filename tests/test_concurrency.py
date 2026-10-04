@@ -189,19 +189,37 @@ def test_callback_queue_overflow_is_reported_not_silent():
     plugin.set_param_value_callback(lambda idx, v: None)
 
     # Fire more events than the queue capacity (1024) before draining.
-    # (set_param fires the listener synchronously.)
-    for i in range(1500):
-        plugin.set_param(0, (i % 100) / 100.0)
+    # (set_param fires the listener synchronously.) The first call after the
+    # first drop warns, and only once per plugin.
+    with pytest.warns(RuntimeWarning, match="poll_callbacks") as record:
+        for i in range(1500):
+            plugin.set_param(0, (i % 100) / 100.0)
+    assert len([w for w in record if "poll_callbacks" in str(w.message)]) == 1
 
-    # Some events should have been dropped (or very close to it). Either way,
-    # the dropped counter must be retrievable and non-negative.
     dropped = plugin.callback_events_dropped()
-    assert dropped >= 0
+    assert dropped > 0
     # Reading again must reset (we documented it that way).
     assert plugin.callback_events_dropped() == 0
 
     # Drain whatever we managed to enqueue. Must not crash.
     plugin.poll_callbacks()
+
+
+@skip_if_no_plugin
+def test_callback_queue_polled_in_time_does_not_warn():
+    import warnings
+
+    plugin = minihost.Plugin(PLUGIN, sample_rate=48000, max_block_size=512)
+    if plugin.num_params == 0:
+        pytest.skip("plugin has no parameters")
+    plugin.set_param_value_callback(lambda idx, v: None)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        for i in range(1500):
+            plugin.set_param(0, (i % 100) / 100.0)
+            if i % 100 == 0:
+                plugin.poll_callbacks()
+    assert plugin.callback_events_dropped() == 0
 
 
 # ---------------------------------------------------------------------------

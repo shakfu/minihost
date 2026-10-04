@@ -144,6 +144,8 @@ Parameter changes from the editor reach `MH_Plugin` through JUCE's existing `Aud
 }
 ```
 
+An input whose file rate differs from `sample_rate` is an error unless it sets `"resample": true`. Optional `"resample_quality"` (`"best"` default, `"medium"`, `"fastest"`) picks the converter; an unknown value fails the load in both the desktop app and `minihost.load_project`.
+
 Plugin state is the opaque blob returned by `mh_get_state`, base64-encoded. Project files are not portable across plugin versions that change state format; that's the plugin's contract, not ours.
 
 ### Render path

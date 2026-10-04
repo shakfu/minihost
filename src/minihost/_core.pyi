@@ -286,6 +286,14 @@ class Plugin:
         main_out: AudioInput,
         sidechain_in: AudioInput,
     ) -> None: ...
+    def process_sidechain_midi(
+        self,
+        main_in: AudioInput,
+        main_out: AudioInput,
+        sidechain_in: AudioInput,
+        midi_in: list[tuple[int, int, int, int]],
+        midi_out_capacity: int = 256,
+    ) -> list[tuple[int, int, int, int]]: ...
     def process_double(
         self,
         input: NDArray[np.float64],
@@ -699,8 +707,12 @@ def audio_resample(
     data: AudioInput,
     sample_rate_in: int,
     sample_rate_out: int,
+    quality: int = 0,
 ) -> "AudioBuffer":
-    """Resample audio data. Returns AudioBuffer regardless of input type."""
+    """Resample audio data. Returns AudioBuffer regardless of input type.
+
+    quality: 0 best, 1 medium, 2 fastest (libsamplerate sinc converters).
+    """
     ...
 
 def audio_get_file_info(path: str) -> dict[str, Any]:

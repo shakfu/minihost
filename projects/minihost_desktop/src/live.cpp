@@ -2,6 +2,8 @@
 
 #include "live.h"
 
+#include "midi_ringbuffer.h"
+
 #include <climits>
 #include <cmath>
 #include <cstring>
@@ -12,6 +14,7 @@ LiveEngine::LiveEngine() {}
 
 LiveEngine::~LiveEngine()
 {
+    stopTimer();
     stop();
     setMidiInputDevice({});  // closes any open mh_midi_in
 }
@@ -73,7 +76,7 @@ void LiveEngine::pushIncomingMidi(const unsigned char* data, size_t len)
     // mirrors what mh_process_midi accepts).
     if (len == 0 || len > 3) return;
     MH_MidiEvent ev{};
-    ev.sample_offset = 0;        // anchored to start of next block
+    ev.sample_offset = 0;        // placed from time_ns by the audio thread
     if (len >= 1) ev.status = data[0];
     if (len >= 2) ev.data1  = data[1];
     if (len >= 3) ev.data2  = data[2];
@@ -84,8 +87,8 @@ void LiveEngine::pushIncomingMidi(const unsigned char* data, size_t len)
     const auto next = (head + 1) % kMidiRingCapacity;
     if (next == midi_tail_.load(std::memory_order_acquire))
         return;  // full: drop newest
-    midi_ring_[head].ev         = ev;
-    midi_ring_[head].age_blocks = 0;
+    midi_ring_[head].ev      = ev;
+    midi_ring_[head].time_ns = mh_midi_clock_ns();
     midi_head_.store(next, std::memory_order_release);
 }
 
@@ -259,8 +262,12 @@ bool LiveEngine::start(const juce::File& project_file, juce::String& error)
         }
     }
 
+    midi_scratch_.reserve(256);
+    midi_chunk_.reserve(256);
     dm_.addAudioCallback(this);
     running_.store(true, std::memory_order_release);
+    if (!(first_midi_logged_ && first_audio_logged_))
+        startTimer(250);
     return true;
 }
 
@@ -271,6 +278,28 @@ void LiveEngine::detachCallback()
         dm_.removeAudioCallback(this);
         running_.store(false, std::memory_order_release);
     }
+}
+
+void LiveEngine::timerCallback()
+{
+    if (!first_midi_logged_ && first_midi_seen_.load(std::memory_order_acquire))
+    {
+        std::fprintf(stderr,
+            "[live] first MIDI event reached engine: "
+            "status=0x%02X d1=%d d2=%d (staged into %zu MIDI_INPUT nodes)\n",
+            (unsigned) first_midi_.status, (int) first_midi_.data1,
+            (int) first_midi_.data2, first_midi_nodes_);
+        first_midi_logged_ = true;
+    }
+    if (!first_audio_logged_ && first_audio_seen_.load(std::memory_order_acquire))
+    {
+        std::fprintf(stderr,
+            "[live] first non-silent block produced "
+            "(plugin chain is generating audio)\n");
+        first_audio_logged_ = true;
+    }
+    if (first_midi_logged_ && first_audio_logged_)
+        stopTimer();
 }
 
 void LiveEngine::stop()
@@ -287,6 +316,7 @@ void LiveEngine::stop()
 void LiveEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
 {
     if (device == nullptr) return;
+    midi_prev_cb_ns_ = 0;  // callbacks have not started
 
     const double device_rate = device->getCurrentSampleRate();
     std::fprintf(stderr,
@@ -390,6 +420,28 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
         return;
     }
 
+    // Drain MIDI once per callback and place each event by arrival time
+    // across the whole callback: a fixed one-callback delay rather than up
+    // to one callback of jitter. The ring has one producer, so the
+    // offsets come out in order.
+    const uint64_t cb_ns = mh_midi_clock_ns();
+    midi_scratch_.clear();
+    {
+        std::size_t t = midi_tail_.load(std::memory_order_relaxed);
+        const std::size_t h = midi_head_.load(std::memory_order_acquire);
+        while (t != h && midi_scratch_.size() < 256)
+        {
+            MH_MidiEvent ev = midi_ring_[t].ev;
+            ev.sample_offset = mh_midi_time_to_offset(
+                midi_ring_[t].time_ns, midi_prev_cb_ns_, cb_ns, numSamples);
+            midi_scratch_.push_back(ev);
+            t = (t + 1) % kMidiRingCapacity;
+        }
+        midi_tail_.store(t, std::memory_order_release);
+    }
+    midi_prev_cb_ns_ = cb_ns;
+    std::size_t midi_next = 0;
+
     // Render in chunks of up to cb_block_size_. Device callback sizes
     // are usually small (64-1024) so a single chunk is the norm.
     int frames_left = numSamples;
@@ -447,44 +499,34 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
         // setValue on each AudioProcessorParameter).
         drainParamWrites_(/*max=*/64);
 
-        // Drain MIDI events from the ring buffer. All events go to
-        // every plugin node (v1 fan-out routing). Per-plugin
-        // designation is a follow-up.
-        midi_scratch_.clear();
+        // This chunk's share of the drained MIDI, rebased to the chunk.
+        midi_chunk_.clear();
+        while (midi_next < midi_scratch_.size()
+               && midi_scratch_[midi_next].sample_offset < offset + n)
         {
-            std::size_t t = midi_tail_.load(std::memory_order_relaxed);
-            const std::size_t h = midi_head_.load(std::memory_order_acquire);
-            while (t != h && midi_scratch_.size() < 256)
-            {
-                midi_scratch_.push_back(midi_ring_[t].ev);
-                t = (t + 1) % kMidiRingCapacity;
-            }
-            midi_tail_.store(t, std::memory_order_release);
+            MH_MidiEvent ev = midi_scratch_[midi_next++];
+            ev.sample_offset -= offset;
+            midi_chunk_.push_back(ev);
         }
         // Stage the drained events on every MIDI_INPUT node in the
         // project. Routing within the graph (MIDI edges) fans the
         // events out to plugins. Legacy receives_midi projects get a
         // synthesized MIDI_INPUT node at load time (see project.cpp
         // migration), so a single staging path covers both formats.
-        if (!midi_scratch_.empty() && compiled_ != nullptr)
+        if (!midi_chunk_.empty() && compiled_ != nullptr)
         {
             auto* graph = compiled_->graph->handle();
             for (MH_NodeId nid : compiled_->midi_input_node_ids)
                 mh_graph_set_midi_input_events(
                     graph, nid,
-                    midi_scratch_.data(),
-                    (int) midi_scratch_.size());
+                    midi_chunk_.data(),
+                    (int) midi_chunk_.size());
 
-            static std::atomic<bool> logged_midi{false};
-            if (!logged_midi.load(std::memory_order_relaxed))
+            if (!first_midi_seen_.load(std::memory_order_relaxed))
             {
-                const auto& ev = midi_scratch_.front();
-                std::fprintf(stderr,
-                    "[live] first MIDI event reached engine: "
-                    "status=0x%02X d1=%d d2=%d (staged into %zu MIDI_INPUT nodes)\n",
-                    (unsigned) ev.status, (int) ev.data1, (int) ev.data2,
-                    compiled_->midi_input_node_ids.size());
-                logged_midi.store(true, std::memory_order_relaxed);
+                first_midi_ = midi_chunk_.front();
+                first_midi_nodes_ = compiled_->midi_input_node_ids.size();
+                first_midi_seen_.store(true, std::memory_order_release);
             }
         }
 
@@ -558,15 +600,10 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
             // touched these samples in the graph.
             compiled_->updateMeters(out_top_ptrs_.data(), n);
 
-            // One-shot diagnostic: log the first block whose output
-            // buffer contains a non-zero sample, and separately log
-            // the first staged MIDI events. Helps confirm whether
-            // audio is being produced at all and whether MIDI is
-            // reaching the engine. Not RT-safe in the strictest
-            // sense (fprintf can lock); kept guarded by static
-            // flags so each fires at most once per app run.
-            static std::atomic<bool> logged_audio{false};
-            if (!logged_audio.load(std::memory_order_relaxed))
+            // Flag the first block whose output contains a non-zero
+            // sample; timerCallback logs it. Confirms audio is being
+            // produced at all.
+            if (!first_audio_seen_.load(std::memory_order_relaxed))
             {
                 bool any_nonzero = false;
                 for (size_t bi = 0;
@@ -577,12 +614,7 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
                         if (buf[s] != 0.0f) { any_nonzero = true; break; }
                 }
                 if (any_nonzero)
-                {
-                    std::fprintf(stderr,
-                        "[live] first non-silent block produced "
-                        "(plugin chain is generating audio)\n");
-                    logged_audio.store(true, std::memory_order_relaxed);
-                }
+                    first_audio_seen_.store(true, std::memory_order_release);
             }
         } catch (...) {
             // Anything throwing on the audio thread means stop now.

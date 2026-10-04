@@ -22,6 +22,7 @@
 | `mh_process_midi_io` | Process audio with MIDI input and output |
 | `mh_process_auto` | Process with sample-accurate parameter automation and MIDI |
 | `mh_process_sidechain` | Process audio with sidechain input |
+| `mh_process_sidechain_midi_io` | Process audio with sidechain input and MIDI in/out |
 | `mh_process_double` | Process audio with 64-bit double precision |
 | `mh_supports_double` | Check if plugin supports native double precision |
 
@@ -283,7 +284,8 @@ Scope, stated rather than discovered later:
 | `mh_audio_data_free` | Free decoded audio data returned by `mh_audio_read` |
 | `mh_audio_write` | Write interleaved float32 data to WAV or FLAC file |
 | `mh_audio_get_file_info` | Get audio file metadata without decoding |
-| `mh_audio_resample` | Resample interleaved float32 audio between any two sample rates |
+| `mh_audio_resample` | Resample interleaved float32 audio, rate ratio within 1/256 to 256 (best quality) |
+| `mh_audio_resample_ex` | As `mh_audio_resample`, with an `MH_ResampleQuality` |
 
 ### Supported Formats
 

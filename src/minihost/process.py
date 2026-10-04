@@ -170,7 +170,7 @@ def _load_midi_events(
         _collect_midi_events,
         _event_to_midi_tuple,
         _seconds_to_samples,
-        _tick_to_seconds,
+        _tick_converter,
     )
 
     if isinstance(midi, (str, Path)):
@@ -191,8 +191,9 @@ def _load_midi_events(
 
     out: list[MidiEvent] = []
     max_sample = 0
+    to_seconds = _tick_converter(tempo_map, tpq)
     for event in raw:
-        seconds = _tick_to_seconds(event["tick"], tempo_map, tpq)
+        seconds = to_seconds(event["tick"])
         sample_pos = _seconds_to_samples(seconds, sample_rate)
         tup = _event_to_midi_tuple(event, sample_pos)
         if tup:
@@ -286,15 +287,6 @@ def _prepare_render(
         raise ValueError(
             "sidechain is not supported for PluginChain (no chain-level "
             "process_sidechain). Use a single Plugin instead."
-        )
-    if sidechain is not None and midi is not None:
-        # mh_process_sidechain is the only process* entry point with no MIDI
-        # parameter, so the sidechain block loop has nowhere to put the events.
-        # They used to be collected and then silently dropped.
-        raise ValueError(
-            "midi and sidechain cannot be combined: the sidechain process path "
-            "has no MIDI input. Render the MIDI part separately, or drive the "
-            "plugin without a sidechain."
         )
     if bpm is not None and is_chain:
         raise ValueError(
@@ -492,7 +484,12 @@ def _iter_blocks(
             # has_sidechain implies a sidechain buffer was provided, so the
             # per-block psc is always a real buffer here (never None).
             assert psc is not None
-            cast(Plugin, plugin_or_chain).process_sidechain(pin, pout, psc)
+            if has_midi:
+                cast(Plugin, plugin_or_chain).process_sidechain_midi(
+                    pin, pout, psc, block_midi
+                )
+            else:
+                cast(Plugin, plugin_or_chain).process_sidechain(pin, pout, psc)
         elif has_auto:
             plugin_or_chain.process_auto(pin, pout, block_midi, block_auto)
         elif has_midi:
@@ -569,7 +566,7 @@ def process_audio(
             a pre-resolved list of ``(sample_offset, status, data1,
             data2)`` tuples. Routed through :meth:`Plugin.process_midi`
             (or :meth:`process_auto` when ``param_changes`` is also
-            given).
+            given, or :meth:`process_sidechain_midi` with ``sidechain``).
         sidechain: Optional sidechain audio (same accepted types as
             ``audio``). Plugin-only; PluginChain has no sidechain
             process method.

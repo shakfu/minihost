@@ -118,6 +118,9 @@ int mh_audio_get_channels(MH_AudioDevice* dev);
 // Connect MIDI input port (can be called while running)
 // port_index: MIDI input port index (use mh_midi_enumerate_inputs to list)
 // Returns 1 on success, 0 on failure
+// Events are stamped on arrival and placed in the next block at the position
+// they arrived within the previous callback period: one block of latency, no
+// block-boundary jitter. mh_audio_send_midi events are placed the same way.
 int mh_audio_connect_midi_input(MH_AudioDevice* dev, int port_index);
 
 // Connect MIDI output port (can be called while running)

@@ -422,6 +422,42 @@ def test_resample_matches_across_clis(tmp_path):
     assert c_out.read_bytes() == cpp_out.read_bytes()
 
 
+@skip_if_no_audio
+def test_resample_quality_matches_across_clis_and_takes_effect(tmp_path):
+    """Each --quality gives the same bytes from both binaries and the Python
+    CLI, and the settings differ from each other."""
+    import sys
+
+    outputs = {}
+    for quality in ("best", "medium", "fastest"):
+        args = ["resample", str(PIANO), "{OUT}", "--rate", "44100",
+                "--quality", quality]
+        c_out = tmp_path / f"c-{quality}.wav"
+        cpp_out = tmp_path / f"cpp-{quality}.wav"
+        py_out = tmp_path / f"py-{quality}.wav"
+        _render(C_BIN, args, c_out)
+        _render(CPP_BIN, args, cpp_out)
+        subprocess.run(
+            [sys.executable, "-m", "minihost.cli", "resample", str(PIANO),
+             "-o", str(py_out), "-r", "44100", "--quality", quality],
+            check=True, capture_output=True, timeout=120,
+        )
+        assert c_out.read_bytes() == cpp_out.read_bytes(), quality
+        assert c_out.read_bytes() == py_out.read_bytes(), quality
+        outputs[quality] = c_out.read_bytes()
+    assert len(set(outputs.values())) == 3
+
+
+@skip_if_no_audio
+def test_unknown_resample_quality_fails_in_both_clis(tmp_path):
+    for binary in (C_BIN, CPP_BIN):
+        out = tmp_path / "never.wav"
+        proc = _run(binary, ["resample", str(PIANO), str(out), "--rate", "44100",
+                             "--quality", "ok"])
+        assert proc.returncode != 0, binary
+        assert not out.exists(), binary
+
+
 @pytest.mark.parametrize(
     "args",
     [

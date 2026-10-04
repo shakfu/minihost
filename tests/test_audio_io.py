@@ -288,6 +288,35 @@ class TestResample:
         assert abs(down.shape[1] - 44100) <= 2
 
 
+class TestResampleQuality:
+    """libsamplerate's sinc converters. Thresholds sit well inside what was
+    measured (best: -152 dB alias, 149 dB SNR; fastest: -112 dB, 108 dB) and
+    far beyond what the previous linear resampler could reach."""
+
+    @pytest.mark.parametrize("quality", ["best", "medium", "fastest"])
+    def test_tone_above_the_new_nyquist_is_removed(self, quality):
+        # 21 kHz cannot exist at 32 kHz; anything left is aliasing.
+        t = np.arange(44100 * 2) / 44100
+        x = np.sin(2 * np.pi * 21000 * t).astype(np.float32)[None, :]
+        y = resample(x, 44100, 32000, quality=quality)
+        rms = np.sqrt(np.mean(y[0, 3200:-3200] ** 2))
+        assert 20 * np.log10(rms + 1e-12) < -100
+
+    @pytest.mark.parametrize("quality", ["best", "medium", "fastest"])
+    def test_passband_tone_is_reproduced(self, quality):
+        t = np.arange(44100) / 44100
+        x = np.sin(2 * np.pi * 1000 * t).astype(np.float32)[None, :]
+        y = resample(x, 44100, 48000, quality=quality)
+        ref = np.sin(2 * np.pi * 1000 * np.arange(y.shape[1]) / 48000)
+        err = y[0, 4800:-4800] - ref[4800:-4800]
+        snr = 10 * np.log10(np.mean(ref[4800:-4800] ** 2) / np.mean(err**2))
+        assert snr > 100
+
+    def test_unknown_quality_is_rejected(self):
+        with pytest.raises(ValueError, match="quality"):
+            resample(np.zeros((1, 10), dtype=np.float32), 44100, 48000, quality="ok")
+
+
 class TestResampleBoundaries:
     """Extreme dimensions and sample-rate ratios.
 
@@ -326,10 +355,16 @@ class TestResampleBoundaries:
     def test_extreme_downsample_ratio_yields_at_least_one_frame(self):
         # The mirror image: a ratio small enough to round the output to zero
         # frames still has to produce a valid buffer, not a zero-size one.
-        data = np.zeros((1, 1000), dtype=np.float32)
-        out = resample(data, 4_000_000_000, 1)
+        data = np.zeros((1, 1), dtype=np.float32)
+        out = resample(data, 256, 1)
         assert out.shape[0] == 1
         assert out.shape[1] >= 1
+
+    def test_ratio_beyond_256_is_rejected_with_a_clear_error(self):
+        # libsamplerate's limit. Was accepted by the linear resampler.
+        data = np.zeros((1, 1000), dtype=np.float32)
+        with pytest.raises(RuntimeError, match="between 1/256 and 256"):
+            resample(data, 4_000_000_000, 1)
 
     def test_single_frame_input(self):
         data = np.zeros((2, 1), dtype=np.float32)

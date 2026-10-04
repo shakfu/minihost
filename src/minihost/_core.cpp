@@ -713,6 +713,7 @@ public:
     }
 
     void set_param(int index, float value) {
+        warn_on_callback_overflow();
         if (!mh_set_param(live(), index, require_finite(value, "value"))) {
             throw std::runtime_error("Failed to set parameter");
         }
@@ -961,6 +962,7 @@ public:
 
     // Process audio (simple version - no MIDI)
     void process(AudioArray input, AudioArray output) {
+        warn_on_callback_overflow();
         // Bound with the GIL released for the whole call.
         std::lock_guard<std::mutex> busy(busy_);
         int in_channels = checked_dim(input.shape(0));
@@ -992,6 +994,7 @@ public:
     nb::list process_midi(AudioArray input, AudioArray output,
                           nb::list midi_in, int midi_out_capacity)
     {
+        warn_on_callback_overflow();
         check_midi_capacity(midi_out_capacity);
         int in_channels = checked_dim(input.shape(0));
         int out_channels = checked_dim(output.shape(0));
@@ -1125,12 +1128,19 @@ public:
         return result;
     }
 
-    // Process with sidechain input
-    void process_sidechain(AudioArray main_in, AudioArray main_out,
-                           nb::ndarray<float, nb::shape<-1, -1>, nb::c_contig, nb::device::cpu> sidechain_in)
+    using SidechainArray = nb::ndarray<float, nb::shape<-1, -1>, nb::c_contig, nb::device::cpu>;
+
+    // Validated channel pointers for the sidechain process paths.
+    struct SidechainPtrs {
+        std::vector<const float*> main_in;
+        std::vector<float*> main_out;
+        std::vector<const float*> sc;
+        int nframes;
+    };
+
+    SidechainPtrs sidechain_ptrs(AudioArray& main_in, AudioArray& main_out,
+                                 SidechainArray& sidechain_in) const
     {
-        // Bound with the GIL released for the whole call.
-        std::lock_guard<std::mutex> busy(busy_);
         int main_in_ch = checked_dim(main_in.shape(0));
         int main_out_ch = checked_dim(main_out.shape(0));
         int main_in_frames = checked_dim(main_in.shape(1));
@@ -1166,33 +1176,68 @@ public:
                 std::to_string(required_sc));
         }
 
-        int nframes = main_in_frames;
+        SidechainPtrs ptrs;
+        ptrs.nframes = main_in_frames;
+        for (int ch = 0; ch < main_in_ch; ++ch)
+            ptrs.main_in.push_back(main_in.data() + ch * ptrs.nframes);
+        for (int ch = 0; ch < main_out_ch; ++ch)
+            ptrs.main_out.push_back(main_out.data() + ch * ptrs.nframes);
+        for (int ch = 0; ch < sc_ch; ++ch)
+            ptrs.sc.push_back(sidechain_in.data() + ch * ptrs.nframes);
+        return ptrs;
+    }
 
-        // Set up channel pointers for main input
-        std::vector<const float*> main_in_ptrs(main_in_ch);
-        for (int ch = 0; ch < main_in_ch; ++ch) {
-            main_in_ptrs[ch] = main_in.data() + ch * nframes;
-        }
-
-        // Set up channel pointers for main output
-        std::vector<float*> main_out_ptrs(main_out_ch);
-        for (int ch = 0; ch < main_out_ch; ++ch) {
-            main_out_ptrs[ch] = main_out.data() + ch * nframes;
-        }
-
-        // Set up channel pointers for sidechain
-        std::vector<const float*> sc_ptrs(sc_ch);
-        for (int ch = 0; ch < sc_ch; ++ch) {
-            sc_ptrs[ch] = sidechain_in.data() + ch * nframes;
-        }
-
-        if (!mh_process_sidechain(live(),
-                                  main_in_ptrs.data(),
-                                  main_out_ptrs.data(),
-                                  sc_ptrs.data(),
-                                  nframes)) {
+    // Process with sidechain input
+    void process_sidechain(AudioArray main_in, AudioArray main_out,
+                           SidechainArray sidechain_in)
+    {
+        warn_on_callback_overflow();
+        // Bound with the GIL released for the whole call.
+        std::lock_guard<std::mutex> busy(busy_);
+        SidechainPtrs ptrs = sidechain_ptrs(main_in, main_out, sidechain_in);
+        if (!mh_process_sidechain(live(), ptrs.main_in.data(), ptrs.main_out.data(),
+                                  ptrs.sc.data(), ptrs.nframes)) {
             throw std::runtime_error("Process with sidechain failed");
         }
+    }
+
+    // Process with sidechain input and MIDI
+    nb::list process_sidechain_midi(AudioArray main_in, AudioArray main_out,
+                                    SidechainArray sidechain_in,
+                                    nb::list midi_in, int midi_out_capacity)
+    {
+        warn_on_callback_overflow();
+        check_midi_capacity(midi_out_capacity);
+        SidechainPtrs ptrs = sidechain_ptrs(main_in, main_out, sidechain_in);
+
+        std::vector<MH_MidiEvent> midi_events;
+        for (size_t i = 0; i < nb::len(midi_in); ++i) {
+            midi_events.push_back(parse_midi_event(midi_in[i]));
+        }
+        std::vector<MH_MidiEvent> midi_out(midi_out_capacity);
+        int num_midi_out = 0;
+
+        // GIL released for the native call only, as in process_midi.
+        bool ok;
+        {
+            nb::gil_scoped_release nogil;
+            std::lock_guard<std::mutex> busy(busy_);
+            ok = mh_process_sidechain_midi_io(
+                     live(), ptrs.main_in.data(), ptrs.main_out.data(),
+                     ptrs.sc.data(), ptrs.nframes,
+                     midi_events.data(), static_cast<int>(midi_events.size()),
+                     midi_out.data(), midi_out_capacity, &num_midi_out) != 0;
+        }
+        if (!ok) {
+            throw std::runtime_error("Process with sidechain failed");
+        }
+
+        nb::list result;
+        for (int i = 0; i < num_midi_out; ++i) {
+            result.append(nb::make_tuple(midi_out[i].sample_offset, midi_out[i].status,
+                                         midi_out[i].data1, midi_out[i].data2));
+        }
+        return result;
     }
 
     // Double precision support
@@ -1202,6 +1247,7 @@ public:
 
     // Process audio with double precision
     void process_double(DoubleAudioArray input, DoubleAudioArray output) {
+        warn_on_callback_overflow();
         // Bound with the GIL released for the whole call.
         std::lock_guard<std::mutex> busy(busy_);
         int in_channels = checked_dim(input.shape(0));
@@ -1347,6 +1393,7 @@ public:
         // the next. On Linux and Windows it flushes the plugin thread's
         // queue rather than waiting for its next 10 ms pump.
         mh_message_thread_poll();
+        warn_on_callback_overflow();
 
         // A callback that polls again would overwrite dispatch_buffer_ while
         // the loop below iterates it. The outer call is already delivering in
@@ -1410,6 +1457,21 @@ public:
     // not being drained frequently enough.
     int callback_events_dropped() {
         return cb_queue_dropped_.exchange(0, std::memory_order_relaxed);
+    }
+
+    // Warn once per plugin after the first dropped event, so a callback that
+    // is never polled does not fail silently. Call with no lock held: a
+    // warning filter can run Python that calls back into this plugin.
+    void warn_on_callback_overflow() {
+        if (!cb_overflowed_.load(std::memory_order_relaxed)
+            || cb_overflow_warned_.exchange(true))
+            return;
+        nb::gil_scoped_acquire gil;
+        if (PyErr_WarnEx(PyExc_RuntimeWarning,
+                         "plugin callback queue is full (1024 events) and is "
+                         "dropping events; call poll_callbacks() regularly",
+                         1) < 0)
+            throw nb::python_error();
     }
 
     // ---- cyclic garbage collection ----
@@ -1498,12 +1560,15 @@ private:
     std::vector<CallbackEvent> dispatch_buffer_;   // owned by poll_callbacks
     bool dispatching_ = false;                     // poll_callbacks in progress
     std::atomic<int> cb_queue_dropped_{0};
+    std::atomic<bool> cb_overflowed_{false};
+    std::atomic<bool> cb_overflow_warned_{false};
 
     // Push helper: returns true if pushed, false if dropped (queue full).
     bool push_callback_event(const CallbackEvent& ev) {
         std::lock_guard<std::mutex> lock(cb_queue_mutex_);
         if (cb_queue_.size() >= CB_QUEUE_CAPACITY) {
             cb_queue_dropped_.fetch_add(1, std::memory_order_relaxed);
+            cb_overflowed_.store(true, std::memory_order_relaxed);
             return false;
         }
         cb_queue_.push_back(ev);
@@ -4687,6 +4752,11 @@ NB_MODULE(_core, m) {
              nb::arg("main_in"), nb::arg("main_out"), nb::arg("sidechain_in"),
              nb::call_guard<nb::gil_scoped_release>(),
              "Process audio with sidechain input (all arrays shape: [channels, frames])")
+        .def("process_sidechain_midi", &Plugin::process_sidechain_midi,
+             nb::arg("main_in"), nb::arg("main_out"), nb::arg("sidechain_in"),
+             nb::arg("midi_in"), nb::arg("midi_out_capacity") = MIDI_OUT_CAPACITY,
+             "process_sidechain with MIDI. midi_in and the return value are as in "
+             "process_midi.")
 
         // Double precision processing
         .def_prop_ro("supports_double", &Plugin::supports_double,
@@ -5584,7 +5654,8 @@ NB_MODULE(_core, m) {
     m.def("audio_resample", [](
                 nb::ndarray<const float, nb::shape<-1, -1>, nb::c_contig, nb::device::cpu> data,
                 unsigned int sample_rate_in,
-                unsigned int sample_rate_out) {
+                unsigned int sample_rate_out,
+                int quality) {
         size_t channels = (size_t) checked_dim(data.shape(0));
         size_t frames_in = (size_t) checked_dim(data.shape(1));
         // Reject before resampling rather than after: the result must fit an
@@ -5597,7 +5668,7 @@ NB_MODULE(_core, m) {
 
         // Accept any 2D float32 c-contiguous buffer-protocol producer
         // (numpy ndarray, AudioBuffer via DLPack, memoryview, ...).
-        // Interleave for the miniaudio resampler.
+        // Interleave for the resampler.
         std::vector<float> interleaved(channels * frames_in);
         planar_to_interleaved(data.data(), interleaved.data(), channels, frames_in);
 
@@ -5605,11 +5676,12 @@ NB_MODULE(_core, m) {
         MhAudioBuffer* buf = nullptr;
         {
             nb::gil_scoped_release nogil;
-            MH_AudioData* result = mh_audio_resample(
+            MH_AudioData* result = mh_audio_resample_ex(
                 interleaved.data(),
                 static_cast<unsigned int>(channels),
                 static_cast<unsigned int>(frames_in),
                 sample_rate_in, sample_rate_out,
+                static_cast<MH_ResampleQuality>(quality),
                 err, sizeof(err));
             if (result) {
                 // De-interleave directly into a fresh AudioBuffer. No numpy required.
@@ -5631,9 +5703,10 @@ NB_MODULE(_core, m) {
 
         return nb::cast(buf, nb::rv_policy::take_ownership);
     }, nb::arg("data"), nb::arg("sample_rate_in"), nb::arg("sample_rate_out"),
+       nb::arg("quality") = 0,
        "Resample audio data. Input: any 2D float32 c-contiguous buffer-protocol "
        "producer (AudioBuffer / numpy ndarray / ...). Returns an AudioBuffer at "
-       "sample_rate_out.");
+       "sample_rate_out. quality: 0 best, 1 medium, 2 fastest (libsamplerate sinc).");
 
     m.def("audio_get_file_info", [](const std::string& path) {
         char err[1024] = {0};

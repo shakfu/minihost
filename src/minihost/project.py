@@ -30,6 +30,8 @@ Schema notes:
       project's sample_rate (a mismatch is an error). Set optional
       `resample: true` on the input to convert a mismatched file to the
       project rate at load time (via the shared mh_audio_resample).
+      Optional `resample_quality`: "best" (default), "medium" or
+      "fastest"; see `audio_io.resample`.
     - Output nodes have a `sink` path (WAV/FLAC). Optional `bit_depth`
       (default 24).
     - Plugin nodes have a `path`. Optional `state_b64` for persisted
@@ -117,6 +119,7 @@ class _InputNode:
     # mh_audio_resample). When False (default), a mismatch is an error --
     # the project renderer is otherwise strict about input rates.
     resample: bool = False
+    resample_quality: str = "best"
     audio: "Any" = field(repr=False, default=None)  # np.ndarray, lazy-typed
 
 
@@ -278,7 +281,16 @@ def load_project(project_path: str | Path) -> LoadedProject:
                 channels=_require_int_at_least(raw, "channels", 1),
                 source=_resolve(project_dir, _require_field(raw, "source", str)),
                 resample=_optional_field(raw, "resample", bool, False),
+                resample_quality=_optional_field(raw, "resample_quality", str, "best"),
             )
+            # Checked at load, not only when a resample happens, so a typo
+            # fails the same way whatever the input file's rate.
+            if in_node.resample_quality not in audio_io._RESAMPLE_QUALITY:
+                raise ProjectError(
+                    f"input {nid!r}: resample_quality must be one of "
+                    f"{sorted(audio_io._RESAMPLE_QUALITY)}, got "
+                    f"{in_node.resample_quality!r}"
+                )
             inputs.append(in_node)
             node_by_id[nid] = ("input", in_node)
         elif kind == "output":
@@ -407,7 +419,9 @@ def load_project(project_path: str | Path) -> LoadedProject:
                     f"match project sample_rate {sr} (set resample=true on "
                     f"the input to convert)"
                 )
-            data = audio_io.resample(data, int(file_sr), int(sr))
+            data = audio_io.resample(
+                data, int(file_sr), int(sr), quality=n.resample_quality
+            )
         if data.shape[0] != n.channels:
             raise ProjectError(
                 f"input {n.id!r}: file has {data.shape[0]} channels, "

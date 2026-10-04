@@ -528,6 +528,9 @@ struct MH_Plugin
     int mainInCh = 0;
     int outCh = 0;
     int sidechainCh = 0;  // sidechain input channels (0 if none)
+    // Read once at open, on the plugin thread: the query is thread-affine,
+    // and mh_process_double needs it on the audio thread.
+    bool supportsDouble = false;
     // Every input channel the instance actually has, summed across all enabled
     // buses (main + sidechain + any aux). Only used to size processBuf, which
     // must present the plugin with a full complement of channels.
@@ -739,15 +742,18 @@ static MidiMessage makeShortMidiMessage(unsigned char status,
     return MidiMessage(status, data1, data2);
 }
 
-extern "C" int mh_process_midi_io(MH_Plugin* p,
-                                  const float* const* inputs,
-                                  float* const* outputs,
-                                  int nframes,
-                                  const MH_MidiEvent* midi_in,
-                                  int num_midi_in,
-                                  MH_MidiEvent* midi_out,
-                                  int midi_out_capacity,
-                                  int* num_midi_out)
+// Every float process entry point but mh_process_auto. A NULL sidechain_in
+// feeds the sidechain silence.
+static int processBlockImpl(MH_Plugin* p,
+                            const float* const* inputs,
+                            float* const* outputs,
+                            const float* const* sidechain_in,
+                            int nframes,
+                            const MH_MidiEvent* midi_in,
+                            int num_midi_in,
+                            MH_MidiEvent* midi_out,
+                            int midi_out_capacity,
+                            int* num_midi_out)
 {
     if (!p || !p->inst) return 0;
     if (nframes < 0 || nframes > p->maxBlockSize) return 0;
@@ -777,7 +783,13 @@ extern "C" int mh_process_midi_io(MH_Plugin* p,
         for (int ch = 0; ch < p->mainInCh; ++ch)
             std::memset(buf.getWritePointer(ch), 0, bytes);
     }
-    for (int ch = p->mainInCh; ch < totalCh; ++ch)
+    int ch = p->mainInCh;
+    if (sidechain_in)
+    {
+        for (; ch < p->mainInCh + p->sidechainCh; ++ch)
+            std::memcpy(buf.getWritePointer(ch), sidechain_in[ch - p->mainInCh], bytes);
+    }
+    for (; ch < totalCh; ++ch)
         std::memset(buf.getWritePointer(ch), 0, bytes);
 
     // Build MIDI input buffer from events
@@ -832,6 +844,21 @@ extern "C" int mh_process_midi_io(MH_Plugin* p,
     }
 
     return 1;
+}
+
+extern "C" int mh_process_midi_io(MH_Plugin* p,
+                                  const float* const* inputs,
+                                  float* const* outputs,
+                                  int nframes,
+                                  const MH_MidiEvent* midi_in,
+                                  int num_midi_in,
+                                  MH_MidiEvent* midi_out,
+                                  int midi_out_capacity,
+                                  int* num_midi_out)
+{
+    return processBlockImpl(p, inputs, outputs, nullptr, nframes,
+                            midi_in, num_midi_in,
+                            midi_out, midi_out_capacity, num_midi_out);
 }
 
 extern "C" int mh_process_midi(MH_Plugin* p,
@@ -1143,8 +1170,11 @@ extern "C" int mh_set_transport(MH_Plugin* p, const MH_TransportInfo* transport)
 extern "C" double mh_get_tail_seconds(MH_Plugin* p)
 {
     if (!p || !p->inst) return 0.0;
-    std::lock_guard<std::mutex> lock(p->stateMutex);
-    return p->inst->getTailLengthSeconds();
+    return runOnMsg([&]() -> double
+    {
+        std::lock_guard<std::mutex> lock(p->stateMutex);
+        return p->inst->getTailLengthSeconds();
+    });
 }
 
 extern "C" int mh_get_bypass(MH_Plugin* p)
@@ -1673,6 +1703,8 @@ static MH_Plugin* finishPluginFromDesc(AudioPluginFormatManager& fm,
     // Extended bus/channel layout with sidechain
     tryConfigureBusesEx(*inst, main_in_ch, main_out_ch, sidechain_in_ch);
 
+    p->supportsDouble = inst->supportsDoublePrecisionProcessing();
+
     // Determine actual sidechain channels
     p->sidechainCh = 0;
     if (sidechain_in_ch > 0 && inst->getBusCount(true) > 1)
@@ -1901,58 +1933,24 @@ extern "C" int mh_process_sidechain(MH_Plugin* p,
                                     const float* const* sidechain_in,
                                     int nframes)
 {
-    if (!p || !p->inst) return 0;
-    if (nframes < 0 || nframes > p->maxBlockSize) return 0;
+    return processBlockImpl(p, main_in, main_out, sidechain_in, nframes,
+                            nullptr, 0, nullptr, 0, nullptr);
+}
 
-    // Use the pre-allocated combined processBuf (sized in mh_open_ex to
-    // max(totalInCh, outCh)) to avoid per-call heap allocation.
-    auto& buffer = p->processBuf;
-    int totalInCh = p->mainInCh + p->sidechainCh;
-    int totalCh = buffer.getNumChannels();
-    buffer.setSize(totalCh, nframes, false, false, true);
-
-    // Copy main input to first channels
-    if (main_in)
-    {
-        for (int ch = 0; ch < p->mainInCh; ++ch)
-            buffer.copyFrom(ch, 0, main_in[ch], nframes);
-    }
-    else
-    {
-        for (int ch = 0; ch < p->mainInCh; ++ch)
-            buffer.clear(ch, 0, nframes);
-    }
-
-    // Copy sidechain input to subsequent channels
-    if (sidechain_in && p->sidechainCh > 0)
-    {
-        for (int ch = 0; ch < p->sidechainCh; ++ch)
-            buffer.copyFrom(p->mainInCh + ch, 0, sidechain_in[ch], nframes);
-    }
-    else if (p->sidechainCh > 0)
-    {
-        for (int ch = p->mainInCh; ch < totalInCh; ++ch)
-            buffer.clear(ch, 0, nframes);
-    }
-
-    // Clear any remaining output channels
-    for (int ch = totalInCh; ch < totalCh; ++ch)
-        buffer.clear(ch, 0, nframes);
-
-    // Clear MIDI buffer
-    p->midi.clear();
-
-    // Process
-    p->inst->processBlock(buffer, p->midi);
-
-    // Copy output back to caller's buffer
-    if (main_out)
-    {
-        for (int ch = 0; ch < p->outCh; ++ch)
-            std::memcpy(main_out[ch], buffer.getReadPointer(ch), sizeof(float) * nframes);
-    }
-
-    return 1;
+extern "C" int mh_process_sidechain_midi_io(MH_Plugin* p,
+                                            const float* const* main_in,
+                                            float* const* main_out,
+                                            const float* const* sidechain_in,
+                                            int nframes,
+                                            const MH_MidiEvent* midi_in,
+                                            int num_midi_in,
+                                            MH_MidiEvent* midi_out,
+                                            int midi_out_capacity,
+                                            int* num_midi_out)
+{
+    return processBlockImpl(p, main_in, main_out, sidechain_in, nframes,
+                            midi_in, num_midi_in,
+                            midi_out, midi_out_capacity, num_midi_out);
 }
 
 extern "C" int mh_get_sidechain_channels(MH_Plugin* p)
@@ -2246,7 +2244,7 @@ extern "C" int mh_scan_directory(const char* directory_path,
 extern "C" int mh_supports_double(MH_Plugin* p)
 {
     if (!p || !p->inst) return 0;
-    return p->inst->supportsDoublePrecisionProcessing() ? 1 : 0;
+    return p->supportsDouble ? 1 : 0;
 }
 
 extern "C" int mh_get_processing_precision(MH_Plugin* p)
@@ -2264,7 +2262,7 @@ extern "C" int mh_set_processing_precision(MH_Plugin* p, int precision)
     return runOnMsg([&]() -> int
     {
     // Double precision requires plugin support
-    if (precision == MH_PRECISION_DOUBLE && !p->inst->supportsDoublePrecisionProcessing())
+    if (precision == MH_PRECISION_DOUBLE && !p->supportsDouble)
         return 0;
 
     std::lock_guard<std::mutex> lock(p->stateMutex);
@@ -2347,7 +2345,7 @@ extern "C" int mh_process_double(MH_Plugin* p,
     // avoid heap allocation on the audio thread. setSize with
     // avoidReallocating=true updates the reported sample count without
     // reallocating because nframes <= maxBlockSize is already validated.
-    if (p->inst->supportsDoublePrecisionProcessing())
+    if (p->supportsDouble)
     {
         auto& buf = p->processBufD;
         const int totalCh = buf.getNumChannels();

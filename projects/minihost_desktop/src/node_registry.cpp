@@ -174,6 +174,15 @@ NodeKindEntry makeInput()
         s.source   = project_dir.getChildFile(require_string(n, "source"));
         if (n.getDynamicObject()->hasProperty("resample"))
             s.resample = (bool) n["resample"];
+        if (n.getDynamicObject()->hasProperty("resample_quality"))
+            s.resample_quality = require_string(n, "resample_quality");
+        // Checked at load, as the Python loader does, so a typo fails
+        // whatever the input file's rate.
+        if (project::resampleQualityFromName(s.resample_quality) < 0)
+            throw project::ProjectError(
+                ("input " + id + ": resample_quality must be one of "
+                 "best, medium, fastest, got '" + s.resample_quality
+                 + "'").toStdString());
         d.inputs.push_back(std::move(s));
     };
     e.serialize_all = [](const ProjectDocument& d,
@@ -187,6 +196,8 @@ NodeKindEntry makeInput()
             // and back-compatible with readers that predate the flag.
             if (n.resample)
                 o->setProperty("resample", true);
+            if (n.resample_quality != "best")
+                o->setProperty("resample_quality", n.resample_quality);
             push(o, "input", n.id);
         }
     };
@@ -215,6 +226,11 @@ NodeKindEntry makeInput()
                        "resample to project rate if mismatched");
         aw.getComboBoxComponent("resample")
           ->setSelectedItemIndex(s.resample ? 1 : 0);
+        aw.addComboBox("resample_quality", { "best", "medium", "fastest" },
+                       "resample quality");
+        aw.getComboBoxComponent("resample_quality")
+          ->setSelectedItemIndex(
+              juce::jmax(0, project::resampleQualityFromName(s.resample_quality)));
     };
     e.dialog_apply = [](ProjectDocument& d, int i, juce::AlertWindow& aw,
                         const juce::String& new_id,
@@ -225,6 +241,8 @@ NodeKindEntry makeInput()
         s.source   = juce::File(aw.getTextEditorContents("source"));
         s.resample = aw.getComboBoxComponent("resample")
                        ->getSelectedItemIndex() == 1;
+        s.resample_quality = aw.getComboBoxComponent("resample_quality")
+                               ->getText();
     };
 
     e.load_one = [](const ProjectDocument& d, int i,

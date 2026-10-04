@@ -37,7 +37,7 @@ public:
     ~MinihostTestProcessor() override = default;
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
-    void releaseResources() override {}
+    void releaseResources() override;
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
 
@@ -48,13 +48,20 @@ public:
     bool acceptsMidi() const override                   { return true; }
     bool producesMidi() const override                  { return true; }
     bool isMidiEffect() const override                  { return false; }
-    double getTailLengthSeconds() const override        { return 0.0; }
+    double getTailLengthSeconds() const override;
 
-    int getNumPrograms() override                       { return 1; }
-    int getCurrentProgram() override                    { return 0; }
-    void setCurrentProgram (int) override               {}
-    const juce::String getProgramName (int) override    { return "Default"; }
+    int getNumPrograms() override;
+    int getCurrentProgram() override;
+    void setCurrentProgram (int) override;
+    const juce::String getProgramName (int) override;
     void changeProgramName (int, const juce::String&) override {}
+
+    // Thread-affinity probes: each logs itself if called off the thread that
+    // constructed the plugin. See traceAffinity in the .cpp. setNonRealtime
+    // is not one: JUCE's VST3 wrapper calls it from process() every block.
+    void reset() override;
+    bool supportsDoublePrecisionProcessing() const override;
+    void updateTrackProperties (const TrackProperties&) override;
 
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;

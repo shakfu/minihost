@@ -106,6 +106,7 @@ All audio inputs accept `AudioBuffer`, `numpy.ndarray`, or any 2D float32 c-cont
 | `process_midi(input, output, midi_in)` | Process with MIDI. Returns list of output MIDI events (max 256 per call) |
 | `process_auto(input, output, midi_in, param_changes)` | Process with sample-accurate automation and MIDI. Returns output MIDI (max 256) |
 | `process_sidechain(main_in, main_out, sidechain_in)` | Process with sidechain input |
+| `process_sidechain_midi(main_in, main_out, sidechain_in, midi_in, midi_out_capacity=256)` | Process with sidechain input and MIDI; returns output events |
 | `process_double(input, output)` | Process with 64-bit double precision. Buffers dtype: `float64` (currently numpy-only) |
 
 MIDI events are tuples of `(sample_offset, status, data1, data2)`. Parameter changes are tuples of `(sample_offset, param_index, value)`.
@@ -347,6 +348,8 @@ When `capture=True`, the audio device opens in duplex mode: system audio input i
 | `transport_set_position(position_samples)` | Move the playhead |
 | `transport_set_loop(enabled, start_samples=0, end_samples=0)` | Set loop points |
 | `transport_set_recording(recording)` | Set the recording flag passed to the plugin |
+
+!!! note "Device MIDI timing" Events from a MIDI input port or `send_midi` are stamped on arrival. Each reaches the plugin in the next audio block, at the position it arrived within the previous callback period. The cost is a fixed one-block delay: 10.7 ms at 512 frames and 48 kHz. Use a smaller block size to reduce it.
 
 ### Parameter changes while playing
 
@@ -801,10 +804,19 @@ resample(
     data: AudioBuffer | np.ndarray | Any,
     sample_rate_in: int,
     sample_rate_out: int,
+    quality: str = "best",
 ) -> AudioBuffer | np.ndarray
 ```
 
-Resample audio data to a different sample rate. Input/output shape: `(channels, frames)`, float32. Accepts AudioBuffer, numpy ndarray, or any 2D float32 c-contiguous buffer-protocol producer. Return type matches the input type (AudioBuffer in -> AudioBuffer out; numpy.ndarray in -> numpy.ndarray out). Uses miniaudio's linear resampler with 4th-order low-pass anti-aliasing. Returns a copy when rates are equal.
+Resample audio data to a different sample rate. Input/output shape: `(channels, frames)`, float32. Accepts AudioBuffer, numpy ndarray, or any 2D float32 c-contiguous buffer-protocol producer. Return type matches the input type (AudioBuffer in -> AudioBuffer out; numpy.ndarray in -> numpy.ndarray out). Uses libsamplerate's band-limited sinc converters. Returns a copy when rates are equal. The rate ratio must be within 1/256 to 256.
+
+| `quality` | Passband | Speed (60 s stereo, 44.1 to 48 kHz, Apple M-series) |
+|-|-|-|
+| `"best"` (default) | 97% of Nyquist | 47x realtime |
+| `"medium"` | 90% | 178x |
+| `"fastest"` | 80% | 373x |
+
+`process_audio_to_file`, projects and the CLIs use `"best"`.
 
 ---
 

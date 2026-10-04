@@ -42,7 +42,7 @@ with (
 
 - **Audio file I/O** via miniaudio + tflac -- read WAV/FLAC/MP3/Vorbis, write WAV (16/24/32-bit) and FLAC (16/24-bit), optional Broadcast Wave (`bext`) metadata on WAV output (`write_audio(..., bwf={...})`)
 
-- **Sample rate conversion** via miniaudio resampler -- `minihost.resample()` API and `minihost resample` CLI subcommand
+- **Sample rate conversion** via libsamplerate (band-limited sinc) -- `minihost.resample()` API and `minihost resample` CLI subcommand
 
 - **Real-time audio playback** via miniaudio (cross-platform), with duplex capture mode for effect processing
 
@@ -112,7 +112,7 @@ minihost ships as two separate static libraries with a one-way dependency: `libm
 
 - **`libminihost`** -- the plugin host core (`projects/libminihost/`). Loads and runs VST3/AU/LV2 plugins and processes audio blocks you hand it: MIDI in/out, parameters, state save/restore, sample-accurate automation, sidechain, transport, bus layouts, and the routing abstractions (`PluginChain`, `PluginBus`, `PluginGraph`). Depends only on JUCE. C ABI prefix: `mh_*` (e.g. `mh_open`, `mh_process`, `mh_chain_*`, `mh_bus_*`, `mh_graph_*`). Header: `minihost.h`. Link this alone to load a plugin and feed it your own buffers -- the offline and embedded path, with no device or codec dependencies.
 
-- **`libminihost_audio`** -- the I/O layer around the core (`projects/libminihost_audio/`). It has no plugin-format knowledge; it gets audio and MIDI in and out of the machine and drives a plugin or chain through its real-time audio callback. Provides live audio device playback/capture (miniaudio), audio file read/write (read WAV/FLAC/MP3/Vorbis; write WAV/FLAC via miniaudio + tflac), MIDI ports (libremidi), and the lock-free ring buffers. Depends on `libminihost` plus the vendored miniaudio, tflac, and libremidi. C ABI prefix: `mh_audio_*`. Headers: `minihost_audio.h`, `minihost_audiofile.h`, `minihost_midi.h`. Link this in addition to `libminihost` when you want real-time devices, file I/O, or MIDI hardware.
+- **`libminihost_audio`** -- the I/O layer around the core (`projects/libminihost_audio/`). It has no plugin-format knowledge; it gets audio and MIDI in and out of the machine and drives a plugin or chain through its real-time audio callback. Provides live audio device playback/capture (miniaudio), audio file read/write (read WAV/FLAC/MP3/Vorbis; write WAV/FLAC via miniaudio + tflac), MIDI ports (libremidi), and the lock-free ring buffers. Depends on `libminihost` plus the vendored miniaudio, tflac, libremidi and libsamplerate. C ABI prefix: `mh_audio_*`. Headers: `minihost_audio.h`, `minihost_audiofile.h`, `minihost_midi.h`. Link this in addition to `libminihost` when you want real-time devices, file I/O, or MIDI hardware.
 
 In short: `libminihost` runs the plugin; `libminihost_audio` connects it to speakers, files, and MIDI hardware. The Python wheel links both.
 

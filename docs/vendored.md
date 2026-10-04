@@ -10,6 +10,7 @@ This file tracks the vendored C/C++ libraries included in `projects/`. JUCE is n
 | tflac | unversioned (2024) | `projects/tflac/` | <https://github.com/jprjr/tflac> | BSD-0 |
 | libremidi | 5.3.1 | `projects/libremidi/` | <https://github.com/jcelerier/libremidi> | BSD-2-Clause |
 | midifile | unversioned (2021) | `projects/midifile/` | <https://github.com/craigsapp/midifile> | BSD-2-Clause |
+| libsamplerate | 0.2.2 | `projects/libsamplerate/` | <https://github.com/libsndfile/libsamplerate> | BSD-2-Clause |
 | py2tosc `check_json.py` | 0.6.0 | `tests/check_json.py` | <https://github.com/shakfu/py2tosc> | MIT |
 
 ## Update Process
@@ -19,6 +20,8 @@ This file tracks the vendored C/C++ libraries included in `projects/`. JUCE is n
 2. Replace the contents of the corresponding `projects/<name>/` directory.
 
 3. Build and run tests: `make clean && make build && make test`.
+
+libsamplerate is a subset of the release tarball (`libsamplerate-0.2.2.tar.xz`, SHA-256 `3258da280511d24b49d6b08615bbe824d0cacc9842b0e4caf11c52cf2b043893`): `COPYING`, `include/samplerate.h`, and from `src/` the four `.c` files, `common.h` and the three coefficient headers. Its generated `config.h` is replaced by compile definitions in `projects/libminihost_audio/CMakeLists.txt`.
 
 Note that `tests/check_json.py` is a test-only vendoring, not a build dependency: a single stdlib-only file that py2tosc publishes for projects which *generate* `.ui.json` descriptions and want to validate them without depending on the compiler. It is re-copied on a py2tosc schema bump.
 

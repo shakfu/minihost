@@ -1202,6 +1202,41 @@ class TestCmdResample:
         assert info["frames"] == 48000
         assert "48000" in capsys.readouterr().out
 
+    def _run_main(self, argv):
+        from minihost.cli import main
+
+        with patch("sys.argv", ["minihost"] + argv):
+            return main()
+
+    def test_unknown_quality_is_rejected_by_the_parser(self, tmp_path):
+        with pytest.raises(SystemExit) as exc:
+            self._run_main(["resample", "in.wav", "-o", str(tmp_path / "o.wav"),
+                            "-r", "48000", "--quality", "ok"])
+        assert exc.value.code == 2
+
+    @pytest.mark.parametrize("flag, expected", [([], "best"),
+                                                (["--quality", "medium"], "medium")])
+    def test_quality_reaches_the_resampler(self, tmp_path, flag, expected):
+        import numpy as np
+        from minihost.audio_io import resample, write_audio
+
+        src = tmp_path / "in.wav"
+        write_audio(src, np.zeros((1, 441), dtype=np.float32), 44100)
+        argv = ["resample", str(src), "-o", str(tmp_path / "o.wav"), "-r", "48000"]
+        with patch("minihost.audio_io.resample", wraps=resample) as spy:
+            assert self._run_main(argv + flag) == 0
+        assert spy.call_args.kwargs["quality"] == expected
+
+    def test_ratio_beyond_256_is_an_error_not_a_traceback(self, capsys, tmp_path):
+        import numpy as np
+        from minihost.audio_io import write_audio
+
+        src = tmp_path / "in.wav"
+        write_audio(src, np.zeros((1, 100), dtype=np.float32), 48000)
+        assert self._run_main(["resample", str(src), "-o", str(tmp_path / "o.wav"),
+                               "-r", "100"]) == 1
+        assert "between 1/256 and 256" in capsys.readouterr().err
+
 
 # ---------------------------------------------------------------------------
 # Audio device selection

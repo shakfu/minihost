@@ -35,7 +35,8 @@
 
 namespace minihost_desktop {
 
-class LiveEngine : public juce::AudioIODeviceCallback
+class LiveEngine : public juce::AudioIODeviceCallback,
+                   private juce::Timer
 {
 public:
     LiveEngine();
@@ -154,6 +155,16 @@ private:
     void detachCallback();
     void initialiseDeviceManagerOnce();
 
+    // Prints the first-audio / first-MIDI diagnostics the audio thread
+    // flags below; fprintf can lock, so it stays off the audio thread.
+    void timerCallback() override;
+    std::atomic<bool>                              first_audio_seen_{ false };
+    std::atomic<bool>                              first_midi_seen_{ false };
+    MH_MidiEvent                                   first_midi_{};
+    std::size_t                                    first_midi_nodes_ = 0;
+    bool                                           first_audio_logged_ = false;
+    bool                                           first_midi_logged_ = false;
+
     juce::AudioDeviceManager                       dm_;
     bool                                           dm_initialised_ = false;
 
@@ -202,15 +213,20 @@ private:
 
     struct MidiSlot {
         MH_MidiEvent ev;
-        int          age_blocks;  // for block-anchored sample_offset
+        uint64_t     time_ns;  // arrival, from mh_midi_clock_ns
     };
     static constexpr std::size_t kMidiRingCapacity = 1024;
     std::array<MidiSlot, kMidiRingCapacity>        midi_ring_{};
     std::atomic<std::size_t>                       midi_head_{ 0 };
     std::atomic<std::size_t>                       midi_tail_{ 0 };
 
-    // Scratch buffer for staging drained MIDI before render_block.
+    // MIDI drained once per device callback, offsets placed by arrival
+    // time across the whole callback; midi_chunk_ holds one render chunk's
+    // share, rebased. Both reserved in start().
     std::vector<MH_MidiEvent>                      midi_scratch_;
+    std::vector<MH_MidiEvent>                      midi_chunk_;
+    // Start of the previous device callback; 0 until the first one.
+    uint64_t                                       midi_prev_cb_ns_ = 0;
 
     MH_MidiIn*                                     midi_in_ = nullptr;
     juce::String                                   midi_input_port_name_;

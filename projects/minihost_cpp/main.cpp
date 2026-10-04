@@ -1531,8 +1531,11 @@ int cmd_process(const std::string& plugin_path,
             for (int c = 0; c < proc_sc_ch; c++) {
                 sc_ptrs[c] = sc_channels[c].data() + start;
             }
-            mh_process_sidechain(p, in_ptrs.data(), out_ptrs.data(),
-                                 sc_ptrs.data(), bsize);
+            mh_process_sidechain_midi_io(p, in_ptrs.data(), out_ptrs.data(),
+                                         sc_ptrs.data(), bsize,
+                                         block_midi.empty() ? nullptr : block_midi.data(),
+                                         static_cast<int>(block_midi.size()),
+                                         nullptr, 0, nullptr);
         } else if (has_param_automation || !block_midi.empty()) {
             // Use process_auto for combined MIDI + param automation
             mh_process_auto(p,
@@ -2424,7 +2427,14 @@ int cmd_play(const std::string& plugin_path,
 // ============================================================================
 
 int cmd_resample(const std::string& input_path, const std::string& output_path,
-                 unsigned int target_rate, int bit_depth, bool overwrite) {
+                 unsigned int target_rate, int bit_depth, bool overwrite,
+                 const std::string& quality_name) {
+    // Validated by the option's IsMember check.
+    const MH_ResampleQuality quality =
+        quality_name == "medium"  ? MH_RESAMPLE_MEDIUM
+      : quality_name == "fastest" ? MH_RESAMPLE_FASTEST
+                                  : MH_RESAMPLE_BEST;
+
     // Check if output exists
     if (!overwrite) {
         std::ifstream test(output_path);
@@ -2460,9 +2470,9 @@ int cmd_resample(const std::string& input_path, const std::string& output_path,
     }
 
     // Resample
-    MH_AudioData* resampled = mh_audio_resample(
+    MH_AudioData* resampled = mh_audio_resample_ex(
         input->data, input->channels, input->frames,
-        input->sample_rate, target_rate, err, sizeof(err));
+        input->sample_rate, target_rate, quality, err, sizeof(err));
     if (!resampled) {
         print_error(err);
         mh_audio_data_free(input);
@@ -2991,6 +3001,7 @@ int main(int argc, char** argv) {
     unsigned int resample_target_rate = 0;
     int resample_bit_depth = 24;
     bool resample_overwrite = false;
+    std::string resample_quality = "best";
 
     // Both argument shapes are accepted so a command line is portable
     // between the two binaries: minihost_c takes `resample IN OUT --rate N`,
@@ -3011,6 +3022,9 @@ int main(int argc, char** argv) {
         ->default_val(24)
         ->check(CLI::IsMember({16, 24, 32}));
     resample_cmd->add_flag("-y,--overwrite", resample_overwrite, "Overwrite output if it exists");
+    resample_cmd->add_option("--quality", resample_quality,
+                             "Sinc converter: best (default), medium or fastest")
+        ->check(CLI::IsMember({"best", "medium", "fastest"}));
 
     resample_cmd->callback([&]() {
         if (resample_output.empty()) resample_output = resample_output_pos;
@@ -3022,7 +3036,7 @@ int main(int argc, char** argv) {
         }
         std::exit(cmd_resample(resample_input, resample_output,
                                resample_target_rate, resample_bit_depth,
-                               resample_overwrite));
+                               resample_overwrite, resample_quality));
     });
 
     // Parse and run

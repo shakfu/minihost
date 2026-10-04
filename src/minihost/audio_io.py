@@ -153,10 +153,14 @@ def write_audio(
     _write(str(path), write_data, int(sample_rate), bit_depth, bwf)
 
 
+_RESAMPLE_QUALITY = {"best": 0, "medium": 1, "fastest": 2}
+
+
 def resample(
     data: Any,
     sample_rate_in: int,
     sample_rate_out: int,
+    quality: str = "best",
 ) -> Any:
     """Resample audio data to a different sample rate.
 
@@ -165,7 +169,10 @@ def resample(
             ``AudioBuffer``, numpy ndarray, or any 2D float32 c-contiguous
             buffer.
         sample_rate_in: Source sample rate in Hz.
-        sample_rate_out: Target sample rate in Hz.
+        sample_rate_out: Target sample rate in Hz. The ratio to
+            ``sample_rate_in`` must be within [1/256, 256].
+        quality: libsamplerate sinc converter: ``"best"``, ``"medium"`` or
+            ``"fastest"`` (passband 97%, 90%, 80% of Nyquist).
 
     Returns:
         Resampled data of shape (channels, new_samples). The return type
@@ -173,11 +180,16 @@ def resample(
         ``numpy.ndarray`` in -> ``numpy.ndarray`` out). Other buffer-
         protocol inputs return ``AudioBuffer``.
     """
+    if quality not in _RESAMPLE_QUALITY:
+        raise ValueError(
+            f"quality must be one of {sorted(_RESAMPLE_QUALITY)}, got {quality!r}"
+        )
+    q = _RESAMPLE_QUALITY[quality]
     is_audiobuffer = isinstance(data, AudioBuffer)
 
     if is_audiobuffer:
         # AudioBuffer goes straight through DLPack; no numpy needed.
-        out = _resample(data, int(sample_rate_in), int(sample_rate_out))
+        out = _resample(data, int(sample_rate_in), int(sample_rate_out), q)
         return out  # AudioBuffer
 
     # Non-AudioBuffer input: coerce via numpy (lazy import). The C
@@ -189,7 +201,7 @@ def resample(
     arr = np.ascontiguousarray(data, dtype=np.float32)
     if arr.ndim == 1:
         arr = arr.reshape(1, -1)
-    out = _resample(arr, int(sample_rate_in), int(sample_rate_out))  # AudioBuffer
+    out = _resample(arr, int(sample_rate_in), int(sample_rate_out), q)  # AudioBuffer
 
     if is_numpy:
         return out.as_ndarray()

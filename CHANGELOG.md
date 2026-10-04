@@ -2,7 +2,33 @@
 
 ## [Unreleased]
 
+### Added
+
+- `Plugin.process_sidechain_midi` and C ABI 2.10.0 `mh_process_sidechain_midi_io`. The sidechain path was the only one without MIDI, so an instrument with a sidechain could not be played. `process_audio` now accepts `midi` with `sidechain` instead of raising.
+
+- A `RuntimeWarning` the first time a plugin's callback queue drops an event. A callback registered but never polled with `poll_callbacks()` otherwise received nothing, with no diagnostic. It is raised from the next `process*`, `set_param` or `poll_callbacks` call. A background dispatcher was rejected: on macOS the poll must run the main run loop.
+
+- `tests/conftest.py`: a `MINIHOST_TEST_PLUGIN*` variable naming a missing path stops the run with a usage error. Before, modules that checked only that the variable was set errored (7 failures, 64 errors), and the rest skipped.
+
+- `MinihostTestFx` logs control callbacks made off its constructing thread when `MINIHOST_TEST_AFFINITY_LOG` is set. `tests/test_thread_affinity.py` drives every `Plugin` control op from the Python thread and fails on any logged call.
+
 ### Fixed
+
+- `minihost_c` and `minihost_cpp` dropped MIDI when given a sidechain.
+
+- A `.vstpreset` whose class ID was not valid UTF-8 raised `UnicodeDecodeError` from the binding. `mh_vstpreset_read` now rejects a class ID that is not printable ASCII, with its own message. Hex digits are not required: presets from older minihost releases carry `minihost_unknown`.
+
+- `mh_get_tail_seconds` and `mh_supports_double` called the plugin from the caller's thread, not the plugin thread. `mh_process_double` also queried double-precision support on the audio thread every block. Tail is now marshaled; double support is read once at open.
+
+- The desktop app's live engine called `fprintf` from the audio callback for its first-audio and first-MIDI diagnostics. The audio thread now sets flags, and a message-thread timer prints them.
+
+### Changed
+
+- Resampling uses libsamplerate 0.2.2 (vendored, BSD-2-Clause) instead of miniaudio's linear interpolator. This affects `resample`, `process_audio_to_file`, projects, the desktop app and the CLIs. A 21 kHz tone resampled from 44.1 to 32 kHz now leaves -152 dB of aliasing. `resample`, `--quality` on the `resample` command of all three CLIs, an input node's `resample_quality` in project files (desktop and Python), and new `mh_audio_resample_ex` take a quality (`best`, the default, `medium`, `fastest`). The rate ratio is now limited to 1/256 to 256. The wheel grows by about 1.5 MB, mostly the `best` converter's filter table.
+
+- Live MIDI keeps its timing. `AudioDevice` and the desktop app placed every event from a MIDI port or `send_midi` at offset 0 of the next block, so timing jittered by up to one block (10.7 ms at 512 frames, 48 kHz). Events are now stamped on arrival and placed at the same relative position one block later. Latency is a fixed one block instead of 0 to 1 block. Positions are scaled by the measured callback period rather than by frames over sample rate, so device-clock drift cannot push an event out of its block.
+
+- MIDI file tick-to-seconds conversion is O(log m) per event for m tempo changes, down from O(m). Results are bit-identical.
 
 - On Linux and Windows, `process_audio` and `Plugin.poll_callbacks()` could miss a latency reported by the previous process call. `mh_message_thread_poll` returned without pumping there. The plugin thread pumps only every 10 ms, so the change often arrived too late. The poll now runs a pump on the plugin thread and waits for it.
 

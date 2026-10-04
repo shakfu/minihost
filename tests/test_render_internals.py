@@ -11,6 +11,7 @@ from minihost.render import (
     _event_to_midi_tuple,
     _is_auto_tail,
     _seconds_to_samples,
+    _tick_converter,
     _tick_to_seconds,
 )
 
@@ -194,6 +195,32 @@ class TestTickToSeconds:
         # 0-480 at 120 BPM = 0.5s, then 480-4800 (4320 ticks) at 60 BPM = 9.0s
         result = _tick_to_seconds(4800, tempo_map, 480)
         assert result == pytest.approx(0.5 + 9.0)
+
+    def test_matches_the_linear_scan_it_replaced(self):
+        """The bisect converter returns bit-identical values to the original
+        segment-by-segment walk, including duplicate ticks, ticks exactly on a
+        change, negative ticks and a map not starting at tick 0."""
+        import random
+
+        def linear(tick, tempo_map, tpq):
+            seconds, prev_tick, prev_tempo = 0.0, 0, tempo_map[0][1]
+            for map_tick, tempo in tempo_map:
+                if map_tick >= tick:
+                    break
+                seconds += ((map_tick - prev_tick) / tpq) * (prev_tempo / 1_000_000.0)
+                prev_tick, prev_tempo = map_tick, tempo
+            return seconds + ((tick - prev_tick) / tpq) * (prev_tempo / 1_000_000.0)
+
+        rng = random.Random(7)
+        for _ in range(200):
+            first = rng.choice([0, 0, rng.randint(1, 500)])
+            changes = sorted(rng.randint(first, 20_000) for _ in range(rng.randint(0, 40)))
+            tempo_map = [(t, rng.uniform(200_000, 1_500_000)) for t in [first, *changes]]
+            tpq = rng.choice([96, 480, 960])
+            convert = _tick_converter(tempo_map, tpq)
+            probes = [t for t, _ in tempo_map] + [rng.randint(-100, 25_000) for _ in range(50)]
+            for tick in probes:
+                assert convert(tick) == linear(tick, tempo_map, tpq)
 
 
 # ---------------------------------------------------------------------------

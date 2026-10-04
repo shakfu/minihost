@@ -24,6 +24,7 @@ import json
 import subprocess
 
 import numpy as np
+import pytest
 
 import minihost
 from minihost import audio_io
@@ -265,9 +266,11 @@ def test_multinode_mix_render_parity(tmp_path):
 
 
 @skip_if_no_desktop
-def test_save_roundtrip_preserves_resample_flag(tmp_path):
-    """The input `resample` flag must survive the C++ parse -> save path
-    and reload via the Python loader."""
+@pytest.mark.parametrize("quality", [None, "fastest"])
+def test_save_roundtrip_preserves_resample_flag(tmp_path, quality):
+    """The input `resample` flag and `resample_quality` must survive the
+    C++ parse -> save path and reload via the Python loader. The default
+    quality is not written, so existing projects resave unchanged."""
     in_wav = tmp_path / "in.wav"
     audio_io.write_audio(
         str(in_wav), np.zeros((2, 512), dtype=np.float32), 44100, bit_depth=24
@@ -286,6 +289,7 @@ def test_save_roundtrip_preserves_resample_flag(tmp_path):
                         "channels": 2,
                         "source": str(in_wav),
                         "resample": True,
+                        **({"resample_quality": quality} if quality else {}),
                     },
                     {
                         "id": "out",
@@ -308,12 +312,16 @@ def test_save_roundtrip_preserves_resample_flag(tmp_path):
     reloaded = json.loads(resaved.read_text())
     in_node = next(n for n in reloaded["nodes"] if n.get("kind") == "input")
     assert in_node.get("resample") is True
+    assert in_node.get("resample_quality") == quality
     # And the Python loader agrees.
-    assert minihost.load_project(resaved).inputs[0].resample is True
+    loaded = minihost.load_project(resaved)
+    assert loaded.inputs[0].resample is True
+    assert loaded.inputs[0].resample_quality == (quality or "best")
 
 
 @skip_if_no_desktop
-def test_resample_render_parity(tmp_path):
+@pytest.mark.parametrize("quality", [None, "medium", "fastest"])
+def test_resample_render_parity(tmp_path, quality):
     """A 44.1k input rendered into a 48k project with resample=true must be
     bit-identical between the C++ desktop and Python pipelines. Both read
     via mh_audio_read and resample via mh_audio_resample (the same C
@@ -338,6 +346,7 @@ def test_resample_render_parity(tmp_path):
                             "channels": 2,
                             "source": str(in_wav),
                             "resample": True,
+                            **({"resample_quality": quality} if quality else {}),
                         },
                         {
                             "id": "out",
@@ -374,3 +383,35 @@ def test_resample_render_parity(tmp_path):
     n = min(py.shape[1], cpp.shape[1])
     maxerr = float(np.max(np.abs(py[:, :n] - cpp[:, :n])))
     assert maxerr == 0.0, f"max sample diff {maxerr:.3e} (should be exactly 0)"
+
+
+@skip_if_no_desktop
+def test_bad_resample_quality_is_rejected(tmp_path):
+    """Rejected at load, as the Python loader does, even with matching rates."""
+    in_wav = tmp_path / "in.wav"
+    audio_io.write_audio(
+        str(in_wav), np.zeros((2, 512), dtype=np.float32), 48000, bit_depth=24
+    )
+    proj = tmp_path / "p.json"
+    proj.write_text(
+        json.dumps(
+            {
+                "minihost_project_version": 1,
+                "sample_rate": 48000,
+                "block_size": 256,
+                "nodes": [
+                    {"id": "in", "kind": "input", "channels": 2,
+                     "source": str(in_wav), "resample_quality": "ok"},
+                    {"id": "out", "kind": "output", "channels": 2,
+                     "sink": str(tmp_path / "out.wav"), "bit_depth": 24},
+                ],
+                "edges": [{"src": "in", "dst": "out"}],
+            }
+        )
+    )
+    res = _run(f"--render-project={proj}", timeout=60)
+    assert res.returncode != 0
+    assert "resample_quality" in res.stderr + res.stdout
+    assert not (tmp_path / "out.wav").exists()
+    with pytest.raises(minihost.ProjectError, match="resample_quality"):
+        minihost.load_project(proj)

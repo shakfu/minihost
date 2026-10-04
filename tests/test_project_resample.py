@@ -20,10 +20,12 @@ import minihost
 from minihost import audio_io
 
 
-def _write_project(path, in_wav, out_wav, *, project_sr, resample):
+def _write_project(path, in_wav, out_wav, *, project_sr, resample, quality=None):
     node = {"id": "in", "kind": "input", "channels": 2, "source": str(in_wav)}
     if resample is not None:
         node["resample"] = resample
+    if quality is not None:
+        node["resample_quality"] = quality
     path.write_text(
         json.dumps(
             {
@@ -99,3 +101,41 @@ def test_resample_flag_round_trips(tmp_path):
     )
     loaded2 = minihost.load_project(proj2)
     assert loaded2.inputs[0].resample is False
+
+
+def _src_wav(tmp_path):
+    rng = np.random.default_rng(5)
+    src = (rng.standard_normal((2, 4410)) * 0.1).astype(np.float32)
+    in_wav = tmp_path / "in.wav"
+    audio_io.write_audio(str(in_wav), src, 44100, bit_depth=32)
+    data, _ = audio_io.read_audio(str(in_wav), as_=np.ndarray)
+    return in_wav, data
+
+
+@pytest.mark.parametrize("quality", ["best", "medium", "fastest"])
+def test_resample_quality_selects_the_converter(tmp_path, quality):
+    in_wav, data = _src_wav(tmp_path)
+    proj = tmp_path / "p.json"
+    _write_project(proj, in_wav, tmp_path / "o.wav", project_sr=48000,
+                   resample=True, quality=quality)
+    loaded = minihost.load_project(proj)
+    assert loaded.inputs[0].resample_quality == quality
+    expected = audio_io.resample(data, 44100, 48000, quality=quality)
+    np.testing.assert_array_equal(loaded.inputs[0].audio, expected)
+
+
+def test_resample_quality_defaults_to_best(tmp_path):
+    in_wav, _ = _src_wav(tmp_path)
+    proj = tmp_path / "p.json"
+    _write_project(proj, in_wav, tmp_path / "o.wav", project_sr=48000, resample=True)
+    assert minihost.load_project(proj).inputs[0].resample_quality == "best"
+
+
+@pytest.mark.parametrize("bad", ["ok", 1])
+def test_bad_resample_quality_is_rejected_even_when_rates_match(tmp_path, bad):
+    in_wav, _ = _src_wav(tmp_path)
+    proj = tmp_path / "p.json"
+    _write_project(proj, in_wav, tmp_path / "o.wav", project_sr=44100,
+                   resample=False, quality=bad)
+    with pytest.raises(minihost.ProjectError, match="resample_quality"):
+        minihost.load_project(proj)

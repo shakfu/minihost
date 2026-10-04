@@ -151,6 +151,8 @@ These functions are designed for realtime audio callbacks and do NOT acquire loc
 
 - `mh_process_sidechain()`
 
+- `mh_process_sidechain_midi_io()`
+
 - `mh_process_double()`
 
 - `mh_chain_process()`, `mh_chain_process_midi_io()`, `mh_chain_process_auto()`

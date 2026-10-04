@@ -6,8 +6,8 @@
 //
 //   1. AUDIO-THREAD ONLY (no locks, no allocations after warmup):
 //        mh_process, mh_process_midi, mh_process_midi_io,
-//        mh_process_auto, mh_process_sidechain, mh_process_double,
-//        mh_set_param_rt
+//        mh_process_auto, mh_process_sidechain, mh_process_sidechain_midi_io,
+//        mh_process_double, mh_set_param_rt
 //      Call from exactly one thread (the audio callback). Concurrent calls
 //      from multiple threads on the same MH_Plugin are undefined.
 //
@@ -81,6 +81,9 @@ extern "C" {
 #endif
 
 // API version components. Bump per the policy described above.
+// 2.10.0: added mh_process_sidechain_midi_io. mh_process_sidechain was the
+//   only process entry point without MIDI, so an instrument with a sidechain
+//   could not be played (additive).
 // 2.9.0: added mh_graph_get_midi_output_dropped. MIDI output, processor
 //   and merge nodes drop events past MH_GRAPH_MIDI_OUTPUT_CAPACITY per
 //   block, and callers had no reliable way to learn of it. Consequently
@@ -142,7 +145,7 @@ extern "C" {
 //   mh_graph_* (parallel bus) -> mh_bus_* / MH_PluginGraph -> MH_PluginBus,
 //   and mh_graph_v2_* (DAG) -> mh_graph_* / MH_GraphV2 -> MH_PluginGraph.
 #define MH_API_VERSION_MAJOR 2
-#define MH_API_VERSION_MINOR 9
+#define MH_API_VERSION_MINOR 10
 #define MH_API_VERSION_PATCH 0
 
 // Single packed integer for compile-time comparison.
@@ -511,7 +514,8 @@ int mh_process_auto(MH_Plugin* p,
                     const MH_ParamChange* param_changes,
                     int num_param_changes);
 
-// MIDI output events the last mh_process_midi_io or mh_process_auto call on
+// MIDI output events the last mh_process_midi_io, mh_process_auto or
+// mh_process_sidechain_midi_io call on
 // this plugin produced beyond midi_out_capacity, and so dropped. 0 when that
 // call passed no midi_out buffer. Call from the thread that processes.
 int mh_get_midi_out_dropped(MH_Plugin* p);
@@ -606,6 +610,18 @@ int mh_process_sidechain(MH_Plugin* p,
                          float* const* main_out,
                          const float* const* sidechain_in,
                          int nframes);
+
+// mh_process_sidechain with MIDI input and output, as in mh_process_midi_io.
+int mh_process_sidechain_midi_io(MH_Plugin* p,
+                                 const float* const* main_in,
+                                 float* const* main_out,
+                                 const float* const* sidechain_in,
+                                 int nframes,
+                                 const MH_MidiEvent* midi_in,
+                                 int num_midi_in,
+                                 MH_MidiEvent* midi_out,
+                                 int midi_out_capacity,
+                                 int* num_midi_out);
 
 // Get number of sidechain input channels configured for this plugin
 // Returns 0 if no sidechain or plugin opened with mh_open() instead of mh_open_ex()

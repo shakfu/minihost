@@ -4,6 +4,7 @@
 #include "minihost_audiofile.h"
 #include "miniaudio.h"
 #include "tflac.h"
+#include "samplerate.h"
 #include <limits.h>
 #include <math.h>
 #include <stdint.h>
@@ -583,6 +584,22 @@ MH_AudioData* mh_audio_resample(const float* data_in,
                                 unsigned int sample_rate_in,
                                 unsigned int sample_rate_out,
                                 char* err, size_t err_size) {
+    return mh_audio_resample_ex(data_in, channels, frames_in, sample_rate_in,
+                                sample_rate_out, MH_RESAMPLE_BEST, err, err_size);
+}
+
+MH_AudioData* mh_audio_resample_ex(const float* data_in,
+                                   unsigned int channels,
+                                   unsigned int frames_in,
+                                   unsigned int sample_rate_in,
+                                   unsigned int sample_rate_out,
+                                   MH_ResampleQuality quality,
+                                   char* err, size_t err_size) {
+    if (quality != MH_RESAMPLE_BEST && quality != MH_RESAMPLE_MEDIUM
+        && quality != MH_RESAMPLE_FASTEST) {
+        if (err && err_size > 0) snprintf(err, err_size, "Invalid resample quality");
+        return NULL;
+    }
     if (!data_in || channels == 0 || frames_in == 0) {
         if (err && err_size > 0) snprintf(err, err_size, "Invalid input parameters");
         return NULL;
@@ -622,7 +639,7 @@ MH_AudioData* mh_audio_resample(const float* data_in,
     // before the conversion: a double above UINT64_MAX converts to an
     // unsigned integer type by undefined behaviour, not by saturating.
     const double estimate = (double)frames_in * (double)sample_rate_out
-                            / (double)sample_rate_in + 16.0;
+                            / (double)sample_rate_in + 64.0;
     if (!(estimate >= 0.0) || estimate > (double)UINT_MAX) {
         if (err && err_size > 0) {
             snprintf(err, err_size,
@@ -632,7 +649,16 @@ MH_AudioData* mh_audio_resample(const float* data_in,
         }
         return NULL;
     }
-    ma_uint64 expected_out = (ma_uint64)estimate;
+    unsigned long long expected_out = (unsigned long long)estimate;
+
+    const double ratio = (double)sample_rate_out / (double)sample_rate_in;
+    if (!src_is_valid_ratio(ratio)) {
+        if (err && err_size > 0)
+            snprintf(err, err_size,
+                     "Cannot resample %u Hz to %u Hz: the ratio must be "
+                     "between 1/256 and 256", sample_rate_in, sample_rate_out);
+        return NULL;
+    }
 
     // Allocate output buffer
     size_t out_bytes;
@@ -646,46 +672,63 @@ MH_AudioData* mh_audio_resample(const float* data_in,
         return NULL;
     }
 
-    // Initialize resampler
-    ma_resampler_config config = ma_resampler_config_init(
-        ma_format_f32, channels, sample_rate_in, sample_rate_out,
-        ma_resample_algorithm_linear);
-    // Linear is the only algorithm miniaudio ships; its one quality knob is
-    // the anti-alias filter order, and every caller here is offline, where
-    // the extra biquads cost nothing worth measuring. Was 4.
-    config.linear.lpfOrder = MA_MAX_FILTER_ORDER;
-
-    ma_resampler resampler;
-    ma_result result = ma_resampler_init(&config, NULL, &resampler);
-    if (result != MA_SUCCESS) {
-        free(out_buf);
-        if (err && err_size > 0) snprintf(err, err_size, "Failed to init resampler: %d", result);
-        return NULL;
-    }
-
-    // Process
-    ma_uint64 in_count = frames_in;
-    ma_uint64 out_count = expected_out;
-    result = ma_resampler_process_pcm_frames(&resampler, data_in, &in_count, out_buf, &out_count);
-    ma_resampler_uninit(&resampler, NULL);
-
-    if (result != MA_SUCCESS) {
-        free(out_buf);
-        if (err && err_size > 0) snprintf(err, err_size, "Resampler failed: %d", result);
-        return NULL;
-    }
-
-    // A single-shot call stops at whichever side runs out first. If the
-    // output estimate above were ever short, the excess input would be
-    // dropped and the caller would get a quietly truncated buffer.
-    if (in_count != (ma_uint64)frames_in) {
+    int src_err = 0;
+    SRC_STATE* src = src_new((int)quality, (int)channels, &src_err);
+    if (!src) {
         free(out_buf);
         if (err && err_size > 0)
-            snprintf(err, err_size,
-                     "Resampler consumed %llu of %u input frames",
-                     (unsigned long long)in_count, frames_in);
+            snprintf(err, err_size, "Failed to init resampler: %s", src_strerror(src_err));
         return NULL;
     }
+
+    // Fed in chunks: SRC_DATA counts frames in `long`, 32 bits on Windows.
+    // After the last input chunk, calls continue until the filter is flushed.
+    const unsigned long long CHUNK = 1u << 16;
+    unsigned long long in_done = 0, out_done = 0;
+    SRC_DATA d;
+    memset(&d, 0, sizeof(d));
+    d.src_ratio = ratio;
+    for (;;) {
+        unsigned long long in_n = frames_in - in_done;
+        if (in_n > CHUNK) in_n = CHUNK;
+        unsigned long long out_room = expected_out - out_done;
+        if (out_room > CHUNK * 256) out_room = CHUNK * 256;
+        d.data_in = data_in + in_done * channels;
+        d.input_frames = (long)in_n;
+        d.data_out = out_buf + out_done * channels;
+        d.output_frames = (long)out_room;
+        d.end_of_input = (in_done + in_n == frames_in);
+        src_err = src_process(src, &d);
+        if (src_err) break;
+        in_done += (unsigned long long)d.input_frames_used;
+        out_done += (unsigned long long)d.output_frames_gen;
+        if (d.end_of_input && d.output_frames_gen == 0) break;
+        if (d.input_frames_used == 0 && d.output_frames_gen == 0) {
+            src_err = -1;  // no progress: the output estimate ran out
+            break;
+        }
+    }
+    src_delete(src);
+
+    if (src_err || in_done != frames_in) {
+        free(out_buf);
+        if (err && err_size > 0) {
+            if (src_err > 0)
+                snprintf(err, err_size, "Resampler failed: %s", src_strerror(src_err));
+            else
+                snprintf(err, err_size, "Resampler consumed %llu of %u input frames",
+                         in_done, frames_in);
+        }
+        return NULL;
+    }
+    // The converter's flush can emit a frame more or less than the exact
+    // length; callers rely on frames_in * ratio, rounded, and never 0.
+    unsigned long long out_count = (unsigned long long)llround((double)frames_in * ratio);
+    if (out_count == 0) out_count = 1;
+    if (out_count > expected_out) out_count = expected_out;
+    if (out_done < out_count)
+        memset(out_buf + out_done * channels, 0,
+               (size_t)(out_count - out_done) * channels * sizeof(float));
 
     // Build result
     MH_AudioData* out = (MH_AudioData*)malloc(sizeof(MH_AudioData));

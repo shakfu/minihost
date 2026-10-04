@@ -22,6 +22,21 @@ set(_minihost_audio_sources
     minihost_midi.cpp
     minihost_osc.cpp
     ${CMAKE_SOURCE_DIR}/projects/tflac/tflac.c
+    ${CMAKE_SOURCE_DIR}/projects/libsamplerate/src/samplerate.c
+    ${CMAKE_SOURCE_DIR}/projects/libsamplerate/src/src_sinc.c
+    ${CMAKE_SOURCE_DIR}/projects/libsamplerate/src/src_linear.c
+    ${CMAKE_SOURCE_DIR}/projects/libsamplerate/src/src_zoh.c
+)
+
+# libsamplerate without its generated config.h: the three sinc converters, stdbool,
+# plus the name and version src_get_version() reports.
+set_source_files_properties(
+    ${CMAKE_SOURCE_DIR}/projects/libsamplerate/src/samplerate.c
+    ${CMAKE_SOURCE_DIR}/projects/libsamplerate/src/src_sinc.c
+    ${CMAKE_SOURCE_DIR}/projects/libsamplerate/src/src_linear.c
+    ${CMAKE_SOURCE_DIR}/projects/libsamplerate/src/src_zoh.c
+    PROPERTIES COMPILE_DEFINITIONS
+    "ENABLE_SINC_FAST_CONVERTER;ENABLE_SINC_MEDIUM_CONVERTER;ENABLE_SINC_BEST_CONVERTER;HAVE_STDBOOL_H;PACKAGE=\"libsamplerate\";VERSION=\"0.2.2\""
 )
 
 # Common configuration applied to both flavours. The libminihost
@@ -43,6 +58,7 @@ function(_minihost_audio_configure_common target)
         ${CMAKE_SOURCE_DIR}/projects/libminihost
         ${CMAKE_SOURCE_DIR}/projects/libremidi/include
         ${CMAKE_SOURCE_DIR}/projects/tflac
+        ${CMAKE_SOURCE_DIR}/projects/libsamplerate/include
     )
 
     # juce_osc: OSC transport. Depends only on juce_events, which

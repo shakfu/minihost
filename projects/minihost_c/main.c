@@ -116,7 +116,8 @@ static void print_usage(const char* prog) {
     printf("  --playback-device N     Playback device index\n");
     printf("  --capture-device N      Capture device index\n\n");
     printf("Resample command options:\n");
-    printf("  --rate N                Target sample rate in Hz\n\n");
+    printf("  --rate N                Target sample rate in Hz\n");
+    printf("  --quality Q             best (default), medium or fastest\n\n");
     printf("Presets command options:\n");
     printf("  --save FILE             Write current state as .vstpreset to FILE\n");
     printf("  --program N             Select factory program N before saving\n");
@@ -1641,7 +1642,9 @@ static int cmd_process(const char* plugin_path,
             const float* sc_ptrs[32];
             for (int c = 0; c < proc_sc_ch; c++)
                 sc_ptrs[c] = sc_channels[c] + start;
-            mh_process_sidechain(p, in_ptrs, out_ptrs, sc_ptrs, bsize);
+            mh_process_sidechain_midi_io(p, in_ptrs, out_ptrs, sc_ptrs, bsize,
+                                         num_block_midi > 0 ? block_midi : NULL,
+                                         num_block_midi, NULL, 0, NULL);
         } else if (has_midi || has_param_automation) {
             mh_process_auto(p,
                             in_ptrs, out_ptrs, bsize,
@@ -1982,8 +1985,20 @@ static int cmd_play(const char* plugin_path,
 // ============================================================================
 
 static int cmd_resample(const char* input_file, const char* output_file,
-                        int target_rate, int bit_depth) {
+                        int target_rate, int bit_depth, const char* quality_name) {
     char err[1024] = {0};
+
+    MH_ResampleQuality quality;
+    if (!quality_name || str_eq(quality_name, "best")) {
+        quality = MH_RESAMPLE_BEST;
+    } else if (str_eq(quality_name, "medium")) {
+        quality = MH_RESAMPLE_MEDIUM;
+    } else if (str_eq(quality_name, "fastest")) {
+        quality = MH_RESAMPLE_FASTEST;
+    } else {
+        fprintf(stderr, "Error: --quality must be best, medium or fastest\n");
+        return 1;
+    }
 
     MH_AudioData* audio = mh_audio_read(input_file, err, sizeof(err));
     if (!audio) {
@@ -2003,12 +2018,13 @@ static int cmd_resample(const char* input_file, const char* output_file,
         return 1;
     }
 
-    MH_AudioData* resampled = mh_audio_resample(audio->data,
-                                                 audio->channels,
-                                                 audio->frames,
-                                                 audio->sample_rate,
-                                                 (unsigned)target_rate,
-                                                 err, sizeof(err));
+    MH_AudioData* resampled = mh_audio_resample_ex(audio->data,
+                                                    audio->channels,
+                                                    audio->frames,
+                                                    audio->sample_rate,
+                                                    (unsigned)target_rate,
+                                                    quality,
+                                                    err, sizeof(err));
     if (!resampled) {
         fprintf(stderr, "Error: %s\n", err);
         mh_audio_data_free(audio);
@@ -2791,6 +2807,7 @@ int main(int argc, char** argv) {
     int playback_device = -1;
     int capture_device = -1;
     int resample_rate = 0;
+    const char* resample_quality = NULL;
     double tail_seconds = 0.0;
     const char* midi_input_file = NULL;
     // presets subcommand
@@ -2941,6 +2958,8 @@ int main(int argc, char** argv) {
             capture_device = atoi(args[++i]);
         } else if (str_eq(args[i], "--rate") && i + 1 < remaining) {
             resample_rate = atoi(args[++i]);
+        } else if (str_eq(args[i], "--quality") && i + 1 < remaining) {
+            resample_quality = args[++i];
         } else if (str_eq(args[i], "--tail") && i + 1 < remaining) {
             tail_seconds = atof(args[++i]);
         } else if ((str_eq(args[i], "-m") || str_eq(args[i], "--midi")) && i + 1 < remaining) {
@@ -3099,7 +3118,8 @@ int main(int argc, char** argv) {
             fprintf(stderr, "Usage: %s resample INPUT OUTPUT --rate N\n", argv[0]);
             return 1;
         }
-        return cmd_resample(rs_input, rs_output, resample_rate, bit_depth);
+        return cmd_resample(rs_input, rs_output, resample_rate, bit_depth,
+                            resample_quality);
     }
     else if (str_eq(cmd, "chain")) {
         /* Every positional argument is a plugin, in signal order. */

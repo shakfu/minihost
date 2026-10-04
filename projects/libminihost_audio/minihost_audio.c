@@ -162,6 +162,9 @@ struct MH_AudioDevice {
     MH_MidiRingBuffer* midi_in_buffer;   // MIDI thread -> audio thread
     MH_MidiRingBuffer* midi_send_buffer; // app thread  -> audio thread
     MH_MidiRingBuffer* midi_out_buffer;  // audio thread -> MIDI output
+    // Start time of the previous audio callback, for placing timestamped
+    // MIDI (mh_midi_time_to_offset). 0 until the first callback after start.
+    uint64_t midi_prev_cb_ns;
 
     // Parameter changes, same one-producer-per-ring rule as the MIDI pair
     // above and for the same reason. param_ctl_buffer belongs to whichever
@@ -397,12 +400,12 @@ static void midi_input_callback(const unsigned char* data, size_t len, void* use
     if (!dev || !dev->midi_in_buffer || len < 1) return;
 
     MH_MidiEvent event;
-    event.sample_offset = 0;  // Will be processed at start of next audio buffer
+    event.sample_offset = 0;  // set from the arrival time by the audio thread
     event.status = data[0];
     event.data1 = (len >= 2) ? data[1] : 0;
     event.data2 = (len >= 3) ? data[2] : 0;
 
-    mh_midi_ringbuffer_push(dev->midi_in_buffer, &event);
+    mh_midi_ringbuffer_push_at(dev->midi_in_buffer, &event, mh_midi_clock_ns());
 }
 
 // Resolve, once at open, every plugin the playhead is handed to. A chain
@@ -494,6 +497,7 @@ static void transport_advance(MH_AudioDevice* dev, int frames) {
 // Audio callback - called from miniaudio's audio thread
 static void audio_callback(ma_device* device, void* output, const void* input, ma_uint32 frame_count) {
     MH_AudioDevice* dev = (MH_AudioDevice*)device->pUserData;
+    const uint64_t cb_ns = mh_midi_clock_ns();
 
     float* interleaved_output = (float*)output;
     int channels = dev->channels;
@@ -542,16 +546,33 @@ static void audio_callback(ma_device* device, void* output, const void* input, m
 
     // Drain MIDI input buffer
     MH_MidiEvent midi_events[256];
+    uint64_t midi_times[256];
     int num_midi_events = 0;
     if (dev->midi_in_buffer) {
-        num_midi_events = mh_midi_ringbuffer_pop_all(dev->midi_in_buffer, midi_events, 256);
+        num_midi_events = mh_midi_ringbuffer_pop_all_at(dev->midi_in_buffer,
+                                                        midi_events, midi_times, 256);
     }
     // Programmatic sends live in their own ring (see the struct comment).
     if (dev->midi_send_buffer && num_midi_events < 256) {
-        num_midi_events += mh_midi_ringbuffer_pop_all(
+        num_midi_events += mh_midi_ringbuffer_pop_all_at(
             dev->midi_send_buffer, midi_events + num_midi_events,
-            256 - num_midi_events);
+            midi_times + num_midi_events, 256 - num_midi_events);
     }
+    // Place each event by arrival time, then stable-sort by offset: the two
+    // rings interleave in time, and mh_process_auto drops events that run
+    // backwards.
+    for (int i = 0; i < num_midi_events; i++) {
+        MH_MidiEvent ev = midi_events[i];
+        ev.sample_offset = mh_midi_time_to_offset(midi_times[i], dev->midi_prev_cb_ns,
+                                                  cb_ns, frames);
+        int j = i;
+        while (j > 0 && midi_events[j - 1].sample_offset > ev.sample_offset) {
+            midi_events[j] = midi_events[j - 1];
+            j--;
+        }
+        midi_events[j] = ev;
+    }
+    dev->midi_prev_cb_ns = cb_ns;
 
     // Drain parameter changes from both producer rings into one coalesced
     // array. The control ring is drained first, so on the rare block that
@@ -1187,6 +1208,7 @@ int mh_audio_start(MH_AudioDevice* dev) {
     if (!dev) return 0;
     if (dev->is_playing) return 1; // Already playing
 
+    dev->midi_prev_cb_ns = 0;  // the audio thread is not running yet
     ma_result result = ma_device_start(&dev->device);
     if (result != MA_SUCCESS) {
         return 0;
@@ -1383,12 +1405,12 @@ int mh_audio_send_midi(MH_AudioDevice* dev, unsigned char status, unsigned char 
     if (!dev || !dev->midi_send_buffer) return 0;
 
     MH_MidiEvent event;
-    event.sample_offset = 0;  // Will be processed at start of next audio buffer
+    event.sample_offset = 0;  // set from the send time by the audio thread
     event.status = status;
     event.data1 = data1;
     event.data2 = data2;
 
-    return mh_midi_ringbuffer_push(dev->midi_send_buffer, &event);
+    return mh_midi_ringbuffer_push_at(dev->midi_send_buffer, &event, mh_midi_clock_ns());
 }
 
 // Parse a decimal integer occupying the whole of [begin, end).

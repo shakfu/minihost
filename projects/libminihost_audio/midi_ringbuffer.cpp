@@ -3,12 +3,14 @@
 
 #include "midi_ringbuffer.h"
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <new>
 
 struct MH_MidiRingBuffer {
     MH_MidiEvent* buffer;
+    uint64_t* times;  // arrival time per slot, parallel to buffer
     int capacity;
     int mask;  // capacity - 1, for fast modulo with power of 2
     std::atomic<int> write_pos;
@@ -49,7 +51,10 @@ MH_MidiRingBuffer* mh_midi_ringbuffer_create(int capacity) {
     if (!rb) return nullptr;
 
     rb->buffer = static_cast<MH_MidiEvent*>(std::calloc(capacity, sizeof(MH_MidiEvent)));
-    if (!rb->buffer) {
+    rb->times = static_cast<uint64_t*>(std::calloc(capacity, sizeof(uint64_t)));
+    if (!rb->buffer || !rb->times) {
+        std::free(rb->buffer);
+        std::free(rb->times);
         delete rb;
         return nullptr;
     }
@@ -65,10 +70,16 @@ MH_MidiRingBuffer* mh_midi_ringbuffer_create(int capacity) {
 void mh_midi_ringbuffer_free(MH_MidiRingBuffer* rb) {
     if (!rb) return;
     std::free(rb->buffer);
+    std::free(rb->times);
     delete rb;
 }
 
 int mh_midi_ringbuffer_push(MH_MidiRingBuffer* rb, const MH_MidiEvent* event) {
+    return mh_midi_ringbuffer_push_at(rb, event, 0);
+}
+
+int mh_midi_ringbuffer_push_at(MH_MidiRingBuffer* rb, const MH_MidiEvent* event,
+                               uint64_t time_ns) {
     if (!rb || !event) return 0;
 
     int write = rb->write_pos.load(std::memory_order_relaxed);
@@ -82,6 +93,7 @@ int mh_midi_ringbuffer_push(MH_MidiRingBuffer* rb, const MH_MidiEvent* event) {
 
     // Write the event
     rb->buffer[write] = *event;
+    rb->times[write] = time_ns;
 
     // Publish the write
     rb->write_pos.store(next_write, std::memory_order_release);
@@ -109,6 +121,11 @@ int mh_midi_ringbuffer_pop(MH_MidiRingBuffer* rb, MH_MidiEvent* event) {
 }
 
 int mh_midi_ringbuffer_pop_all(MH_MidiRingBuffer* rb, MH_MidiEvent* events, int max_events) {
+    return mh_midi_ringbuffer_pop_all_at(rb, events, nullptr, max_events);
+}
+
+int mh_midi_ringbuffer_pop_all_at(MH_MidiRingBuffer* rb, MH_MidiEvent* events,
+                                  uint64_t* times_ns, int max_events) {
     if (!rb || !events || max_events <= 0) return 0;
 
     int count = 0;
@@ -117,6 +134,7 @@ int mh_midi_ringbuffer_pop_all(MH_MidiRingBuffer* rb, MH_MidiEvent* events, int 
 
     while (read != write && count < max_events) {
         events[count] = rb->buffer[read];
+        if (times_ns) times_ns[count] = rb->times[read];
         read = (read + 1) & rb->mask;
         count++;
     }
@@ -141,6 +159,26 @@ int mh_midi_ringbuffer_count(MH_MidiRingBuffer* rb) {
     int read = rb->read_pos.load(std::memory_order_acquire);
     int write = rb->write_pos.load(std::memory_order_acquire);
     return (write - read) & rb->mask;
+}
+
+uint64_t mh_midi_clock_ns(void) {
+    return (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+int mh_midi_time_to_offset(uint64_t time_ns, uint64_t prev_cb_ns,
+                           uint64_t this_cb_ns, int frames) {
+    if (frames <= 1 || prev_cb_ns == 0 || this_cb_ns <= prev_cb_ns
+        || time_ns <= prev_cb_ns)
+        return 0;
+    if (time_ns >= this_cb_ns) return frames - 1;
+    // Scaled by the measured period rather than frames / sample rate, so a
+    // device clock that drifts from the system clock cannot push events out
+    // of the block.
+    const double pos = (double) (time_ns - prev_cb_ns)
+                     / (double) (this_cb_ns - prev_cb_ns);
+    const int off = (int) (pos * frames);
+    return off < frames ? off : frames - 1;
 }
 
 }  // extern "C"

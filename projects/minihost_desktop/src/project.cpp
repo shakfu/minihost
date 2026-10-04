@@ -136,6 +136,14 @@ void interleave(const std::vector<std::vector<float>>& planar,
 
 } // namespace
 
+int resampleQualityFromName(const juce::String& name)
+{
+    if (name == "best")    return MH_RESAMPLE_BEST;
+    if (name == "medium")  return MH_RESAMPLE_MEDIUM;
+    if (name == "fastest") return MH_RESAMPLE_FASTEST;
+    return -1;
+}
+
 void LoadedProject::updateMeters(float* const* const* out_buffers, int nframes)
 {
     for (size_t m = 0; m < meter_states.size(); ++m)
@@ -533,9 +541,10 @@ std::unique_ptr<LoadedProject> loadProject(const juce::File& path)
                          + juce::String(doc.sample_rate)
                          + " (enable resample on the input to convert)");
             char rerr[256] = {0};
-            MH_AudioData* rs = mh_audio_resample(
+            MH_AudioData* rs = mh_audio_resample_ex(
                 ad->data, ad->channels, (unsigned int) ad->frames,
                 ad->sample_rate, (unsigned int) doc.sample_rate,
+                (MH_ResampleQuality) resampleQualityFromName(in.resample_quality),
                 rerr, sizeof(rerr));
             if (!rs)
                 throwErr("input " + in.id + ": resample "

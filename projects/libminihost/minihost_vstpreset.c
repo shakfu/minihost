@@ -142,6 +142,16 @@ int mh_vstpreset_read(const char* path, MH_VstPreset* out,
         out->class_id[i + 1] = '\0';
         break;
     }
+    // A FUID is 32 hex digits. Only printable ASCII is required, so presets
+    // from older minihost releases ("minihost_unknown") still load.
+    for (const char* c = out->class_id; *c; c++) {
+        if (*c < 0x20 || *c > 0x7E) {
+            free(data);
+            set_err(err_buf, err_buf_size,
+                    "Invalid class ID: not printable ASCII");
+            return 0;
+        }
+    }
 
     unsigned long long raw_list_offset = read_le_u64(data + 40);
     if (raw_list_offset < HEADER_SIZE ||

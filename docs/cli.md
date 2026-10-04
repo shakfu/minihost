@@ -21,7 +21,7 @@ minihost [-r SAMPLE_RATE] [-b BLOCK_SIZE] <command> [options]
 ```console
 $ minihost --version
 minihost 0.9.0
-libminihost ABI 2.9.0
+libminihost ABI 2.10.0
 ```
 
 ## Commands
@@ -326,6 +326,7 @@ Morphing operates on normalized per-parameter values (not opaque state blobs), s
 minihost resample input.wav -o output.wav -r 48000
 minihost resample input.wav -o output.wav -r 44100 --bit-depth 16
 minihost resample input.wav -o output.wav -r 96000 -y
+minihost resample input.wav -o output.wav -r 48000 --quality fastest
 ```
 
 | Option | Description |
@@ -334,7 +335,10 @@ minihost resample input.wav -o output.wav -r 96000 -y
 | `-o, --output` | Output file path (required) |
 | `-r, --target-rate HZ` | Target sample rate (required) |
 | `--bit-depth {16,24,32}` | Output bit depth (default: 24) |
+| `--quality {best,medium,fastest}` | Sinc converter (default: best). See [`resample`](api_python.md#resampling) |
 | `-y, --overwrite` | Overwrite output if it exists |
+
+The rate ratio must be within 1/256 to 256. `minihost_c` and `minihost_cpp` take the same `--quality`, and all three CLIs write identical bytes for a given setting.
 
 ---
 

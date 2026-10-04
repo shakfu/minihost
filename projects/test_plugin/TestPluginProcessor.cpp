@@ -3,7 +3,44 @@
 
 #include "TestPluginProcessor.h"
 
+#include <cstdio>
+#include <cstdlib>
+#include <mutex>
+#include <thread>
+
 namespace {
+
+// Thread that constructed the first instance: the host's plugin thread.
+std::thread::id gCreatorThread;
+
+// With MINIHOST_TEST_AFFINITY_LOG set to a path, append `what` to that file
+// whenever a control callback runs on any other thread. The host promises to
+// marshal these to one thread; tests/test_thread_affinity.py checks it.
+void traceAffinity (const char* what)
+{
+    static const char* path = std::getenv ("MINIHOST_TEST_AFFINITY_LOG");
+    if (path == nullptr || std::this_thread::get_id() == gCreatorThread)
+        return;
+    static std::mutex m;
+    std::lock_guard<std::mutex> lock (m);
+    if (auto* f = std::fopen (path, "a"))
+    {
+        std::fprintf (f, "%s\n", what);
+        std::fclose (f);
+    }
+}
+
+// JUCE's default text for a 0.01-step float (two decimals), traced.
+juce::AudioParameterFloatAttributes tracedText()
+{
+    return juce::AudioParameterFloatAttributes().withStringFromValueFunction (
+        [] (float v, int length)
+        {
+            traceAffinity ("getText");
+            juce::String asText (v, 2);
+            return length > 0 ? asText.substring (0, length) : asText;
+        });
+}
 
 // Peak amplitude at velocity 127. See the note at the assignment below.
 constexpr float kVoiceScale = MinihostTestProcessor::kVoicePeak;
@@ -32,18 +69,45 @@ juce::AudioProcessor::BusesProperties MinihostTestProcessor::busLayout()
 MinihostTestProcessor::MinihostTestProcessor()
     : juce::AudioProcessor (busLayout())
 {
+    if (gCreatorThread == std::thread::id())
+        gCreatorThread = std::this_thread::get_id();
+
     // Added in ParamIndex order.
     addParameter (gain_ = new juce::AudioParameterFloat (
-        juce::ParameterID { "gain", 1 }, "Gain", 0.0f, 1.0f, 1.0f));
+        juce::ParameterID { "gain", 1 }, "Gain",
+        juce::NormalisableRange<float> (0.0f, 1.0f, 0.01f), 1.0f, tracedText()));
     addParameter (latency_ = new juce::AudioParameterInt (
         juce::ParameterID { "latency", 1 }, "Latency",
         0, kMaxLatencySamples, 0));
     addParameter (scMix_ = new juce::AudioParameterFloat (
-        juce::ParameterID { "scmix", 1 }, "Sidechain Mix", 0.0f, 1.0f, 0.0f));
+        juce::ParameterID { "scmix", 1 }, "Sidechain Mix",
+        juce::NormalisableRange<float> (0.0f, 1.0f, 0.01f), 0.0f, tracedText()));
+}
+
+void MinihostTestProcessor::releaseResources()          { traceAffinity ("releaseResources"); }
+double MinihostTestProcessor::getTailLengthSeconds() const { traceAffinity ("getTailLengthSeconds"); return 0.0; }
+int MinihostTestProcessor::getNumPrograms()              { traceAffinity ("getNumPrograms"); return 1; }
+int MinihostTestProcessor::getCurrentProgram()           { traceAffinity ("getCurrentProgram"); return 0; }
+void MinihostTestProcessor::setCurrentProgram (int)      { traceAffinity ("setCurrentProgram"); }
+const juce::String MinihostTestProcessor::getProgramName (int)
+{
+    traceAffinity ("getProgramName");
+    return "Default";
+}
+void MinihostTestProcessor::reset()                      { traceAffinity ("reset"); }
+bool MinihostTestProcessor::supportsDoublePrecisionProcessing() const
+{
+    traceAffinity ("supportsDoublePrecisionProcessing");
+    return false;
+}
+void MinihostTestProcessor::updateTrackProperties (const TrackProperties&)
+{
+    traceAffinity ("updateTrackProperties");
 }
 
 void MinihostTestProcessor::prepareToPlay (double sampleRate, int)
 {
+    traceAffinity ("prepareToPlay");
     sampleRate_ = sampleRate;
 
     // Allocated for the worst case once: a latency change mid-stream then
@@ -64,6 +128,7 @@ void MinihostTestProcessor::prepareToPlay (double sampleRate, int)
 
 bool MinihostTestProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
+    traceAffinity ("isBusesLayoutSupported");
     if (layouts.getMainOutputChannelSet() != juce::AudioChannelSet::mono()
         && layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo())
         return false;
@@ -180,6 +245,7 @@ void MinihostTestProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
 void MinihostTestProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
+    traceAffinity ("getStateInformation");
     juce::MemoryOutputStream out (destData, true);
     out.writeFloat (gain_->get());
     out.writeInt (latency_->get());
@@ -188,6 +254,7 @@ void MinihostTestProcessor::getStateInformation (juce::MemoryBlock& destData)
 
 void MinihostTestProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
+    traceAffinity ("setStateInformation");
     juce::MemoryInputStream in (data, (size_t) sizeInBytes, false);
     if (in.getNumBytesRemaining() < 12) return;
     *gain_    = in.readFloat();

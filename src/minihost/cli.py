@@ -1121,7 +1121,7 @@ def _collect_play_midi_events(midi_file_path: str, sample_rate: float):
         _collect_midi_events,
         _event_to_midi_tuple,
         _seconds_to_samples,
-        _tick_to_seconds,
+        _tick_converter,
     )
 
     mf = minihost.MidiFile()
@@ -1134,8 +1134,9 @@ def _collect_play_midi_events(midi_file_path: str, sample_rate: float):
 
     events = []
     last_sample = 0
+    to_seconds = _tick_converter(tempo_map, tpq)
     for ev in raw:
-        seconds = _tick_to_seconds(ev["tick"], tempo_map, tpq)
+        seconds = to_seconds(ev["tick"])
         sample_pos = _seconds_to_samples(seconds, sample_rate)
         tup = _event_to_midi_tuple(ev, sample_pos)
         if tup is not None:
@@ -1620,7 +1621,7 @@ def _load_midi_events(midi_path, sample_rate):
         _collect_midi_events,
         _event_to_midi_tuple,
         _seconds_to_samples,
-        _tick_to_seconds,
+        _tick_converter,
     )
 
     mf = minihost.MidiFile()
@@ -1634,9 +1635,9 @@ def _load_midi_events(midi_path, sample_rate):
     # Convert to sample positions
     result = []
     max_sample = 0
+    to_seconds = _tick_converter(tempo_map, tpq)
     for event in all_events:
-        tick = event["tick"]
-        seconds = _tick_to_seconds(tick, tempo_map, tpq)
+        seconds = to_seconds(event["tick"])
         sample_pos = _seconds_to_samples(seconds, sample_rate)
         midi_tuple = _event_to_midi_tuple(event, sample_pos)
         if midi_tuple:
@@ -2289,7 +2290,11 @@ def cmd_resample(args: argparse.Namespace) -> int:
         )
         return 1
 
-    data = resample(data, sr_in, sr_out)
+    try:
+        data = resample(data, sr_in, sr_out, quality=getattr(args, "quality", "best"))
+    except RuntimeError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
     bit_depth = args.bit_depth if args.bit_depth else 24
 
     try:
@@ -2940,6 +2945,12 @@ Examples:
         default=None,
         choices=[16, 24, 32],
         help="Output bit depth (default: 24)",
+    )
+    resample_p.add_argument(
+        "--quality",
+        default="best",
+        choices=["best", "medium", "fastest"],
+        help="Sinc converter: best (default), medium or fastest",
     )
     resample_p.add_argument(
         "-y", "--overwrite", action="store_true", help="Overwrite output if it exists"

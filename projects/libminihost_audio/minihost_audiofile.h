@@ -78,8 +78,17 @@ typedef struct {
 int mh_audio_get_file_info(const char* path, MH_AudioFileInfo* info,
                            char* err, size_t err_size);
 
-// Resample interleaved float32 audio data.
+// libsamplerate's band-limited sinc converters. Passband: BEST 97%,
+// MEDIUM 90%, FASTEST 80% of the lower Nyquist frequency.
+typedef enum {
+    MH_RESAMPLE_BEST = 0,
+    MH_RESAMPLE_MEDIUM = 1,
+    MH_RESAMPLE_FASTEST = 2
+} MH_ResampleQuality;
+
+// Resample interleaved float32 audio data at MH_RESAMPLE_BEST.
 // data_in: interleaved float32 samples [frames_in * channels]
+// The rate ratio must be within [1/256, 256].
 // Returns a new MH_AudioData with resampled audio, or NULL on error.
 // Caller must free with mh_audio_data_free().
 MH_AudioData* mh_audio_resample(const float* data_in,
@@ -88,6 +97,15 @@ MH_AudioData* mh_audio_resample(const float* data_in,
                                 unsigned int sample_rate_in,
                                 unsigned int sample_rate_out,
                                 char* err, size_t err_size);
+
+// mh_audio_resample with a choice of converter.
+MH_AudioData* mh_audio_resample_ex(const float* data_in,
+                                   unsigned int channels,
+                                   unsigned int frames_in,
+                                   unsigned int sample_rate_in,
+                                   unsigned int sample_rate_out,
+                                   MH_ResampleQuality quality,
+                                   char* err, size_t err_size);
 
 #ifdef __cplusplus
 }

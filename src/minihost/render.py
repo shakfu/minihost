@@ -8,6 +8,7 @@ provided.
 
 from __future__ import annotations
 
+import bisect
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -101,35 +102,34 @@ def _build_tempo_map(midi_file: MidiFile) -> list[tuple[int, float]]:
     return tempo_map
 
 
-def _tick_to_seconds(tick: int, tempo_map: list[tuple[int, float]], tpq: int) -> float:
-    """Convert MIDI tick to seconds using tempo map.
+def _tick_converter(
+    tempo_map: list[tuple[int, float]], tpq: int
+) -> Callable[[int], float]:
+    """Return a tick -> seconds function for ``tempo_map``.
 
-    Args:
-        tick: MIDI tick value
-        tempo_map: List of (tick, microseconds_per_quarter)
-        tpq: Ticks per quarter note
-
-    Returns:
-        Time in seconds
+    Seconds at each tempo change are summed once, so each conversion is a
+    binary search: O(log m) rather than O(m) for m tempo changes.
     """
-    seconds = 0.0
-    prev_tick = 0
-    prev_tempo = tempo_map[0][1]
+    if tempo_map[0][0] != 0:
+        tempo_map = [(0, tempo_map[0][1]), *tempo_map]
+    ticks = [t for t, _ in tempo_map]
+    tempos = [us / 1_000_000.0 for _, us in tempo_map]
+    starts = [0.0]
+    prev_tick, prev_tempo = 0, tempos[0]
+    for t, tempo in zip(ticks[1:], tempos[1:]):
+        starts.append(starts[-1] + ((t - prev_tick) / tpq) * prev_tempo)
+        prev_tick, prev_tempo = t, tempo
 
-    for map_tick, tempo in tempo_map:
-        if map_tick >= tick:
-            break
-        # Add time for segment from prev_tick to map_tick
-        delta_ticks = map_tick - prev_tick
-        seconds += (delta_ticks / tpq) * (prev_tempo / 1_000_000.0)
-        prev_tick = map_tick
-        prev_tempo = tempo
+    def convert(tick: int) -> float:
+        i = max(bisect.bisect_right(ticks, tick) - 1, 0)
+        return starts[i] + ((tick - ticks[i]) / tpq) * tempos[i]
 
-    # Add remaining time from last tempo change to target tick
-    delta_ticks = tick - prev_tick
-    seconds += (delta_ticks / tpq) * (prev_tempo / 1_000_000.0)
+    return convert
 
-    return seconds
+
+def _tick_to_seconds(tick: int, tempo_map: list[tuple[int, float]], tpq: int) -> float:
+    """Convert one MIDI tick to seconds. Use :func:`_tick_converter` in loops."""
+    return _tick_converter(tempo_map, tpq)(tick)
 
 
 def _seconds_to_beats_and_bpm(
@@ -255,8 +255,9 @@ def midi_file_to_events(
     tempo_map = _build_tempo_map(mf)
     tpq = mf.ticks_per_quarter
     events: list[tuple[int, int, int, int]] = []
+    to_seconds = _tick_converter(tempo_map, tpq)
     for event in _collect_midi_events(mf):
-        seconds = _tick_to_seconds(event["tick"], tempo_map, tpq)
+        seconds = to_seconds(event["tick"])
         offset = _seconds_to_samples(seconds, sample_rate)
         tup = _event_to_midi_tuple(event, offset)
         if tup is not None:
@@ -596,9 +597,9 @@ class MidiRenderer:
 
         # Convert events to sample positions
         self._events_with_samples = []
+        to_seconds = _tick_converter(self._tempo_map, self._tpq)
         for event in all_events:
-            tick = event["tick"]
-            seconds = _tick_to_seconds(tick, self._tempo_map, self._tpq)
+            seconds = to_seconds(event["tick"])
             sample_pos = _seconds_to_samples(seconds, self.sample_rate)
             self._events_with_samples.append((sample_pos, event))
 
