@@ -214,11 +214,17 @@ class TestTickToSeconds:
         rng = random.Random(7)
         for _ in range(200):
             first = rng.choice([0, 0, rng.randint(1, 500)])
-            changes = sorted(rng.randint(first, 20_000) for _ in range(rng.randint(0, 40)))
-            tempo_map = [(t, rng.uniform(200_000, 1_500_000)) for t in [first, *changes]]
+            changes = sorted(
+                rng.randint(first, 20_000) for _ in range(rng.randint(0, 40))
+            )
+            tempo_map = [
+                (t, rng.uniform(200_000, 1_500_000)) for t in [first, *changes]
+            ]
             tpq = rng.choice([96, 480, 960])
             convert = _tick_converter(tempo_map, tpq)
-            probes = [t for t, _ in tempo_map] + [rng.randint(-100, 25_000) for _ in range(50)]
+            probes = [t for t, _ in tempo_map] + [
+                rng.randint(-100, 25_000) for _ in range(50)
+            ]
             for tick in probes:
                 assert convert(tick) == linear(tick, tempo_map, tpq)
 

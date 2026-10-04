@@ -400,10 +400,20 @@ def test_bad_resample_quality_is_rejected(tmp_path):
                 "sample_rate": 48000,
                 "block_size": 256,
                 "nodes": [
-                    {"id": "in", "kind": "input", "channels": 2,
-                     "source": str(in_wav), "resample_quality": "ok"},
-                    {"id": "out", "kind": "output", "channels": 2,
-                     "sink": str(tmp_path / "out.wav"), "bit_depth": 24},
+                    {
+                        "id": "in",
+                        "kind": "input",
+                        "channels": 2,
+                        "source": str(in_wav),
+                        "resample_quality": "ok",
+                    },
+                    {
+                        "id": "out",
+                        "kind": "output",
+                        "channels": 2,
+                        "sink": str(tmp_path / "out.wav"),
+                        "bit_depth": 24,
+                    },
                 ],
                 "edges": [{"src": "in", "dst": "out"}],
             }

@@ -1210,12 +1210,23 @@ class TestCmdResample:
 
     def test_unknown_quality_is_rejected_by_the_parser(self, tmp_path):
         with pytest.raises(SystemExit) as exc:
-            self._run_main(["resample", "in.wav", "-o", str(tmp_path / "o.wav"),
-                            "-r", "48000", "--quality", "ok"])
+            self._run_main(
+                [
+                    "resample",
+                    "in.wav",
+                    "-o",
+                    str(tmp_path / "o.wav"),
+                    "-r",
+                    "48000",
+                    "--quality",
+                    "ok",
+                ]
+            )
         assert exc.value.code == 2
 
-    @pytest.mark.parametrize("flag, expected", [([], "best"),
-                                                (["--quality", "medium"], "medium")])
+    @pytest.mark.parametrize(
+        "flag, expected", [([], "best"), (["--quality", "medium"], "medium")]
+    )
     def test_quality_reaches_the_resampler(self, tmp_path, flag, expected):
         import numpy as np
         from minihost.audio_io import resample, write_audio
@@ -1233,8 +1244,12 @@ class TestCmdResample:
 
         src = tmp_path / "in.wav"
         write_audio(src, np.zeros((1, 100), dtype=np.float32), 48000)
-        assert self._run_main(["resample", str(src), "-o", str(tmp_path / "o.wav"),
-                               "-r", "100"]) == 1
+        assert (
+            self._run_main(
+                ["resample", str(src), "-o", str(tmp_path / "o.wav"), "-r", "100"]
+            )
+            == 1
+        )
         assert "between 1/256 and 256" in capsys.readouterr().err
 
 

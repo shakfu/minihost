@@ -20,7 +20,8 @@ from cli_helpers import find_test_plugin
 FX = find_test_plugin("MinihostTestFx", "MINIHOST_TEST_PLUGIN_FX")
 
 pytestmark = pytest.mark.skipif(
-    not FX, reason="MinihostTestFx not built; set MINIHOST_TEST_PLUGIN_FX or "
+    not FX,
+    reason="MinihostTestFx not built; set MINIHOST_TEST_PLUGIN_FX or "
     "build with -DMINIHOST_BUILD_TEST_PLUGIN=ON",
 )
 
@@ -77,8 +78,13 @@ def test_control_ops_run_on_the_plugin_thread(tmp_path):
     log = tmp_path / "affinity.log"
     env = {**os.environ, "MINIHOST_TEST_AFFINITY_LOG": str(log)}
     script = f"FX = {FX!r}\n" + CONTROL_OPS
-    r = subprocess.run([sys.executable, "-c", script], env=env,
-                       capture_output=True, text=True, timeout=120)
+    r = subprocess.run(
+        [sys.executable, "-c", script],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
     assert r.returncode == 0, r.stderr
     off_thread = sorted(set(log.read_text().split())) if log.exists() else []
     assert off_thread == [], f"called off the plugin thread: {off_thread}"

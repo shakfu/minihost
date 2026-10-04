@@ -116,8 +116,14 @@ def _src_wav(tmp_path):
 def test_resample_quality_selects_the_converter(tmp_path, quality):
     in_wav, data = _src_wav(tmp_path)
     proj = tmp_path / "p.json"
-    _write_project(proj, in_wav, tmp_path / "o.wav", project_sr=48000,
-                   resample=True, quality=quality)
+    _write_project(
+        proj,
+        in_wav,
+        tmp_path / "o.wav",
+        project_sr=48000,
+        resample=True,
+        quality=quality,
+    )
     loaded = minihost.load_project(proj)
     assert loaded.inputs[0].resample_quality == quality
     expected = audio_io.resample(data, 44100, 48000, quality=quality)
@@ -135,7 +141,8 @@ def test_resample_quality_defaults_to_best(tmp_path):
 def test_bad_resample_quality_is_rejected_even_when_rates_match(tmp_path, bad):
     in_wav, _ = _src_wav(tmp_path)
     proj = tmp_path / "p.json"
-    _write_project(proj, in_wav, tmp_path / "o.wav", project_sr=44100,
-                   resample=False, quality=bad)
+    _write_project(
+        proj, in_wav, tmp_path / "o.wav", project_sr=44100, resample=False, quality=bad
+    )
     with pytest.raises(minihost.ProjectError, match="resample_quality"):
         minihost.load_project(proj)

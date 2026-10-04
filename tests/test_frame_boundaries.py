@@ -15,7 +15,8 @@ np = pytest.importorskip("numpy")
 FX = find_test_plugin("MinihostTestFx", "MINIHOST_TEST_PLUGIN_FX")
 
 pytestmark = pytest.mark.skipif(
-    not FX, reason="MinihostTestFx not built; set MINIHOST_TEST_PLUGIN_FX or "
+    not FX,
+    reason="MinihostTestFx not built; set MINIHOST_TEST_PLUGIN_FX or "
     "build with -DMINIHOST_BUILD_TEST_PLUGIN=ON",
 )
 
@@ -44,14 +45,21 @@ def _call(plugin, method, n):
     return src, out
 
 
-METHODS = ["process", "process_midi", "process_auto", "process_sidechain",
-           "process_sidechain_midi", "process_double"]
+METHODS = [
+    "process",
+    "process_midi",
+    "process_auto",
+    "process_sidechain",
+    "process_sidechain_midi",
+    "process_double",
+]
 
 
 @pytest.fixture
 def fx():
-    plugin = minihost.Plugin(FX, sample_rate=48000, max_block_size=BLOCK,
-                             sidechain_channels=2)
+    plugin = minihost.Plugin(
+        FX, sample_rate=48000, max_block_size=BLOCK, sidechain_channels=2
+    )
     yield plugin
     plugin.close()
 

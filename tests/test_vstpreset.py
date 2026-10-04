@@ -750,9 +750,18 @@ _FUZZ_LIST = struct.unpack_from("<q", _FUZZ_SEED_FILE, 40)[0]
 _FUZZ_INT_FIELDS = [(4, "<i"), (40, "<q"), (_FUZZ_LIST + 4, "<i")] + [
     (_FUZZ_LIST + 8 + 20 * i + k, "<q") for i in range(2) for k in (4, 12)
 ]
-_FUZZ_EDGE_VALUES = [0, 1, -1, 47, 48, len(_FUZZ_SEED_FILE) - 1,
-                     len(_FUZZ_SEED_FILE), len(_FUZZ_SEED_FILE) + 1,
-                     2**31 - 1, -(2**31)]
+_FUZZ_EDGE_VALUES = [
+    0,
+    1,
+    -1,
+    47,
+    48,
+    len(_FUZZ_SEED_FILE) - 1,
+    len(_FUZZ_SEED_FILE),
+    len(_FUZZ_SEED_FILE) + 1,
+    2**31 - 1,
+    -(2**31),
+]
 
 
 class TestFuzzReadVstPreset:
@@ -767,14 +776,16 @@ class TestFuzzReadVstPreset:
             if op == 0 and data:
                 data[rng.randrange(len(data))] = rng.randrange(256)
             elif op == 1:
-                del data[rng.randrange(len(data) + 1):]
+                del data[rng.randrange(len(data) + 1) :]
             elif op == 2:
                 pos = rng.randrange(len(data) + 1)
                 data[pos:pos] = rng.randbytes(rng.randint(1, 16))
             else:
                 off, fmt = rng.choice(_FUZZ_INT_FIELDS)
                 if off + struct.calcsize(fmt) <= len(data):
-                    vals = _FUZZ_EDGE_VALUES + ([2**63 - 1, -(2**63)] if fmt == "<q" else [])
+                    vals = _FUZZ_EDGE_VALUES + (
+                        [2**63 - 1, -(2**63)] if fmt == "<q" else []
+                    )
                     struct.pack_into(fmt, data, off, rng.choice(vals))
         return bytes(data)
 
