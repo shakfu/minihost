@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.0]
+
 ### Added
 
 - `Plugin.process_sidechain_midi` and C ABI 2.10.0 `mh_process_sidechain_midi_io`. The sidechain path was the only one without MIDI, so an instrument with a sidechain could not be played. `process_audio` now accepts `midi` with `sidechain` instead of raising.
