@@ -1,0 +1,80 @@
+{
+  "minihost_project_version": 1,
+  "sample_rate": 48000,
+  "block_size": 512,
+  "duration_seconds": 8.0,
+  "nodes": [
+    {
+      "id": "mic",
+      "kind": "device_input",
+      "channels": 2
+    },
+    {
+      "id": "delay",
+      "kind": "plugin",
+      "name": "AUDelay",
+      "descriptor": "PFBMVUdJTiBuYW1lPSJBVURlbGF5IiBmb3JtYXQ9IkF1ZGlvVW5pdCIgZmlsZT0iQXVkaW9Vbml0OkVmZmVjdHMvYXVmeCxkZWx5LGFwcGwiLz4="
+    },
+    {
+      "id": "meter",
+      "kind": "meter",
+      "channels": 2
+    },
+    {
+      "id": "out",
+      "kind": "output",
+      "channels": 2,
+      "sink": "../../build/out/projects/09_mic_delay.wav",
+      "bit_depth": 24
+    },
+    {
+      "id": "speakers",
+      "kind": "device_output",
+      "channels": 2
+    }
+  ],
+  "edges": [
+    {
+      "src": "mic",
+      "dst": "delay",
+      "dst_port": 0
+    },
+    {
+      "src": "delay",
+      "dst": "meter",
+      "dst_port": 0
+    },
+    {
+      "src": "delay",
+      "dst": "out",
+      "dst_port": 0
+    },
+    {
+      "src": "delay",
+      "dst": "speakers",
+      "dst_port": 0
+    }
+  ],
+  "layout": {
+    "mic": {
+      "x": 60,
+      "y": 60
+    },
+    "delay": {
+      "x": 280,
+      "y": 60
+    },
+    "out": {
+      "x": 500,
+      "y": 60
+    },
+    "meter": {
+      "x": 500,
+      "y": 170
+    },
+    "speakers": {
+      "x": 500,
+      "y": 280
+    }
+  }
+}

@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.5...3.20)
 
 project(midifile C CXX)
 set(CMAKE_CXX_STANDARD 11)

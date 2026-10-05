@@ -1,0 +1,83 @@
+{
+  "minihost_project_version": 1,
+  "sample_rate": 48000,
+  "block_size": 512,
+  "nodes": [
+    {
+      "id": "click",
+      "kind": "metronome",
+      "channels": 2,
+      "gain": 0.5,
+      "freq_hz": 1000.0,
+      "decay_ms": 30.0
+    },
+    {
+      "id": "drums",
+      "kind": "input",
+      "channels": 2,
+      "source": "audio/drums.wav"
+    },
+    {
+      "id": "mix",
+      "kind": "mix",
+      "num_inputs": 2,
+      "channels": 2
+    },
+    {
+      "id": "out",
+      "kind": "output",
+      "channels": 2,
+      "sink": "../../build/out/projects/06_metronome.wav",
+      "bit_depth": 24
+    },
+    {
+      "id": "speakers",
+      "kind": "device_output",
+      "channels": 2
+    }
+  ],
+  "edges": [
+    {
+      "src": "click",
+      "dst": "mix",
+      "dst_port": 0
+    },
+    {
+      "src": "drums",
+      "dst": "mix",
+      "dst_port": 1
+    },
+    {
+      "src": "mix",
+      "dst": "out",
+      "dst_port": 0
+    },
+    {
+      "src": "mix",
+      "dst": "speakers",
+      "dst_port": 0
+    }
+  ],
+  "layout": {
+    "click": {
+      "x": 60,
+      "y": 60
+    },
+    "drums": {
+      "x": 60,
+      "y": 170
+    },
+    "mix": {
+      "x": 280,
+      "y": 60
+    },
+    "out": {
+      "x": 500,
+      "y": 60
+    },
+    "speakers": {
+      "x": 500,
+      "y": 170
+    }
+  }
+}

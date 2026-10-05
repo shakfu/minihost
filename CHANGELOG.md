@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+### Added
+
+- Desktop: live mode plays file input nodes from the transport position and records every file output node while the transport plays. Before, file inputs played silence in live mode and file outputs were never written. Play overwrites each sink. Stop finalizes the recordings and rewinds the transport to 0. Before, Stop only paused.
+
+- Desktop: "Play File" and "Stop File" on input and output nodes play the source or sink file straight to the device, bypassing the graph.
+
+- Desktop: live mode plays a `midi_input` node's `.mid` source from the transport position, merged with device MIDI, and follows Loop. Before, the file played only in offline renders. Held notes get note-offs at each loop wrap and on Stop, so no note hangs.
+
+- Desktop: a `sequencer` node generates a melody for MIDI plugins. It plays notes in a scale on the transport's step grid. Settings are steps, rate, root, scale, octaves, density, gate, velocity range, mutate, seed and channel. Each step's note is hashed from the seed and step index, so live playback, loops and offline renders produce the same notes. A pattern repeats every `steps` steps, and `mutate` is the chance that one pass of a step varies. Edits to a running sequencer apply at the next block without restarting Live. The node draws its pattern and outlines the playing step.
+
+  ```json
+  {"id": "seq", "kind": "sequencer", "steps": 16, "rate": 0.25, "root": 60,
+   "scale": "minor_pentatonic", "density": 0.65, "mutate": 0.1, "seed": 7}
+  ```
+
+- Desktop: projects take an optional top-level `bpm` (default 120). Offline renders use it, Start Live sets the transport to it, and Set BPM saves it. Set BPM no longer needs Live to be running.
+
+- Desktop: `--render-midi-log` writes the events reaching `midi_output` nodes during a headless render. Self-test outputs (`.device.wav`, `.midi.txt`) now go beside the project's first output sink instead of beside the project. Example projects write to `build/out/projects/`.
+
+- Desktop: a Loop toggle (status bar, Audio > Loop) repeats the input files. In live mode it loops the transport over the project length, which is the longest input, and Set Loop Region can narrow it. It also loops Play File. While Loop is on, the recording keeps growing across repeats.
+
+- Desktop: a status bar under the canvas. It has Start/Stop Live, Play, Stop, Loop and Render buttons. It shows the device and sample rate, the transport state and position, recording (blinking, with sink names and elapsed time), Loop, and Play File progress. A device rate that differs from the project rate shows in amber. Nodes carry matching markers: PLAYING, LOOPING or ENDED on inputs, REC on outputs, LIVE or OUT on device outputs, and PLAY FILE on the node whose file is playing. Before, sound was the only sign of any of these states. Play starts live mode if it is off.
+
+- Desktop: File > Render (Cmd+R) renders the open document, including unsaved edits. Before, render read a project file chosen from disk. That command remains as Render Project File.... The render dialog takes a tail in seconds, and the headless CLI takes `--render-tail=<s>`. Before, a render stopped at the input's end and cut off reverb and delay tails.
+
+### Fixed
+
+- Desktop: instruments with no audio inputs, such as Serum 2, Zebralette and Dexed, had no input port on the canvas, so no MIDI edge could be drawn to them. MIDI could only enter a plugin through its audio port. Plugins now have a separate MIDI input port, a lilac square. It is hidden only when a probe has shown the plugin takes no MIDI. The probe result is saved as a plugin node's `probe` object, so ports stay correct after reopening a project. Before, they reset to "effect with one audio input". Projects saved before this change get their probe data filled in from the opened plugins on Start Live.
+
+- Desktop: a project with no `midi_input` node ran the legacy `receives_midi` migration for every MIDI-capable plugin. A plugin already fed by a MIDI edge, from a sequencer, clock or MIDI processor, then got a second MIDI source, and its routed MIDI was lost. Dexed driven by a sequencer rendered silence. The migration now skips plugins that have an incoming MIDI edge.
+
+- Desktop: the recording frame count included blocks the recorder's FIFO had dropped, so the status bar overstated what was on disk. Only accepted blocks count now.
+
+### Changed
+
+- Vendored `midifile` declares `cmake_minimum_required(VERSION 3.5...3.20)`, which silences CMake's deprecation warning for minimums below 3.10.
+
+- Desktop: Start Live uses the open document, not the saved file, so it also works on untitled projects.
+
 ## [0.10.0]
 
 ### Added

@@ -53,6 +53,38 @@ public:
     void setOnAddPluginRequested(AddPluginRequestedCb cb)
     { on_add_plugin_requested_ = std::move(cb); }
 
+    // "Play File" / "Stop File" on input and output nodes. The app plays
+    // the input's source or the output's sink straight to the device.
+    using PlayFileCb = std::function<void(const juce::File&)>;
+    void setOnPlayFile(PlayFileCb cb) { on_play_file_ = std::move(cb); }
+    void setOnStopFile(std::function<void()> cb) { on_stop_file_ = std::move(cb); }
+
+    // What the engine is doing, drawn as node markers: file inputs and
+    // device outputs while the transport plays, output nodes while they
+    // record, and the node whose file Play File is playing.
+    struct Activity {
+        bool       live      = false;
+        bool       playing   = false;
+        bool       recording = false;
+        bool       looping   = false;
+        long long  position  = 0;   // transport, in samples
+        double     bpm       = 0.0; // live tempo; 0 = use the project's
+        juce::File preview;
+        bool operator==(const Activity& o) const
+        {
+            return live == o.live && playing == o.playing
+                && recording == o.recording && looping == o.looping
+                && position == o.position && bpm == o.bpm
+                && preview == o.preview;
+        }
+    };
+    void setActivity(const Activity& a)
+    {
+        if (a == activity_) return;
+        activity_ = a;
+        repaint();
+    }
+
     // Replace the displayed document. Triggers a re-layout: nodes
     // whose ids appear in `doc->layout` use those saved positions;
     // any remaining nodes are auto-positioned by topological depth.
@@ -66,6 +98,10 @@ public:
     // captured editor state), call this so the canvas refreshes its
     // label cache. Pure repaint trigger; no layout recompute.
     void notifyDocumentChanged() { repaint(); }
+
+    // Re-derives node labels and ports from the document (e.g. after
+    // probe data was filled in). Keeps selection and undo history.
+    void refreshLayout() { rebuildLayout(); repaint(); }
 
     // Undo / redo of canvas edits (add / delete / connect / move /
     // properties). Snapshot-based: each edit records the pre-edit
@@ -126,7 +162,11 @@ private:
         juce::Rectangle<float> bounds;
         int                 num_input_ports  = 0;
         int                 num_output_ports = 0;  // 0 for output kind, 1 otherwise
+        bool                midi_in          = false;  // separate MIDI input port
     };
+
+    // Port index of a node's MIDI input port (see NodeLayout::midi_in).
+    static constexpr int kMidiPort = -2;
 
     // Per-edge visual data. doc_edge_index is the position of the
     // corresponding entry in doc_->edges so deletes remove the right
@@ -158,6 +198,9 @@ private:
 
     juce::Point<float> outputPortPos(const NodeLayout& n) const;
     juce::Point<float> inputPortPos (const NodeLayout& n, int port) const;
+    // Where an edge ends: the MIDI port for MIDI edges into a node that
+    // has one, else the audio port.
+    juce::Point<float> edgeEndPos(const EdgeLayout& e) const;
 
     // Bezier control points used by both paint and edge hit-testing.
     void edgeCubic(juce::Point<float> p0, juce::Point<float> p1,
@@ -202,6 +245,17 @@ private:
     void timerCallback() override { repaint(); }
     OpenPluginEditorCb        on_open_plugin_editor_;
     AddPluginRequestedCb      on_add_plugin_requested_;
+    PlayFileCb                on_play_file_;
+    Activity                  activity_;
+
+    // Activity marker for node n: outline colour and corner tag. Returns
+    // false when the node is idle.
+    bool nodeActivity(const NodeLayout& n, juce::Colour& colour,
+                      juce::String& tag) const;
+    // Sequencer node: one cell per step of the current pass, lit where a
+    // note plays, the playing step outlined.
+    void paintSequencerSteps(juce::Graphics& g, const NodeLayout& n) const;
+    std::function<void()>     on_stop_file_;
     std::vector<NodeLayout>   nodes_;
     std::vector<EdgeLayout>   edges_;
 

@@ -1,0 +1,90 @@
+{
+  "minihost_project_version": 1,
+  "sample_rate": 48000,
+  "block_size": 512,
+  "bpm": 110.0,
+  "duration_seconds": 8.0,
+  "nodes": [
+    {
+      "id": "seq",
+      "kind": "sequencer",
+      "steps": 16,
+      "rate": 0.25,
+      "root": 60,
+      "scale": "minor_pentatonic",
+      "octaves": 2,
+      "density": 0.65,
+      "gate": 0.4,
+      "mutate": 0.1,
+      "seed": 7
+    },
+    {
+      "id": "synth",
+      "kind": "plugin",
+      "name": "AUMIDISynth",
+      "descriptor": "PFBMVUdJTiBuYW1lPSJBVU1JRElTeW50aCIgZm9ybWF0PSJBdWRpb1VuaXQiIGZpbGU9IkF1ZGlvVW5pdDpTeW50aHMvYXVtdSxtc3luLGFwcGwiLz4="
+    },
+    {
+      "id": "reverb",
+      "kind": "plugin",
+      "name": "AUReverb2",
+      "descriptor": "PFBMVUdJTiBuYW1lPSJBVVJldmVyYjIiIGZvcm1hdD0iQXVkaW9Vbml0IiBmaWxlPSJBdWRpb1VuaXQ6RWZmZWN0cy9hdWZ4LHJ2YjIsYXBwbCIvPg=="
+    },
+    {
+      "id": "out",
+      "kind": "output",
+      "channels": 2,
+      "sink": "../../build/out/projects/11_sequencer.wav",
+      "bit_depth": 24
+    },
+    {
+      "id": "speakers",
+      "kind": "device_output",
+      "channels": 2
+    }
+  ],
+  "edges": [
+    {
+      "src": "seq",
+      "dst": "synth",
+      "kind": "midi"
+    },
+    {
+      "src": "synth",
+      "dst": "reverb",
+      "dst_port": 0
+    },
+    {
+      "src": "reverb",
+      "dst": "out",
+      "dst_port": 0
+    },
+    {
+      "src": "reverb",
+      "dst": "speakers",
+      "dst_port": 0
+    }
+  ],
+  "layout": {
+    "seq": {
+      "x": 60,
+      "y": 60
+    },
+    "synth": {
+      "x": 280,
+      "y": 60
+    },
+    "reverb": {
+      "x": 500,
+      "y": 60
+    },
+    "out": {
+      "x": 720,
+      "y": 60
+    },
+    "speakers": {
+      "x": 720,
+      "y": 170
+    }
+  }
+}

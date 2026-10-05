@@ -23,10 +23,28 @@
 //       watchdog kills the process if the probe exceeds an upper
 //       time bound. Exit 0 on clean completion.
 //
-//   minihost_desktop --render-project=<project.json>
-//       Headless render. Same code path as the File > Render Project
-//       menu but with no window; prints progress to stderr and exits
-//       with the render's success/failure status.
+//   minihost_desktop --render-project=<project.json> [--render-tail=<s>]
+//                    [--render-midi-log]
+//       Headless render. Same code path as File > Render but with no
+//       window; prints progress to stderr and exits with the render's
+//       success/failure status. --render-tail extends the render.
+//       --render-midi-log writes events reaching midi_output nodes to
+//       <project>.render-midi.txt next to the first output sink.
+//
+//   minihost_desktop --live-selftest=<project.json> [--live-loop]
+//       Headless LiveEngine self-test with no audio device. Plays the
+//       transport twice for the project length, calling the device
+//       callback directly, so file outputs are recorded and the device
+//       output is captured to <project>.device.wav next to the first
+//       output sink. --live-loop turns
+//       Loop on and plays one take of 2.5 project lengths. Checks the
+//       recording state queries. Events reaching midi_output nodes are
+//       written to <project>.midi.txt (next to the sink) as
+//       "frame status data1 data2". --live-reseed adds 1 to every
+//       sequencer's seed halfway through the first take. If plugins
+//       lacked probe data, the project with it filled in is saved as
+//       <project>.probed.json.
+//       Driven by tests/test_desktop_live.py.
 //
 //   minihost_desktop --save-roundtrip=<project.json>
 //       Headless parse + re-save to <input>.resaved.json. Exercises the
@@ -88,6 +106,7 @@
 #include "live.h"
 #include "plugin_scanner.h"
 #include "project.h"
+#include "status_bar.h"
 
 #include <atomic>
 #include <cstdio>
@@ -794,9 +813,11 @@ public:
             "File > New Project        start an empty canvas.\n"
             "File > Open Project...    load an existing project.json.\n"
             "File > Open Plugin...     host a single plugin's editor.\n"
-            "File > Render Project...  render a project.json to disk.\n\n"
+            "File > Render Project File...  render a project.json to disk.\n\n"
             "Once a project is open, right-click the canvas to add nodes;\n"
-            "drag from an output port to an input port to connect them.",
+            "drag from an output port to an input port to connect them.\n"
+            "Cmd+R renders it. Audio > Start Live, then Transport: Play\n"
+            "plays it and records its output nodes.",
             juce::dontSendNotification);
         welcomeLabel_.setJustificationType(juce::Justification::centred);
         welcomeLabel_.setColour(juce::Label::textColourId,
@@ -841,11 +862,17 @@ public:
             });
             if (on_add_plugin_requested_)
                 canvas_->setOnAddPluginRequested(on_add_plugin_requested_);
+            canvas_->setOnPlayFile(on_play_file_);
+            canvas_->setOnStopFile(on_stop_file_);
+            status_bar_ = std::make_unique<StatusBar>(
+                status_actions_, live_engine_getter_, *canvas_);
+            project_view_.addAndMakeVisible(canvas_.get());
+            project_view_.addAndMakeVisible(status_bar_.get());
         }
         canvas_->setDocument(current_doc_.get());
         // setContentNonOwned releases the previous content (welcomeLabel)
         // without deleting it (we still own it).
-        setContentNonOwned(canvas_.get(), /*resizeToFit=*/false);
+        setContentNonOwned(&project_view_, /*resizeToFit=*/false);
         setName("minihost: "
                 + (project_path == juce::File()
                        ? juce::String("(untitled)")
@@ -886,6 +913,31 @@ public:
         if (canvas_)
             canvas_->setOnAddPluginRequested(on_add_plugin_requested_);
     }
+    // File > Render (Cmd+R): renders the open document, saved or not.
+    void setOnRenderOpenProject(std::function<void()> cb)
+    { on_render_open_project_ = std::move(cb); }
+    void renderOpenProject()
+    { if (has_open_project_ && on_render_open_project_) on_render_open_project_(); }
+
+    // Status bar buttons and engine access. Set before the first
+    // showProject().
+    void setStatusBar(StatusBar::Actions actions,
+                      std::function<LiveEngine*()> engine)
+    {
+        status_actions_     = std::move(actions);
+        live_engine_getter_ = std::move(engine);
+    }
+    void setOnToggleLoop(std::function<void()> cb)
+    { on_toggle_loop_ = std::move(cb); }
+    void setLooping(bool on) { looping_ = on; menuItemsChanged(); }
+
+    // Node "Play File" / "Stop File" and Audio > Stop File Playback.
+    // Set before the first showProject().
+    void setOnPlayFile(std::function<void(const juce::File&)> cb)
+    { on_play_file_ = std::move(cb); }
+    void setOnStopFile(std::function<void()> cb)
+    { on_stop_file_ = std::move(cb); }
+
     // File > Open Plugin... delegates here when set (app shows its shared
     // picker, then hosts the pick in a standalone EditorWindow). When
     // unset, showOpenPluginChooser's raw file chooser is used as a fallback.
@@ -913,6 +965,18 @@ public:
             app->systemRequestedQuit();
     }
 
+    // Unhandled keys bubble up from the canvas.
+    bool keyPressed(const juce::KeyPress& key) override
+    {
+        if (key.getModifiers().isCommandDown()
+            && (key.getKeyCode() == 'R' || key.getKeyCode() == 'r'))
+        {
+            renderOpenProject();
+            return true;
+        }
+        return juce::DocumentWindow::keyPressed(key);
+    }
+
     // ----- juce::MenuBarModel ----- //
     juce::StringArray getMenuBarNames() override
     {
@@ -932,8 +996,11 @@ public:
             m.addItem(kMenuSaveProjectAs, "Save Project As...",
                       /*isActive=*/has_open_project_);
             m.addSeparator();
+            m.addItem(kMenuRender,        "Render...    Cmd+R",
+                      /*isActive=*/has_open_project_);
+            m.addItem(kMenuRenderProject, "Render Project File...");
+            m.addSeparator();
             m.addItem(kMenuOpenPlugin,    "Open Plugin...");
-            m.addItem(kMenuRenderProject, "Render Project...");
             m.addSeparator();
             m.addItem(kMenuQuit, "Quit");
         }
@@ -962,14 +1029,17 @@ public:
             m.addItem(kMenuStopLive, "Stop Live",
                       /*isActive=*/live_running_);
             m.addSeparator();
-            m.addItem(kMenuTransportPlay, "Transport: Play",
-                      /*isActive=*/live_running_);
+            m.addItem(kMenuTransportPlay, "Transport: Play (records outputs)",
+                      /*isActive=*/has_open_project_);
             m.addItem(kMenuTransportStop, "Transport: Stop",
                       /*isActive=*/live_running_);
             m.addItem(kMenuSetBpm, "Set BPM...",
-                      /*isActive=*/live_running_);
+                      /*isActive=*/has_open_project_);
             m.addItem(kMenuSetLoop, "Set Loop Region...",
                       /*isActive=*/live_running_);
+            m.addItem(kMenuLoop, "Loop", /*isEnabled=*/true, /*isTicked=*/looping_);
+            m.addSeparator();
+            m.addItem(kMenuStopFile, "Stop File Playback");
         }
         else if (menuName == "Help")
         {
@@ -997,6 +1067,11 @@ public:
             if (on_save_project_as_) on_save_project_as_();
             break;
         case kMenuRenderProject: showRenderProjectChooser(); break;
+        case kMenuRender:
+            renderOpenProject();
+            break;
+        case kMenuStopFile: if (on_stop_file_) on_stop_file_(); break;
+        case kMenuLoop: if (on_toggle_loop_) on_toggle_loop_(); break;
         case kMenuUndo: if (canvas_ != nullptr) canvas_->undo(); break;
         case kMenuRedo: if (canvas_ != nullptr) canvas_->redo(); break;
         case kMenuPluginBrowser:
@@ -1042,6 +1117,23 @@ private:
         kMenuSetLoop,
         kMenuQuit,
         kMenuAbout,
+        kMenuRender,
+        kMenuStopFile,
+        kMenuLoop,
+    };
+
+    // Canvas above, status bar below.
+    struct ProjectView : juce::Component
+    {
+        void resized() override
+        {
+            auto r = getLocalBounds();
+            if (getNumChildComponents() == 2)
+            {
+                getChildComponent(1)->setBounds(r.removeFromBottom(StatusBar::kHeight));
+                getChildComponent(0)->setBounds(r);
+            }
+        }
     };
 
     void showOpenPluginChooser()
@@ -1130,9 +1222,18 @@ private:
     std::function<void()>              on_add_plugin_requested_;
     std::function<void()>              on_request_open_plugin_;
     std::function<void()>              on_doc_edited_external_;
+    std::function<void()>              on_render_open_project_;
+    std::function<void(const juce::File&)> on_play_file_;
+    std::function<void()>              on_stop_file_;
     juce::Label                        welcomeLabel_;
     std::unique_ptr<juce::FileChooser> chooser_;
     std::unique_ptr<CanvasComponent>   canvas_;
+    std::unique_ptr<StatusBar>         status_bar_;
+    ProjectView                        project_view_;
+    StatusBar::Actions                 status_actions_;
+    std::function<LiveEngine*()>       live_engine_getter_;
+    std::function<void()>              on_toggle_loop_;
+    bool                               looping_ = false;
     std::unique_ptr<project::ProjectDocument> current_doc_;
     juce::File                         current_project_;
     bool                               has_open_project_ = false;
@@ -1155,27 +1256,26 @@ public:
 class ProjectRenderJob : public juce::ThreadWithProgressWindow
 {
 public:
-    static void launch(juce::File project_file,
+    static void launch(project::ProjectDocument doc,
+                       const juce::String& title,
                        project::RenderOptions options = {})
     {
         // Lifetime: deletes itself in threadComplete().
-        auto* job = new ProjectRenderJob(std::move(project_file),
-                                         options);
+        auto* job = new ProjectRenderJob(std::move(doc), title, options);
         job->launchThread();
     }
 
     void run() override
     {
         try {
-            auto loaded = project::loadProject(project_file_);
+            auto loaded = project::loadProject(doc_);
             setStatusMessage("Rendering...");
 
             std::atomic<bool> cancel{ false };
             juce::String err;
-            const int total = loaded->duration_frames;
             const bool ok = project::renderProject(
                 *loaded, cancel,
-                [this, total, &cancel](int done, int /*tot*/) {
+                [this, &cancel](int done, int total) {
                     if (threadShouldExit()) cancel.store(true);
                     setProgress(total > 0
                                 ? (double) done / (double) total
@@ -1219,19 +1319,20 @@ public:
     }
 
 private:
-    ProjectRenderJob(juce::File project_file,
+    ProjectRenderJob(project::ProjectDocument doc,
+                     const juce::String& title,
                      project::RenderOptions options)
         : juce::ThreadWithProgressWindow(
-              juce::String("Rendering ") + project_file.getFileName(),
+              juce::String("Rendering ") + title,
               /*hasProgressBar=*/true,
               /*hasCancelButton=*/true),
-          project_file_(std::move(project_file)),
+          doc_(std::move(doc)),
           options_(options)
     {
         setStatusMessage("Loading project...");
     }
 
-    juce::File              project_file_;
+    project::ProjectDocument doc_;
     project::RenderOptions  options_;
     bool                    succeeded_ = false;
     juce::String            error_;
@@ -1306,7 +1407,22 @@ public:
                 quit();
                 return;
             }
-            runHeadlessProjectRender(juce::File(path));
+            project::RenderOptions opts;
+            if (args.containsOption("--render-tail"))
+                opts.tail_seconds = args.removeValueForOption("--render-tail")
+                                        .getDoubleValue();
+            const bool midi_log = args.removeOptionIfFound("--render-midi-log");
+            runHeadlessProjectRender(juce::File(path), opts, midi_log);
+            return;
+        }
+
+        if (args.containsOption("--live-selftest"))
+        {
+            const auto path = args.removeValueForOption("--live-selftest");
+            const bool loop   = args.removeOptionIfFound("--live-loop");
+            const bool reseed = args.removeOptionIfFound("--live-reseed");
+            setApplicationReturnValue(runLiveSelfTest(juce::File(path), loop, reseed));
+            quit();
             return;
         }
 
@@ -1471,11 +1587,44 @@ public:
                 [this]() { showMidiInputDialog(); },
                 [this]() { startLive(); },
                 [this]() { stopLive(); },
-                [this]() { if (live_) live_->setTransportPlaying(true); },
-                [this]() { if (live_) live_->setTransportPlaying(false); },
+                [this]() { transportPlay(); },
+                [this]() { if (live_) live_->stopTransport(); },
                 [this]() { showBpmDialog(); },
                 [this]() { showLoopDialog(); });
             mainWindow_->setOnPluginBrowser([this]() { showPluginBrowser(); });
+            mainWindow_->setOnRenderOpenProject([this]() {
+                if (!mainWindow_) return;
+                auto* doc = mainWindow_->currentDocument();
+                if (doc == nullptr) return;
+                const auto& path = mainWindow_->currentProjectPath();
+                showRenderOptions(*doc, path == juce::File()
+                                            ? juce::String("(untitled)")
+                                            : path.getFileName());
+            });
+            mainWindow_->setOnToggleLoop([this]() { toggleLoop(); });
+            mainWindow_->setStatusBar(
+                StatusBar::Actions{
+                    [this]() {
+                        if (live_ && live_->isRunning()) stopLive();
+                        else                             startLive();
+                    },
+                    [this]() { transportPlay(); },
+                    [this]() {
+                        if (live_) { live_->stopTransport(); live_->stopPreview(); }
+                    },
+                    [this]() { toggleLoop(); },
+                    [this]() { mainWindow_->renderOpenProject(); } },
+                [this]() { return live_.get(); });
+            mainWindow_->setOnPlayFile([this](const juce::File& f) {
+                juce::String err;
+                if (!ensureLiveEngine().startPreview(f, err))
+                    juce::AlertWindow::showMessageBoxAsync(
+                        juce::AlertWindow::WarningIcon,
+                        "Could not play file", err);
+            });
+            mainWindow_->setOnStopFile([this]() {
+                if (live_) live_->stopPreview();
+            });
             mainWindow_->setOnAddLibraryPlugin(
                 [this]() { showAddLibraryPluginMenu(); });
 
@@ -1518,8 +1667,11 @@ public:
             // crash costs at most kAutosaveIntervalMs of unsaved editing. Only
             // the GUI shell participates (headless modes share the settings
             // dir but must not touch a crashed session's recovery file).
-            mainWindow_->setOnDocumentEditedExternal(
-                [this]() { doc_dirty_ = true; unsaved_changes_ = true; });
+            mainWindow_->setOnDocumentEditedExternal([this]() {
+                doc_dirty_ = true;
+                unsaved_changes_ = true;
+                pushSequencerEdits();
+            });
             autosave_enabled_ = true;
             autosave_timer_ = std::make_unique<CallbackTimer>(
                 [this]() { performAutosave(); });
@@ -1952,13 +2104,20 @@ private:
 
     // Headless render: blocks the message thread (it's fine here -- no
     // window is open) and exits when done.
-    void runHeadlessProjectRender(juce::File project_file)
+    void runHeadlessProjectRender(juce::File project_file,
+                                  project::RenderOptions options,
+                                  bool midi_log)
     {
         std::atomic<bool> cancel{ false };
         int last_pct = -1;
         juce::String err;
         try {
             auto loaded = project::loadProject(project_file);
+            juce::String log;
+            if (midi_log)
+                options.after_block = [&](int frame, int) {
+                    appendMidiOutputs(*loaded, frame, log);
+                };
             std::fprintf(stderr,
                 "loaded: %d input(s), %d output(s), %d plugin(s), "
                 "duration=%d frames\n",
@@ -1975,7 +2134,7 @@ private:
                         last_pct = pct;
                     }
                 },
-                err);
+                err, options);
             if (!ok)
             {
                 std::fprintf(stderr,
@@ -1987,6 +2146,9 @@ private:
             for (const auto& on : loaded->doc.outputs)
                 std::fprintf(stderr, "wrote %s\n",
                              on.sink.getFullPathName().toRawUTF8());
+            if (midi_log)
+                artifactFile(loaded->doc, project_file, ".render-midi.txt")
+                    .replaceWithText(log);
             setApplicationReturnValue(0);
             quit();
         } catch (const std::exception& e) {
@@ -1998,9 +2160,22 @@ private:
 
     void runProjectRender(juce::File project_file)
     {
-        // Show an options dialog before launching the render. The
-        // dialog is async (JUCE modal loops are disabled); it kicks
-        // off ProjectRenderJob::launch on OK.
+        try {
+            showRenderOptions(project::parseProjectFile(project_file),
+                              project_file.getFileName());
+        } catch (const std::exception& e) {
+            juce::AlertWindow::showMessageBoxAsync(
+                juce::AlertWindow::WarningIcon,
+                "Render failed", e.what());
+        }
+    }
+
+    // Shows the options dialog, then renders a snapshot of `doc`. The
+    // dialog is async (JUCE modal loops are disabled); it kicks off
+    // ProjectRenderJob::launch on OK.
+    void showRenderOptions(project::ProjectDocument doc,
+                           const juce::String& title)
+    {
         auto* aw = new juce::AlertWindow(
             "Render options",
             "Configure render output:",
@@ -2009,13 +2184,14 @@ private:
         aw->getComboBoxComponent("bit_depth")->setSelectedItemIndex(1);
         aw->addTextEditor("normalize", "0",
                           "Normalize to dBFS (0 = off, e.g. -1.0)");
+        aw->addTextEditor("tail", "0",
+                          "Tail seconds past the input end (reverb, delay)");
         aw->addButton("Render", 1, juce::KeyPress(juce::KeyPress::returnKey));
         aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
 
-        const juce::File pf = std::move(project_file);
         aw->enterModalState(true,
             juce::ModalCallbackFunction::create(
-                [aw, pf](int result) {
+                [aw, doc = std::move(doc), title](int result) {
                     if (result == 1)
                     {
                         project::RenderOptions opts;
@@ -2027,11 +2203,148 @@ private:
                         opts.normalize_dbfs
                             = aw->getTextEditorContents("normalize")
                                   .getDoubleValue();
-                        ProjectRenderJob::launch(pf, opts);
+                        opts.tail_seconds
+                            = aw->getTextEditorContents("tail")
+                                  .getDoubleValue();
+                        ProjectRenderJob::launch(doc, title, opts);
                     }
                     delete aw;
                 }),
             /*deleteWhenDismissed=*/false);
+    }
+
+    // Test artifacts go beside the project's first output sink (build/out
+    // for the examples), else beside the project.
+    static juce::File artifactFile(const project::ProjectDocument& doc,
+                                   const juce::File& project_file,
+                                   const juce::String& suffix)
+    {
+        const auto dir = doc.outputs.empty()
+                       ? project_file.getParentDirectory()
+                       : doc.outputs.front().sink.getParentDirectory();
+        dir.createDirectory();
+        return dir.getChildFile(project_file.getFileNameWithoutExtension() + suffix);
+    }
+
+    // Appends the events now held by each midi_output node as lines of
+    // "frame status data1 data2", frames offset by `base`.
+    static void appendMidiOutputs(project::LoadedProject& lp, long long base,
+                                  juce::String& log)
+    {
+        MH_MidiEvent evs[MH_GRAPH_MIDI_OUTPUT_CAPACITY];
+        for (auto nid : lp.midi_output_node_ids)
+        {
+            int count = 0;
+            mh_graph_get_midi_output_events(lp.graph->handle(), nid, evs,
+                                            MH_GRAPH_MIDI_OUTPUT_CAPACITY, &count);
+            for (int i = 0; i < std::min(count, MH_GRAPH_MIDI_OUTPUT_CAPACITY); ++i)
+                log << (base + evs[i].sample_offset) << " " << (int) evs[i].status
+                    << " " << (int) evs[i].data1 << " " << (int) evs[i].data2 << "\n";
+        }
+    }
+
+    // Two takes of the project length each, in uneven callback sizes, so
+    // the test sees recording, file-input playback and the rewind on Stop.
+    int runLiveSelfTest(const juce::File& project_file, bool loop, bool reseed)
+    {
+        auto fail = [](const char* m) {
+            std::fprintf(stderr, "live-selftest: %s\n", m);
+            return 1;
+        };
+        try {
+            const auto doc = project::parseProjectFile(project_file);
+            LiveEngine engine;
+            engine.setLooping(loop);
+            juce::String err;
+            if (!engine.start(doc, err, /*attach_device=*/false))
+                return fail(err.toRawUTF8());
+            {
+                auto probed = doc;
+                if (project::fillMissingProbes(probed, *engine.loadedProject()))
+                    project::saveProjectFile(
+                        artifactFile(doc, project_file, ".probed.json"), probed);
+            }
+            const int takes  = loop ? 1 : 2;
+            const int frames = loop ? engine.projectFrames() * 5 / 2
+                                    : engine.projectFrames();
+            auto* lp = engine.loadedProject();
+            // MIDI outputs are drained per callback, so a callback must be
+            // a single render chunk.
+            const int callback = lp->midi_output_node_ids.empty()
+                               ? 300 : std::min(300, lp->doc.block_size);
+            juce::String midi_log;
+            long long elapsed = 0;
+            auto drainMidi = [&](int n) {
+                appendMidiOutputs(*lp, elapsed, midi_log);
+                elapsed += n;
+            };
+            std::vector<float> l((size_t) callback), r((size_t) callback), device;
+            float* outs[2] = { l.data(), r.data() };
+            const juce::AudioIODeviceCallbackContext ctx{};
+            for (int take = 0; take < takes; ++take)
+            {
+                if (!engine.play(err))
+                    return fail(err.toRawUTF8());
+                if (!engine.isRecording())
+                    return fail("isRecording() false after play()");
+                // One extra callback after the take carries the Stop note-offs.
+                for (int done = 0; done < frames; done += callback)
+                {
+                    if (reseed && take == 0 && done < frames / 2
+                        && done + callback >= frames / 2)
+                        for (auto s : doc.sequencers)
+                        {
+                            s.params.seed += 1;
+                            if (!engine.updateSequencer(s.id, s.params))
+                                return fail("updateSequencer() failed");
+                        }
+                    const int n = std::min(callback, frames - done);
+                    engine.audioDeviceIOCallbackWithContext(
+                        nullptr, 0, outs, 2, n, ctx);
+                    drainMidi(n);
+                    // Faster than real time: let the disk writer keep up so
+                    // the recorder's 2 s FIFO never drops a block.
+                    while (engine.recordingBacklog() > doc.sample_rate / 2)
+                        juce::Thread::sleep(1);
+                    for (int i = 0; i < n; ++i)
+                    {
+                        device.push_back(l[(size_t) i]);
+                        device.push_back(r[(size_t) i]);
+                    }
+                }
+                const long long want_pos = loop ? frames % engine.projectFrames()
+                                                : frames;
+                if (engine.positionSamples() != want_pos)
+                    return fail("positionSamples() does not match the playhead");
+                if (engine.recordedFrames() != frames)
+                    return fail("recordedFrames() does not match frames played");
+                engine.stopTransport();
+                if (engine.isRecording())
+                    return fail("isRecording() true after stopTransport()");
+                // Render one callback stopped, to flush note-offs.
+                engine.audioDeviceIOCallbackWithContext(nullptr, 0, outs, 2,
+                                                        callback, ctx);
+                drainMidi(callback);
+            }
+            if (!lp->midi_output_node_ids.empty())
+                artifactFile(doc, project_file, ".midi.txt").replaceWithText(midi_log);
+            engine.stop();
+            const auto out = artifactFile(doc, project_file, ".device.wav");
+            char werr[256] = {0};
+            if (!mh_audio_write(out.getFullPathName().toRawUTF8(),
+                                device.data(), 2,
+                                (unsigned) (device.size() / 2),
+                                (unsigned) doc.sample_rate, 32,
+                                werr, sizeof(werr)))
+            {
+                std::fprintf(stderr, "live-selftest: %s\n", werr);
+                return 1;
+            }
+            return 0;
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "live-selftest: %s\n", e.what());
+            return 1;
+        }
     }
 
     void runSaveRoundtrip(juce::File project_file)
@@ -2688,8 +3001,8 @@ private:
     void startLive()
     {
         if (!mainWindow_) return;
-        const auto& path = mainWindow_->currentProjectPath();
-        if (path == juce::File())
+        auto* doc = mainWindow_->currentDocument();
+        if (doc == nullptr)
         {
             juce::AlertWindow::showMessageBoxAsync(
                 juce::AlertWindow::InfoIcon,
@@ -2698,10 +3011,11 @@ private:
             return;
         }
 
-        // Topology swap under mute: stop -> reload -> start.
+        // Topology swap under mute: stop -> reload -> start. Uses the open
+        // document, so unsaved edits are heard.
         auto& engine = ensureLiveEngine();
         juce::String err;
-        if (!engine.start(path, err))
+        if (!engine.start(*doc, err))
         {
             mainWindow_->setLiveRunning(false);
             juce::AlertWindow::showMessageBoxAsync(
@@ -2710,10 +3024,49 @@ private:
                 err);
             return;
         }
+        engine.setBpm(doc->effectiveBpm());
         mainWindow_->setLiveRunning(true);
         if (auto* c = mainWindow_->canvas())
+        {
             c->setLiveProject(engine.loadedProject());
+            // The plugins are open now: fill probe data missing from older
+            // project files, which fixes their canvas ports.
+            if (project::fillMissingProbes(*doc, *engine.loadedProject()))
+            {
+                c->refreshLayout();
+                doc_dirty_ = true;
+                unsaved_changes_ = true;
+            }
+        }
         std::fprintf(stderr, "live: started\n");
+    }
+
+    // Sequencer settings apply live; other graph edits need Restart Live.
+    void pushSequencerEdits()
+    {
+        if (!live_ || !live_->isRunning() || !mainWindow_) return;
+        if (const auto* doc = mainWindow_->currentDocument())
+            for (const auto& s : doc->sequencers)
+                live_->updateSequencer(s.id, s.params);
+    }
+
+    void toggleLoop()
+    {
+        auto& engine = ensureLiveEngine();
+        engine.setLooping(!engine.isLooping());
+        if (mainWindow_) mainWindow_->setLooping(engine.isLooping());
+    }
+
+    // Starts live mode first if needed, so Play is one step.
+    void transportPlay()
+    {
+        if (!live_ || !live_->isRunning()) startLive();
+        if (!live_ || !live_->isRunning()) return;
+        juce::String err;
+        if (!live_->play(err))
+            juce::AlertWindow::showMessageBoxAsync(
+                juce::AlertWindow::WarningIcon,
+                "Could not start transport", err);
     }
 
     void stopLive()
@@ -2777,8 +3130,8 @@ private:
     void showLoopDialog()
     {
         if (!live_) return;
-        const double sr = 48000.0;  // canonical; ideally use the
-                                    // currently loaded project's rate
+        const double sr = live_->projectSampleRate() > 0.0
+                        ? live_->projectSampleRate() : 48000.0;
         auto* aw = new juce::AlertWindow(
             "Loop region",
             "Loop in seconds (set both to 0 to disable):",
@@ -2803,20 +3156,24 @@ private:
                         const long long ss = (long long) (s * sr);
                         const long long es = (long long) (e * sr);
                         live_->setLoop(ss, es, ss < es);
+                        if (mainWindow_) mainWindow_->setLooping(ss < es);
                     }
                     delete aw;
                 }),
             /*deleteWhenDismissed=*/false);
     }
 
+    // Tempo is a project setting (saved, used by renders) and also drives
+    // the live transport.
     void showBpmDialog()
     {
-        if (!live_) return;
+        auto* doc = mainWindow_ ? mainWindow_->currentDocument() : nullptr;
+        if (doc == nullptr) return;
         auto* aw = new juce::AlertWindow(
             "Set BPM",
             "Tempo in beats per minute (1-960):",
             juce::AlertWindow::QuestionIcon);
-        aw->addTextEditor("bpm", juce::String(live_->bpm()), {}, false);
+        aw->addTextEditor("bpm", juce::String(doc->effectiveBpm()), {}, false);
         aw->addButton("OK",     1, juce::KeyPress(juce::KeyPress::returnKey));
         aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
         aw->enterModalState(true,
@@ -2826,8 +3183,14 @@ private:
                     {
                         const double bpm
                             = aw->getTextEditorContents("bpm").getDoubleValue();
-                        if (bpm > 0.0 && bpm < 1000.0)
-                            live_->setBpm(bpm);
+                        auto* d = mainWindow_ ? mainWindow_->currentDocument() : nullptr;
+                        if (bpm > 0.0 && bpm < 1000.0 && d != nullptr)
+                        {
+                            d->bpm = bpm;
+                            doc_dirty_ = true;
+                            unsaved_changes_ = true;
+                            if (live_) live_->setBpm(bpm);
+                        }
                     }
                     delete aw;
                 }),

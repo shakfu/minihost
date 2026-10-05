@@ -1,0 +1,74 @@
+{
+  "minihost_project_version": 1,
+  "sample_rate": 48000,
+  "block_size": 512,
+  "bpm": 124.0,
+  "duration_seconds": 8.0,
+  "nodes": [
+    {
+      "id": "seq",
+      "kind": "sequencer",
+      "steps": 16,
+      "rate": 0.25,
+      "root": 48,
+      "scale": "minor",
+      "octaves": 2,
+      "density": 0.7,
+      "gate": 0.5,
+      "mutate": 0.15,
+      "seed": 21
+    },
+    {
+      "id": "dexed",
+      "kind": "plugin",
+      "path": "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+    },
+    {
+      "id": "out",
+      "kind": "output",
+      "channels": 2,
+      "sink": "../../build/out/projects/13_sequencer_dexed.wav",
+      "bit_depth": 24
+    },
+    {
+      "id": "speakers",
+      "kind": "device_output",
+      "channels": 2
+    }
+  ],
+  "edges": [
+    {
+      "src": "seq",
+      "dst": "dexed",
+      "kind": "midi"
+    },
+    {
+      "src": "dexed",
+      "dst": "out",
+      "dst_port": 0
+    },
+    {
+      "src": "dexed",
+      "dst": "speakers",
+      "dst_port": 0
+    }
+  ],
+  "layout": {
+    "seq": {
+      "x": 60,
+      "y": 60
+    },
+    "dexed": {
+      "x": 280,
+      "y": 60
+    },
+    "out": {
+      "x": 500,
+      "y": 60
+    },
+    "speakers": {
+      "x": 500,
+      "y": 170
+    }
+  }
+}

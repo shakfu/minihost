@@ -313,3 +313,32 @@ def test_desktop_save_roundtrip_matches_python(tmp_path):
     assert orig.layout == resaved_loaded.layout
     assert len(orig.inputs) == len(resaved_loaded.inputs)
     assert len(orig.outputs) == len(resaved_loaded.outputs)
+
+
+@skip_if_no_desktop
+def test_desktop_save_roundtrip_keeps_plugin_probe(tmp_path):
+    """The plugin probe cache (channels, MIDI capability) decides the
+    canvas ports, including the MIDI input port of an instrument with no
+    audio inputs. It must survive a save."""
+    proj = tmp_path / "p.json"
+    probe = {"in_channels": 0, "out_channels": 2, "accepts_midi": True,
+             "produces_midi": False}
+    proj.write_text(json.dumps({
+        "minihost_project_version": 1,
+        "sample_rate": 48000,
+        "block_size": 256,
+        "nodes": [
+            {"id": "synth", "kind": "plugin", "path": "/nonexistent/Synth.vst3",
+             "probe": probe},
+            {"id": "fx", "kind": "plugin", "path": "/nonexistent/Fx.vst3"},
+            {"id": "spk", "kind": "device_output", "channels": 2},
+        ],
+        "edges": [],
+    }))
+    res = subprocess.run([str(DESKTOP_BIN), f"--save-roundtrip={proj}"],
+                         capture_output=True, text=True, timeout=30)
+    assert res.returncode == 0, res.stderr
+    nodes = {n["id"]: n for n in
+             json.loads((tmp_path / "p.resaved.json").read_text())["nodes"]}
+    assert nodes["synth"]["probe"] == probe
+    assert "probe" not in nodes["fx"]  # never probed: nothing invented

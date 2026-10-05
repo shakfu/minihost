@@ -1,0 +1,80 @@
+{
+  "minihost_project_version": 1,
+  "sample_rate": 48000,
+  "block_size": 512,
+  "nodes": [
+    {
+      "id": "pad",
+      "kind": "input",
+      "channels": 2,
+      "source": "audio/pad.wav"
+    },
+    {
+      "id": "gain",
+      "kind": "gain",
+      "channels": 2,
+      "gain": 0.5
+    },
+    {
+      "id": "meter",
+      "kind": "meter",
+      "channels": 2
+    },
+    {
+      "id": "out",
+      "kind": "output",
+      "channels": 2,
+      "sink": "../../build/out/projects/02_gain_meter.wav",
+      "bit_depth": 24
+    },
+    {
+      "id": "speakers",
+      "kind": "device_output",
+      "channels": 2
+    }
+  ],
+  "edges": [
+    {
+      "src": "pad",
+      "dst": "gain",
+      "dst_port": 0
+    },
+    {
+      "src": "gain",
+      "dst": "meter",
+      "dst_port": 0
+    },
+    {
+      "src": "gain",
+      "dst": "out",
+      "dst_port": 0
+    },
+    {
+      "src": "gain",
+      "dst": "speakers",
+      "dst_port": 0
+    }
+  ],
+  "layout": {
+    "pad": {
+      "x": 60,
+      "y": 60
+    },
+    "gain": {
+      "x": 280,
+      "y": 60
+    },
+    "out": {
+      "x": 500,
+      "y": 60
+    },
+    "meter": {
+      "x": 500,
+      "y": 170
+    },
+    "speakers": {
+      "x": 500,
+      "y": 280
+    }
+  }
+}

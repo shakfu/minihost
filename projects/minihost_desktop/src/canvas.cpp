@@ -1,6 +1,7 @@
 // canvas.cpp -- see canvas.h for design.
 
 #include "canvas.h"
+#include "sequencer.h"
 
 #include "minihost_audiofile.h"
 #include "node_registry.h"
@@ -98,6 +99,7 @@ void CanvasComponent::rebuildLayout()
             n.label = info.label;
             n.num_input_ports  = info.num_input_ports;
             n.num_output_ports = info.num_output_ports;
+            n.midi_in          = info.midi_input_port;
             n.bounds = juce::Rectangle<float>(0, 0, kNodeWidth, kNodeHeight);
             nodes_.push_back(std::move(n));
         }
@@ -177,13 +179,27 @@ juce::Point<float> CanvasComponent::outputPortPos(const NodeLayout& n) const
     return { n.bounds.getRight(), n.bounds.getCentreY() };
 }
 
+juce::Point<float> CanvasComponent::edgeEndPos(const EdgeLayout& e) const
+{
+    const auto& dst = nodes_[(size_t) e.dst_node_index];
+    const bool to_midi = e.kind == project::EdgeKind::Midi && dst.midi_in;
+    return inputPortPos(dst, to_midi ? kMidiPort : e.dst_port);
+}
+
 juce::Point<float> CanvasComponent::inputPortPos(const NodeLayout& n,
                                                  int port) const
 {
+    // The MIDI port sits below the audio ports, or mid-height if the node
+    // has none; audio ports share the upper part of the edge.
+    if (port == kMidiPort)
+        return { n.bounds.getX(),
+                 n.bounds.getY() + n.bounds.getHeight()
+                     * (n.num_input_ports > 0 ? 0.75f : 0.5f) };
     const int N = std::max(1, n.num_input_ports);
-    const float t = (N == 1)
-                  ? 0.5f
-                  : (float)(port + 1) / (float)(N + 1);
+    float t = (N == 1)
+            ? 0.5f
+            : (float)(port + 1) / (float)(N + 1);
+    if (n.midi_in) t *= 0.6f;
     return { n.bounds.getX(),
              n.bounds.getY() + n.bounds.getHeight() * t };
 }
@@ -214,9 +230,8 @@ void CanvasComponent::paint(juce::Graphics& g)
     {
         const auto& e = edges_[i];
         const auto& src = nodes_[(size_t) e.src_node_index];
-        const auto& dst = nodes_[(size_t) e.dst_node_index];
         const auto p0 = outputPortPos(src);
-        const auto p1 = inputPortPos(dst, e.dst_port);
+        const auto p1 = edgeEndPos(e);
         juce::Point<float> c0, c1;
         edgeCubic(p0, p1, c0, c1);
         juce::Path path;
@@ -269,6 +284,23 @@ void CanvasComponent::paint(juce::Graphics& g)
                     : juce::Colour(0xff707070));
         g.drawRoundedRectangle(n.bounds, 6.0f,
                                i == selected_node_ ? 2.0f : 1.0f);
+
+        juce::Colour act_col;
+        juce::String act_tag;
+        if (nodeActivity(n, act_col, act_tag))
+        {
+            g.setColour(act_col);
+            g.drawRoundedRectangle(n.bounds.expanded(3.0f), 8.0f, 2.5f);
+            // Tag pill straddling the top edge.
+            const float w = 12.0f + (float) act_tag.length() * 7.0f;
+            const juce::Rectangle<float> pill(n.bounds.getRight() - w - 6.0f,
+                                              n.bounds.getY() - 9.0f, w, 16.0f);
+            g.fillRoundedRectangle(pill, 8.0f);
+            g.setColour(juce::Colours::white);
+            g.setFont(juce::FontOptions(11.0f, juce::Font::bold));
+            g.drawText(act_tag, pill, juce::Justification::centred, false);
+            g.setFont(juce::FontOptions(12.0f));
+        }
 
         // Meter overlay: vertical per-channel level bars across the
         // bottom of the node. Always draws an empty frame so the
@@ -338,9 +370,14 @@ void CanvasComponent::paint(juce::Graphics& g)
             g.drawRect(box, 1.0f);
         }
 
+        auto label_area = n.bounds.toNearestInt().reduced(8);
+        if (n.kind == "sequencer")
+        {
+            paintSequencerSteps(g, n);
+            label_area.removeFromBottom(12);
+        }
         g.setColour(juce::Colours::white);
-        g.drawFittedText(n.label,
-                         n.bounds.toNearestInt().reduced(8),
+        g.drawFittedText(n.label, label_area,
                          juce::Justification::centred, 3);
 
         g.setColour(juce::Colour(0xffd0d0d0));
@@ -356,7 +393,130 @@ void CanvasComponent::paint(juce::Graphics& g)
             g.fillEllipse(p.x - kPortRadius, p.y - kPortRadius,
                           kPortRadius * 2, kPortRadius * 2);
         }
+        if (n.midi_in)
+        {
+            // Square, in the MIDI edge colour, so it reads as MIDI.
+            const auto p = inputPortPos(n, kMidiPort);
+            g.setColour(juce::Colour(0xffb98be0));
+            g.fillRect(p.x - kPortRadius, p.y - kPortRadius,
+                       kPortRadius * 2, kPortRadius * 2);
+            g.setColour(juce::Colour(0xffd0d0d0));
+        }
     }
+}
+
+void CanvasComponent::paintSequencerSteps(juce::Graphics& g,
+                                          const NodeLayout& n) const
+{
+    const project::SequencerParams* p = nullptr;
+    for (const auto& s : doc_->sequencers)
+        if (s.id == n.id) p = &s.params;
+    if (p == nullptr) return;
+
+    const bool running = activity_.live && activity_.playing;
+    const double bpm  = activity_.bpm > 0.0 ? activity_.bpm : doc_->effectiveBpm();
+    const double step = p->rate * 60.0 * doc_->sample_rate / bpm;
+    const long long cur = running && step >= 1.0
+                        ? (long long) ((double) activity_.position / step) : -1;
+    const long long pass_start = cur >= 0 ? (cur / p->steps) * p->steps : 0;
+
+    auto strip = n.bounds.reduced(8.0f).removeFromBottom(10.0f);
+    g.setColour(juce::Colour(0xff121212));
+    g.fillRect(strip);
+    const float w = strip.getWidth() / (float) p->steps;
+    for (int j = 0; j < p->steps; ++j)
+    {
+        const auto st = project::sequencerStep(*p, pass_start + j);
+        juce::Rectangle<float> cell(strip.getX() + j * w + 0.5f, strip.getY() + 1.0f,
+                                    std::max(1.0f, w - 1.0f), strip.getHeight() - 2.0f);
+        if (st.on)
+        {
+            g.setColour(juce::Colour(0xff9ad0a8).withAlpha(0.4f + 0.6f * st.velocity / 127.0f));
+            g.fillRect(cell);
+        }
+        if (pass_start + j == cur)
+        {
+            g.setColour(juce::Colours::yellow);
+            g.drawRect(cell.expanded(0.5f), 1.0f);
+        }
+    }
+}
+
+bool CanvasComponent::nodeActivity(const NodeLayout& n, juce::Colour& colour,
+                                   juce::String& tag) const
+{
+    if (doc_ == nullptr) return false;
+    const juce::Colour green(0xff3aa84a), red(0xffd03030), blue(0xff3a78c8);
+    if (n.kind == "input")
+    {
+        for (const auto& in : doc_->inputs)
+        {
+            if (in.id != n.id) continue;
+            if (activity_.live && activity_.playing)
+            {
+                // Past the end of a non-looping file the input is silent.
+                if (!activity_.looping && live_project_ != nullptr)
+                {
+                    const auto& li = live_project_->doc.inputs;
+                    for (size_t k = 0; k < li.size(); ++k)
+                        if (li[k].id == in.id
+                            && activity_.position >= live_project_->input_frames[k])
+                        {
+                            colour = juce::Colour(0xff808080);
+                            tag = "ENDED";
+                            return true;
+                        }
+                }
+                colour = green;
+                tag = activity_.looping ? "LOOPING" : "PLAYING";
+                return true;
+            }
+            if (activity_.preview != juce::File() && activity_.preview == in.source)
+            { colour = blue; tag = "PLAY FILE"; return true; }
+        }
+        return false;
+    }
+    if (n.kind == "midi_input" && activity_.live && activity_.playing)
+    {
+        // Only nodes playing a .mid file; device MIDI has no transport.
+        if (live_project_ == nullptr) return false;
+        for (const auto& fmi : live_project_->file_midi_inputs)
+        {
+            if (fmi.id != n.id) continue;
+            if (!activity_.looping && !fmi.events.empty()
+                && activity_.position > fmi.events.back().sample_offset)
+            { colour = juce::Colour(0xff808080); tag = "ENDED"; return true; }
+            colour = green;
+            tag = activity_.looping ? "LOOPING" : "PLAYING";
+            return true;
+        }
+        return false;
+    }
+    if (n.kind == "output")
+    {
+        for (const auto& on : doc_->outputs)
+        {
+            if (on.id != n.id) continue;
+            if (activity_.recording)
+            { colour = red; tag = "REC"; return true; }
+            if (activity_.preview != juce::File() && activity_.preview == on.sink)
+            { colour = blue; tag = "PLAY FILE"; return true; }
+        }
+        return false;
+    }
+    if (n.kind == "sequencer" && activity_.live && activity_.playing)
+    {
+        colour = green;
+        tag = activity_.looping ? "LOOPING" : "PLAYING";
+        return true;
+    }
+    if (n.kind == "device_output" && activity_.live)
+    {
+        colour = activity_.playing ? green : juce::Colour(0xff808080);
+        tag    = activity_.playing ? "OUT" : "LIVE";
+        return true;
+    }
+    return false;
 }
 
 int CanvasComponent::hitTestNode(juce::Point<float> p) const
@@ -390,6 +550,9 @@ std::pair<int, int> CanvasComponent::hitTestInputPort(juce::Point<float> p) cons
             if (p.getDistanceFrom(pp) <= kPortHitRadius)
                 return { i, port };
         }
+        if (n.midi_in
+            && p.getDistanceFrom(inputPortPos(n, kMidiPort)) <= kPortHitRadius)
+            return { i, kMidiPort };
     }
     return { -1, -1 };
 }
@@ -405,9 +568,8 @@ int CanvasComponent::hitTestEdge(juce::Point<float> p, float tolerance) const
     {
         const auto& e = edges_[i];
         const auto& src = nodes_[(size_t) e.src_node_index];
-        const auto& dst = nodes_[(size_t) e.dst_node_index];
         const auto p0 = outputPortPos(src);
-        const auto p1 = inputPortPos(dst, e.dst_port);
+        const auto p1 = edgeEndPos(e);
         juce::Point<float> c0, c1;
         edgeCubic(p0, p1, c0, c1);
         juce::Path path;
@@ -463,15 +625,40 @@ void CanvasComponent::mouseDown(const juce::MouseEvent& e)
             selected_edge_ = -1;
             repaint();
             juce::PopupMenu mn;
-            enum { kEditProps = 1, kDelete };
+            enum { kEditProps = 1, kDelete, kPlayFile, kStopFile };
+            // Input nodes play their source; output nodes their sink.
+            juce::File file;
+            if (doc_ != nullptr)
+            {
+                const auto& nl = nodes_[(size_t) hit];
+                if (nl.kind == "input")
+                {
+                    for (const auto& in : doc_->inputs)
+                        if (in.id == nl.id) file = in.source;
+                }
+                else if (nl.kind == "output")
+                {
+                    for (const auto& on : doc_->outputs)
+                        if (on.id == nl.id) file = on.sink;
+                }
+            }
+            if (file != juce::File())
+            {
+                mn.addItem(kPlayFile, "Play File",
+                           file.existsAsFile() && on_play_file_ != nullptr);
+                mn.addItem(kStopFile, "Stop File", on_stop_file_ != nullptr);
+                mn.addSeparator();
+            }
             mn.addItem(kEditProps, "Properties...");
             mn.addItem(kDelete,    "Delete");
             juce::PopupMenu::Options opts;
             opts = opts.withTargetScreenArea(
                 { e.getScreenPosition(), e.getScreenPosition() });
             const int node = hit;
-            mn.showMenuAsync(opts, [this, node](int chosen) {
-                if (chosen == kEditProps) showNodePropertiesDialog(node);
+            mn.showMenuAsync(opts, [this, node, file](int chosen) {
+                if (chosen == kPlayFile && on_play_file_) on_play_file_(file);
+                else if (chosen == kStopFile && on_stop_file_) on_stop_file_();
+                else if (chosen == kEditProps) showNodePropertiesDialog(node);
                 else if (chosen == kDelete)
                 {
                     selected_node_ = node;
@@ -680,9 +867,11 @@ void CanvasComponent::addEdgeToDoc(int src_node_index, int dst_node_index,
     const auto* src_entry = findKind(src_n.kind);
     const auto* dst_entry = findKind(dst_n.kind);
     const bool src_is_midi = src_entry && src_entry->is_midi_source;
-    const bool dst_is_midi = dst_entry && dst_entry->is_midi_sink;
+    const bool dst_is_midi = (dst_entry && dst_entry->is_midi_sink)
+                          || dst_port == kMidiPort;
     if (src_is_midi || dst_is_midi)
     {
+        dst_port = 0;   // kMidiPort is canvas-only; plugins have one MIDI input
         if (!src_is_midi && src_n.kind != "plugin")
         {
             juce::AlertWindow::showMessageBoxAsync(

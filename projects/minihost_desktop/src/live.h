@@ -4,18 +4,20 @@
 // + a LoadedProject and pumps mh_graph_render_block from an
 // AudioIODeviceCallback.
 //
-// v1 live contract:
-//   - The currently loaded project provides the graph topology.
-//   - Project input nodes are fed silence each block (the PluginGraph
-//     contract requires they receive data; we don't route device
-//     input into them in this slice). Synth chains work; effects
-//     over device input require a future "device_in" node kind.
-//   - Output node 0 is copied to the device's output channels.
-//     If channel counts mismatch the device, extra device channels
-//     are silenced, extra graph channels are dropped.
+// Live contract:
+//   - The open project document provides the graph topology.
+//   - File input nodes play their decoded audio from the transport
+//     position while the transport plays, silence otherwise. midi_input
+//     nodes with a .mid source do the same, merged with device MIDI, and
+//     sequencer nodes generate notes on the step grid. Held notes get
+//     note-offs at each loop wrap and on Stop.
+//   - device_output nodes are summed to the device's output channels
+//     (legacy projects without one route output node 0 instead).
+//   - While the transport plays, every file output node is recorded to
+//     its sink. Stop finalizes the files and rewinds to 0.
 //
 // Threading:
-//   - start()/stop()/configure are message-thread only.
+//   - start()/stop()/play()/stopTransport() are message-thread only.
 //   - The audio callback runs on the device thread. It does no
 //     mutex'd work and no allocations after start().
 
@@ -27,8 +29,11 @@
 #include "minihost_midi.h"
 
 #include <juce_audio_devices/juce_audio_devices.h>
+#include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -47,7 +52,10 @@ public:
     // block size, attaches the callback. On failure, error is set
     // and the engine is left stopped. Safe to call when already
     // running (will stop the previous run first).
-    bool start(const juce::File& project_file, juce::String& error);
+    // attach_device=false skips the device callback; the caller then
+    // drives audioDeviceIOCallbackWithContext itself (headless selftest).
+    bool start(const project::ProjectDocument& doc, juce::String& error,
+               bool attach_device = true);
     void stop();
     bool isRunning() const noexcept { return running_.load(); }
 
@@ -96,8 +104,11 @@ public:
                            float value) noexcept;
 
     // Transport. Default BPM is 120; default state is stopped.
-    void setTransportPlaying(bool playing) noexcept
-    { transport_playing_.store(playing); }
+    // play() opens a recorder per file output node (overwriting its sink)
+    // and starts the transport; it fails if a sink cannot be opened.
+    // stopTransport() finalizes the recordings and rewinds to 0.
+    bool play(juce::String& error);
+    void stopTransport();
     bool isTransportPlaying() const noexcept
     { return transport_playing_.load(); }
     void setBpm(double bpm) noexcept
@@ -114,9 +125,33 @@ public:
     {
         loop_start_.store(start_samples);
         loop_end_.store(end_samples);
+        loop_wanted_.store(is_looping);
         loop_enabled_.store(is_looping
                             && start_samples < end_samples);
     }
+    // The Loop toggle. Start Live sets the loop region to the project
+    // length (Set Loop Region can narrow it). Also loops Play File.
+    // Persists across Start / Stop Live.
+    void setLooping(bool on);
+    bool isLooping() const noexcept { return loop_wanted_.load(); }
+
+    // ----- State for the GUI (message thread; values may lag a block) ----- //
+    long long positionSamples() const noexcept { return published_pos_.load(); }
+    int       projectFrames() const noexcept
+    { return compiled_ ? compiled_->duration_frames : 0; }
+    double    projectSampleRate() const noexcept
+    { return compiled_ ? (double) compiled_->doc.sample_rate : 0.0; }
+    bool      isRecording() const noexcept { return recording_.load(); }
+    // Frames accepted for recording (a block the FIFO could not take is
+    // dropped and not counted), and those not yet written to disk.
+    long long recordedFrames() const noexcept { return recorded_frames_.load(); }
+    long long recordingBacklog() const noexcept
+    { return recorded_frames_.load() - written_.frames.load(); }
+    const juce::File& previewFile() const noexcept { return preview_file_; }
+    double    previewPositionSeconds() const;
+    double    previewLengthSeconds() const
+    { return preview_transport_.getLengthInSeconds(); }
+
     long long loopStart()   const noexcept { return loop_start_.load(); }
     long long loopEnd()     const noexcept { return loop_end_.load();   }
     bool      loopEnabled() const noexcept { return loop_enabled_.load(); }
@@ -131,6 +166,20 @@ public:
     void setMidiInputDevice(const juce::String& port_name);
     juce::String midiInputDevice() const noexcept
     { return midi_input_port_name_; }
+
+    // Plays an audio file straight to the device, bypassing the graph.
+    // Mixes with live output if the engine is running. Decoded with the
+    // same reader as project inputs; resampled to the device rate.
+    bool startPreview(const juce::File& file, juce::String& error);
+    void stopPreview();
+    bool isPreviewing() const { return preview_transport_.isPlaying(); }
+
+    // Applies new settings to the running sequencer node `id` at the next
+    // block, releasing its sounding notes. Unchanged settings are ignored.
+    // Returns false if there is no such node in the live project or the
+    // queue is full.
+    bool updateSequencer(const juce::String& id,
+                         const project::SequencerParams& params);
 
     // Test hook: drain pending commands synchronously, applying them
     // to the live engine's plugins. The real audio callback drains
@@ -167,6 +216,38 @@ private:
 
     juce::AudioDeviceManager                       dm_;
     bool                                           dm_initialised_ = false;
+    bool                                           attached_ = false;
+
+    // ----- Recording (file output nodes, while the transport plays) ----- //
+    // recorders_[i] records doc.outputs[i]. Swapped on the message thread
+    // under recorder_lock_; the audio thread only try-locks it, so a
+    // block that collides with a swap is dropped rather than blocking.
+    void closeRecorders();
+    juce::TimeSliceThread                          writer_thread_{ "minihost recorder" };
+    std::vector<std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter>> recorders_;
+    juce::SpinLock                                 recorder_lock_;
+    std::atomic<long long>                         dropped_frames_{ 0 };
+    std::atomic<bool>                              recording_{ false };
+    std::atomic<long long>                         recorded_frames_{ 0 };
+
+    // Counts frames the writer thread has written (first recorder).
+    struct WrittenCounter : juce::AudioFormatWriter::ThreadedWriter::IncomingDataReceiver
+    {
+        std::atomic<long long> frames{ 0 };
+        void reset(int, double, juce::int64) override {}
+        void addBlock(juce::int64, const juce::AudioBuffer<float>&, int, int n) override
+        { frames.fetch_add(n, std::memory_order_relaxed); }
+    };
+    WrittenCounter                                 written_;
+    std::atomic<bool>                              rewind_pending_{ false };
+
+    // ----- File preview ----- //
+    juce::AudioBuffer<float>                       preview_buffer_;
+    std::unique_ptr<juce::MemoryAudioSource>       preview_source_;
+    juce::AudioTransportSource                     preview_transport_;
+    juce::AudioSourcePlayer                        preview_player_;
+    bool                                           preview_attached_ = false;
+    juce::File                                     preview_file_;
 
     // The audio thread reads `compiled_` only; we publish a new value
     // under stop() (callback already detached) and never mutate while
@@ -197,6 +278,8 @@ private:
     std::atomic<long long>                         loop_start_{ 0 };
     std::atomic<long long>                         loop_end_{ 0 };
     std::atomic<bool>                              loop_enabled_{ false };
+    std::atomic<bool>                              loop_wanted_{ false };
+    std::atomic<long long>                         published_pos_{ 0 };
 
     // SPSC queue for live parameter writes. Producer = GUI thread,
     // consumer = audio callback (drainParamWrites_ at top of each
@@ -225,6 +308,30 @@ private:
     // share, rebased. Both reserved in start().
     std::vector<MH_MidiEvent>                      midi_scratch_;
     std::vector<MH_MidiEvent>                      midi_chunk_;
+
+    // ----- Transport-driven MIDI sources ----- //
+    // File MIDI (midi_input nodes with a .mid source) and sequencers. Per
+    // source, `events` holds this chunk's events, `merged` those plus device
+    // MIDI (file sources only), and `held` marks sounding notes,
+    // [channel * 128 + note], so wraps, Stop and edits can release them.
+    struct TransportMidi {
+        std::vector<MH_MidiEvent>  events;
+        std::vector<MH_MidiEvent>  merged;
+        std::array<bool, 16 * 128> held{};
+    };
+    struct SequencerPlay : TransportMidi {
+        project::SequencerParams params;
+        bool                     changed = false;  // release before next chunk
+    };
+    struct SequencerUpdate {
+        int                      index = -1;
+        project::SequencerParams params;
+    };
+    std::vector<TransportMidi>                     file_midi_;
+    std::vector<SequencerPlay>                     seq_midi_;
+    RtParamQueue<64, SequencerUpdate>              seq_queue_;
+    bool                                           was_playing_ = false;  // audio thread
+    double                                         last_bpm_    = 0.0;    // audio thread
     // Start of the previous device callback; 0 until the first one.
     uint64_t                                       midi_prev_cb_ns_ = 0;
 

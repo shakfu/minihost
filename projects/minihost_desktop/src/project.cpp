@@ -4,6 +4,7 @@
 
 #include "minihost_audiofile.h"
 #include "node_registry.h"
+#include "sequencer.h"
 
 #include "MidiFile.h"   // smf::MidiFile (projects/midifile)
 
@@ -342,6 +343,13 @@ ProjectDocument parseProjectFile(const juce::File& path)
         if (!v.isVoid())
             out.duration_seconds = (double) v;
     }
+    if (doc.getDynamicObject()->hasProperty("bpm"))
+    {
+        const double bpm = (double) doc["bpm"];
+        if (!(bpm > 0.0 && bpm < 1000.0))
+            throwErr("bpm must be in (0, 1000)");
+        out.bpm = bpm;
+    }
 
     const auto project_dir = path.getParentDirectory();
 
@@ -444,6 +452,8 @@ void saveProjectFile(const juce::File& path, const ProjectDocument& doc)
     root->setProperty("block_size",  doc.block_size);
     if (doc.duration_seconds.has_value())
         root->setProperty("duration_seconds", *doc.duration_seconds);
+    if (doc.bpm.has_value())
+        root->setProperty("bpm", *doc.bpm);
 
     juce::Array<juce::var> nodes;
     NodeKindEntry::PushNodeFn pushNode =
@@ -509,8 +519,13 @@ void saveProjectFile(const juce::File& path, const ProjectDocument& doc)
 
 std::unique_ptr<LoadedProject> loadProject(const juce::File& path)
 {
+    return loadProject(parseProjectFile(path));
+}
+
+std::unique_ptr<LoadedProject> loadProject(ProjectDocument document)
+{
     auto loaded = std::make_unique<LoadedProject>();
-    loaded->doc = parseProjectFile(path);
+    loaded->doc = std::move(document);
     auto& doc = loaded->doc;
 
     // Read input audio.
@@ -679,6 +694,10 @@ std::unique_ptr<LoadedProject> loadProject(const juce::File& path)
     // the whole load. The opened instance is authoritative -- the cached
     // accepts_midi flag on the spec may be stale or absent for plugins
     // loaded from disk without a fresh probe.
+    //
+    // A plugin that already has an incoming MIDI edge (from a sequencer,
+    // clock or MIDI processor) is routed, not legacy: a second MIDI source
+    // on its port would displace the routed one.
     if (doc.midi_inputs.empty())
     {
         std::vector<MH_NodeId> recv_nodes;
@@ -686,6 +705,10 @@ std::unique_ptr<LoadedProject> loadProject(const juce::File& path)
         {
             const auto& pl = doc.plugins[i];
             if (!pl.receives_midi) continue;
+            const bool routed = std::any_of(doc.edges.begin(), doc.edges.end(),
+                [&pl](const EdgeSpec& e) {
+                    return e.kind == EdgeKind::Midi && e.dst == pl.id; });
+            if (routed) continue;
             MH_Info info{};
             if (mh_get_info(loaded->plugins[i], &info) && info.accepts_midi)
                 recv_nodes.push_back(id_to_node[pl.id.toStdString()]);
@@ -701,6 +724,27 @@ std::unique_ptr<LoadedProject> loadProject(const juce::File& path)
 
     g.compile();
     return loaded;
+}
+
+bool fillMissingProbes(ProjectDocument& doc, const LoadedProject& loaded)
+{
+    bool changed = false;
+    const size_t n = std::min(doc.plugins.size(), loaded.plugins.size());
+    for (size_t i = 0; i < n; ++i)
+    {
+        auto& spec = doc.plugins[i];
+        if (spec.probed_in_channels >= 0 || spec.id != loaded.doc.plugins[i].id)
+            continue;
+        MH_Info info{};
+        if (loaded.plugins[i] == nullptr || !mh_get_info(loaded.plugins[i], &info))
+            continue;
+        spec.probed_in_channels  = info.num_input_ch;
+        spec.probed_out_channels = info.num_output_ch;
+        spec.accepts_midi        = info.accepts_midi != 0;
+        spec.produces_midi       = info.produces_midi != 0;
+        changed = true;
+    }
+    return changed;
 }
 
 bool renderProject(LoadedProject& proj,
@@ -725,7 +769,9 @@ bool renderProject(LoadedProject& proj,
         return false;
     }
     const int block = doc.block_size;
-    const int total = proj.duration_frames;
+    const int total = proj.duration_frames
+        + (int) std::lround(std::max(0.0, options.tail_seconds)
+                            * (double) doc.sample_rate);
 
     // Offline bounce: tell every plugin it is not running live. Plugins
     // use this to switch to their higher-quality, non-causal or
@@ -810,6 +856,7 @@ bool renderProject(LoadedProject& proj,
     // staging a block is a forward walk rather than a rescan.
     std::vector<size_t> midi_cursors(proj.file_midi_inputs.size(), 0);
     std::vector<MH_MidiEvent> block_midi;   // reused scratch per block
+    std::vector<std::vector<MH_MidiEvent>> seq_midi(proj.sequencer_node_ids.size());
 
     int frame = 0;
     while (frame < total)
@@ -845,6 +892,23 @@ bool renderProject(LoadedProject& proj,
                 (int) block_midi.size());
         }
 
+        // Sequencers: the same generator LiveEngine runs, at the project
+        // tempo. Notes still sounding when the render ends are not released.
+        for (size_t q = 0; q < proj.sequencer_node_ids.size(); ++q)
+        {
+            auto& buf = seq_midi[q];
+            buf.clear();
+            sequencerEvents(doc.sequencers[q].params, (double) doc.sample_rate,
+                            doc.effectiveBpm(), frame, block_end,
+                            [&](long long at, MH_MidiEvent e) {
+                                e.sample_offset = (int) (at - frame);
+                                buf.push_back(e);
+                            });
+            mh_graph_set_midi_input_events(
+                proj.graph->handle(), proj.sequencer_node_ids[q],
+                buf.empty() ? nullptr : buf.data(), (int) buf.size());
+        }
+
         // Stage inputs.
         for (size_t i = 0; i < proj.doc.inputs.size(); ++i)
         {
@@ -874,6 +938,8 @@ bool renderProject(LoadedProject& proj,
             error = juce::String("render_block failed: ") + e.what();
             return false;
         }
+
+        if (options.after_block) options.after_block(frame, n);
 
         // Capture outputs into accumulator.
         for (size_t i = 0; i < proj.doc.outputs.size(); ++i)

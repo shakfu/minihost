@@ -1,0 +1,79 @@
+{
+  "minihost_project_version": 1,
+  "sample_rate": 48000,
+  "block_size": 512,
+  "duration_seconds": 5.0,
+  "nodes": [
+    {
+      "id": "notes",
+      "kind": "midi_input",
+      "source": "audio/melody.mid"
+    },
+    {
+      "id": "transpose",
+      "kind": "midi_transpose",
+      "semitones": 12
+    },
+    {
+      "id": "dexed",
+      "kind": "plugin",
+      "path": "/Library/Audio/Plug-Ins/VST3/Dexed.vst3"
+    },
+    {
+      "id": "out",
+      "kind": "output",
+      "channels": 2,
+      "sink": "../../build/out/projects/10_midi_synth.wav",
+      "bit_depth": 24
+    },
+    {
+      "id": "speakers",
+      "kind": "device_output",
+      "channels": 2
+    }
+  ],
+  "edges": [
+    {
+      "src": "notes",
+      "dst": "transpose",
+      "kind": "midi"
+    },
+    {
+      "src": "transpose",
+      "dst": "dexed",
+      "kind": "midi"
+    },
+    {
+      "src": "dexed",
+      "dst": "out",
+      "dst_port": 0
+    },
+    {
+      "src": "dexed",
+      "dst": "speakers",
+      "dst_port": 0
+    }
+  ],
+  "layout": {
+    "notes": {
+      "x": 60,
+      "y": 60
+    },
+    "transpose": {
+      "x": 280,
+      "y": 60
+    },
+    "dexed": {
+      "x": 500,
+      "y": 60
+    },
+    "out": {
+      "x": 720,
+      "y": 60
+    },
+    "speakers": {
+      "x": 720,
+      "y": 170
+    }
+  }
+}

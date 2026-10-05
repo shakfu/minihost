@@ -37,6 +37,8 @@ struct CanvasNodeInfo {
     juce::String label;
     int          num_input_ports  = 0;
     int          num_output_ports = 0;
+    // A separate MIDI input port (plugins), in addition to the audio ports.
+    bool         midi_input_port  = false;
 };
 
 // Bundles every per-kind dispatch site into one struct. Lambdas

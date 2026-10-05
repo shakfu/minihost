@@ -1,6 +1,7 @@
 // node_registry.cpp -- see node_registry.h for design.
 
 #include "node_registry.h"
+#include "sequencer.h"
 #include "minihost.h"
 
 #include <juce_core/juce_core.h>
@@ -291,6 +292,16 @@ NodeKindEntry makePlugin()
             if (v.isBool() || v.isInt() || v.isInt64())
                 s.receives_midi = ((bool) v);
         }
+        // Cached probe from when the node was added; drives the canvas
+        // ports. The loader re-derives the real values from the plugin.
+        const auto probe = n["probe"];
+        if (probe.isObject())
+        {
+            s.probed_in_channels  = prop_int(probe, "in_channels", -1);
+            s.probed_out_channels = prop_int(probe, "out_channels", -1);
+            s.accepts_midi        = (bool) probe["accepts_midi"];
+            s.produces_midi       = (bool) probe["produces_midi"];
+        }
         d.plugins.push_back(std::move(s));
     };
     e.serialize_all = [](const ProjectDocument& d,
@@ -308,6 +319,15 @@ NodeKindEntry makePlugin()
                 o->setProperty("state_b64", n.state_b64);
             if (!n.receives_midi)
                 o->setProperty("receives_midi", false);
+            if (n.probed_in_channels >= 0)
+            {
+                auto* probe = new juce::DynamicObject();
+                probe->setProperty("in_channels",   n.probed_in_channels);
+                probe->setProperty("out_channels",  n.probed_out_channels);
+                probe->setProperty("accepts_midi",  n.accepts_midi);
+                probe->setProperty("produces_midi", n.produces_midi);
+                o->setProperty("probe", juce::var(probe));
+            }
             push(o, "plugin", n.id);
         }
     };
@@ -318,11 +338,15 @@ NodeKindEntry makePlugin()
         // port. -1 means unknown; assume effect (1 in port) until
         // re-probed.
         const int in_ports = (s.probed_in_channels == 0) ? 0 : 1;
+        // MIDI port unless a probe showed the plugin takes no MIDI; an
+        // unprobed plugin (older project files) gets one.
+        const bool probed = s.probed_in_channels >= 0;
         // Prefer the file name for the label; AU nodes have no path, so fall
         // back to the stored plugin name.
         juce::String label = s.path.getFileNameWithoutExtension();
         if (label.isEmpty()) label = s.display_name;
-        return CanvasNodeInfo{ s.id + "\n" + label, in_ports, 1 };
+        return CanvasNodeInfo{ s.id + "\n" + label, in_ports, 1,
+                               !probed || s.accepts_midi };
     };
     e.channels_for = [](const ProjectDocument& d, int i, bool out) {
         const auto& s = d.plugins[(size_t) i];
@@ -633,7 +657,7 @@ NodeKindEntry makeMidiInput()
         aw.addTextEditor("source",
                          s.source != juce::File() ? s.source.getFullPathName()
                                                   : juce::String(),
-                         ".mid file for offline render (empty = live only)");
+                         ".mid file, played by render and transport (empty = device only)");
     };
     e.dialog_apply = [](ProjectDocument& d, int i, juce::AlertWindow& aw,
                         const juce::String& new_id,
@@ -653,12 +677,12 @@ NodeKindEntry makeMidiInput()
         const auto nid = g.addMidiInput();
         id_to_node[s.id.toStdString()] = nid;
         lp.midi_input_node_ids.push_back(nid);
-        // File-sourced MIDI: read the .mid into sample-offset events so
-        // renderProject can stream it offline (live playback uses device
-        // MIDI and ignores this).
+        // File-sourced MIDI: read the .mid into sample-offset events, played
+        // by renderProject and by LiveEngine from the transport position.
         if (s.source != juce::File())
         {
             LoadedProject::FileMidiInput fmi;
+            fmi.id      = s.id;
             fmi.node_id = nid;
             if (! project::readMidiFileEvents(
                       s.source, (double) d.sample_rate, fmi.events))
@@ -736,9 +760,11 @@ NodeKindEntry makeMidiOutput()
     e.load_one = [](const ProjectDocument& d, int i,
                     minihost::PluginGraph& g,
                     std::unordered_map<std::string, MH_NodeId>& id_to_node,
-                    LoadedProject&) {
+                    LoadedProject& lp) {
         const auto& s = d.midi_outputs[(size_t) i];
-        id_to_node[s.id.toStdString()] = g.addMidiOutput();
+        const auto nid = g.addMidiOutput();
+        id_to_node[s.id.toStdString()] = nid;
+        lp.midi_output_node_ids.push_back(nid);
     };
     return e;
 }
@@ -1434,6 +1460,154 @@ NodeKindEntry makeMidiClock()
     return e;
 }
 
+NodeKindEntry makeSequencer()
+{
+    NodeKindEntry e;
+    e.kind_string = "sequencer";
+    e.colour      = juce::Colour(0xff4a7a5a);
+    e.count       = count_of  <&ProjectDocument::sequencers>;
+    e.id_at       = id_of     <&ProjectDocument::sequencers>;
+    e.erase_by_id = erase_of  <&ProjectDocument::sequencers>;
+    e.is_midi_source = true;
+    e.menu_label  = "Add Generative Sequencer";
+
+    e.parse = [](const juce::var& n, const juce::String& id,
+                 ProjectDocument& d, const juce::File&) {
+        project::SequencerNodeSpec s;
+        s.id = id;
+        auto& p = s.params;
+        p.steps    = prop_int   (n, "steps",    p.steps);
+        p.rate     = prop_double(n, "rate",     p.rate);
+        p.root     = prop_int   (n, "root",     p.root);
+        p.octaves  = prop_int   (n, "octaves",  p.octaves);
+        p.density  = prop_double(n, "density",  p.density);
+        p.gate     = prop_double(n, "gate",     p.gate);
+        p.vel_min  = prop_int   (n, "velocity_min", p.vel_min);
+        p.vel_max  = prop_int   (n, "velocity_max", p.vel_max);
+        p.mutate   = prop_double(n, "mutate",   p.mutate);
+        const double seed = prop_double(n, "seed", p.seed);
+        if (std::isfinite(seed))
+            p.seed = (uint32_t) (juce::int64) std::fmod(std::abs(seed), 4294967296.0);
+        p.channel  = prop_int   (n, "channel",  p.channel);
+        const auto scale = prop_string(n, "scale", "minor");
+        const int si = project::scaleNames().indexOf(scale);
+        if (si < 0)
+            throw project::ProjectError(("sequencer " + id + ": unknown scale '"
+                + scale + "' (one of " + project::scaleNames().joinIntoString(", ")
+                + ")").toStdString());
+        p.scale = (project::Scale) si;
+        project::clampSequencerParams(p);
+        d.sequencers.push_back(std::move(s));
+    };
+    e.serialize_all = [](const ProjectDocument& d,
+                         NodeKindEntry::PushNodeFn& push) {
+        for (const auto& n : d.sequencers) {
+            const auto& p = n.params;
+            auto* o = new juce::DynamicObject();
+            o->setProperty("steps",        p.steps);
+            o->setProperty("rate",         p.rate);
+            o->setProperty("root",         p.root);
+            o->setProperty("scale",        project::scaleNames()[(int) p.scale]);
+            o->setProperty("octaves",      p.octaves);
+            o->setProperty("density",      p.density);
+            o->setProperty("gate",         p.gate);
+            o->setProperty("velocity_min", p.vel_min);
+            o->setProperty("velocity_max", p.vel_max);
+            o->setProperty("mutate",       p.mutate);
+            o->setProperty("seed",         (juce::int64) p.seed);
+            o->setProperty("channel",      p.channel);
+            push(o, "sequencer", n.id);
+        }
+    };
+
+    e.canvas_info = [](const ProjectDocument& d, int i) {
+        const auto& s = d.sequencers[(size_t) i];
+        juce::String rate = juce::String(s.params.rate, 3) + " beat";
+        for (const auto& r : project::sequencerRates())
+            if (std::abs(r.second - s.params.rate) < 1e-9) rate = r.first;
+        return CanvasNodeInfo{
+            s.id + "\n(sequencer " + juce::String(s.params.steps) + " x " + rate
+              + ", " + project::scaleNames()[(int) s.params.scale] + ")",
+            0, 1
+        };
+    };
+    e.channels_for = [](const ProjectDocument&, int, bool){ return -1; };
+
+    e.menu_add = [](ProjectDocument& d) {
+        project::SequencerNodeSpec s;
+        s.id = uniqueId(d, "seq");
+        s.params.seed = (uint32_t) juce::Random::getSystemRandom().nextInt();
+        d.sequencers.push_back(std::move(s));
+    };
+    e.dialog_title = [](const ProjectDocument&, int) {
+        return juce::String("Generative sequencer (connect to a MIDI plugin)");
+    };
+    e.dialog_emit = [](const ProjectDocument& d, int i,
+                       juce::AlertWindow& aw) {
+        const auto& p = d.sequencers[(size_t) i].params;
+        juce::StringArray rates;
+        int rate_idx = 3;
+        for (size_t r = 0; r < project::sequencerRates().size(); ++r)
+        {
+            rates.add(project::sequencerRates()[r].first);
+            if (std::abs(project::sequencerRates()[r].second - p.rate) < 1e-9)
+                rate_idx = (int) r;
+        }
+        aw.addComboBox("rate", rates, "step length");
+        aw.getComboBoxComponent("rate")->setSelectedItemIndex(rate_idx);
+        aw.addTextEditor("steps", juce::String(p.steps), "steps per pattern (1-64)");
+        aw.addComboBox("scale", project::scaleNames(), "scale");
+        aw.getComboBoxComponent("scale")->setSelectedItemIndex((int) p.scale);
+        aw.addTextEditor("root", juce::String(p.root), "root note (MIDI, 60 = C4)");
+        aw.addTextEditor("octaves", juce::String(p.octaves), "octave range (1-4)");
+        aw.addTextEditor("density", juce::String(p.density, 2),
+                         "density: chance a step plays (0-1)");
+        aw.addTextEditor("gate", juce::String(p.gate, 2),
+                         "gate: note length per step (0.01-1)");
+        aw.addTextEditor("velocity_min", juce::String(p.vel_min), "velocity min");
+        aw.addTextEditor("velocity_max", juce::String(p.vel_max), "velocity max");
+        aw.addTextEditor("mutate", juce::String(p.mutate, 2),
+                         "mutate: chance a step varies each pass (0-1)");
+        aw.addTextEditor("seed", juce::String((juce::int64) p.seed),
+                         "seed (any number; a new one gives a new melody)");
+        aw.addTextEditor("channel", juce::String(p.channel), "MIDI channel (1-16)");
+    };
+    e.dialog_apply = [](ProjectDocument& d, int i, juce::AlertWindow& aw,
+                        const juce::String& new_id,
+                        NodeKindEntry::RenameFn& rename) {
+        auto& s = d.sequencers[(size_t) i];
+        if (s.id != new_id) { rename(s.id, new_id); s.id = new_id; }
+        auto& p = s.params;
+        const int ri = aw.getComboBoxComponent("rate")->getSelectedItemIndex();
+        if (ri >= 0) p.rate = project::sequencerRates()[(size_t) ri].second;
+        const int si = aw.getComboBoxComponent("scale")->getSelectedItemIndex();
+        if (si >= 0) p.scale = (project::Scale) si;
+        p.steps   = read_int  (aw, "steps",   p.steps);
+        p.root    = read_int  (aw, "root",    p.root);
+        p.octaves = read_int  (aw, "octaves", p.octaves);
+        p.density = read_float(aw, "density", (float) p.density);
+        p.gate    = read_float(aw, "gate",    (float) p.gate);
+        p.vel_min = read_int  (aw, "velocity_min", p.vel_min);
+        p.vel_max = read_int  (aw, "velocity_max", p.vel_max);
+        p.mutate  = read_float(aw, "mutate",  (float) p.mutate);
+        const auto seed = aw.getTextEditorContents("seed");
+        if (seed.isNotEmpty()) p.seed = (uint32_t) seed.getLargeIntValue();
+        p.channel = read_int  (aw, "channel", p.channel);
+        project::clampSequencerParams(p);
+    };
+
+    e.load_one = [](const ProjectDocument& d, int i,
+                    minihost::PluginGraph& g,
+                    std::unordered_map<std::string, MH_NodeId>& id_to_node,
+                    LoadedProject& lp) {
+        const auto& s = d.sequencers[(size_t) i];
+        const auto nid = g.addMidiInput();
+        id_to_node[s.id.toStdString()] = nid;
+        lp.sequencer_node_ids.push_back(nid);
+    };
+    return e;
+}
+
 //============================================================
 // MIDI processor kinds
 //============================================================
@@ -1789,6 +1963,7 @@ const std::vector<NodeKindEntry>& nodeRegistry()
         v.push_back(makeMergeChannels());
         v.push_back(makeMetronome());
         v.push_back(makeMidiClock());
+        v.push_back(makeSequencer());
         v.push_back(makeMidiFilter());
         v.push_back(makeMidiTranspose());
         v.push_back(makeMidiVelocityCurve());

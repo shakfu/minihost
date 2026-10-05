@@ -3,6 +3,8 @@
 #include "live.h"
 
 #include "midi_ringbuffer.h"
+#include "minihost_audiofile.h"
+#include "sequencer.h"
 
 #include <climits>
 #include <cmath>
@@ -10,12 +12,75 @@
 
 namespace minihost_desktop {
 
+namespace {
+
+// Fills `out` with one chunk of a transport-driven MIDI source, offsets
+// local to the chunk. range(s0, s1, emit) must call emit(sample, event)
+// for each event at an absolute transport sample in [s0, s1), in time
+// order. Follows the loop region; held notes get note-offs at each wrap
+// and, if `release_first`, at offset 0.
+template <class Range>
+void collectTransportMidi(std::vector<MH_MidiEvent>& out,
+                          std::array<bool, 16 * 128>& held, Range&& range,
+                          long long pos, int n, bool play, bool release_first,
+                          bool loop_on, long long loop_s, long long loop_e)
+{
+    out.clear();
+    auto push = [&](MH_MidiEvent e, int off) {
+        if (out.size() == out.capacity()) return;   // never reallocate
+        e.sample_offset = off;
+        out.push_back(e);
+        const int type = e.status & 0xF0;
+        const size_t key = (size_t) (e.status & 0x0F) * 128 + (e.data1 & 0x7F);
+        if (type == 0x90 && e.data2 > 0)       held[key] = true;
+        else if (type == 0x80 || type == 0x90) held[key] = false;
+    };
+    auto release = [&](int off) {
+        for (size_t key = 0; key < held.size(); ++key)
+            if (held[key])
+                push({ 0, (unsigned char) (0x80 | (key / 128)),
+                       (unsigned char) (key % 128), 0 }, off);
+    };
+
+    if (release_first) release(0);
+    if (!play) return;
+    if (loop_on && pos >= loop_e)
+    {
+        release(0);
+        pos = loop_s + (pos - loop_s) % (loop_e - loop_s);
+    }
+    int local = 0;
+    while (local < n)
+    {
+        long long seg_end = pos + (n - local);
+        const bool wraps = loop_on && seg_end >= loop_e;
+        if (wraps) seg_end = loop_e;
+        const long long seg_start = pos;
+        const int seg_local = local;
+        range(seg_start, seg_end, [&](long long at, MH_MidiEvent e) {
+            push(e, seg_local + (int) (at - seg_start));
+        });
+        local += (int) (seg_end - pos);
+        if (!wraps) break;
+        // The loop end can fall on the chunk end; offsets must stay < n.
+        release(std::min(local, n - 1));
+        pos = loop_s;
+    }
+}
+
+} // namespace
+
+
 LiveEngine::LiveEngine() {}
 
 LiveEngine::~LiveEngine()
 {
     stopTimer();
     stop();
+    stopPreview();
+    if (preview_attached_) dm_.removeAudioCallback(&preview_player_);
+    preview_player_.setSource(nullptr);
+    writer_thread_.stopThread(2000);
     setMidiInputDevice({});  // closes any open mh_midi_in
 }
 
@@ -135,13 +200,14 @@ void LiveEngine::initialiseDeviceManagerOnce()
     dm_initialised_ = true;
 }
 
-bool LiveEngine::start(const juce::File& project_file, juce::String& error)
+bool LiveEngine::start(const project::ProjectDocument& doc,
+                       juce::String& error, bool attach_device)
 {
-    initialiseDeviceManagerOnce();
+    if (attach_device) initialiseDeviceManagerOnce();
     stop();
 
     try {
-        compiled_ = project::loadProject(project_file);
+        compiled_ = project::loadProject(doc);
     } catch (const std::exception& e) {
         error = juce::String("loadProject failed: ") + e.what();
         return false;
@@ -174,11 +240,8 @@ bool LiveEngine::start(const juce::File& project_file, juce::String& error)
     }
 
     // Pre-allocate input/output buffer storage + pointer tables.
-    // File-source inputs come first, then device_inputs -- matches the
-    // loader's add-order. Both are zero-filled here; per-block the
-    // audio callback overwrites device_input slots with the live
-    // device input channels, while file-source slots stay silent
-    // (their WAV data is only staged during file rendering).
+    // File-source inputs come first, then device_inputs, then
+    // metronomes -- matches the loader's add-order.
     in_planar_.clear();
     in_ch_ptrs_.clear();
     in_top_ptrs_.clear();
@@ -201,10 +264,9 @@ bool LiveEngine::start(const juce::File& project_file, juce::String& error)
     out_planar_.clear();
     out_ch_ptrs_.clear();
     out_top_ptrs_.clear();
-    // File-sink outputs come first, then device_outputs -- ordering
-    // matches the loader. LiveEngine writes file-sink buffers nowhere
-    // (file rendering is a separate path); they're allocated so the
-    // graph has somewhere to write each block.
+    // File-sink outputs come first, then device_outputs, then meters --
+    // ordering matches the loader. File-sink buffers are recorded while
+    // the transport plays.
     auto pushOut = [&](int channels) {
         std::vector<float> buf((size_t) channels
                                * (size_t) cb_block_size_, 0.0f);
@@ -262,10 +324,35 @@ bool LiveEngine::start(const juce::File& project_file, juce::String& error)
         }
     }
 
+    // The Loop toggle covers the whole project until Set Loop Region
+    // narrows it.
+    setLoop(0, compiled_->duration_frames, loop_wanted_.load());
+
     midi_scratch_.reserve(256);
     midi_chunk_.reserve(256);
-    dm_.addAudioCallback(this);
+    // Reserved so the audio thread never reallocates; overflow drops.
+    file_midi_.assign(compiled_->file_midi_inputs.size(), TransportMidi{});
+    for (auto& f : file_midi_)
+    {
+        f.events.reserve(MH_GRAPH_MIDI_OUTPUT_CAPACITY);
+        f.merged.reserve(MH_GRAPH_MIDI_OUTPUT_CAPACITY + 256);
+    }
+    seq_midi_.assign(compiled_->sequencer_node_ids.size(), SequencerPlay{});
+    for (size_t i = 0; i < seq_midi_.size(); ++i)
+    {
+        seq_midi_[i].params = compiled_->doc.sequencers[i].params;
+        seq_midi_[i].events.reserve(MH_GRAPH_MIDI_OUTPUT_CAPACITY);
+    }
+    SequencerUpdate stale;
+    while (seq_queue_.pop(stale)) {}   // edits for a previous project
+    was_playing_ = false;
+    last_bpm_    = 0.0;
     running_.store(true, std::memory_order_release);
+    if (attach_device)
+    {
+        dm_.addAudioCallback(this);
+        attached_ = true;
+    }
     if (!(first_midi_logged_ && first_audio_logged_))
         startTimer(250);
     return true;
@@ -273,11 +360,12 @@ bool LiveEngine::start(const juce::File& project_file, juce::String& error)
 
 void LiveEngine::detachCallback()
 {
-    if (running_.load(std::memory_order_acquire))
+    if (attached_)
     {
         dm_.removeAudioCallback(this);
-        running_.store(false, std::memory_order_release);
+        attached_ = false;
     }
+    running_.store(false, std::memory_order_release);
 }
 
 void LiveEngine::timerCallback()
@@ -305,12 +393,180 @@ void LiveEngine::timerCallback()
 void LiveEngine::stop()
 {
     detachCallback();
+    closeRecorders();
     rate_mismatch_.store(false, std::memory_order_relaxed);
     mismatched_device_rate_.store(0.0, std::memory_order_relaxed);
     transport_playing_.store(false);
+    rewind_pending_.store(false);
     transport_pos_samples_ = 0;
     transport_pos_beats_   = 0.0;
+    published_pos_.store(0);
     compiled_.reset();
+}
+
+bool LiveEngine::updateSequencer(const juce::String& id,
+                                 const project::SequencerParams& params)
+{
+    if (compiled_ == nullptr) return false;
+    auto& seqs = compiled_->doc.sequencers;
+    for (size_t i = 0; i < seqs.size(); ++i)
+    {
+        if (seqs[i].id != id) continue;
+        if (seqs[i].params == params) return true;   // e.g. a node drag
+        if (!seq_queue_.push({ (int) i, params })) return false;
+        seqs[i].params = params;   // message-thread copy; audio has its own
+        return true;
+    }
+    return false;
+}
+
+void LiveEngine::setLooping(bool on)
+{
+    loop_wanted_.store(on);
+    loop_enabled_.store(on && loop_start_.load() < loop_end_.load());
+    if (preview_source_ != nullptr) preview_source_->setLooping(on);
+}
+
+double LiveEngine::previewPositionSeconds() const
+{
+    // A looping source's read position keeps growing; fold it back.
+    const double len = preview_transport_.getLengthInSeconds();
+    const double pos = preview_transport_.getCurrentPosition();
+    return len > 0.0 ? std::fmod(pos, len) : pos;
+}
+
+bool LiveEngine::play(juce::String& error)
+{
+    if (compiled_ == nullptr)
+    {
+        error = "live mode is not running";
+        return false;
+    }
+    if (transport_playing_.load()) return true;
+
+    std::vector<std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter>> recs;
+    const auto& doc = compiled_->doc;
+    for (const auto& on : doc.outputs)
+    {
+        // Sinks are WAV or FLAC, as for the offline renderer.
+        std::unique_ptr<juce::AudioFormat> fmt;
+        if (on.sink.hasFileExtension("flac"))
+            fmt = std::make_unique<juce::FlacAudioFormat>();
+        else
+            fmt = std::make_unique<juce::WavAudioFormat>();
+
+        on.sink.getParentDirectory().createDirectory();
+        on.sink.deleteFile();
+        std::unique_ptr<juce::OutputStream> stream
+            = std::make_unique<juce::FileOutputStream>(on.sink);
+        if (static_cast<juce::FileOutputStream*>(stream.get())->failedToOpen())
+        {
+            error = "cannot open " + on.sink.getFullPathName();
+            return false;
+        }
+        const auto opts = juce::AudioFormatWriterOptions{}
+            .withSampleRate((double) doc.sample_rate)
+            .withNumChannels(on.channels)
+            .withBitsPerSample(on.bit_depth);
+        auto writer = fmt->createWriterFor(stream, opts);
+        if (writer == nullptr)
+        {
+            error = "cannot record " + juce::String(on.bit_depth)
+                  + "-bit " + fmt->getFormatName() + " to "
+                  + on.sink.getFullPathName();
+            return false;
+        }
+        // Two seconds of FIFO absorbs disk stalls.
+        recs.push_back(std::make_unique<juce::AudioFormatWriter::ThreadedWriter>(
+            writer.release(), writer_thread_, doc.sample_rate * 2));
+    }
+    if (!recs.empty() && !writer_thread_.isThreadRunning())
+        writer_thread_.startThread();
+    written_.frames.store(0);
+    if (!recs.empty()) recs.front()->setDataReceiver(&written_);
+
+    {
+        const juce::SpinLock::ScopedLockType lock(recorder_lock_);
+        recorders_ = std::move(recs);
+    }
+    dropped_frames_.store(0);
+    recorded_frames_.store(0);
+    recording_.store(!recorders_.empty());
+    transport_playing_.store(true);
+    return true;
+}
+
+void LiveEngine::stopTransport()
+{
+    transport_playing_.store(false);
+    rewind_pending_.store(true);
+    closeRecorders();
+}
+
+void LiveEngine::closeRecorders()
+{
+    std::vector<std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter>> old;
+    {
+        const juce::SpinLock::ScopedLockType lock(recorder_lock_);
+        old.swap(recorders_);
+    }
+    recording_.store(false);
+    // Destroying a ThreadedWriter flushes its FIFO and closes the file.
+    old.clear();
+    if (const auto dropped = dropped_frames_.exchange(0); dropped > 0)
+        std::fprintf(stderr,
+            "[live] recording dropped %lld frames (disk too slow)\n",
+            dropped);
+}
+
+bool LiveEngine::startPreview(const juce::File& file, juce::String& error)
+{
+    initialiseDeviceManagerOnce();
+    stopPreview();
+
+    char err[256] = {0};
+    MH_AudioData* ad = mh_audio_read(file.getFullPathName().toRawUTF8(),
+                                     err, sizeof(err));
+    if (ad == nullptr)
+    {
+        error = "failed to read " + file.getFullPathName() + ": "
+              + juce::String(static_cast<const char*>(err));
+        return false;
+    }
+    preview_buffer_.setSize((int) ad->channels, (int) ad->frames);
+    for (int c = 0; c < (int) ad->channels; ++c)
+    {
+        float* dst = preview_buffer_.getWritePointer(c);
+        for (int i = 0; i < (int) ad->frames; ++i)
+            dst[i] = ad->data[(size_t) i * ad->channels + (size_t) c];
+    }
+    const double file_rate = (double) ad->sample_rate;
+    mh_audio_data_free(ad);
+
+    preview_source_ = std::make_unique<juce::MemoryAudioSource>(
+        preview_buffer_, /*copyMemory=*/false, loop_wanted_.load());
+    preview_file_ = file;
+    preview_transport_.setSource(preview_source_.get(), 0, nullptr,
+                                 file_rate, preview_buffer_.getNumChannels());
+    if (!preview_attached_)
+    {
+        preview_player_.setSource(&preview_transport_);
+        dm_.addAudioCallback(&preview_player_);
+        preview_attached_ = true;
+    }
+    preview_transport_.setPosition(0.0);
+    preview_transport_.start();
+    return true;
+}
+
+void LiveEngine::stopPreview()
+{
+    preview_transport_.stop();
+    // setSource takes the transport's callback lock, so the audio thread
+    // is not reading the source when it is released.
+    preview_transport_.setSource(nullptr);
+    preview_source_.reset();
+    preview_file_ = juce::File();
 }
 
 void LiveEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
@@ -442,6 +698,12 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
     midi_prev_cb_ns_ = cb_ns;
     std::size_t midi_next = 0;
 
+    if (rewind_pending_.exchange(false, std::memory_order_acq_rel))
+    {
+        transport_pos_samples_ = 0;
+        transport_pos_beats_   = 0.0;
+    }
+
     // Render in chunks of up to cb_block_size_. Device callback sizes
     // are usually small (64-1024) so a single chunk is the norm.
     int frames_left = numSamples;
@@ -450,17 +712,23 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
     {
         const int n = std::min(frames_left, cb_block_size_);
 
+        // Transport state for this chunk, read once so file playback,
+        // recording and the plugin playhead agree.
+        const bool      play    = transport_playing_.load(std::memory_order_relaxed);
+        const double    chunk_bpm = transport_bpm_.load(std::memory_order_relaxed);
+        const long long chunk_pos = transport_pos_samples_;
+        const long long loop_s  = loop_start_.load(std::memory_order_relaxed);
+        const long long loop_e  = loop_end_.load(std::memory_order_relaxed);
+        const bool      loop_on = loop_enabled_.load(std::memory_order_relaxed)
+                                  && loop_e > loop_s;
+
         // Push transport info to every plugin node before rendering.
         // mh_set_transport copies into the plugin's internal state
         // without I/O; on the audio thread it's fine to call.
         {
             const double sr   = (double) compiled_->doc.sample_rate;
             const double bpm  = transport_bpm_.load(std::memory_order_relaxed);
-            const bool   play = transport_playing_.load(std::memory_order_relaxed);
             MH_TransportInfo ti{};
-            const long long loop_s = loop_start_.load(std::memory_order_relaxed);
-            const long long loop_e = loop_end_.load(std::memory_order_relaxed);
-            const bool loop_on     = loop_enabled_.load(std::memory_order_relaxed);
             ti.bpm                  = bpm;
             ti.time_sig_numerator   = 4;
             ti.time_sig_denominator = 4;
@@ -513,14 +781,82 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
         // events out to plugins. Legacy receives_midi projects get a
         // synthesized MIDI_INPUT node at load time (see project.cpp
         // migration), so a single staging path covers both formats.
-        if (!midi_chunk_.empty() && compiled_ != nullptr)
+        // Nodes with a .mid source get the file merged in; staging
+        // replaces, so they are staged once, below.
+        auto* graph = compiled_->graph->handle();
+        const auto& fmis = compiled_->file_midi_inputs;
+        const bool stopped_now = was_playing_ && !play;
+        for (size_t k = 0; k < fmis.size(); ++k)
         {
-            auto* graph = compiled_->graph->handle();
+            auto& f = file_midi_[k];
+            const auto& ev = fmis[k].events;
+            collectTransportMidi(f.events, f.held,
+                [&ev](long long s0, long long s1, auto&& emit) {
+                    auto it = std::lower_bound(ev.begin(), ev.end(), s0,
+                        [](const MH_MidiEvent& e, long long p) {
+                            return e.sample_offset < p; });
+                    for (; it != ev.end() && it->sample_offset < s1; ++it)
+                        emit(it->sample_offset, *it);
+                },
+                chunk_pos, n, play, stopped_now, loop_on, loop_s, loop_e);
+            f.merged.clear();
+            size_t a = 0, b = 0;
+            while (a < f.events.size() || b < midi_chunk_.size())
+            {
+                const bool take_file = b == midi_chunk_.size()
+                    || (a < f.events.size()
+                        && f.events[a].sample_offset <= midi_chunk_[b].sample_offset);
+                if (f.merged.size() == f.merged.capacity()) break;
+                f.merged.push_back(take_file ? f.events[a++] : midi_chunk_[b++]);
+            }
+            if (!f.merged.empty())
+                mh_graph_set_midi_input_events(graph, fmis[k].node_id,
+                                               f.merged.data(),
+                                               (int) f.merged.size());
+        }
+        // Sequencers. An edit or a tempo change moves the step grid, so
+        // sounding notes are released first.
+        {
+            SequencerUpdate u;
+            while (seq_queue_.pop(u))
+                if (u.index >= 0 && u.index < (int) seq_midi_.size())
+                {
+                    seq_midi_[(size_t) u.index].params  = u.params;
+                    seq_midi_[(size_t) u.index].changed = true;
+                }
+            const double sr = (double) compiled_->doc.sample_rate;
+            const bool tempo_moved = last_bpm_ != 0.0 && chunk_bpm != last_bpm_;
+            for (size_t q = 0; q < seq_midi_.size(); ++q)
+            {
+                auto& sq = seq_midi_[q];
+                const bool release = stopped_now || (play && (sq.changed || tempo_moved));
+                if (play || stopped_now) sq.changed = false;
+                const auto& params = sq.params;
+                collectTransportMidi(sq.events, sq.held,
+                    [&](long long s0, long long s1, auto&& emit) {
+                        project::sequencerEvents(params, sr, chunk_bpm, s0, s1, emit);
+                    },
+                    chunk_pos, n, play, release, loop_on, loop_s, loop_e);
+                if (!sq.events.empty())
+                    mh_graph_set_midi_input_events(graph, compiled_->sequencer_node_ids[q],
+                                                   sq.events.data(),
+                                                   (int) sq.events.size());
+            }
+            last_bpm_ = chunk_bpm;
+        }
+
+        if (!midi_chunk_.empty())
+        {
             for (MH_NodeId nid : compiled_->midi_input_node_ids)
-                mh_graph_set_midi_input_events(
-                    graph, nid,
-                    midi_chunk_.data(),
-                    (int) midi_chunk_.size());
+            {
+                bool is_file = false;
+                for (const auto& fmi : fmis) is_file |= fmi.node_id == nid;
+                if (!is_file)
+                    mh_graph_set_midi_input_events(
+                        graph, nid,
+                        midi_chunk_.data(),
+                        (int) midi_chunk_.size());
+            }
 
             if (!first_midi_seen_.load(std::memory_order_relaxed))
             {
@@ -531,8 +867,8 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
         }
 
         // Stage input buffers for this block:
-        //   - File-source inputs (compiled_->doc.inputs): silence (their
-        //     WAV data is only consumed by file rendering, not live).
+        //   - File-source inputs (compiled_->doc.inputs): the decoded file
+        //     from the transport position while playing, else silence.
         //   - device_input nodes: copy from inputChannelData. Extra
         //     graph channels (beyond what the device supplies) get
         //     silence; extra device channels are ignored. Multiple
@@ -551,6 +887,26 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
             for (size_t c = 0; c < channels; ++c)
                 std::memset(buf.data() + c * (size_t) cb_block_size_, 0,
                             (size_t) n * sizeof(float));
+        }
+        if (play)
+        {
+            for (size_t i = 0; i < compiled_->doc.inputs.size(); ++i)
+            {
+                const int    ch     = compiled_->doc.inputs[i].channels;
+                const int    frames = compiled_->input_frames[i];
+                const float* src    = compiled_->input_audio[i].data();
+                float*       dst    = in_planar_[i].data();
+                for (int s = 0; s < n; ++s)
+                {
+                    long long p = chunk_pos + s;
+                    if (loop_on && p >= loop_e)
+                        p = loop_s + (p - loop_s) % (loop_e - loop_s);
+                    if (p < 0 || p >= frames) continue;
+                    for (int c = 0; c < ch; ++c)
+                        dst[(size_t) c * cb_block_size_ + (size_t) s]
+                            = src[(size_t) c * (size_t) frames + (size_t) p];
+                }
+            }
         }
         for (size_t k = 0;
              k < compiled_->device_input_buffer_indices.size(); ++k)
@@ -627,6 +983,21 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
             return;
         }
 
+        // Record file output nodes. A try-lock: if the message thread is
+        // swapping recorders this chunk is skipped, never waited on.
+        if (play)
+        {
+            const juce::SpinLock::ScopedTryLockType lock(recorder_lock_);
+            if (lock.isLocked() && !recorders_.empty())
+            {
+                bool all = true;
+                for (size_t i = 0; i < recorders_.size(); ++i)
+                    all &= recorders_[i]->write(out_ch_ptrs_[i].data(), n);
+                if (all) recorded_frames_.fetch_add(n, std::memory_order_relaxed);
+                else     dropped_frames_.fetch_add(n, std::memory_order_relaxed);
+            }
+        }
+
         // Route to the device output. If the project has any
         // device_output nodes, sum them per-channel (extra device
         // channels are silenced; extra graph channels are dropped).
@@ -686,9 +1057,11 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
                                 (size_t) n * sizeof(float));
         }
 
+        was_playing_ = play;
         frames_left -= n;
         offset      += n;
     }
+    published_pos_.store(transport_pos_samples_, std::memory_order_relaxed);
 }
 
 } // namespace minihost_desktop

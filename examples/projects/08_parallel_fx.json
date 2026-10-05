@@ -1,0 +1,125 @@
+{
+  "minihost_project_version": 1,
+  "sample_rate": 48000,
+  "block_size": 512,
+  "nodes": [
+    {
+      "id": "pad",
+      "kind": "input",
+      "channels": 2,
+      "source": "audio/pad.wav"
+    },
+    {
+      "id": "delay",
+      "kind": "plugin",
+      "name": "AUDelay",
+      "descriptor": "PFBMVUdJTiBuYW1lPSJBVURlbGF5IiBmb3JtYXQ9IkF1ZGlvVW5pdCIgZmlsZT0iQXVkaW9Vbml0OkVmZmVjdHMvYXVmeCxkZWx5LGFwcGwiLz4="
+    },
+    {
+      "id": "reverb",
+      "kind": "plugin",
+      "name": "AUReverb2",
+      "descriptor": "PFBMVUdJTiBuYW1lPSJBVVJldmVyYjIiIGZvcm1hdD0iQXVkaW9Vbml0IiBmaWxlPSJBdWRpb1VuaXQ6RWZmZWN0cy9hdWZ4LHJ2YjIsYXBwbCIvPg=="
+    },
+    {
+      "id": "mix",
+      "kind": "mix",
+      "num_inputs": 3,
+      "channels": 2,
+      "gains": [
+        0.7,
+        0.5,
+        0.5
+      ]
+    },
+    {
+      "id": "meter",
+      "kind": "meter",
+      "channels": 2
+    },
+    {
+      "id": "out",
+      "kind": "output",
+      "channels": 2,
+      "sink": "../../build/out/projects/08_parallel_fx.wav",
+      "bit_depth": 24
+    },
+    {
+      "id": "speakers",
+      "kind": "device_output",
+      "channels": 2
+    }
+  ],
+  "edges": [
+    {
+      "src": "pad",
+      "dst": "mix",
+      "dst_port": 0
+    },
+    {
+      "src": "pad",
+      "dst": "delay",
+      "dst_port": 0
+    },
+    {
+      "src": "pad",
+      "dst": "reverb",
+      "dst_port": 0
+    },
+    {
+      "src": "delay",
+      "dst": "mix",
+      "dst_port": 1
+    },
+    {
+      "src": "reverb",
+      "dst": "mix",
+      "dst_port": 2
+    },
+    {
+      "src": "mix",
+      "dst": "out",
+      "dst_port": 0
+    },
+    {
+      "src": "mix",
+      "dst": "meter",
+      "dst_port": 0
+    },
+    {
+      "src": "mix",
+      "dst": "speakers",
+      "dst_port": 0
+    }
+  ],
+  "layout": {
+    "pad": {
+      "x": 60,
+      "y": 170
+    },
+    "delay": {
+      "x": 280,
+      "y": 60
+    },
+    "reverb": {
+      "x": 280,
+      "y": 280
+    },
+    "mix": {
+      "x": 500,
+      "y": 170
+    },
+    "out": {
+      "x": 720,
+      "y": 60
+    },
+    "meter": {
+      "x": 720,
+      "y": 170
+    },
+    "speakers": {
+      "x": 720,
+      "y": 280
+    }
+  }
+}

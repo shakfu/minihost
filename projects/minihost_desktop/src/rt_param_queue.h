@@ -26,6 +26,7 @@
 #include <atomic>
 #include <array>
 #include <cstdint>
+#include <type_traits>
 
 namespace minihost_desktop {
 
@@ -37,14 +38,16 @@ struct ParamWriteCommand {
 
 // Capacity must be a power of two. 1024 commands ~= 16 kB; plenty for
 // typical knob-twiddling rates against any sensible block boundary.
-template <std::size_t Capacity>
+// T must be trivially copyable.
+template <std::size_t Capacity, class T = ParamWriteCommand>
 class RtParamQueue
 {
     static_assert(Capacity > 0 && (Capacity & (Capacity - 1)) == 0,
                   "Capacity must be a power of two");
+    static_assert(std::is_trivially_copyable_v<T>);
 public:
     // Producer (GUI/message thread). Returns false if full (overflow).
-    bool push(const ParamWriteCommand& cmd) noexcept
+    bool push(const T& cmd) noexcept
     {
         const auto head = head_.load(std::memory_order_relaxed);
         const auto next = (head + 1) & kMask;
@@ -56,7 +59,7 @@ public:
     }
 
     // Consumer (audio thread). Returns false if empty.
-    bool pop(ParamWriteCommand& out) noexcept
+    bool pop(T& out) noexcept
     {
         const auto tail = tail_.load(std::memory_order_relaxed);
         if (tail == head_.load(std::memory_order_acquire))
@@ -81,7 +84,7 @@ private:
     static constexpr std::size_t kMask = Capacity - 1;
     alignas(64) std::atomic<std::size_t> head_{ 0 };
     alignas(64) std::atomic<std::size_t> tail_{ 0 };
-    std::array<ParamWriteCommand, Capacity> buf_{};
+    std::array<T, Capacity> buf_{};
 };
 
 } // namespace minihost_desktop

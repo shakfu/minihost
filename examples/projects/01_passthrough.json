@@ -1,0 +1,51 @@
+{
+  "minihost_project_version": 1,
+  "sample_rate": 48000,
+  "block_size": 512,
+  "nodes": [
+    {
+      "id": "drums",
+      "kind": "input",
+      "channels": 2,
+      "source": "audio/drums.wav"
+    },
+    {
+      "id": "out",
+      "kind": "output",
+      "channels": 2,
+      "sink": "../../build/out/projects/01_passthrough.wav",
+      "bit_depth": 24
+    },
+    {
+      "id": "speakers",
+      "kind": "device_output",
+      "channels": 2
+    }
+  ],
+  "edges": [
+    {
+      "src": "drums",
+      "dst": "out",
+      "dst_port": 0
+    },
+    {
+      "src": "drums",
+      "dst": "speakers",
+      "dst_port": 0
+    }
+  ],
+  "layout": {
+    "drums": {
+      "x": 60,
+      "y": 60
+    },
+    "out": {
+      "x": 280,
+      "y": 60
+    },
+    "speakers": {
+      "x": 280,
+      "y": 170
+    }
+  }
+}

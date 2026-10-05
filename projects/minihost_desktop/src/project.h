@@ -24,6 +24,7 @@
 #include <vector>
 
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 
 namespace minihost_desktop::project {
@@ -37,9 +38,8 @@ public:
 int resampleQualityFromName(const juce::String& name);
 
 // A pre-recorded audio file (WAV/FLAC/MP3/Vorbis) read at project
-// load time and fed into the graph per-block during file rendering.
-// During live playback the file is NOT replayed; live audio sources
-// use DeviceInputNodeSpec instead.
+// load time and fed into the graph per-block, both in file rendering
+// and from the transport position during live playback.
 struct InputNodeSpec {
     juce::String id;
     int          channels = 0;
@@ -56,10 +56,9 @@ struct InputNodeSpec {
 };
 
 // A file-sink: receives audio from the graph and writes it to disk
-// (WAV/FLAC) when the project is rendered. Bit depth is per-output
-// (16, 24, or 32 = float). This node is purely the file-rendering
-// side of audio output -- it does NOT route to the live audio device.
-// For speaker / headphone output, use DeviceOutputNodeSpec.
+// (WAV/FLAC) when the project is rendered, or while the live transport
+// plays. Bit depth is per-output (16, 24, or 32 = float). It does NOT
+// route to the live audio device; use DeviceOutputNodeSpec for that.
 //
 // Legacy back-compat: when a project has *no* DeviceOutputNodeSpec,
 // LiveEngine falls back to routing the first OutputNodeSpec's buffer
@@ -112,9 +111,9 @@ struct MidiInputNodeSpec {
     // Optional port name; empty means "let the LiveEngine decide"
     // (the engine's user-chosen MIDI input) during live playback.
     juce::String port_name;
-    // Optional .mid file. When set, offline file-render (renderProject)
-    // streams this file's events into the node block by block, mirroring the
-    // Python renderer. Empty = live-only (device MIDI drives the node).
+    // Optional .mid file. Offline render streams it block by block,
+    // mirroring the Python renderer; live mode plays it from the
+    // transport position, merged with device MIDI. Empty = device only.
     juce::File   source;
 };
 
@@ -226,6 +225,43 @@ struct MidiClockNodeSpec {
     juce::String id;
 };
 
+// Generative step sequencer: a MIDI source that plays a random melody in
+// a scale on the transport's step grid. Every note is a pure function of
+// these settings and the step index (see sequencer.h), so live playback,
+// loops and offline renders produce the same notes. Trivially copyable so
+// LiveEngine can take edits on the audio thread.
+enum class Scale : int {
+    Major = 0, Minor, Dorian, MajorPentatonic, MinorPentatonic, Chromatic
+};
+
+struct SequencerParams {
+    int      steps    = 16;     // pattern length; it repeats unless mutated
+    double   rate     = 0.25;   // step length in beats (0.25 = 1/16)
+    int      root     = 48;     // MIDI note of scale degree 0
+    Scale    scale    = Scale::Minor;
+    int      octaves  = 2;      // pitch range above root
+    double   density  = 0.7;    // probability a step plays
+    double   gate     = 0.5;    // note length as a fraction of a step
+    int      vel_min  = 70;
+    int      vel_max  = 110;
+    double   mutate   = 0.0;    // probability a step differs from its pattern
+    uint32_t seed     = 1;
+    int      channel  = 1;      // 1-16
+};
+
+inline bool operator==(const SequencerParams& a, const SequencerParams& b)
+{
+    return a.steps == b.steps && a.rate == b.rate && a.root == b.root
+        && a.scale == b.scale && a.octaves == b.octaves && a.density == b.density
+        && a.gate == b.gate && a.vel_min == b.vel_min && a.vel_max == b.vel_max
+        && a.mutate == b.mutate && a.seed == b.seed && a.channel == b.channel;
+}
+
+struct SequencerNodeSpec {
+    juce::String    id;
+    SequencerParams params;
+};
+
 // MIDI filter: passes events whose channel is in `channel_mask` (bit
 // i = channel i). Note On/Off events also require note in
 // [min_note, max_note]. System messages (status >= 0xF0) always pass.
@@ -289,6 +325,9 @@ struct ProjectDocument {
     int                    sample_rate = 0;
     int                    block_size  = 0;
     std::optional<double>  duration_seconds;
+    // Tempo for offline renders and the initial live tempo. Unset = 120.
+    std::optional<double>  bpm;
+    double effectiveBpm() const { return bpm.value_or(120.0); }
     std::vector<InputNodeSpec>        inputs;
     std::vector<OutputNodeSpec>       outputs;
     std::vector<PluginNodeSpec>       plugins;
@@ -304,6 +343,7 @@ struct ProjectDocument {
     std::vector<MergeChannelsNodeSpec>   merge_channels;
     std::vector<MetronomeNodeSpec>       metronomes;
     std::vector<MidiClockNodeSpec>       midi_clocks;
+    std::vector<SequencerNodeSpec>       sequencers;
     std::vector<MidiFilterNodeSpec>        midi_filters;
     std::vector<MidiTransposeNodeSpec>     midi_transposes;
     std::vector<MidiVelocityCurveNodeSpec> midi_velocity_curves;
@@ -349,16 +389,19 @@ struct LoadedProject {
     // all MIDI_INPUT nodes in the project.
     std::vector<MH_NodeId>             midi_input_node_ids;
 
-    // File-sourced MIDI inputs for offline rendering. One entry per
-    // midi_input node that has a `source` .mid file: its graph node id and
-    // the file's events flattened to absolute sample offsets (sorted).
-    // renderProject streams these into the graph per block; the live path
-    // uses device MIDI instead and ignores this.
+    // File-sourced MIDI inputs. One entry per midi_input node that has a
+    // `source` .mid file: its spec id, graph node id and the file's events
+    // flattened to absolute sample offsets (sorted). renderProject streams
+    // these per block; LiveEngine plays them from the transport position.
     struct FileMidiInput {
+        juce::String               id;
         MH_NodeId                  node_id;
         std::vector<MH_MidiEvent>  events;
     };
     std::vector<FileMidiInput>         file_midi_inputs;
+
+    // Graph node ids of midi_output nodes, in doc.midi_outputs order.
+    std::vector<MH_NodeId>             midi_output_node_ids;
 
     // For each DeviceOutputNodeSpec, the index into the graph's audio
     // output_buffers[] (i.e. its position in add-order among audio
@@ -371,9 +414,7 @@ struct LoadedProject {
     // For each DeviceInputNodeSpec, the index into the graph's audio
     // input_buffers[] (doc.inputs come first, then device_inputs).
     // LiveEngine copies live device input channels into these buffers
-    // each block; non-device input buffers continue to be zero-filled
-    // (file InputNodeSpec audio is staged here only during file
-    // rendering, not live).
+    // each block.
     std::vector<int>                   device_input_buffer_indices;
 
     // Per-meter live state: lock-free per-channel peak amplitude
@@ -448,6 +489,9 @@ struct LoadedProject {
     };
     std::vector<MidiClockState>        midi_clock_states;
 
+    // Graph MIDI_INPUT node of each SequencerNodeSpec, in doc order.
+    std::vector<MH_NodeId>             sequencer_node_ids;
+
     // Builds the next block's MIDI clock events (Start / Stop /
     // 24-PPQN Clock ticks) per midi_clock node, stages them on the
     // graph via mh_graph_set_midi_input_events, and updates the
@@ -459,6 +503,14 @@ struct LoadedProject {
 };
 
 std::unique_ptr<LoadedProject> loadProject(const juce::File& path);
+
+// Copies channel counts and MIDI capability from `loaded`'s opened plugins
+// into `doc` plugin specs that have no probe yet (older project files).
+// `loaded` must have been built from `doc`. Returns true if any changed.
+bool fillMissingProbes(ProjectDocument& doc, const LoadedProject& loaded);
+// Same, from an in-memory document (the canvas's working copy, which may be
+// unsaved or untitled). File paths in `doc` must already be absolute.
+std::unique_ptr<LoadedProject> loadProject(ProjectDocument doc);
 
 // Read a .mid file and flatten it to absolute sample-offset MIDI events
 // (sorted), using the file's tempo map at `sample_rate`. Keeps channel-voice
@@ -472,9 +524,15 @@ bool readMidiFileEvents(const juce::File& midi_file, double sample_rate,
 // the project file"; otherwise it applies to ALL output nodes.
 // normalize_dbfs == 0.0 means "no normalization"; any non-zero value
 // peak-normalizes the WHOLE render to that target before writing.
+// tail_seconds extends the render past the project length so effect
+// tails (reverb, delay) are not cut off.
+// after_block, if set, runs after each block renders, with the block's
+// first frame and length (e.g. to drain midi_output nodes).
 struct RenderOptions {
     int    bit_depth_override = 0;
     double normalize_dbfs     = 0.0;
+    double tail_seconds       = 0.0;
+    std::function<void(int, int)> after_block;
 };
 
 // Renders the project block-by-block. progress_callback (if non-null)

@@ -1,0 +1,161 @@
+{
+  "minihost_project_version": 1,
+  "sample_rate": 48000,
+  "block_size": 512,
+  "bpm": 96.0,
+  "duration_seconds": 10.0,
+  "nodes": [
+    {
+      "id": "bass",
+      "kind": "sequencer",
+      "steps": 8,
+      "rate": 0.5,
+      "root": 36,
+      "scale": "dorian",
+      "octaves": 1,
+      "density": 0.8,
+      "gate": 0.8,
+      "velocity_min": 90,
+      "velocity_max": 110,
+      "seed": 3
+    },
+    {
+      "id": "lead",
+      "kind": "sequencer",
+      "steps": 12,
+      "rate": 0.25,
+      "root": 64,
+      "scale": "dorian",
+      "octaves": 2,
+      "density": 0.5,
+      "gate": 0.3,
+      "mutate": 0.25,
+      "seed": 11
+    },
+    {
+      "id": "bass_synth",
+      "kind": "plugin",
+      "name": "AUMIDISynth",
+      "descriptor": "PFBMVUdJTiBuYW1lPSJBVU1JRElTeW50aCIgZm9ybWF0PSJBdWRpb1VuaXQiIGZpbGU9IkF1ZGlvVW5pdDpTeW50aHMvYXVtdSxtc3luLGFwcGwiLz4="
+    },
+    {
+      "id": "lead_synth",
+      "kind": "plugin",
+      "name": "AUMIDISynth",
+      "descriptor": "PFBMVUdJTiBuYW1lPSJBVU1JRElTeW50aCIgZm9ybWF0PSJBdWRpb1VuaXQiIGZpbGU9IkF1ZGlvVW5pdDpTeW50aHMvYXVtdSxtc3luLGFwcGwiLz4="
+    },
+    {
+      "id": "mix",
+      "kind": "mix",
+      "num_inputs": 2,
+      "channels": 2,
+      "gains": [
+        0.9,
+        0.6
+      ]
+    },
+    {
+      "id": "delay",
+      "kind": "plugin",
+      "name": "AUDelay",
+      "descriptor": "PFBMVUdJTiBuYW1lPSJBVURlbGF5IiBmb3JtYXQ9IkF1ZGlvVW5pdCIgZmlsZT0iQXVkaW9Vbml0OkVmZmVjdHMvYXVmeCxkZWx5LGFwcGwiLz4="
+    },
+    {
+      "id": "meter",
+      "kind": "meter",
+      "channels": 2
+    },
+    {
+      "id": "out",
+      "kind": "output",
+      "channels": 2,
+      "sink": "../../build/out/projects/12_two_sequencers.wav",
+      "bit_depth": 24
+    },
+    {
+      "id": "speakers",
+      "kind": "device_output",
+      "channels": 2
+    }
+  ],
+  "edges": [
+    {
+      "src": "bass",
+      "dst": "bass_synth",
+      "kind": "midi"
+    },
+    {
+      "src": "lead",
+      "dst": "lead_synth",
+      "kind": "midi"
+    },
+    {
+      "src": "bass_synth",
+      "dst": "mix",
+      "dst_port": 0
+    },
+    {
+      "src": "lead_synth",
+      "dst": "mix",
+      "dst_port": 1
+    },
+    {
+      "src": "mix",
+      "dst": "delay",
+      "dst_port": 0
+    },
+    {
+      "src": "delay",
+      "dst": "out",
+      "dst_port": 0
+    },
+    {
+      "src": "delay",
+      "dst": "meter",
+      "dst_port": 0
+    },
+    {
+      "src": "delay",
+      "dst": "speakers",
+      "dst_port": 0
+    }
+  ],
+  "layout": {
+    "bass": {
+      "x": 60,
+      "y": 60
+    },
+    "lead": {
+      "x": 60,
+      "y": 170
+    },
+    "bass_synth": {
+      "x": 280,
+      "y": 60
+    },
+    "lead_synth": {
+      "x": 280,
+      "y": 170
+    },
+    "mix": {
+      "x": 500,
+      "y": 60
+    },
+    "delay": {
+      "x": 720,
+      "y": 60
+    },
+    "out": {
+      "x": 940,
+      "y": 60
+    },
+    "meter": {
+      "x": 940,
+      "y": 170
+    },
+    "speakers": {
+      "x": 940,
+      "y": 280
+    }
+  }
+}

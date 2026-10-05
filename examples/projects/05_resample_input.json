@@ -1,0 +1,52 @@
+{
+  "minihost_project_version": 1,
+  "sample_rate": 48000,
+  "block_size": 512,
+  "nodes": [
+    {
+      "id": "sweep",
+      "kind": "input",
+      "channels": 2,
+      "source": "audio/sweep_44k.wav",
+      "resample": true
+    },
+    {
+      "id": "out",
+      "kind": "output",
+      "channels": 2,
+      "sink": "../../build/out/projects/05_resample_input.wav",
+      "bit_depth": 24
+    },
+    {
+      "id": "speakers",
+      "kind": "device_output",
+      "channels": 2
+    }
+  ],
+  "edges": [
+    {
+      "src": "sweep",
+      "dst": "out",
+      "dst_port": 0
+    },
+    {
+      "src": "sweep",
+      "dst": "speakers",
+      "dst_port": 0
+    }
+  ],
+  "layout": {
+    "sweep": {
+      "x": 60,
+      "y": 60
+    },
+    "out": {
+      "x": 280,
+      "y": 60
+    },
+    "speakers": {
+      "x": 280,
+      "y": 170
+    }
+  }
+}

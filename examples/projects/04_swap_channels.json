@@ -1,0 +1,100 @@
+{
+  "minihost_project_version": 1,
+  "sample_rate": 48000,
+  "block_size": 512,
+  "nodes": [
+    {
+      "id": "beeps",
+      "kind": "input",
+      "channels": 2,
+      "source": "audio/stereo_id.wav"
+    },
+    {
+      "id": "left",
+      "kind": "pick_channel",
+      "in_channels": 2,
+      "channel_index": 0
+    },
+    {
+      "id": "right",
+      "kind": "pick_channel",
+      "in_channels": 2,
+      "channel_index": 1
+    },
+    {
+      "id": "merge",
+      "kind": "merge_channels",
+      "out_channels": 2
+    },
+    {
+      "id": "out",
+      "kind": "output",
+      "channels": 2,
+      "sink": "../../build/out/projects/04_swap_channels.wav",
+      "bit_depth": 24
+    },
+    {
+      "id": "speakers",
+      "kind": "device_output",
+      "channels": 2
+    }
+  ],
+  "edges": [
+    {
+      "src": "beeps",
+      "dst": "left",
+      "dst_port": 0
+    },
+    {
+      "src": "beeps",
+      "dst": "right",
+      "dst_port": 0
+    },
+    {
+      "src": "right",
+      "dst": "merge",
+      "dst_port": 0
+    },
+    {
+      "src": "left",
+      "dst": "merge",
+      "dst_port": 1
+    },
+    {
+      "src": "merge",
+      "dst": "out",
+      "dst_port": 0
+    },
+    {
+      "src": "merge",
+      "dst": "speakers",
+      "dst_port": 0
+    }
+  ],
+  "layout": {
+    "beeps": {
+      "x": 60,
+      "y": 60
+    },
+    "left": {
+      "x": 280,
+      "y": 60
+    },
+    "right": {
+      "x": 280,
+      "y": 170
+    },
+    "merge": {
+      "x": 500,
+      "y": 60
+    },
+    "out": {
+      "x": 720,
+      "y": 60
+    },
+    "speakers": {
+      "x": 720,
+      "y": 170
+    }
+  }
+}

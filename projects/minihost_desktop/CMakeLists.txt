@@ -29,6 +29,7 @@ add_executable(minihost_desktop
     src/project.cpp
     src/canvas.cpp
     src/live.cpp
+    src/status_bar.cpp
     src/node_registry.cpp
     src/plugin_scanner.cpp
 )
