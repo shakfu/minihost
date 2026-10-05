@@ -198,7 +198,7 @@ static std::pair<int, int> resolve_axis_key(nb::handle key, int size,
             "AudioBuffer does not support Ellipsis indexing. Use .as_ndarray() for that.");
     }
     if (PyList_Check(p) || PyTuple_Check(p)
-        || (Py_TYPE(p)->tp_iter != nullptr && !PyUnicode_Check(p))) {
+        || (PyType_GetSlot(Py_TYPE(p), Py_tp_iter) != nullptr && !PyUnicode_Check(p))) {
         throw nb::type_error(
             "AudioBuffer does not support fancy / boolean indexing. "
             "Use .as_ndarray() for that.");
@@ -273,7 +273,7 @@ static std::string describe(const char* what, nb::handle t) {
 
 static nb::tuple require_tuple(nb::handle item, size_t n, const char* what,
                                const char* shape) {
-    if (!PyTuple_Check(item.ptr()) || (size_t) PyTuple_GET_SIZE(item.ptr()) != n)
+    if (!PyTuple_Check(item.ptr()) || (size_t) PyTuple_Size(item.ptr()) != n)
         throw nb::value_error(
             (std::string(what) + " must be a tuple " + shape).c_str());
     return nb::borrow<nb::tuple>(item);

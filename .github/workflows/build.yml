@@ -402,7 +402,9 @@ jobs:
       - name: Build wheels
         env:
           CIBW_ARCHS: ${{ matrix.cibw_archs }}
-          CIBW_BUILD: cp310-* cp311-* cp312-* cp313-* cp314-*
+          # One cp312-abi3 wheel. cibuildwheel builds it under cp312, then
+          # reuses it for cp313 and cp314 and runs the tests there too.
+          CIBW_BUILD: cp312-* cp313-* cp314-*
           CIBW_SKIP: '*-musllinux_*'
           CIBW_BEFORE_ALL_LINUX: >
             yum install -y curl alsa-lib-devel freetype-devel fontconfig-devel
@@ -680,17 +682,9 @@ jobs:
             copy_zip   "$kind" windows-x64
           done
 
-          # Wheels. upload-artifact drops empty directories, so
-          # release/wheels is absent rather than empty when none was built.
-          if compgen -G "release/wheels/*.whl" > /dev/null; then
-            (cd release/wheels && zip -qr "../../minihost-wheels-${VER}.zip" .)
-            echo "wrote minihost-wheels-${VER}.zip"
-          else
-            echo "no wheels to archive"
-          fi
-
           echo "=== Release assets ==="
           ls -1 minihost-*.tar.gz minihost-*.zip 2>/dev/null || true
+          ls -1 release/wheels/*.whl 2>/dev/null || true
           ls -1 release/sdist/*.tar.gz 2>/dev/null || true
 
       - name: Create GitHub Release
@@ -703,7 +697,7 @@ jobs:
             minihost-desktop-macos-universal-${{ needs.version.outputs.version }}.tar.gz
             minihost-desktop-linux-x64-${{ needs.version.outputs.version }}.tar.gz
             minihost-desktop-windows-x64-${{ needs.version.outputs.version }}.zip
-            minihost-wheels-${{ needs.version.outputs.version }}.zip
+            release/wheels/*.whl
             release/sdist/*.tar.gz
           body_path: ${{ steps.notes.outputs.found == '1' && 'release-notes.md' || '' }}
           generate_release_notes: ${{ steps.notes.outputs.found != '1' }}

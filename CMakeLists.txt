@@ -152,10 +152,12 @@ endif()
 
 # Python bindings (only when building with scikit-build-core)
 if(DEFINED SKBUILD)
-    find_package(Python REQUIRED COMPONENTS Interpreter Development.Module)
+    find_package(Python 3.12 REQUIRED COMPONENTS Interpreter Development.Module
+                 OPTIONAL_COMPONENTS Development.SABIModule)
     find_package(nanobind CONFIG REQUIRED)
 
-    nanobind_add_module(_core src/minihost/_core.cpp)
+    # Limited API (abi3): one cp312 wheel serves every CPython >= 3.12.
+    nanobind_add_module(_core STABLE_ABI src/minihost/_core.cpp)
     # minihost is pulled in transitively via minihost_audio; listing it here
     # too causes the linker to emit 'ignoring duplicate libraries' warnings.
     # JUCE is linked explicitly so _core.cpp can include juce_audio_basics

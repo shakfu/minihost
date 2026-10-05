@@ -2,7 +2,7 @@
 name = "minihost"
 version = "0.11.0"
 description = "A minimal juce-based plugin host using nanobind"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = []
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -29,8 +29,6 @@ classifiers = [
     "Operating System :: Microsoft :: Windows",
     "Programming Language :: C++",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
@@ -87,6 +85,7 @@ build-backend = "scikit_build_core.build"
 
 [tool.scikit-build]
 wheel.packages = ["src/minihost"]
+wheel.py-api = "cp312"
 wheel.exclude = ["**.cpp"]
 sdist.include = ["thirdparty/JUCE"]
 
