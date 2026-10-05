@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.11.0]
+
 ### Added
 
 - Desktop: live mode plays file input nodes from the transport position and records every file output node while the transport plays. Before, file inputs played silence in live mode and file outputs were never written. Play overwrites each sink. Stop finalizes the recordings and rewinds the transport to 0. Before, Stop only paused.

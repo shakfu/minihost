@@ -3,14 +3,14 @@ name: Build
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    tags: ['[0-9]*']
   pull_request:
     branches: [main]
   workflow_dispatch:
 
 jobs:
   # Resolve one version string shared by every artifact name and archive so
-  # the whole run is self-identifying. Tag builds (refs/tags/v*) use the tag;
+  # the whole run is self-identifying. Tag builds (refs/tags/<version>) use the tag;
   # every other build uses the pyproject version disambiguated by short SHA
   # (e.g. 0.4.2-1a2b3c4) so main / PR artifacts never collide or masquerade
   # as a release.
@@ -24,8 +24,8 @@ jobs:
       - id: compute
         shell: bash
         run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            V="${GITHUB_REF#refs/tags/v}"
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            V="${GITHUB_REF#refs/tags/}"
           else
             BASE=$(sed -nE 's/^version = "([^"]+)"/\1/p' pyproject.toml | head -1)
             V="${BASE}-$(git rev-parse --short HEAD)"
@@ -605,15 +605,33 @@ jobs:
     name: Create release
     runs-on: ubuntu-22.04
     needs: [version, aggregate]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+
       - name: Download aggregated artifacts
         uses: actions/download-artifact@v8
         with:
           name: minihost-all-${{ needs.version.outputs.version }}
           path: release
+
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        # release_notes.py exits 2 and writes nothing when neither
+        # `## [<version>]` nor `## [Unreleased]` has content. Fall back to
+        # GitHub's generated notes rather than fail the release.
+        env:
+          VER: ${{ needs.version.outputs.version }}
+        run: |
+          if python3 scripts/release_notes.py "$VER" --output release-notes.md; then
+            echo "found=1" >> "$GITHUB_OUTPUT"
+            cat release-notes.md
+          else
+            echo "found=0" >> "$GITHUB_OUTPUT"
+            echo "::warning::no CHANGELOG section for $VER; using generated notes"
+          fi
 
       # The aggregate job packs every platform as zip, which is what the
       # build artifact carries. Published releases keep their historical
@@ -687,4 +705,5 @@ jobs:
             minihost-desktop-windows-x64-${{ needs.version.outputs.version }}.zip
             minihost-wheels-${{ needs.version.outputs.version }}.zip
             release/sdist/*.tar.gz
-          generate_release_notes: true
+          body_path: ${{ steps.notes.outputs.found == '1' && 'release-notes.md' || '' }}
+          generate_release_notes: ${{ steps.notes.outputs.found != '1' }}
