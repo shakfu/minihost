@@ -46,28 +46,40 @@ def _project(tmp_path, duration=2.0, name="s", **seq):
     silent = tmp_path / "silent.wav"
     audio_io.write_audio(str(silent), np.zeros((2, 480), np.float32), SR, bit_depth=24)
     proj = tmp_path / f"{name}.json"
-    proj.write_text(json.dumps({
-        "minihost_project_version": 1,
-        "sample_rate": SR,
-        "block_size": 512,
-        "bpm": 120,
-        "duration_seconds": duration,
-        "nodes": [
-            {"id": "in", "kind": "input", "channels": 2, "source": str(silent)},
-            {"id": "out", "kind": "output", "channels": 2,
-             "sink": str(tmp_path / f"{name}.wav"), "bit_depth": 24},
-            {"id": "seq", "kind": "sequencer", **{**SEQ, **seq}},
-            {"id": "mo", "kind": "midi_output"},
-        ],
-        "edges": [{"src": "in", "dst": "out"},
-                  {"src": "seq", "dst": "mo", "kind": "midi"}],
-    }))
+    proj.write_text(
+        json.dumps(
+            {
+                "minihost_project_version": 1,
+                "sample_rate": SR,
+                "block_size": 512,
+                "bpm": 120,
+                "duration_seconds": duration,
+                "nodes": [
+                    {"id": "in", "kind": "input", "channels": 2, "source": str(silent)},
+                    {
+                        "id": "out",
+                        "kind": "output",
+                        "channels": 2,
+                        "sink": str(tmp_path / f"{name}.wav"),
+                        "bit_depth": 24,
+                    },
+                    {"id": "seq", "kind": "sequencer", **{**SEQ, **seq}},
+                    {"id": "mo", "kind": "midi_output"},
+                ],
+                "edges": [
+                    {"src": "in", "dst": "out"},
+                    {"src": "seq", "dst": "mo", "kind": "midi"},
+                ],
+            }
+        )
+    )
     return proj
 
 
 def _run(*args, ok=True):
-    res = subprocess.run([str(DESKTOP_BIN), *args], capture_output=True, text=True,
-                         timeout=60)
+    res = subprocess.run(
+        [str(DESKTOP_BIN), *args], capture_output=True, text=True, timeout=60
+    )
     if ok:
         assert res.returncode == 0, f"stdout:{res.stdout}\nstderr:{res.stderr}"
     return res
@@ -121,8 +133,10 @@ def test_pattern_repeats_unless_mutated(tmp_path):
 
     def bars(events):
         ons = _ons(events)
-        return [[(f - b * bar, n, v) for f, _, n, v in ons if b * bar <= f < (b + 1) * bar]
-                for b in range(4)]
+        return [
+            [(f - b * bar, n, v) for f, _, n, v in ons if b * bar <= f < (b + 1) * bar]
+            for b in range(4)
+        ]
 
     plain = bars(_render(_project(tmp_path, duration=4.0, name="plain")))
     assert plain[0] and plain[0] == plain[1] == plain[2] == plain[3]
@@ -206,20 +220,30 @@ def test_sequencer_drives_an_instrument_plugin(tmp_path):
     xml = '<PLUGIN name="AUMIDISynth" format="AudioUnit" file="AudioUnit:Synths/aumu,msyn,appl"/>'
     proj = tmp_path / "synth.json"
     out = tmp_path / "synth.wav"
-    proj.write_text(json.dumps({
-        "minihost_project_version": 1,
-        "sample_rate": SR,
-        "block_size": 512,
-        "duration_seconds": 1.0,
-        "nodes": [
-            {"id": "seq", "kind": "sequencer", **SEQ, "density": 1.0},
-            {"id": "synth", "kind": "plugin", "name": "AUMIDISynth",
-             "descriptor": base64.b64encode(xml.encode()).decode()},
-            {"id": "out", "kind": "output", "channels": 2, "sink": str(out)},
-        ],
-        "edges": [{"src": "seq", "dst": "synth", "kind": "midi"},
-                  {"src": "synth", "dst": "out"}],
-    }))
+    proj.write_text(
+        json.dumps(
+            {
+                "minihost_project_version": 1,
+                "sample_rate": SR,
+                "block_size": 512,
+                "duration_seconds": 1.0,
+                "nodes": [
+                    {"id": "seq", "kind": "sequencer", **SEQ, "density": 1.0},
+                    {
+                        "id": "synth",
+                        "kind": "plugin",
+                        "name": "AUMIDISynth",
+                        "descriptor": base64.b64encode(xml.encode()).decode(),
+                    },
+                    {"id": "out", "kind": "output", "channels": 2, "sink": str(out)},
+                ],
+                "edges": [
+                    {"src": "seq", "dst": "synth", "kind": "midi"},
+                    {"src": "synth", "dst": "out"},
+                ],
+            }
+        )
+    )
     _run(f"--render-project={proj}")
     audio, _ = audio_io.read_audio(str(out), as_=np.ndarray)
     assert np.abs(audio).max() > 0.01
@@ -233,23 +257,43 @@ def test_start_live_fills_missing_plugin_probe(tmp_path):
         pytest.skip("stock AU instruments are macOS-only")
     xml = '<PLUGIN name="AUMIDISynth" format="AudioUnit" file="AudioUnit:Synths/aumu,msyn,appl"/>'
     proj = tmp_path / "old.json"
-    proj.write_text(json.dumps({
-        "minihost_project_version": 1,
-        "sample_rate": SR,
-        "block_size": 512,
-        "duration_seconds": 0.1,
-        "nodes": [
-            {"id": "seq", "kind": "sequencer"},
-            {"id": "synth", "kind": "plugin", "name": "AUMIDISynth",
-             "descriptor": base64.b64encode(xml.encode()).decode()},
-            {"id": "out", "kind": "output", "channels": 2,
-             "sink": str(tmp_path / "old.wav")},
-        ],
-        "edges": [{"src": "seq", "dst": "synth", "kind": "midi"},
-                  {"src": "synth", "dst": "out"}],
-    }))
+    proj.write_text(
+        json.dumps(
+            {
+                "minihost_project_version": 1,
+                "sample_rate": SR,
+                "block_size": 512,
+                "duration_seconds": 0.1,
+                "nodes": [
+                    {"id": "seq", "kind": "sequencer"},
+                    {
+                        "id": "synth",
+                        "kind": "plugin",
+                        "name": "AUMIDISynth",
+                        "descriptor": base64.b64encode(xml.encode()).decode(),
+                    },
+                    {
+                        "id": "out",
+                        "kind": "output",
+                        "channels": 2,
+                        "sink": str(tmp_path / "old.wav"),
+                    },
+                ],
+                "edges": [
+                    {"src": "seq", "dst": "synth", "kind": "midi"},
+                    {"src": "synth", "dst": "out"},
+                ],
+            }
+        )
+    )
     _run(f"--live-selftest={proj}")
-    nodes = {n["id"]: n for n in
-             json.loads(proj.with_suffix(".probed.json").read_text())["nodes"]}
-    assert nodes["synth"]["probe"] == {"in_channels": 0, "out_channels": 2,
-                                       "accepts_midi": True, "produces_midi": False}
+    nodes = {
+        n["id"]: n
+        for n in json.loads(proj.with_suffix(".probed.json").read_text())["nodes"]
+    }
+    assert nodes["synth"]["probe"] == {
+        "in_channels": 0,
+        "out_channels": 2,
+        "accepts_midi": True,
+        "produces_midi": False,
+    }

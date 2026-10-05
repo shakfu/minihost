@@ -77,7 +77,10 @@ def pad() -> np.ndarray:
 def stereo_id() -> np.ndarray:
     """Left: 440 Hz beeps on the beat. Right: 880 Hz beeps on the off-beat."""
     t = _t(4.0)
-    beep = lambda f, offset: np.sin(2 * np.pi * f * t) * (((t + offset) % 0.5) < 0.12)
+
+    def beep(f: float, offset: float) -> np.ndarray:
+        return np.sin(2 * np.pi * f * t) * (((t + offset) % 0.5) < 0.12)
+
     return (np.stack([beep(440.0, 0.0), beep(880.0, 0.25)]) * 0.3).astype(np.float32)
 
 
@@ -261,7 +264,9 @@ def examples() -> dict[str, dict]:
 
     if platform.system() == "Darwin":
         # Stereo; DLSMusicDevice has 4 outputs.
-        synth = lambda: au("AUMIDISynth", "aumu,msyn,appl", "Synths")
+        def synth() -> dict:
+            return au("AUMIDISynth", "aumu,msyn,appl", "Synths")
+
         ex["11_sequencer"] = project(
             {
                 "seq": seq(steps=16, rate=0.25, root=60, scale="minor_pentatonic",
