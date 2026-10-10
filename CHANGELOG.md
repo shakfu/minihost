@@ -6,6 +6,8 @@
 
 - Python 3.12 or later is required. Releases ship one `cp312-abi3` wheel per platform, built against the Python limited API, where they used to ship one wheel per CPython version. The same wheel installs on 3.12, 3.13, 3.14 and later. Python 3.10 and 3.11 are no longer supported.
 
+- Python 3.15 is supported and tested in CI. CI tests the abi3 wheel on 3.12 and 3.15 only. cibuildwheel is pinned to 4.3.0, which supports 3.15.
+
 ## [0.11.0]
 
 ### Added
