@@ -225,6 +225,10 @@ private:
     void closeRecorders();
     juce::TimeSliceThread                          writer_thread_{ "minihost recorder" };
     std::vector<std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter>> recorders_;
+    // (part file, sink) per recorder. A take is written to the part file
+    // and moved over the sink when it closes, so a Play that fails to open
+    // a later sink leaves every earlier take in place.
+    std::vector<std::pair<juce::File, juce::File>> recording_files_;
     juce::SpinLock                                 recorder_lock_;
     std::atomic<long long>                         dropped_frames_{ 0 };
     std::atomic<bool>                              recording_{ false };

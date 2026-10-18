@@ -8,9 +8,43 @@
 
 - Python 3.15 is supported and tested in CI. CI tests the abi3 wheel on 3.12 and 3.15 only. cibuildwheel is pinned to 4.3.0, which supports 3.15.
 
+- Tests: `minihost_desktop --canvas-script=<script.json>` applies canvas edits without a window: connect, add, delete, Properties fields, undo and redo. Each op runs the code the mouse and dialogs use, and dialog warnings are returned in the output. `tests/test_desktop_canvas.py` drives it.
+
 - Tests: the MIDI loopback tests also run on Linux, through the ALSA sequencer (`tests/alsa_loopback.py`, ctypes, no new dependency). `tests/test_midi_device_loopback.py` sends MIDI through a running `AudioDevice` and the `MinihostTestFx` pass-through. That covers the ALSA back-end for virtual ports, ports opened by index and `send_midi`. GitHub's hosted runners have no `/dev/snd/seq`, so these tests skip in CI.
 
 ### Fixed
+
+- Desktop: the metronome and MIDI clock read the transport after it had advanced past the chunk. Every click and clock tick came one chunk early (10.7 ms at 512 samples), and beat 0 and tick 0 were never emitted.
+
+- Desktop: a failed project save could replace the file with a truncated copy. JUCE's `replaceWithText` ignores a failed write, and `moveFileTo` deletes the target before renaming. The save now checks the write, flushes it to disk, and renames over the target.
+
+- Desktop: Open Project and New Project discarded unsaved edits without asking. They now show the same Save / Don't Save / Cancel prompt as quitting.
+
+- Desktop: sequencer edits made while Live was playing did not take effect until some later edit. The edit notification ran before the dialog applied the change, so Live received the old settings.
+
+- Desktop: memory errors in live mode and the plugin editor:
+  - a failed Restart Live left the canvas reading the freed project;
+  - a meter edited while Live ran was read past the end of its level array;
+  - closing an editor window or quitting during "Render 5s" closed the plugin under the running render.
+
+- Desktop: renders now match Python when loading a project:
+  - relative plugin paths resolve against the project file's directory, not the working directory;
+  - a plugin state the plugin refuses fails the render with "state rejected", where it used to render with default parameters;
+  - MIDI-file events on the same tick keep Python's order. The sort was unstable.
+
+- Desktop: device MIDI received while Live was stopped was replayed at offset 0 when Live started. A long backlog dropped events, which could leave notes hanging. Start now discards it.
+
+- Desktop: wiring audio into a plugin removed the MIDI edge feeding the same plugin; both use port 0.
+
+- Desktop: Capture State chose the editor by window title. With two nodes on one plugin file, or an AudioUnit, it could store another plugin's state. It now captures the plugin of the window whose button was pressed.
+
+- Desktop: data-loss fixes:
+  - a second instance shared the first's crash-recovery file, offered it as a crash, overwrote it and deleted it on exit; only the first instance now uses it;
+  - `--scan-plugins` replaced the plugin list at its destination, blacklist included; it now merges, exits 1 if the list cannot be written, and exits 2 for an unknown `--scan-format`;
+  - Play deleted each recording target before opening the next, so one that could not be opened lost the earlier takes; takes now go to a `.part` file that replaces the target when recording stops;
+  - quitting during an offline render left the render running during teardown; quit now cancels it.
+
+- Desktop: renaming a node to an id already in use, or adding a node whose generated id clashed with an existing one, merged two nodes on the canvas, and the saved project then failed to open with "duplicate node id". Every id path now checks all node kinds.
 
 - Interpreter exit hung on Linux while an `AudioDevice` was open. The atexit pass closed the device but kept its reference to the plugin. The plugin was then destroyed during finalization, after the JUCE message thread had stopped, and its VST3 `disconnect` waited forever for the message-manager lock.
 

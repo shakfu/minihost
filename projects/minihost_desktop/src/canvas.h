@@ -31,8 +31,11 @@
 
 namespace minihost_desktop {
 
+struct NodeKindEntry;
+
 class CanvasComponent : public juce::Component,
-                        private juce::Timer
+                        private juce::Timer,
+                        private juce::AsyncUpdater
 {
 public:
     CanvasComponent();
@@ -112,6 +115,19 @@ public:
     bool redo();
     bool canUndo() const { return undo_history_.canUndo(); }
     bool canRedo() const { return undo_history_.canRedo(); }
+
+    // Applies one scripted edit through the code the mouse, context menu
+    // and Properties dialog use. Used by `minihost_desktop --canvas-script`
+    // to test canvas edits without a window. Ops (JSON objects):
+    //   {"op":"connect","src":id,"dst":id,"port":n|"midi"}
+    //   {"op":"add","kind":k}           (registry kinds, or "channel_split")
+    //   {"op":"delete","id":id}
+    //   {"op":"properties","id":id,"fields":{name:value,...}}
+    //   {"op":"undo"} / {"op":"redo"}
+    // Warnings that would open a dialog are appended to `warnings`.
+    // Returns false and sets `error` for a malformed op or unknown node.
+    bool applyScriptOp(const juce::var& op, juce::StringArray& warnings,
+                       juce::String& error);
 
     // Fired after any edit, undo, or redo so the application can mark the
     // window dirty and refresh the Edit menu's enabled state.
@@ -226,6 +242,14 @@ private:
     void showNodePropertiesDialog(int node_index);
 
     void deleteSelected();
+    void addRegistryNode(const NodeKindEntry& entry);
+    juce::AlertWindow* createPropertiesDialog(const NodeKindEntry& entry,
+                                              int spec_index) const;
+    void applyPropertiesDialog(juce::AlertWindow& aw,
+                               const NodeKindEntry& entry, int spec_index);
+    // A warning dialog, or an entry in script_warnings_ while scripted.
+    void warn(const juce::String& title, const juce::String& message);
+    juce::StringArray* script_warnings_ = nullptr;
     void removeNodeFromDoc(int node_index);
     void removeEdgeFromDoc(int doc_edge_index);
     void addEdgeToDoc(int src_node_index, int dst_node_index, int dst_port);
@@ -233,7 +257,9 @@ private:
 
     // Capture the current document as an undo restore point. Call
     // immediately before any mutation of *doc_. No-op when doc_ is null.
-    // Also notifies the application that an edit is happening.
+    // Also notifies the application of the edit, asynchronously: the
+    // callers mutate after this returns, and the listener (the live
+    // sequencer push) must read the edited document.
     void recordUndo();
 
     project::ProjectDocument* doc_ = nullptr;
@@ -243,6 +269,10 @@ private:
 
     // juce::Timer
     void timerCallback() override { repaint(); }
+
+    // juce::AsyncUpdater
+    void handleAsyncUpdate() override
+    { if (on_document_edited_) on_document_edited_(); }
     OpenPluginEditorCb        on_open_plugin_editor_;
     AddPluginRequestedCb      on_add_plugin_requested_;
     PlayFileCb                on_play_file_;

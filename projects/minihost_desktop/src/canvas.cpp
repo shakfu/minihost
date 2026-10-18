@@ -8,7 +8,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <unordered_set>
 
 namespace minihost_desktop {
 
@@ -38,6 +37,8 @@ void CanvasComponent::setDocument(project::ProjectDocument* doc)
     // A different document starts with a clean history; the old undo
     // stack refers to the previous document's state.
     undo_history_.clear();
+    // An edit notification still pending belongs to the old document.
+    cancelPendingUpdate();
     rebuildLayout();
     repaint();
 }
@@ -46,7 +47,7 @@ void CanvasComponent::recordUndo()
 {
     if (doc_ == nullptr) return;
     undo_history_.snapshot(*doc_);
-    if (on_document_edited_) on_document_edited_();
+    triggerAsyncUpdate();
 }
 
 bool CanvasComponent::undo()
@@ -337,14 +338,21 @@ void CanvasComponent::paint(juce::Graphics& g)
                                    box.getY(), box.getBottom());
 
             // Filled bars from current peaks. Skipped silently when
-            // Live isn't running (live_project_ is null).
-            if (live_project_ != nullptr
-                && meter_idx >= 0
-                && meter_idx < (int) live_project_->meter_states.size())
+            // Live isn't running (live_project_ is null). meter_states
+            // follow the document Live compiled, which edits since
+            // then may have reordered or resized, so match by id.
+            int live_idx = -1;
+            if (live_project_ != nullptr)
+                for (int mi = 0; mi < (int) live_project_->doc.meters.size(); ++mi)
+                    if (live_project_->doc.meters[(size_t) mi].id == n.id)
+                    { live_idx = mi; break; }
+            if (live_idx >= 0
+                && live_idx < (int) live_project_->meter_states.size())
             {
                 const auto* st
-                    = live_project_->meter_states[(size_t) meter_idx].get();
-                for (int c = 0; c < ch; ++c)
+                    = live_project_->meter_states[(size_t) live_idx].get();
+                const int live_ch = std::min(ch, (int) st->peak.size());
+                for (int c = 0; c < live_ch; ++c)
                 {
                     const float peak = st->peak[(size_t) c]
                                           .load(std::memory_order_relaxed);
@@ -874,9 +882,7 @@ void CanvasComponent::addEdgeToDoc(int src_node_index, int dst_node_index,
         dst_port = 0;   // kMidiPort is canvas-only; plugins have one MIDI input
         if (!src_is_midi && src_n.kind != "plugin")
         {
-            juce::AlertWindow::showMessageBoxAsync(
-                juce::AlertWindow::WarningIcon,
-                "MIDI edge requires a MIDI source",
+            warn("MIDI edge requires a MIDI source",
                 "Connect from a MIDI source (input, clock, processor, "
                 "merge, or MIDI-producing plugin) into a MIDI sink "
                 "(output, processor, merge, or MIDI-accepting plugin).");
@@ -903,9 +909,7 @@ void CanvasComponent::addEdgeToDoc(int src_node_index, int dst_node_index,
             }
             if (chosen_port < 0)
             {
-                juce::AlertWindow::showMessageBoxAsync(
-                    juce::AlertWindow::WarningIcon,
-                    "Merge full",
+                warn("Merge full",
                     "All input ports on this midi_merge are already "
                     "connected. Edit the merge to increase num_inputs.");
                 return;
@@ -956,9 +960,7 @@ void CanvasComponent::addEdgeToDoc(int src_node_index, int dst_node_index,
     const int dst_ch = channels_for(dst_node_index, /*is_output_port=*/false);
     if (src_ch >= 0 && dst_ch >= 0 && src_ch != dst_ch)
     {
-        juce::AlertWindow::showMessageBoxAsync(
-            juce::AlertWindow::WarningIcon,
-            "Channel mismatch",
+        warn("Channel mismatch",
             "Cannot connect "
                 + src_n.id + " (" + juce::String(src_ch) + "ch out)"
                 + " -> " + dst_n.id
@@ -974,11 +976,13 @@ void CanvasComponent::addEdgeToDoc(int src_node_index, int dst_node_index,
     // Past channel validation: this edge will be added.
     recordUndo();
 
-    // One edge per (dst_node, dst_port): replace any existing.
+    // One audio edge per (dst_node, dst_port): replace any existing. A
+    // plugin's MIDI edge also has dst_port 0 and must survive.
     doc_->edges.erase(
         std::remove_if(doc_->edges.begin(), doc_->edges.end(),
             [&](const project::EdgeSpec& e) {
-                return e.dst == dst_id && e.dst_port == dst_port;
+                return e.dst == dst_id && e.dst_port == dst_port
+                    && e.kind == project::EdgeKind::Audio;
             }),
         doc_->edges.end());
 
@@ -1030,16 +1034,99 @@ void CanvasComponent::showContextMenu(juce::Point<int> screen_pos)
             const int reg_idx = chosen - kRegistryBase;
             if (reg_idx >= 0 && reg_idx < (int) nodeRegistry().size())
             {
-                const auto& entry = nodeRegistry()[(size_t) reg_idx];
-                if (entry.menu_add && doc_ != nullptr)
-                {
-                    recordUndo();
-                    entry.menu_add(*doc_);
-                    rebuildLayout();
-                    repaint();
-                }
+                addRegistryNode(nodeRegistry()[(size_t) reg_idx]);
             }
         });
+}
+
+void CanvasComponent::addRegistryNode(const NodeKindEntry& entry)
+{
+    if (!entry.menu_add || doc_ == nullptr) return;
+    recordUndo();
+    entry.menu_add(*doc_);
+    rebuildLayout();
+    repaint();
+}
+
+void CanvasComponent::warn(const juce::String& title, const juce::String& message)
+{
+    if (script_warnings_ != nullptr)
+        script_warnings_->add(title + ": " + message);
+    else
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::AlertWindow::WarningIcon, title, message);
+}
+
+bool CanvasComponent::applyScriptOp(const juce::var& op,
+                                    juce::StringArray& warnings,
+                                    juce::String& error)
+{
+    if (doc_ == nullptr) { error = "no document"; return false; }
+    const auto name = op["op"].toString();
+    auto node_index = [this, &error](const juce::var& id) {
+        for (int i = 0; i < (int) nodes_.size(); ++i)
+            if (nodes_[(size_t) i].id == id.toString()) return i;
+        error = "no node " + id.toString();
+        return -1;
+    };
+    // Warnings land in `warnings` instead of opening dialogs.
+    script_warnings_ = &warnings;
+    struct Reset { juce::StringArray*& p; ~Reset() { p = nullptr; } } reset{ script_warnings_ };
+
+    if (name == "connect")
+    {
+        const int src = node_index(op["src"]);
+        const int dst = node_index(op["dst"]);
+        if (src < 0 || dst < 0) return false;
+        const auto port = op["port"];
+        addEdgeToDoc(src, dst, port.toString() == "midi" ? kMidiPort
+                                                         : (int) port);
+        return true;
+    }
+    if (name == "add")
+    {
+        if (op["kind"].toString() == "channel_split")
+        { addChannelSplitStereo(); return true; }
+        if (const auto* entry = findKind(op["kind"].toString()))
+        { addRegistryNode(*entry); return true; }
+        error = "no addable kind " + op["kind"].toString();
+        return false;
+    }
+    if (name == "delete")
+    {
+        const int i = node_index(op["id"]);
+        if (i < 0) return false;
+        selected_edge_ = -1;
+        selected_node_ = i;
+        deleteSelected();
+        return true;
+    }
+    if (name == "properties")
+    {
+        const int i = node_index(op["id"]);
+        if (i < 0) return false;
+        const auto lookup = mapCanvasIndex(*doc_, i);
+        if (lookup.entry == nullptr) { error = "no registry entry"; return false; }
+        std::unique_ptr<juce::AlertWindow> aw(
+            createPropertiesDialog(*lookup.entry, lookup.spec_index));
+        // Fields are set as the user would type or pick them.
+        if (auto* fields = op["fields"].getDynamicObject())
+            for (const auto& f : fields->getProperties())
+            {
+                const auto key = f.name.toString();
+                if (auto* te = aw->getTextEditor(key))
+                    te->setText(f.value.toString(), false);
+                else if (auto* cb = aw->getComboBoxComponent(key))
+                    cb->setText(f.value.toString(), juce::dontSendNotification);
+                else { error = "no field " + key; return false; }
+            }
+        applyPropertiesDialog(*aw, *lookup.entry, lookup.spec_index);
+        return true;
+    }
+    if (name == "undo") { undo(); return true; }
+    if (name == "redo") { redo(); return true; }
+    error = "unknown op " + name;
+    return false;
 }
 
 void CanvasComponent::setLiveProject(project::LoadedProject* lp)
@@ -1064,51 +1151,68 @@ void CanvasComponent::showNodePropertiesDialog(int node_index)
     const auto& entry = *lookup.entry;
     const int   spec_index = lookup.spec_index;
 
-    auto* aw = new juce::AlertWindow(
-        "Node properties",
-        entry.dialog_title(*doc_, spec_index),
-        juce::AlertWindow::QuestionIcon);
-
-    // Every kind shares an editable id field.
-    aw->addTextEditor("id", entry.id_at(*doc_, spec_index), "id");
-    // Per-kind fields.
-    entry.dialog_emit(*doc_, spec_index, *aw);
-
+    auto* aw = createPropertiesDialog(entry, spec_index);
     aw->addButton("OK",     1, juce::KeyPress(juce::KeyPress::returnKey));
     aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
 
     aw->enterModalState(true,
         juce::ModalCallbackFunction::create(
             [this, aw, &entry, spec_index](int result) {
-                if (result != 1) { delete aw; return; }
-                if (doc_ == nullptr) { delete aw; return; }
-
-                const auto new_id = aw->getTextEditorContents("id").trim();
-                if (new_id.isEmpty()) { delete aw; return; }
-
-                NodeKindEntry::RenameFn rename =
-                    [this](const juce::String& old_id,
-                           const juce::String& nid) {
-                        for (auto& e : doc_->edges)
-                        {
-                            if (e.src == old_id) e.src = nid;
-                            if (e.dst == old_id) e.dst = nid;
-                        }
-                        auto it = doc_->layout.find(old_id.toStdString());
-                        if (it != doc_->layout.end())
-                        {
-                            doc_->layout[nid.toStdString()] = it->second;
-                            doc_->layout.erase(it);
-                        }
-                    };
-
-                recordUndo();
-                entry.dialog_apply(*doc_, spec_index, *aw, new_id, rename);
-                rebuildLayout();
-                repaint();
+                if (result == 1) applyPropertiesDialog(*aw, entry, spec_index);
                 delete aw;
             }),
         /*deleteWhenDismissed=*/false);
+}
+
+juce::AlertWindow* CanvasComponent::createPropertiesDialog(
+    const NodeKindEntry& entry, int spec_index) const
+{
+    auto* aw = new juce::AlertWindow(
+        "Node properties",
+        entry.dialog_title(*doc_, spec_index),
+        juce::AlertWindow::QuestionIcon);
+    // Every kind shares an editable id field.
+    aw->addTextEditor("id", entry.id_at(*doc_, spec_index), "id");
+    entry.dialog_emit(*doc_, spec_index, *aw);
+    return aw;
+}
+
+void CanvasComponent::applyPropertiesDialog(juce::AlertWindow& aw,
+                                            const NodeKindEntry& entry,
+                                            int spec_index)
+{
+    if (doc_ == nullptr) return;
+    const auto new_id = aw.getTextEditorContents("id").trim();
+    if (new_id.isEmpty()) return;
+    // A duplicate id merges two nodes on the canvas and makes the saved
+    // file fail to load.
+    if (new_id != entry.id_at(*doc_, spec_index) && idInUse(*doc_, new_id))
+    {
+        warn("Id already in use",
+             "Another node is already called \"" + new_id
+                 + "\". Node ids must be unique.");
+        return;
+    }
+
+    NodeKindEntry::RenameFn rename =
+        [this](const juce::String& old_id, const juce::String& nid) {
+            for (auto& e : doc_->edges)
+            {
+                if (e.src == old_id) e.src = nid;
+                if (e.dst == old_id) e.dst = nid;
+            }
+            auto it = doc_->layout.find(old_id.toStdString());
+            if (it != doc_->layout.end())
+            {
+                doc_->layout[nid.toStdString()] = it->second;
+                doc_->layout.erase(it);
+            }
+        };
+
+    recordUndo();
+    entry.dialog_apply(*doc_, spec_index, aw, new_id, rename);
+    rebuildLayout();
+    repaint();
 }
 
 void CanvasComponent::addChannelSplitStereo()
@@ -1120,11 +1224,7 @@ void CanvasComponent::addChannelSplitStereo()
         int n = 1;
         juce::String id;
         do { id = prefix + juce::String(n++); }
-        while (std::any_of(doc_->pick_channels.begin(),
-                           doc_->pick_channels.end(),
-                           [&](const project::PickChannelNodeSpec& s) {
-                               return s.id == id;
-                           }));
+        while (idInUse(*doc_, id));
         return id;
     };
     recordUndo();
@@ -1234,19 +1334,11 @@ void CanvasComponent::addOutputNode()
 juce::String CanvasComponent::generateUniqueId(const juce::String& prefix) const
 {
     if (doc_ == nullptr) return prefix + "_1";
-    std::unordered_set<std::string> used;
-    for (const auto& n : doc_->inputs)  used.insert(n.id.toStdString());
-    for (const auto& n : doc_->outputs) used.insert(n.id.toStdString());
-    for (const auto& n : doc_->plugins) used.insert(n.id.toStdString());
-    for (const auto& n : doc_->mixes)   used.insert(n.id.toStdString());
-    for (int i = 1; i < 1000; ++i)
+    for (int i = 1;; ++i)
     {
-        const auto candidate
-            = (prefix + "_" + juce::String(i)).toStdString();
-        if (used.find(candidate) == used.end())
-            return juce::String(candidate);
+        const auto candidate = prefix + "_" + juce::String(i);
+        if (!idInUse(*doc_, candidate)) return candidate;
     }
-    return prefix + "_x";
 }
 
 

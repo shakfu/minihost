@@ -27,6 +27,10 @@ bool readMidiFileEvents(const juce::File& midi_file, double sample_rate,
         return false;
     mf.doTimeAnalysis();   // populate MidiEvent::seconds from the tempo map
 
+    // Python's order: tracks in file order, then a stable sort by tick and
+    // then by sample. Equal to one stable sort on (sample, tick).
+    struct Timed { int tick; MH_MidiEvent ev; };
+    std::vector<Timed> timed;
     for (int t = 0; t < mf.getTrackCount(); ++t)
     {
         auto& track = mf[t];
@@ -44,13 +48,17 @@ bool readMidiFileEvents(const juce::File& midi_file, double sample_rate,
             e.status = (unsigned char) status;
             e.data1  = ev.size() > 1 ? (unsigned char) ev[1] : 0;
             e.data2  = ev.size() > 2 ? (unsigned char) ev[2] : 0;
-            out.push_back(e);
+            timed.push_back({ ev.tick, e });
         }
     }
-    std::sort(out.begin(), out.end(),
-              [](const MH_MidiEvent& a, const MH_MidiEvent& b) {
-                  return a.sample_offset < b.sample_offset;
-              });
+    std::stable_sort(timed.begin(), timed.end(),
+                     [](const Timed& a, const Timed& b) {
+                         if (a.ev.sample_offset != b.ev.sample_offset)
+                             return a.ev.sample_offset < b.ev.sample_offset;
+                         return a.tick < b.tick;
+                     });
+    out.reserve(timed.size());
+    for (const auto& t : timed) out.push_back(t.ev);
     return true;
 }
 
@@ -506,10 +514,25 @@ void saveProjectFile(const juce::File& path, const ProjectDocument& doc)
     const juce::String text = juce::JSON::toString(juce::var(root),
         /*allOnOneLine=*/false);
 
+    // replaceWithText ignores a failed write and moveFileTo deletes the
+    // target before renaming, so a full disk or a crash could lose the file.
+    // Check the write, flush to disk, then rename over the target.
     juce::File tmp = path.getSiblingFile(path.getFileName() + ".tmp");
-    if (!tmp.replaceWithText(text + "\n"))
-        throw ProjectError("failed to write " + tmp.getFullPathName().toStdString());
-    if (!tmp.moveFileTo(path))
+    tmp.deleteFile();  // FileOutputStream appends to an existing file
+    {
+        juce::FileOutputStream out(tmp);
+        const bool wrote = out.openedOk()
+            && out.writeText(text + "\n", false, false, nullptr);
+        if (wrote) out.flush();
+        if (!wrote || out.getStatus().failed())
+        {
+            const auto why = out.getStatus().getErrorMessage();
+            tmp.deleteFile();
+            throw ProjectError("failed to write " + tmp.getFullPathName().toStdString()
+                               + (why.isNotEmpty() ? ": " + why.toStdString() : ""));
+        }
+    }
+    if (!tmp.replaceFileIn(path))
     {
         tmp.deleteFile();
         throw ProjectError("failed to rename tmp file to "
@@ -639,7 +662,9 @@ std::unique_ptr<LoadedProject> loadProject(ProjectDocument document)
             juce::MemoryBlock mb;
             if (!decodeBase64(pl.state_b64, mb))
                 throwErr("plugin " + pl.id + ": malformed state_b64");
-            mh_set_state(p, mb.getData(), (int) mb.getSize());
+            // As in Python: rendering with defaults instead would be silent.
+            if (!mh_set_state(p, mb.getData(), (int) mb.getSize()))
+                throwErr("plugin " + pl.id + ": state rejected");
         }
     }
 

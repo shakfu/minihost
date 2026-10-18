@@ -187,3 +187,36 @@ def test_scan_default_path_survives_shutdown(tmp_path):
         "library was empty after shutdown -- save-on-shutdown clobbered the "
         f"scanned list:\n{res.stderr}"
     )
+
+
+@skip_if_no_desktop
+def test_scan_merges_into_the_existing_list(tmp_path):
+    """A scan used to replace the list at its destination, blacklist and
+    all, with only what that scan covered."""
+    out_xml = tmp_path / "known.xml"
+    out_xml.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<KNOWNPLUGINS><BLACKLISTED id="/plugins/crashes.vst3"/></KNOWNPLUGINS>\n'
+    )
+    scan_dir = tmp_path / "plugins"
+    scan_dir.mkdir()
+
+    res = _run_scan(scan_dir, out_xml)
+    assert res.returncode == 0, res.stderr
+    root = ET.parse(out_xml).getroot()
+    assert [b.get("id") for b in root.findall("BLACKLISTED")] == [
+        "/plugins/crashes.vst3"
+    ]
+
+
+@skip_if_no_desktop
+def test_scan_with_an_unknown_format_writes_nothing(tmp_path):
+    out_xml = tmp_path / "known.xml"
+    out_xml.write_text("<KNOWNPLUGINS/>\n")
+    scan_dir = tmp_path / "plugins"
+    scan_dir.mkdir()
+
+    res = _run_scan(scan_dir, out_xml, fmt="VST")
+    assert res.returncode == 2
+    assert "no format named VST" in res.stderr
+    assert out_xml.read_text() == "<KNOWNPLUGINS/>\n"

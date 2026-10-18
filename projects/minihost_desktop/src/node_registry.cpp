@@ -115,19 +115,10 @@ static juce::String require_string(const juce::var& v, const juce::String& key)
 static juce::String uniqueId(const ProjectDocument& d,
                              const juce::String& prefix)
 {
-    int n = 1;
-    for (;; ++n)
+    for (int n = 1;; ++n)
     {
         juce::String candidate = prefix + juce::String(n);
-        bool used = false;
-        for (const auto& e : nodeRegistry())
-        {
-            const int c = e.count ? e.count(d) : 0;
-            for (int i = 0; i < c; ++i)
-                if (e.id_at(d, i) == candidate) { used = true; break; }
-            if (used) break;
-        }
-        if (!used) return candidate;
+        if (!idInUse(d, candidate)) return candidate;
     }
 }
 
@@ -269,20 +260,22 @@ NodeKindEntry makePlugin()
 
     e.parse = [](const juce::var& n, const juce::String& id,
                  ProjectDocument& d, const juce::File& project_dir) {
-        (void) project_dir;
         project::PluginNodeSpec s;
         s.id   = id;
         s.descriptor = prop_string(n, "descriptor", {});
         if (s.descriptor.isNotEmpty())
         {
             // Descriptor-based (e.g. AudioUnit): path is optional.
-            s.path         = juce::File(prop_string(n, "path", {}));
+            const auto path = prop_string(n, "path", {});
+            if (path.isNotEmpty())
+                s.path = project_dir.getChildFile(path);
             s.display_name = prop_string(n, "name", {});
         }
         else
         {
-            // Legacy / path-based (VST3, LV2): path is required.
-            s.path = juce::File(require_string(n, "path"));
+            // Legacy / path-based (VST3, LV2): path is required. Relative
+            // to the project file, as in Python; absolute stays absolute.
+            s.path = project_dir.getChildFile(require_string(n, "path"));
         }
         s.state_b64 = prop_string(n, "state_b64", {});
         const juce::Identifier kReceivesMidi("receives_midi");
@@ -1986,6 +1979,17 @@ int totalNodeCount(const project::ProjectDocument& doc)
     for (const auto& e : nodeRegistry())
         total += e.count(doc);
     return total;
+}
+
+bool idInUse(const project::ProjectDocument& doc, const juce::String& id)
+{
+    for (const auto& e : nodeRegistry())
+    {
+        const int c = e.count ? e.count(doc) : 0;
+        for (int i = 0; i < c; ++i)
+            if (e.id_at(doc, i) == id) return true;
+    }
+    return false;
 }
 
 CanvasNodeLookup mapCanvasIndex(const project::ProjectDocument& doc,

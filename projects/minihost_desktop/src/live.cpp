@@ -345,6 +345,11 @@ bool LiveEngine::start(const project::ProjectDocument& doc,
     }
     SequencerUpdate stale;
     while (seq_queue_.pop(stale)) {}   // edits for a previous project
+    // The MIDI input stays open while Live is stopped. Drop what it queued,
+    // or the first callbacks replay it all at offset 0. The callback is
+    // detached, so this thread is the ring's only consumer.
+    midi_tail_.store(midi_head_.load(std::memory_order_acquire),
+                     std::memory_order_release);
     was_playing_ = false;
     last_bpm_    = 0.0;
     running_.store(true, std::memory_order_release);
@@ -445,6 +450,13 @@ bool LiveEngine::play(juce::String& error)
     if (transport_playing_.load()) return true;
 
     std::vector<std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter>> recs;
+    std::vector<std::pair<juce::File, juce::File>> files;
+    // On failure, close what opened and drop its part files.
+    auto fail = [&recs, &files] {
+        recs.clear();
+        for (const auto& f : files) f.first.deleteFile();
+        return false;
+    };
     const auto& doc = compiled_->doc;
     for (const auto& on : doc.outputs)
     {
@@ -456,14 +468,16 @@ bool LiveEngine::play(juce::String& error)
             fmt = std::make_unique<juce::WavAudioFormat>();
 
         on.sink.getParentDirectory().createDirectory();
-        on.sink.deleteFile();
+        const auto part = on.sink.getSiblingFile(on.sink.getFileName() + ".part");
+        part.deleteFile();
         std::unique_ptr<juce::OutputStream> stream
-            = std::make_unique<juce::FileOutputStream>(on.sink);
+            = std::make_unique<juce::FileOutputStream>(part);
         if (static_cast<juce::FileOutputStream*>(stream.get())->failedToOpen())
         {
-            error = "cannot open " + on.sink.getFullPathName();
-            return false;
+            error = "cannot open " + part.getFullPathName();
+            return fail();
         }
+        files.emplace_back(part, on.sink);
         const auto opts = juce::AudioFormatWriterOptions{}
             .withSampleRate((double) doc.sample_rate)
             .withNumChannels(on.channels)
@@ -474,7 +488,8 @@ bool LiveEngine::play(juce::String& error)
             error = "cannot record " + juce::String(on.bit_depth)
                   + "-bit " + fmt->getFormatName() + " to "
                   + on.sink.getFullPathName();
-            return false;
+            stream.reset();  // close it before fail() deletes the part file
+            return fail();
         }
         // Two seconds of FIFO absorbs disk stalls.
         recs.push_back(std::make_unique<juce::AudioFormatWriter::ThreadedWriter>(
@@ -489,6 +504,7 @@ bool LiveEngine::play(juce::String& error)
         const juce::SpinLock::ScopedLockType lock(recorder_lock_);
         recorders_ = std::move(recs);
     }
+    recording_files_ = std::move(files);
     dropped_frames_.store(0);
     recorded_frames_.store(0);
     recording_.store(!recorders_.empty());
@@ -513,6 +529,12 @@ void LiveEngine::closeRecorders()
     recording_.store(false);
     // Destroying a ThreadedWriter flushes its FIFO and closes the file.
     old.clear();
+    for (const auto& [part, sink] : recording_files_)
+        if (!part.replaceFileIn(sink))
+            std::fprintf(stderr, "[live] could not move %s to %s\n",
+                         part.getFullPathName().toRawUTF8(),
+                         sink.getFullPathName().toRawUTF8());
+    recording_files_.clear();
     if (const auto dropped = dropped_frames_.exchange(0); dropped > 0)
         std::fprintf(stderr,
             "[live] recording dropped %lld frames (disk too slow)\n",
@@ -935,7 +957,9 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
         // the transport-info push earlier in the block and before
         // renderBlock consumes the inputs / staged MIDI.
         {
-            const long long ti_pos = transport_pos_samples_;
+            // The chunk's start, as for file inputs: the transport has
+            // already advanced past this chunk.
+            const long long ti_pos = chunk_pos;
             const double    ti_bpm = transport_bpm_.load();
             const bool      playing = transport_playing_.load();
             const double    sr =

@@ -50,6 +50,15 @@
 //       Headless parse + re-save to <input>.resaved.json. Exercises the
 //       C++ project writer against the Python parser without UI input.
 //
+//   minihost_desktop --canvas-script=<script.json>
+//       Headless canvas edits. The script is
+//       {"project": path, "ops": [...], "save": path}, paths relative to
+//       the script. Loads the project into a CanvasComponent, applies each
+//       op through CanvasComponent::applyScriptOp (see canvas.h), saves
+//       the result, and prints {"results": [{"ok", "error", "warnings"}]}
+//       to stdout. Exit 1 if an op is malformed or load/save fails.
+//       Driven by tests/test_desktop_canvas.py.
+//
 //   minihost_desktop --undo-selftest=<project.json>
 //       Headless undo/redo self-test over the loaded document. Asserts
 //       the UndoHistory contract (snapshot/undo/redo/redo-clear) via the
@@ -80,12 +89,14 @@
 //       crash containment -- the same path the interactive GUI scan uses.)
 //       Headless in-process plugin scan. Registers the host formats and
 //       scans the given directories (default: each format's standard
-//       locations), writing the KnownPluginList to <file.xml> (default:
-//       known_plugins.xml next to the desktop settings). --scan-format
-//       restricts to one format (AudioUnit ignores the directory list and
-//       enumerates all system AUs, so a hermetic single-dir scan should
-//       pass --scan-format=VST3). Prints per-format found/failed counts.
-//       Exit 0 on a completed scan. Driven by tests/test_desktop_pluginscan.py.
+//       locations), merging the results into the KnownPluginList at
+//       <file.xml> (default: known_plugins.xml next to the desktop
+//       settings). --scan-format restricts to one format (AudioUnit ignores
+//       the directory list and enumerates all system AUs, so a hermetic
+//       single-dir scan should pass --scan-format=VST3). Prints per-format
+//       found/failed counts. Exit 0 on a completed scan, 1 if the list
+//       cannot be written, 2 for an unknown --scan-format. Driven by
+//       tests/test_desktop_pluginscan.py.
 //
 // Note on long options: JUCE's ArgumentList only matches "--opt=value"
 // form for long options (the space-separated form parses as two
@@ -155,9 +166,10 @@ struct EditorOptions {
 
     // Optional toolbar override. If toolbar_label is set, EditorWindow
     // shows that button instead of the default "Render 5s -> ...".
-    // toolbar_action runs on click (message thread).
-    juce::String          toolbar_label;
-    std::function<void()> toolbar_action;
+    // toolbar_action runs on click (message thread) and receives the
+    // window's own plugin.
+    juce::String                    toolbar_label;
+    std::function<void(MH_Plugin*)> toolbar_action;
 };
 
 class EditorWindow;  // fwd
@@ -331,7 +343,7 @@ public:
         {
             renderBtn_.setButtonText(opts_.toolbar_label);
             renderBtn_.onClick = [this] {
-                if (opts_.toolbar_action) opts_.toolbar_action();
+                if (opts_.toolbar_action) opts_.toolbar_action(plugin_);
             };
         }
         else
@@ -407,20 +419,29 @@ public:
 
         if (opts_.mode == EditorMode::AutoRenderAndQuit)
         {
-            juce::Timer::callAfterDelay(250, [this] {
-                triggerRender(/*quitWhenDone=*/true);
+            juce::Component::SafePointer<EditorWindow> self(this);
+            juce::Timer::callAfterDelay(250, [self] {
+                if (self) self->triggerRender(/*quitWhenDone=*/true);
             });
         }
         else if (opts_.mode == EditorMode::ProbeAndQuit)
         {
-            juce::Timer::callAfterDelay(250, [this] { startProbe(); });
+            juce::Component::SafePointer<EditorWindow> self(this);
+            juce::Timer::callAfterDelay(250, [self] {
+                if (self) self->startProbe();
+            });
         }
     }
 
     ~EditorWindow() override
     {
         if (tweaker_) tweaker_->stopTimer();
+        // The render/probe thread uses plugin_, which is closed below.
+        // It joins workerTweaker_ itself, so join it first.
+        closing_.store(true);
         workerTweakStop_.store(true);
+        if (worker_.joinable())
+            worker_.join();
         if (workerTweaker_.joinable())
             workerTweaker_.join();
         editor_.reset();
@@ -449,15 +470,19 @@ private:
         renderBtn_.setEnabled(false);
         renderBtn_.setButtonText("Rendering...");
 
-        std::thread([this, quitWhenDone] {
+        if (worker_.joinable()) worker_.join();  // the previous render, done
+        juce::Component::SafePointer<EditorWindow> self(this);
+        worker_ = std::thread([this, self, quitWhenDone] {
             juce::String error;
             const bool ok = renderToFile(plugin_, opts_.output_path, error);
             juce::MessageManager::callAsync(
-                [this, ok, error, quitWhenDone] {
-                renderBusy_.store(false);
-                renderBtn_.setEnabled(true);
-                renderBtn_.setButtonText(ok
-                    ? juce::String("Rendered -> " + opts_.output_path)
+                [self, ok, error, quitWhenDone] {
+                if (self == nullptr) return;
+                auto& w = *self;
+                w.renderBusy_.store(false);
+                w.renderBtn_.setEnabled(true);
+                w.renderBtn_.setButtonText(ok
+                    ? juce::String("Rendered -> " + w.opts_.output_path)
                     : juce::String("Render failed: " + error));
                 if (quitWhenDone)
                 {
@@ -469,7 +494,7 @@ private:
                     }
                 }
             });
-        }).detach();
+        });
     }
 
     // Toggles the editor (close then re-create) every kEditorToggleMs
@@ -639,11 +664,13 @@ private:
         renderBtn_.setEnabled(false);
         renderBtn_.setButtonText("Probing...");
 
-        std::thread([this] {
+        if (worker_.joinable()) worker_.join();
+        juce::Component::SafePointer<EditorWindow> self(this);
+        worker_ = std::thread([this, self] {
             int completed = 0;
             bool ok = true;
             juce::String error;
-            for (int i = 0; i < opts_.probe_iters; ++i)
+            for (int i = 0; i < opts_.probe_iters && !closing_.load(); ++i)
             {
                 std::fprintf(stderr,
                     "probe: iter %d / %d starting\n",
@@ -661,25 +688,27 @@ private:
                 workerTweaker_.join();
 
             juce::MessageManager::callAsync(
-                [this, ok, error, completed] {
+                [self, ok, error, completed] {
+                if (self == nullptr) return;
+                auto& w = *self;
                 int editorWrites = 0;
-                if (tweaker_)
+                if (w.tweaker_)
                 {
-                    editorWrites = tweaker_->tweakCount();
-                    tweaker_->stopTimer();
+                    editorWrites = w.tweaker_->tweakCount();
+                    w.tweaker_->stopTimer();
                 }
-                if (editor_toggler_)
+                if (w.editor_toggler_)
                 {
-                    editor_toggler_->stopTimer();
-                    editor_toggler_.reset();
+                    w.editor_toggler_->stopTimer();
+                    w.editor_toggler_.reset();
                 }
                 std::fprintf(stderr,
                     "probe: %d iterations completed, "
                     "%d editor-thread writes, "
                     "%d worker-thread writes\n",
-                    completed, editorWrites, workerTweakCount_.load());
-                renderBtn_.setEnabled(true);
-                renderBtn_.setButtonText(ok
+                    completed, editorWrites, w.workerTweakCount_.load());
+                w.renderBtn_.setEnabled(true);
+                w.renderBtn_.setButtonText(ok
                     ? juce::String("Probe OK")
                     : juce::String("Probe failed: " + error));
                 auto* app = juce::JUCEApplication::getInstance();
@@ -689,7 +718,7 @@ private:
                     app->systemRequestedQuit();
                 }
             });
-        }).detach();
+        });
     }
 
     EditorOptions                               opts_;
@@ -710,6 +739,8 @@ private:
     std::thread                                 workerTweaker_;
     std::atomic<bool>                           workerTweakStop_{ true };
     std::atomic<int>                            workerTweakCount_{ 0 };
+    std::thread                                 worker_;   // render or probe
+    std::atomic<bool>                           closing_{ false };
 };
 
 // -------------------------------------------------------------------- //
@@ -1260,10 +1291,26 @@ public:
                        const juce::String& title,
                        project::RenderOptions options = {})
     {
-        // Lifetime: deletes itself in threadComplete().
+        // Lifetime: deletes itself in threadComplete(), or in cancelAll().
         auto* job = new ProjectRenderJob(std::move(doc), title, options);
         job->launchThread();
     }
+
+    // Stops every running render and waits for it. Called from shutdown():
+    // a render left running would keep calling plugins during teardown. A
+    // cancelled render writes no sinks.
+    static void cancelAll()
+    {
+        const auto jobs = running();
+        for (auto* job : jobs)
+        {
+            job->signalThreadShouldExit();
+            job->waitForThreadToExit(-1);
+            delete job;
+        }
+    }
+
+    ~ProjectRenderJob() override { running().removeFirstMatchingValue(this); }
 
     void run() override
     {
@@ -1330,6 +1377,14 @@ private:
           options_(options)
     {
         setStatusMessage("Loading project...");
+        running().add(this);
+    }
+
+    // Message thread only.
+    static juce::Array<ProjectRenderJob*>& running()
+    {
+        static juce::Array<ProjectRenderJob*> jobs;
+        return jobs;
     }
 
     project::ProjectDocument doc_;
@@ -1441,6 +1496,21 @@ public:
                 return;
             }
             runSaveRoundtrip(juce::File(path));
+            return;
+        }
+
+        if (args.containsOption("--canvas-script"))
+        {
+            const auto path = args.removeValueForOption("--canvas-script");
+            if (path.isEmpty())
+            {
+                std::fprintf(stderr, "--canvas-script requires a path\n");
+                setApplicationReturnValue(2);
+                quit();
+                return;
+            }
+            setApplicationReturnValue(runCanvasScript(juce::File(path)));
+            quit();
             return;
         }
 
@@ -1572,14 +1642,20 @@ public:
                     openPluginEditor(opts);
                 },
                 [this](juce::String project_path) {
-                    openProjectInCanvas(juce::File(project_path));
+                    confirmDiscardUnsaved("opening another project",
+                        [this, project_path]() {
+                            openProjectInCanvas(juce::File(project_path));
+                        });
                 },
                 [this](juce::String project_path) {
                     runProjectRender(juce::File(project_path));
                 },
                 [this]() { saveCurrentProject(); },
                 [this]() { saveCurrentProjectAs(); },
-                [this]() { newProject(); },
+                [this]() {
+                    confirmDiscardUnsaved("starting a new project",
+                                          [this]() { newProject(); });
+                },
                 [this](int plugin_index) {
                     openCanvasPluginEditor(plugin_index);
                 },
@@ -1673,13 +1749,28 @@ public:
                 pushSequencerEdits();
             });
             autosave_enabled_ = true;
+            // One sidecar per settings dir, so one instance may own it.
+            // A second instance would offer the first one's live sidecar
+            // as a crash, overwrite it, and delete it on exit.
+            sidecar_lock_ = std::make_unique<juce::InterProcessLock>(
+                "minihost_desktop_autosave_"
+                + juce::String::toHexString(
+                      settingsFile().getFullPathName().hashCode64()));
+            owns_sidecar_ = sidecar_lock_->enter(0);
             autosave_timer_ = std::make_unique<CallbackTimer>(
                 [this]() { performAutosave(); });
             autosave_timer_->startTimer(kAutosaveIntervalMs);
 
             // A surviving sidecar means the previous session did not shut
             // down cleanly (a clean exit deletes it) -- offer to recover.
-            maybeOfferCrashRecovery();
+            if (owns_sidecar_)
+                maybeOfferCrashRecovery();
+            else
+                juce::AlertWindow::showMessageBoxAsync(
+                    juce::AlertWindow::InfoIcon,
+                    "Another minihost window is open",
+                    "Crash recovery covers the first window only. Save "
+                    "work in this window yourself.");
         }
     }
 
@@ -1690,6 +1781,7 @@ public:
         // work the user is deliberately closing. Guarded to the GUI shell so
         // a headless mode sharing the settings dir never clears a *different*
         // (crashed) GUI session's sidecar.
+        ProjectRenderJob::cancelAll();
         if (autosave_timer_) autosave_timer_->stopTimer();
         if (selftest_timer_)  selftest_timer_->stopTimer();
         if (autosave_enabled_) clearAutosave();
@@ -1724,9 +1816,19 @@ public:
     // through an async Save As chooser for an untitled project).
     void systemRequestedQuit() override
     {
+        confirmDiscardUnsaved("quitting", [this]() { quit(); });
+    }
+
+    // Runs `proceed` once unsaved work is resolved: at once when there is
+    // none, else after Save (only if the write lands) or Don't Save. Cancel,
+    // or a cancelled Save As chooser, drops `proceed` and keeps the work.
+    // Quit, New and Open all replace the working document, so all ask.
+    void confirmDiscardUnsaved(const juce::String& action,
+                               std::function<void()> proceed)
+    {
         if (!autosave_enabled_ || !unsaved_changes_ || !mainWindow_)
         {
-            quit();
+            proceed();
             return;
         }
         if (quit_dialog_open_) return;   // already asking; ignore repeats
@@ -1734,22 +1836,19 @@ public:
 
         auto* aw = new juce::AlertWindow(
             "Unsaved changes",
-            "This project has unsaved changes. Save before quitting?",
+            "This project has unsaved changes. Save before " + action + "?",
             juce::AlertWindow::WarningIcon);
         aw->addButton("Save",       1, juce::KeyPress(juce::KeyPress::returnKey));
         aw->addButton("Don't Save", 2);
         aw->addButton("Cancel",     0, juce::KeyPress(juce::KeyPress::escapeKey));
         aw->enterModalState(true,
             juce::ModalCallbackFunction::create(
-                [this, aw](int result) {
+                [this, aw, proceed = std::move(proceed)](int result) {
                     delete aw;
                     quit_dialog_open_ = false;
-                    if (result == 0) return;          // Cancel: stay open
-                    if (result == 2) { quit(); return; }  // Don't Save: discard
-                    // Save: persist first, quit only once it succeeds. A
-                    // cancelled Save As chooser drops the continuation, so the
-                    // app stays open with the work intact.
-                    saveCurrentProject([this]() { quit(); });
+                    if (result == 0) return;               // Cancel
+                    if (result == 2) { proceed(); return; } // Don't Save
+                    saveCurrentProject(proceed);
                 }),
             /*deleteWhenDismissed=*/false);
     }
@@ -1825,7 +1924,7 @@ public:
     // on failure the dirty flag stays set so the next tick retries.
     void performAutosave()
     {
-        if (!mainWindow_) return;
+        if (!mainWindow_ || !owns_sidecar_) return;
         auto* doc = mainWindow_->currentDocument();
         if (doc == nullptr) return;
         if (!doc_dirty_) return;
@@ -1840,8 +1939,11 @@ public:
     // Remove the recovery sidecar (clean exit / explicit save / discard).
     void clearAutosave()
     {
-        autosaveFile().deleteFile();
-        autosaveMetaFile().deleteFile();
+        if (owns_sidecar_)
+        {
+            autosaveFile().deleteFile();
+            autosaveMetaFile().deleteFile();
+        }
         doc_dirty_ = false;
     }
 
@@ -2365,6 +2467,46 @@ private:
         }
     }
 
+    int runCanvasScript(const juce::File& script_file)
+    {
+        const auto script = juce::JSON::parse(script_file);
+        const auto dir = script_file.getParentDirectory();
+        try {
+            auto doc = project::parseProjectFile(
+                dir.getChildFile(script["project"].toString()));
+            CanvasComponent canvas;
+            canvas.setDocument(&doc);
+
+            bool all_ok = true;
+            juce::Array<juce::var> results;
+            if (const auto* ops = script["ops"].getArray())
+                for (const auto& op : *ops)
+                {
+                    juce::StringArray warnings;
+                    juce::String error;
+                    const bool ok = canvas.applyScriptOp(op, warnings, error);
+                    all_ok = all_ok && ok;
+                    auto* r = new juce::DynamicObject();
+                    r->setProperty("ok", ok);
+                    r->setProperty("error", error);
+                    juce::Array<juce::var> w;
+                    for (const auto& x : warnings) w.add(x);
+                    r->setProperty("warnings", w);
+                    results.add(juce::var(r));
+                }
+            canvas.setDocument(nullptr);
+            project::saveProjectFile(dir.getChildFile(script["save"].toString()), doc);
+
+            auto* out = new juce::DynamicObject();
+            out->setProperty("results", results);
+            std::printf("%s\n", juce::JSON::toString(juce::var(out), true).toRawUTF8());
+            return all_ok ? 0 : 1;
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "canvas script failed: %s\n", e.what());
+            return 1;
+        }
+    }
+
     void runUndoSelfTest(juce::File project_file)
     {
         auto fail = [this](const juce::String& m) {
@@ -2654,7 +2796,16 @@ private:
         juce::AudioPluginFormatManager fm;
         juce::addDefaultFormatsToManager(fm);
 
+        // Merge into the list already at the destination, as a GUI rescan
+        // does. Starting empty replaced the user's whole library, blacklist
+        // included, with whatever this scan covered.
+        const auto out = out_override.isNotEmpty()
+                       ? juce::File(out_override)
+                       : knownPluginsFile();
         juce::KnownPluginList list;
+        if (out.existsAsFile())
+            if (auto existing = juce::XmlDocument::parse(out))
+                list.recreateFromXml(*existing);
         if (out_of_process)
             list.setCustomScanner(
                 std::make_unique<OutOfProcessPluginScanner>());
@@ -2662,13 +2813,14 @@ private:
             settingsFile().getSiblingFile("plugin_scan.deadman");
         dead_mans_pedal.getParentDirectory().createDirectory();
 
-        int total_found = 0, total_failed = 0;
+        int total_found = 0, total_failed = 0, formats_scanned = 0;
         for (auto* format : fm.getFormats())
         {
             if (format == nullptr) continue;
             if (format_filter.isNotEmpty()
                 && !format->getName().equalsIgnoreCase(format_filter))
                 continue;
+            ++formats_scanned;
 
             juce::FileSearchPath search;
             if (paths_override.isNotEmpty())
@@ -2695,22 +2847,35 @@ private:
                          format->getName().toRawUTF8(), found, failed);
         }
 
-        const auto out = out_override.isNotEmpty()
-                       ? juce::File(out_override)
-                       : knownPluginsFile();
+        // A misspelt --scan-format scanned nothing and still wrote.
+        if (formats_scanned == 0)
+        {
+            juce::StringArray names;
+            for (auto* format : fm.getFormats())
+                if (format != nullptr) names.add(format->getName());
+            std::fprintf(stderr, "scan: no format named %s (one of %s)\n",
+                         format_filter.toRawUTF8(),
+                         names.joinIntoString(", ").toRawUTF8());
+            setApplicationReturnValue(2);
+            quit();
+            return;
+        }
+
+        bool wrote = false;
         if (auto xml = std::unique_ptr<juce::XmlElement>(list.createXml()))
         {
             out.getParentDirectory().createDirectory();
-            if (xml->writeTo(out))
+            wrote = xml->writeTo(out);
+            if (wrote)
                 std::fprintf(stderr, "scan: wrote %d plugins to %s\n",
-                             total_found, out.getFullPathName().toRawUTF8());
+                             list.getNumTypes(), out.getFullPathName().toRawUTF8());
             else
                 std::fprintf(stderr, "scan: FAILED to write %s\n",
                              out.getFullPathName().toRawUTF8());
         }
         std::fprintf(stderr, "scan: total found %d, failed %d\n",
                      total_found, total_failed);
-        setApplicationReturnValue(0);
+        setApplicationReturnValue(wrote ? 0 : 1);
         quit();
     }
 
@@ -2862,8 +3027,8 @@ private:
         // even if the user reorders the document later, the lambda
         // re-resolves by id below.
         const juce::String node_id = spec.id;
-        opts.toolbar_action = [this, node_id]() {
-            captureStateForCanvasPlugin(node_id);
+        opts.toolbar_action = [this, node_id](MH_Plugin* p) {
+            captureStateForCanvasPlugin(node_id, p);
         };
 
         auto* w = new EditorWindow(
@@ -2878,34 +3043,19 @@ private:
         editors_.add(w);
     }
 
-    // Re-resolves the plugin by id (the user may have edited the doc
-    // while the editor was open) and writes the encoded state back.
-    void captureStateForCanvasPlugin(juce::String node_id)
+    // Writes the state of `p`, the plugin in the editor whose Capture
+    // button was pressed, into node `node_id`. The node is re-resolved by
+    // id: the user may have edited the doc while the editor was open.
+    void captureStateForCanvasPlugin(juce::String node_id, MH_Plugin* p)
     {
-        if (!mainWindow_) return;
+        if (!mainWindow_ || p == nullptr) return;
         auto* doc = mainWindow_->currentDocument();
         if (doc == nullptr) return;
 
-        // Find the EditorWindow currently associated with node_id by
-        // matching its window title (set from the plugin file name on
-        // construction). A more direct registry would be sturdier;
-        // file name matches in practice because each canvas-opened
-        // plugin has a distinct path. For now we re-lookup by id
-        // and use that editor's plugin instance.
-        EditorWindow* match = nullptr;
         int plugin_index = -1;
         for (size_t i = 0; i < doc->plugins.size(); ++i)
             if (doc->plugins[i].id == node_id) { plugin_index = (int) i; break; }
         if (plugin_index < 0) return;
-
-        const auto& spec = doc->plugins[(size_t) plugin_index];
-        const auto basename = spec.path.getFileName();
-        for (auto* w : editors_)
-            if (w->getName().endsWith(basename)) { match = w; break; }
-        if (match == nullptr) return;
-
-        MH_Plugin* p = match->plugin();
-        if (p == nullptr) return;
 
         const int sz = mh_get_state_size(p);
         if (sz <= 0)
@@ -3018,6 +3168,9 @@ private:
         if (!engine.start(*doc, err))
         {
             mainWindow_->setLiveRunning(false);
+            // start() freed the previous LoadedProject before failing.
+            if (auto* c = mainWindow_->canvas())
+                c->setLiveProject(nullptr);
             juce::AlertWindow::showMessageBoxAsync(
                 juce::AlertWindow::WarningIcon,
                 "Could not start live mode",
@@ -3236,6 +3389,10 @@ private:
     std::unique_ptr<juce::Timer> autosave_timer_;
     bool                         doc_dirty_        = false;
     bool                         autosave_enabled_ = false;
+    // False in a GUI instance started while another holds sidecar_lock_.
+    // Headless self-tests keep the default and use the sidecar freely.
+    bool                         owns_sidecar_     = true;
+    std::unique_ptr<juce::InterProcessLock> sidecar_lock_;
 
     // Unsaved-changes tracking for the save-before-quit prompt. Distinct from
     // doc_dirty_ (which measures change since the last *autosave* and resets

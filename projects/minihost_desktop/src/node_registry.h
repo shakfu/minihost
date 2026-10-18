@@ -135,6 +135,10 @@ const NodeKindEntry* findKind(const juce::String& kind_string);
 // Total number of canvas nodes across all kinds.
 int totalNodeCount(const project::ProjectDocument& doc);
 
+// True when any node of any kind already has this id. Ids must be unique
+// across kinds: the parser rejects duplicates and edges refer to ids.
+bool idInUse(const project::ProjectDocument& doc, const juce::String& id);
+
 // Map a canvas node index (the position in CanvasComponent::nodes_)
 // to its registry entry plus the spec index within that kind's
 // vector. Returns {nullptr, -1} on out-of-range.

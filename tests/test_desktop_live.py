@@ -257,3 +257,86 @@ def test_live_recording_longer_than_the_fifo_is_complete(tmp_path):
     rec, _ = audio_io.read_audio(str(out_wav), as_=np.ndarray)
     assert rec.shape == src.shape
     np.testing.assert_array_equal(rec, src)
+
+
+@skip_if_no_desktop
+def test_live_metronome_clicks_on_the_beat(tmp_path):
+    # The metronome read the transport after it had advanced past the
+    # chunk, so every click came one chunk early and beat 0 never sounded.
+    in_wav = tmp_path / "in.wav"
+    audio_io.write_audio(str(in_wav), np.zeros((2, SR), np.float32), SR, bit_depth=32)
+    out_wav = tmp_path / "out.wav"
+    proj = tmp_path / "p.json"
+    proj.write_text(
+        json.dumps(
+            {
+                "minihost_project_version": 1,
+                "sample_rate": SR,
+                "block_size": 256,
+                "bpm": 120,
+                "nodes": [
+                    {"id": "in", "kind": "input", "channels": 2, "source": str(in_wav)},
+                    {"id": "click", "kind": "metronome", "channels": 2},
+                    {
+                        "id": "out",
+                        "kind": "output",
+                        "channels": 2,
+                        "sink": str(out_wav),
+                        "bit_depth": 32,
+                    },
+                    {"id": "spk", "kind": "device_output", "channels": 2},
+                ],
+                "edges": [
+                    {"src": "click", "dst": "out"},
+                    {"src": "in", "dst": "spk"},
+                ],
+            }
+        )
+    )
+    _run(f"--live-selftest={proj}")
+    rec, _ = audio_io.read_audio(str(out_wav), as_=np.ndarray)
+
+    # A click is sin(2 pi f k / sr) under a decay, so its first nonzero
+    # sample is one after the beat. At 120 bpm a beat is SR / 2 samples.
+    sounding = np.flatnonzero(np.abs(rec[0]) > 0)
+    starts = sounding[np.insert(np.diff(sounding) > 1000, 0, True)]
+    np.testing.assert_array_equal(starts, [1, SR // 2 + 1])
+
+
+@skip_if_no_desktop
+def test_failed_play_keeps_earlier_takes(tmp_path):
+    # Play deleted each sink before opening the next, so a sink that could
+    # not be opened lost the previous take of every sink before it.
+    src = _source()
+    proj, out_wav = _project(tmp_path, src)
+    doc = json.loads(proj.read_text())
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    doc["nodes"].append(
+        {
+            "id": "out2",
+            "kind": "output",
+            "channels": 2,
+            "sink": str(locked / "out2.wav"),
+            "bit_depth": 32,
+        }
+    )
+    doc["edges"].append({"src": "in", "dst": "out2"})
+    proj.write_text(json.dumps(doc))
+    _run(f"--live-selftest={proj}")
+    take = out_wav.read_bytes()
+
+    locked.chmod(0o500)  # out2.wav can no longer be created
+    try:
+        res = subprocess.run(
+            [str(DESKTOP_BIN), f"--live-selftest={proj}"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    finally:
+        locked.chmod(0o700)
+    assert res.returncode == 1
+    assert "cannot open" in res.stderr
+    assert out_wav.read_bytes() == take
+    assert not out_wav.with_name("out.wav.part").exists()

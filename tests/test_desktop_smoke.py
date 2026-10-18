@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -425,3 +426,81 @@ def test_bad_resample_quality_is_rejected(tmp_path):
     assert not (tmp_path / "out.wav").exists()
     with pytest.raises(minihost.ProjectError, match="resample_quality"):
         minihost.load_project(proj)
+
+
+# --------------------------------------------------------------------- #
+# Project save                                                          #
+# --------------------------------------------------------------------- #
+
+
+def _large_project(tmp_path):
+    """A project whose saved form is well over 4 KiB."""
+    proj = tmp_path / "p.json"
+    n = 2000
+    doc = {
+        "minihost_project_version": 1,
+        "sample_rate": 48000,
+        "block_size": 512,
+        "nodes": [
+            {
+                "id": "mix",
+                "kind": "mix",
+                "num_inputs": n,
+                "channels": 2,
+                "gains": [0.5] * n,
+            },
+            {
+                "id": "out",
+                "kind": "output",
+                "channels": 2,
+                "sink": str(tmp_path / "out.wav"),
+                "bit_depth": 24,
+            },
+        ],
+        "edges": [{"src": "mix", "dst": "out"}],
+    }
+    proj.write_text(json.dumps(doc))
+    return proj
+
+
+@skip_if_no_desktop
+@pytest.mark.skipif(sys.platform == "win32", reason="needs RLIMIT_FSIZE")
+def test_failed_save_keeps_the_existing_file(tmp_path):
+    # The save ignored a short write and then replaced the target with the
+    # truncated temp file. A file-size limit makes the write fail the way a
+    # full disk does (EFBIG instead of ENOSPC).
+    import resource
+    import signal
+
+    proj = _large_project(tmp_path)
+    target = tmp_path / "p.resaved.json"
+    target.write_text('{"previous": true}\n')
+
+    def limit_file_size():
+        signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+        resource.setrlimit(resource.RLIMIT_FSIZE, (4096, 4096))
+
+    res = subprocess.run(
+        [str(DESKTOP_BIN), f"--save-roundtrip={proj}"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        preexec_fn=limit_file_size,
+    )
+    assert res.returncode == 1, res.stderr
+    assert "failed to write" in res.stderr
+    assert target.read_text() == '{"previous": true}\n'
+    assert not (tmp_path / "p.resaved.json.tmp").exists()
+
+
+@skip_if_no_desktop
+def test_save_overwrites_a_stale_temp_file(tmp_path):
+    # A temp file left by an earlier crash must not leak into the save.
+    proj = _large_project(tmp_path)
+    stale = tmp_path / "p.resaved.json.tmp"
+    stale.write_text("x" * 100_000)
+    res = _run(f"--save-roundtrip={proj}", timeout=30)
+    assert res.returncode == 0, res.stderr
+    resaved = json.loads((tmp_path / "p.resaved.json").read_text())
+    assert len(resaved["nodes"]) == 2
+    assert not stale.exists()
