@@ -30,6 +30,7 @@ import pytest
 
 import minihost
 from cli_helpers import find_test_plugin
+from device_helpers import skip_if_no_audio_device
 
 np = pytest.importorskip("numpy")
 
@@ -201,22 +202,21 @@ def test_osc_server_survives_a_raising_callback():
         server.close()
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="needs a CoreMIDI loopback")
 def test_midiin_survives_a_raising_callback():
     tests_dir = os.path.dirname(__file__)
     out = run_isolated(f"""
         import sys, time
         sys.path.insert(0, {tests_dir!r})
-        import coremidi_loopback
-        if not coremidi_loopback.available():
+        import midi_loopback
+        if not midi_loopback.available():
             print("skip"); raise SystemExit
         got = []
         def cb(data):
             got.append(bytes(data))
             raise ValueError("boom")
         m = minihost.MidiIn.open_virtual("mh-test-raise", cb)
-        ep = coremidi_loopback.wait_for_destination("mh-test-raise")
-        with coremidi_loopback.Sender() as s:
+        ep = midi_loopback.wait_for_destination("mh-test-raise")
+        with midi_loopback.Sender() as s:
             for n in range(3):
                 s.send(ep, bytes([0x90, 60 + n, 100])); time.sleep(0.05)
             time.sleep(0.3)
@@ -224,7 +224,7 @@ def test_midiin_survives_a_raising_callback():
         print(len(got))
     """)
     if out.strip() == "skip":
-        pytest.skip("CoreMIDI loopback unavailable")
+        pytest.skip("MIDI loopback unavailable")
     # Every message reached the callback: the first exception neither
     # terminated the process nor stopped delivery.
     assert out.strip() == "3"
@@ -429,6 +429,37 @@ def test_plugin_transport_rejects_nan_tempo():
             plugin.set_transport(bpm=float("nan"))
     finally:
         plugin.close()
+
+
+# -------------------------------------------------------------------- #
+# Interpreter exit with an AudioDevice still open                       #
+# -------------------------------------------------------------------- #
+
+
+@pytest.mark.skipif(not FX or not os.path.exists(FX), reason="MinihostTestFx not built")
+@skip_if_no_audio_device
+@pytest.mark.parametrize(
+    "open_device",
+    [
+        "dev = minihost.AudioDevice(p)",
+        "dev = minihost.AudioDevice(p); dev.start()",
+        "c = minihost.PluginChain([p]); dev = minihost.AudioDevice(c)",
+    ],
+)
+def test_exit_with_an_open_audio_device_does_not_hang(open_device):
+    # The atexit closer closed the device but kept its plugin reference, so
+    # the plugin was destroyed during finalization and hung on Linux.
+    body = f"p = minihost.Plugin({FX!r}, sample_rate=48000.0, max_block_size=512)\n"
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", "import minihost\n" + body + open_device],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("interpreter hung at exit with an AudioDevice open")
+    assert proc.returncode == 0, proc.stderr
 
 
 # -------------------------------------------------------------------- #

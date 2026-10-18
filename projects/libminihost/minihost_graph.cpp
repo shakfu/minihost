@@ -95,6 +95,11 @@ int mh_bus_add_branch(MH_PluginBus* graph,
         setErr(err_buf, err_buf_size, "chain is NULL");
         return -1;
     }
+    if (!std::isfinite(gain))
+    {
+        setErr(err_buf, err_buf_size, "gain must be finite");
+        return -1;
+    }
     // Every branch processes each block, so a plugin reachable from two
     // branches would advance twice per block.
     for (auto* other : graph->branches)
@@ -192,6 +197,7 @@ int mh_bus_set_branch_gain(MH_PluginBus* graph, int branch_index, float gain)
     if (branch_index < 0 ||
         branch_index >= static_cast<int>(graph->branches.size()))
         return 0;
+    if (!std::isfinite(gain)) return 0;
     graph->gains[branch_index] = gain;
     return 1;
 }

@@ -419,7 +419,7 @@ jobs:
           # as coverage. The one that matters most is the check that minihost
           # and py2tosc slug a parameter name identically -- a divergence
           # there is a control that silently never arrives.
-          CIBW_TEST_REQUIRES: pytest numpy py2tosc>=0.5.2
+          CIBW_TEST_REQUIRES: pytest numpy py2tosc>=0.6.0
           CIBW_TEST_COMMAND: pytest {project}/tests -v
         run: cibuildwheel --output-dir wheelhouse
 

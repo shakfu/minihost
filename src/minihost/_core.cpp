@@ -118,7 +118,8 @@ public:
     using Sample = T;
 
     MhAudioBufferT(int channels, int frames)
-        : buf_(juce::jmax(1, channels), juce::jmax(0, frames))
+        : buf_(juce::jmax(1, checked_size(channels, "channels")),
+               checked_size(frames, "frames"))
     {
         // juce::AudioBuffer leaves memory uninitialized; explicit clear so
         // freshly constructed buffers are deterministic (zero-filled).
@@ -152,6 +153,14 @@ public:
     const juce::AudioBuffer<T>& juce() const { buf_.setNotClear(); return buf_; }
 
 private:
+    // Negative sizes used to be clamped: AudioBuffer(-3, 5) was (1, 5).
+    static int checked_size(int n, const char* what) {
+        if (n < 0)
+            throw nb::value_error((std::string(what) + " must be >= 0, got " +
+                                   std::to_string(n)).c_str());
+        return n;
+    }
+
     mutable juce::AudioBuffer<T> buf_;  // mutable only for setNotClear
 };
 
@@ -297,6 +306,12 @@ static float tuple_finite_float(const nb::tuple& t, size_t i,
 }
 
 // The C setters reject NaN too, but only with a bare 0.
+// C paths stop at the first NUL, so "a\0b" would silently open "a".
+static void check_path(const std::string& path) {
+    if (path.find('\0') != std::string::npos)
+        throw nb::value_error("path contains an embedded null byte");
+}
+
 static float require_finite(float v, const char* name) {
     if (!std::isfinite(v))
         throw nb::value_error((std::string(name) + " must be a finite number").c_str());
@@ -396,6 +411,14 @@ static void validate_process_shape(int in_channels, int out_channels,
     }
 }
 
+// The native call writes only the first `written` outputs. Clear the rest, or
+// a caller's extra rows keep whatever they held before.
+template <typename T>
+static void zero_unwritten(const std::vector<T*>& outs, int written, int nframes) {
+    for (size_t ch = (size_t) std::max(written, 0); ch < outs.size(); ++ch)
+        std::memset(outs[ch], 0, sizeof(T) * (size_t) nframes);
+}
+
 // Build a Python dict from MH_PluginDesc fields.
 static nb::dict plugin_desc_to_dict(const MH_PluginDesc& desc) {
     nb::dict d;
@@ -455,6 +478,7 @@ public:
            int in_channels = 2, int out_channels = 2, int sidechain_channels = 0)
         : sample_rate_(sample_rate), max_block_size_(max_block_size)
     {
+        check_path(path);
         char err[1024] = {0};
         if (sidechain_channels > 0) {
             // Use extended open with sidechain support
@@ -479,6 +503,7 @@ public:
            int in_channels, int out_channels, int sidechain_channels)
         : sample_rate_(sample_rate), max_block_size_(max_block_size)
     {
+        check_path(path);
         char err[1024] = {0};
         plugin_ = mh_session_open(session, path.c_str(),
                                    sample_rate, max_block_size,
@@ -988,6 +1013,7 @@ public:
         if (!mh_process(live(), in_ptrs.data(), out_ptrs.data(), in_frames)) {
             throw std::runtime_error("Process failed");
         }
+        zero_unwritten(out_ptrs, info.num_output_ch, in_frames);
     }
 
     // Process with MIDI
@@ -1040,6 +1066,7 @@ public:
         if (!ok) {
             throw std::runtime_error("Process failed");
         }
+        zero_unwritten(out_ptrs, info.num_output_ch, in_frames);
 
         // Convert MIDI output to Python list
         nb::list result;
@@ -1114,6 +1141,7 @@ public:
         if (!ok) {
             throw std::runtime_error("Process failed");
         }
+        zero_unwritten(out_ptrs, info.num_output_ch, in_frames);
 
         // Convert MIDI output to Python list
         nb::list result;
@@ -1136,6 +1164,7 @@ public:
         std::vector<float*> main_out;
         std::vector<const float*> sc;
         int nframes;
+        int written;  // main outputs the plugin writes
     };
 
     SidechainPtrs sidechain_ptrs(AudioArray& main_in, AudioArray& main_out,
@@ -1178,6 +1207,7 @@ public:
 
         SidechainPtrs ptrs;
         ptrs.nframes = main_in_frames;
+        ptrs.written = info.num_output_ch;
         for (int ch = 0; ch < main_in_ch; ++ch)
             ptrs.main_in.push_back(main_in.data() + ch * ptrs.nframes);
         for (int ch = 0; ch < main_out_ch; ++ch)
@@ -1199,6 +1229,7 @@ public:
                                   ptrs.sc.data(), ptrs.nframes)) {
             throw std::runtime_error("Process with sidechain failed");
         }
+        zero_unwritten(ptrs.main_out, ptrs.written, ptrs.nframes);
     }
 
     // Process with sidechain input and MIDI
@@ -1231,6 +1262,7 @@ public:
         if (!ok) {
             throw std::runtime_error("Process with sidechain failed");
         }
+        zero_unwritten(ptrs.main_out, ptrs.written, ptrs.nframes);
 
         nb::list result;
         for (int i = 0; i < num_midi_out; ++i) {
@@ -1273,6 +1305,7 @@ public:
         if (!mh_process_double(live(), in_ptrs.data(), out_ptrs.data(), in_frames)) {
             throw std::runtime_error("Process (double) failed");
         }
+        zero_unwritten(out_ptrs, info.num_output_ch, in_frames);
     }
 
     // Processing precision
@@ -1798,6 +1831,7 @@ public:
         if (!mh_chain_process(chain_, in_ptrs.data(), out_ptrs.data(), in_frames)) {
             throw std::runtime_error("Chain process failed");
         }
+        zero_unwritten(out_ptrs, mh_chain_get_num_output_channels(chain_), in_frames);
     }
 
     // Process with MIDI
@@ -1849,6 +1883,7 @@ public:
         if (!ok) {
             throw std::runtime_error("Chain process failed");
         }
+        zero_unwritten(out_ptrs, mh_chain_get_num_output_channels(chain_), in_frames);
 
         // Convert MIDI output to Python list
         nb::list result;
@@ -1942,6 +1977,7 @@ public:
         if (!ok) {
             throw std::runtime_error("Chain process_auto failed");
         }
+        zero_unwritten(out_ptrs, mh_chain_get_num_output_channels(chain_), in_frames);
 
         // Convert MIDI output to Python list
         nb::list result;
@@ -2027,6 +2063,7 @@ public:
     void exit(nb::object, nb::object, nb::object) { close(); }
 
     int add_branch(PluginChain& chain, float gain) {
+        require_finite(gain, "gain");
         // mh_bus_add_branch reallocates the branch table a process call reads.
         std::lock_guard<std::mutex> busy(busy_);
         ChainRef handle = chain.share("add_branch");
@@ -2047,6 +2084,7 @@ public:
     }
 
     void set_branch_gain(int branch_index, float gain) {
+        require_finite(gain, "gain");
         if (!mh_bus_set_branch_gain(graph_, branch_index, gain)) {
             throw std::runtime_error("Branch index out of range");
         }
@@ -2111,6 +2149,7 @@ public:
         if (!mh_bus_process(graph_, in_ptrs.data(), out_ptrs.data(), in_fr)) {
             throw std::runtime_error("Bus process failed");
         }
+        zero_unwritten(out_ptrs, mh_bus_get_num_output_channels(graph_), in_fr);
     }
 
     // Fan audio + MIDI to every branch (MIDI to each branch's first
@@ -2166,6 +2205,7 @@ public:
         if (!ok) {
             throw std::runtime_error("Bus process failed");
         }
+        zero_unwritten(out_ptrs, mh_bus_get_num_output_channels(graph_), in_fr);
 
         nb::list result;
         for (int i = 0; i < num_midi_out; ++i) {
@@ -2929,6 +2969,7 @@ public:
     // so the target and value are checked here, on the caller's thread.
     void check_param_target(int plugin_index, int param_index, float value) const {
         require_finite(value, "value");
+        if (!device_) throw std::runtime_error("AudioDevice is closed");
         MH_Plugin* p = nullptr;
         if (chain_handle_) {
             const int n = mh_chain_get_num_plugins(chain_handle_->c);
@@ -3059,14 +3100,19 @@ private:
 
     // Last member: constructed after everything its closer touches, and
     // destroyed (unregistered) before them. See LiveEntry.
+    // The handles go too: a device kept alive past atexit would otherwise
+    // destroy its plugin during finalization, which hangs on Linux.
     LiveEntry live_{ [this] {
         if (device_) { mh_audio_close(device_); device_ = nullptr; }
+        plugin_handle_.reset();
+        chain_handle_.reset();
     } };
 };
 
 
 // Module-level probe function
 nb::dict probe_plugin(const std::string& path) {
+    check_path(path);
     MH_PluginDesc desc;
     char err[1024] = {0};
 
@@ -3089,6 +3135,7 @@ static void scan_callback(const MH_PluginDesc* desc, void* user_data) {
 
 // Module-level scan_directory function
 nb::list scan_directory(const std::string& directory_path) {
+    check_path(directory_path);
     std::vector<nb::dict> results;
     ScanContext ctx{&results};
 
@@ -3185,6 +3232,7 @@ public:
     // Parsed into a temporary so a failed load leaves this file untouched;
     // it used to keep half of the rejected file.
     bool load(const std::string& path) {
+        check_path(path);
         // midifile turns an SMPTE division into ticks per second and drops
         // the flag, so the renderer applied tempo to it (a 1 s note played at
         // 0.5 s). A division of 0 divided by zero later. Both are refused.
@@ -3207,6 +3255,7 @@ public:
 
     // Save to file
     bool save(const std::string& path) {
+        check_path(path);
         return file_.write(path);
     }
 
@@ -3837,6 +3886,7 @@ NB_MODULE(_core, m) {
              "format-registration cost per plugin.")
         .def("probe",
              [](Session& self, const std::string& path) {
+                 check_path(path);
                  MH_PluginDesc desc;
                  char err[1024] = {0};
                  if (!mh_session_probe(self.raw(), path.c_str(), &desc,
@@ -3851,6 +3901,7 @@ NB_MODULE(_core, m) {
              "Returns the same dict shape as the module-level probe().")
         .def("scan_directory",
              [](Session& self, const std::string& directory_path) {
+                 check_path(directory_path);
                  std::vector<nb::dict> results;
                  ScanContext ctx{&results};
                  int n = mh_session_scan_directory(
@@ -3998,6 +4049,7 @@ NB_MODULE(_core, m) {
     // VST3 .vstpreset helpers
     m.def("vstpreset_read_class_id_from_bundle",
           [](const std::string& vst3_path) {
+              check_path(vst3_path);
               char class_id[MH_VSTPRESET_CLASS_ID_LEN + 1] = {0};
               char err[512] = {0};
               if (!mh_vstpreset_read_class_id_from_bundle(
@@ -4016,6 +4068,7 @@ NB_MODULE(_core, m) {
     // controller_state is None if not present in the file.
     m.def("vstpreset_read",
           [](const std::string& path) {
+              check_path(path);
               MH_VstPreset preset{};
               char err[512] = {0};
               if (!mh_vstpreset_read(path.c_str(), &preset, err, sizeof(err))) {
@@ -4042,6 +4095,7 @@ NB_MODULE(_core, m) {
     m.def("vstpreset_write",
           [](const std::string& path, const std::string& class_id,
              nb::bytes component_state, std::optional<nb::bytes> controller_state) {
+              check_path(path);
               char err[512] = {0};
               const void* cont_data = nullptr;
               int cont_size = 0;
@@ -5532,6 +5586,7 @@ NB_MODULE(_core, m) {
 
     // Audio file I/O functions
     m.def("audio_read", [](const std::string& path) {
+        check_path(path);
         char err[1024] = {0};
         MH_AudioData* data = nullptr;
         MhAudioBuffer* buf = nullptr;
@@ -5574,6 +5629,7 @@ NB_MODULE(_core, m) {
                             unsigned int sample_rate,
                             int bit_depth,
                             nb::object bwf) {
+        check_path(path);
         size_t channels = (size_t) checked_dim(data.shape(0));
         size_t frames = (size_t) checked_dim(data.shape(1));
 
@@ -5709,6 +5765,7 @@ NB_MODULE(_core, m) {
        "sample_rate_out. quality: 0 best, 1 medium, 2 fastest (libsamplerate sinc).");
 
     m.def("audio_get_file_info", [](const std::string& path) {
+        check_path(path);
         char err[1024] = {0};
         MH_AudioFileInfo info;
         int ok = mh_audio_get_file_info(path.c_str(), &info, err, sizeof(err));

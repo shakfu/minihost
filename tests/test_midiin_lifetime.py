@@ -25,7 +25,7 @@ The functional tests below need a real MIDI input port, so they skip on
 machines (and CI runners) without one. The structural tests always run.
 
 The last test is the one that actually reproduced the bug: it drives real MIDI
-through a loopback bus (macOS IAC Driver) and asserts the callback fires with
+through a self-contained loopback (`midi_loopback`) and asserts the callback fires with
 the right payload. Pre-fix it segfaulted the interpreter (exit 139) before
 delivering anything; post-fix all messages arrive intact.
 """
@@ -39,7 +39,7 @@ import pytest
 
 import minihost
 
-import coremidi_loopback
+import midi_loopback
 
 
 def _input_ports():
@@ -76,11 +76,11 @@ skip_if_no_midi_port = pytest.mark.skipif(
 )
 
 # The reproduction below builds its own loopback out of a minihost virtual
-# input port plus a CoreMIDI sender, so it needs no IAC bus and no other
-# application -- only a working CoreMIDI back-end.
-skip_if_no_coremidi = pytest.mark.skipif(
-    not coremidi_loopback.available(),
-    reason="CoreMIDI not available (macOS only)",
+# input port plus a CoreMIDI (macOS) or ALSA sequencer (Linux) sender, so it
+# needs no IAC bus and no other application.
+skip_if_no_loopback = pytest.mark.skipif(
+    not midi_loopback.available(),
+    reason="no MIDI loopback sender (CoreMIDI or ALSA sequencer)",
 )
 
 
@@ -205,12 +205,12 @@ def _churn_stack(depth: int = 0) -> int:
     return len(junk)
 
 
-@skip_if_no_coremidi
+@skip_if_no_loopback
 def test_callback_receives_real_midi_after_stack_churn():
     """End-to-end reproduction of the use-after-free.
 
     Opens a minihost *virtual* input port and sends real MIDI to it via
-    CoreMIDI, so the loopback is entirely self-contained. Pre-fix this crashed
+    `midi_loopback`, so the loopback is entirely self-contained. Pre-fix this crashed
     the interpreter with SIGSEGV before delivering anything; post-fix every
     sent message arrives with an intact payload.
     """
@@ -218,15 +218,15 @@ def test_callback_receives_real_midi_after_stack_churn():
     received: list[bytes] = []
     midi_in = _open_virtual_or_skip(name, lambda data: received.append(bytes(data)))
     try:
-        endpoint = coremidi_loopback.wait_for_destination(name)
+        endpoint = midi_loopback.wait_for_destination(name)
         if endpoint is None:
-            pytest.skip("virtual MIDI port did not appear as a CoreMIDI destination")
+            pytest.skip("virtual MIDI port did not appear as a MIDI destination")
 
         _churn_stack()
         gc.collect()
 
         sent = []
-        with coremidi_loopback.Sender() as sender:
+        with midi_loopback.Sender() as sender:
             for note in (60, 64, 67):
                 on = bytes([0x90, note, 100])
                 off = bytes([0x80, note, 0])
@@ -241,10 +241,10 @@ def test_callback_receives_real_midi_after_stack_churn():
 
     # Match as a subsequence: nothing else should be writing to a port we
     # just created, but this keeps the test robust if something is.
-    coremidi_loopback.assert_contains_in_order(received, sent)
+    midi_loopback.assert_contains_in_order(received, sent)
 
 
-@skip_if_no_coremidi
+@skip_if_no_loopback
 def test_callback_stops_after_close():
     """close() must unregister before the object dies -- otherwise the
     libremidi thread could still reach a freed callback holder.
@@ -252,16 +252,16 @@ def test_callback_stops_after_close():
     name = "minihost-close-regression-in"
     received: list[bytes] = []
     midi_in = _open_virtual_or_skip(name, lambda data: received.append(bytes(data)))
-    endpoint = coremidi_loopback.wait_for_destination(name)
+    endpoint = midi_loopback.wait_for_destination(name)
     if endpoint is None:
         midi_in.close()
-        pytest.skip("virtual MIDI port did not appear as a CoreMIDI destination")
+        pytest.skip("virtual MIDI port did not appear as a MIDI destination")
 
     midi_in.close()
     del midi_in
     gc.collect()
 
-    with coremidi_loopback.Sender() as sender:
+    with midi_loopback.Sender() as sender:
         try:
             sender.send(endpoint, bytes([0x90, 72, 100]))
         except RuntimeError:

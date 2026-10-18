@@ -45,10 +45,7 @@ foreach(_target MinihostTestFx MinihostTestSynth)
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
-        JUCE_DISPLAY_SPLASH_SCREEN=0
-        # Otherwise a MIDI-input VST3 exposes 2048 synthetic CC parameters,
-        # which buries the three the fixture is about.
-        JUCE_VST3_EMULATE_MIDI_CC_WITH_PARAMETERS=0)
+        JUCE_DISPLAY_SPLASH_SCREEN=0)
     # No juce_recommended_lto_flags: the fixture is built for determinism,
     # not speed, and LTO across two JUCE copies (host and plugin) in one
     # process is not worth the ODR risk.
@@ -59,3 +56,11 @@ foreach(_target MinihostTestFx MinihostTestSynth)
 endforeach()
 
 target_compile_definitions(MinihostTestSynth PUBLIC MINIHOST_TEST_SYNTH=1)
+
+# A VST3 receives CC and pitch bend only through IMidiMapping, which JUCE
+# provides by emulating each controller as a parameter (2080, appended after
+# the fixture's own). The effect keeps the JUCE default so MIDI pass-through
+# covers controllers, as it does for real JUCE plugins. The synth turns it
+# off to keep its parameter list to the fixture's own.
+target_compile_definitions(MinihostTestFx PUBLIC JUCE_VST3_EMULATE_MIDI_CC_WITH_PARAMETERS=1)
+target_compile_definitions(MinihostTestSynth PUBLIC JUCE_VST3_EMULATE_MIDI_CC_WITH_PARAMETERS=0)

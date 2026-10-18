@@ -119,7 +119,7 @@ def test_chain_automation_bad_plugin_index_raises(fx):
 def test_graph_automation_bad_param_index_raises(fx):
     g, node = _graph(fx)
     with pytest.raises(ValueError, match="param_index"):
-        g.set_node_automation(node, [(0, 999, 0.5)])
+        g.set_node_automation(node, [(0, fx.num_params, 0.5)])
 
 
 @requires_fx

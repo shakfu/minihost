@@ -115,9 +115,14 @@ class OscFeedback:
         """Start polling. No-op if already running."""
         if self._thread is not None:
             return
-        self._stop.clear()
+        # A fresh event per poller: a thread whose stop() join timed out keeps
+        # its own set event, so a later start() cannot revive it.
+        self._stop = threading.Event()
         self._thread = threading.Thread(
-            target=self._run, name="minihost-osc-feedback", daemon=True
+            target=self._run,
+            args=(self._stop,),
+            name="minihost-osc-feedback",
+            daemon=True,
         )
         self._thread.start()
 
@@ -183,8 +188,8 @@ class OscFeedback:
         self._sent_count += sent
         return sent
 
-    def _run(self) -> None:
-        while not self._stop.wait(self._interval):
+    def _run(self, stop: threading.Event) -> None:
+        while not stop.wait(self._interval):
             try:
                 self.poll_once()
             except Exception:

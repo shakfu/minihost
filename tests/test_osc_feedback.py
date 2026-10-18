@@ -225,6 +225,38 @@ def test_start_and_stop_are_idempotent():
     assert not fb.is_running
 
 
+def test_start_after_a_timed_out_stop_runs_one_poller():
+    """stop() whose join times out must not let start() revive the old thread.
+
+    Both threads used to share one stop event, which start() cleared.
+    """
+    release = threading.Event()
+    polling = threading.Event()
+
+    def blocking_get(i):
+        polling.set()
+        release.wait(5.0)
+        return 0.5
+
+    plugin = MagicMock()
+    plugin.get_param = MagicMock(side_effect=blocking_get)
+    fb = OscFeedback(plugin, FakeClient(), {"/a": 0}, interval=0.01)
+    fb.start()
+    try:
+        assert polling.wait(5.0)
+        old = fb._thread
+        fb.stop(timeout=0.05)  # old thread is stuck in get_param
+        assert old.is_alive()
+        fb.start()
+        release.set()
+        old.join(5.0)
+        assert not old.is_alive(), "old poller was revived by start()"
+        assert fb.is_running
+    finally:
+        release.set()
+        fb.stop()
+
+
 def test_the_thread_actually_polls():
     values = {0: 0.5}
     client = FakeClient()

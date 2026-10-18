@@ -245,6 +245,29 @@ def test_midi_passes_through_with_its_offsets_intact():
 
 
 @requires_fx
+def test_controllers_and_pitch_bend_pass_through():
+    # VST3 has no CC input event; JUCE's host routes CC and pitch bend through
+    # the plugin's IMidiMapping. The fixture built without one dropped them.
+    plugin = _open()
+    try:
+        src = np.zeros((2, BLOCK), dtype=np.float32)
+        sent = [
+            (0, 0xB0, 7, 99),
+            (1, 0xB3, 1, 0),
+            (2, 0xE0, 0, 64),
+            (3, 0xE1, 0x7F, 0x7F),
+            (4, 0xE2, 1, 0),
+            (5, 0xD0, 40, 0),
+            (6, 0xC0, 5, 0),
+        ]
+        got = plugin.process_midi(src, np.zeros_like(src), sent)
+
+        assert [tuple(e) for e in got] == sent
+    finally:
+        plugin.close()
+
+
+@requires_fx
 def test_graph_reports_midi_dropped_upstream_of_a_plugin():
     # MIDI input -> transpose (keeps 1024 of 2000) -> fx -> MIDI output.
     # The loss happens before the plugin and must still reach the output.

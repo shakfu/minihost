@@ -8,6 +8,24 @@
 
 - Python 3.15 is supported and tested in CI. CI tests the abi3 wheel on 3.12 and 3.15 only. cibuildwheel is pinned to 4.3.0, which supports 3.15.
 
+- Tests: the MIDI loopback tests also run on Linux, through the ALSA sequencer (`tests/alsa_loopback.py`, ctypes, no new dependency). `tests/test_midi_device_loopback.py` sends MIDI through a running `AudioDevice` and the `MinihostTestFx` pass-through. That covers the ALSA back-end for virtual ports, ports opened by index and `send_midi`. GitHub's hosted runners have no `/dev/snd/seq`, so these tests skip in CI.
+
+### Fixed
+
+- Interpreter exit hung on Linux while an `AudioDevice` was open. The atexit pass closed the device but kept its reference to the plugin. The plugin was then destroyed during finalization, after the JUCE message thread had stopped, and its VST3 `disconnect` waited forever for the message-manager lock.
+
+- Output rows past the channel count of a plugin, chain or bus are now zeroed. They kept their previous contents: a `(4, N)` buffer filled with 7.0 came back `[1, 1, 7, 7]` from a stereo pass-through. This affected every `process*` method on `Plugin`, `PluginChain` and `PluginBus`.
+
+- `PluginBus.add_branch` and `set_branch_gain` raise `ValueError` on a NaN or infinite gain, and `mh_bus_add_branch` / `mh_bus_set_branch_gain` fail. The gain used to be stored, every output sample became NaN, and `get_branch_gain` then raised "Branch index out of range".
+
+- A path containing a NUL byte raises `ValueError`. The C layer stopped at the NUL, so `Plugin("a\x00b")` opened `a` and `write_audio("x.wav\x00y.wav", ...)` overwrote `x.wav`.
+
+- `AudioBuffer` and `AudioBufferD` raise `ValueError` on a negative channel or frame count. `AudioBuffer(-3, 5)` returned a `(1, 5)` buffer.
+
+- `MinihostTestFx` is built with JUCE's default `JUCE_VST3_EMULATE_MIDI_CC_WITH_PARAMETERS=1`. With it off, the fixture had no `IMidiMapping`, so JUCE's host dropped every CC, pitch bend and channel pressure sent to it, and its MIDI pass-through returned notes only. A VST3 receives controllers only through that mapping, and real JUCE plugins have one. The fixture now lists 2080 more parameters, after its own. [MIDI routing](docs/midi_routing.md) documents the mapping requirement and same-offset reordering.
+
+- `OscFeedback.start()` after a `stop()` whose join timed out left two pollers running. Both threads shared one stop event, which `start()` cleared. Each poller now has its own.
+
 ## [0.11.0]
 
 ### Added
