@@ -492,6 +492,32 @@ jobs:
       - name: Install minihost
         run: pip install --verbose '.[numpy]' pytest
 
+      # Diagnostic: minihost's MIDIClientCreate fails here with -50. Calling it
+      # from the main thread and a worker thread, without minihost, separates
+      # a runner without CoreMIDI from a threading bug in minihost.
+      - name: Probe CoreMIDI
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        shell: bash
+        run: |
+          pgrep -lf MIDIServer || echo "no MIDIServer process"
+          python - <<'PY'
+          import ctypes, ctypes.util, threading
+          cm = ctypes.CDLL(ctypes.util.find_library("CoreMIDI"))
+          cf = ctypes.CDLL(ctypes.util.find_library("CoreFoundation"))
+          cf.CFStringCreateWithCString.restype = ctypes.c_void_p
+          cf.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
+          cm.MIDIClientCreate.argtypes = [ctypes.c_void_p] * 3 + [ctypes.POINTER(ctypes.c_uint32)]
+          cm.MIDIGetNumberOfDestinations.restype = ctypes.c_ulong
+          def create(label):
+              ref = ctypes.c_uint32()
+              name = cf.CFStringCreateWithCString(None, b"probe", 0x08000100)
+              print(f"{label}: MIDIClientCreate -> {cm.MIDIClientCreate(name, None, None, ctypes.byref(ref))}")
+          create("main thread")
+          t = threading.Thread(target=create, args=("worker thread",)); t.start(); t.join()
+          print("destinations:", cm.MIDIGetNumberOfDestinations())
+          PY
+
       # MINIHOST_TEST_PLUGIN has always meant an instrument (MIDI in, audio
       # out) -- the plugin-gated tests render notes through it. The effect
       # fixture is exported separately for tests that need audio input,

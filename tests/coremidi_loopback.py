@@ -87,10 +87,9 @@ class Sender:
         self._api = _CoreMidi()
         api = self._api
         self.client = api.ref()
-        if api.cm.MIDIClientCreate(
-            api.cfstr(name), None, None, ctypes.byref(self.client)
-        ):
-            raise RuntimeError("MIDIClientCreate failed")
+        rc = api.cm.MIDIClientCreate(api.cfstr(name), None, None, ctypes.byref(self.client))
+        if rc:
+            raise RuntimeError(f"MIDIClientCreate failed: {rc}")
         self.port = api.ref()
         if api.cm.MIDIOutputPortCreate(
             self.client, api.cfstr("out"), ctypes.byref(self.port)
