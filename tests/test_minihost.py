@@ -985,6 +985,15 @@ class TestPluginIntegration:
             audio.disconnect_midi_output()
             assert audio.midi_output_port == -1
 
+    @skip_if_no_audio_device
+    def test_audio_device_midi_failure_carries_the_reason(self, plugin):
+        """The back-end's reason reaches the exception, not just 'failed'."""
+        audio = minihost.AudioDevice(plugin)
+        with pytest.raises(RuntimeError, match="Invalid port index: 9999"):
+            audio.connect_midi_input(9999)
+        with pytest.raises(RuntimeError, match="Invalid port index: 9999"):
+            audio.connect_midi_output(9999)
+
 
 class TestMidiFile:
     """Tests for MidiFile class."""

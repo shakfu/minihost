@@ -187,6 +187,7 @@ for (int i = 0; i < count; i++) {
 | `mh_audio_get_midi_output_port` | Get connected MIDI output port index (-1 if none) |
 | `mh_audio_create_virtual_midi_input` | Create virtual MIDI input port |
 | `mh_audio_create_virtual_midi_output` | Create virtual MIDI output port |
+| `mh_audio_get_midi_error` | Reason for the last failed MIDI connect or create ("" after success) |
 | `mh_audio_is_midi_input_virtual` | Check if MIDI input is a virtual port |
 | `mh_audio_is_midi_output_virtual` | Check if MIDI output is a virtual port |
 | `mh_audio_send_midi` | Send MIDI event programmatically to plugin |

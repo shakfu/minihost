@@ -2376,8 +2376,8 @@ int cmd_play(const std::string& plugin_path,
     // Create virtual MIDI ports
     if (!virtual_midi.empty()) {
         if (!mh_audio_create_virtual_midi_input(dev, virtual_midi.c_str())) {
-            std::fprintf(stderr, "Warning: Failed to create virtual MIDI input '%s'\n",
-                         virtual_midi.c_str());
+            std::fprintf(stderr, "Warning: Failed to create virtual MIDI input '%s': %s\n",
+                         virtual_midi.c_str(), mh_audio_get_midi_error(dev));
         } else {
             std::fprintf(stderr, "Virtual MIDI input: %s\n", virtual_midi.c_str());
         }
@@ -2385,8 +2385,8 @@ int cmd_play(const std::string& plugin_path,
 
     if (!virtual_midi_out.empty()) {
         if (!mh_audio_create_virtual_midi_output(dev, virtual_midi_out.c_str())) {
-            std::fprintf(stderr, "Warning: Failed to create virtual MIDI output '%s'\n",
-                         virtual_midi_out.c_str());
+            std::fprintf(stderr, "Warning: Failed to create virtual MIDI output '%s': %s\n",
+                         virtual_midi_out.c_str(), mh_audio_get_midi_error(dev));
         } else {
             std::fprintf(stderr, "Virtual MIDI output: %s\n", virtual_midi_out.c_str());
         }

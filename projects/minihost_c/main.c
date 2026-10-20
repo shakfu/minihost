@@ -1944,8 +1944,8 @@ static int cmd_play(const char* plugin_path,
     // Create virtual MIDI port if requested
     if (virtual_midi_name && virtual_midi_name[0] != '\0') {
         if (!mh_audio_create_virtual_midi_input(dev, virtual_midi_name)) {
-            fprintf(stderr, "Warning: Failed to create virtual MIDI port '%s'\n",
-                    virtual_midi_name);
+            fprintf(stderr, "Warning: Failed to create virtual MIDI port '%s': %s\n",
+                    virtual_midi_name, mh_audio_get_midi_error(dev));
         } else {
             fprintf(stderr, "Virtual MIDI input: %s\n", virtual_midi_name);
         }

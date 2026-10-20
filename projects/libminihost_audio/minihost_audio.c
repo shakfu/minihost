@@ -211,6 +211,7 @@ struct MH_AudioDevice {
     int midi_out_port;  // -1 if not connected or virtual
     int midi_in_virtual;   // 1 if virtual port, 0 if physical
     int midi_out_virtual;  // 1 if virtual port, 0 if physical
+    char midi_err[256];    // last MIDI connect/create failure, "" after success
 
     // Audio input ring buffer (for write_input / effect processing)
     MH_AudioRingBuffer* audio_in_buffer;
@@ -911,19 +912,17 @@ MH_AudioDevice* mh_audio_open(MH_Plugin* plugin, const MH_AudioConfig* config,
     // Connect MIDI ports if specified in config
     if (config) {
         if (config->midi_input_port >= 0) {
-            char midi_err[256];
             dev->midi_in = mh_midi_in_open(config->midi_input_port,
                                            midi_input_callback, dev,
-                                           midi_err, sizeof(midi_err));
+                                           dev->midi_err, sizeof(dev->midi_err));
             if (dev->midi_in) {
                 dev->midi_in_port = config->midi_input_port;
             }
             // Don't fail if MIDI connection fails - audio still works
         }
         if (config->midi_output_port >= 0) {
-            char midi_err[256];
             dev->midi_out = mh_midi_out_open(config->midi_output_port,
-                                             midi_err, sizeof(midi_err));
+                                             dev->midi_err, sizeof(dev->midi_err));
             if (dev->midi_out) {
                 dev->midi_out_port = config->midi_output_port;
                 midi_out_pump_attach(dev);
@@ -1127,18 +1126,16 @@ MH_AudioDevice* mh_audio_open_chain(MH_PluginChain* chain, const MH_AudioConfig*
     // Connect MIDI ports if specified in config
     if (config) {
         if (config->midi_input_port >= 0) {
-            char midi_err[256];
             dev->midi_in = mh_midi_in_open(config->midi_input_port,
                                            midi_input_callback, dev,
-                                           midi_err, sizeof(midi_err));
+                                           dev->midi_err, sizeof(dev->midi_err));
             if (dev->midi_in) {
                 dev->midi_in_port = config->midi_input_port;
             }
         }
         if (config->midi_output_port >= 0) {
-            char midi_err[256];
             dev->midi_out = mh_midi_out_open(config->midi_output_port,
-                                             midi_err, sizeof(midi_err));
+                                             dev->midi_err, sizeof(dev->midi_err));
             if (dev->midi_out) {
                 dev->midi_out_port = config->midi_output_port;
                 midi_out_pump_attach(dev);
@@ -1281,8 +1278,8 @@ int mh_audio_connect_midi_input(MH_AudioDevice* dev, int port_index) {
         return 1;  // Just disconnect, success
     }
 
-    char err[256];
-    dev->midi_in = mh_midi_in_open(port_index, midi_input_callback, dev, err, sizeof(err));
+    dev->midi_err[0] = '\0';
+    dev->midi_in = mh_midi_in_open(port_index, midi_input_callback, dev, dev->midi_err, sizeof(dev->midi_err));
     if (!dev->midi_in) {
         return 0;
     }
@@ -1308,8 +1305,8 @@ int mh_audio_connect_midi_output(MH_AudioDevice* dev, int port_index) {
         return 1;  // Just disconnect, success
     }
 
-    char err[256];
-    dev->midi_out = mh_midi_out_open(port_index, err, sizeof(err));
+    dev->midi_err[0] = '\0';
+    dev->midi_out = mh_midi_out_open(port_index, dev->midi_err, sizeof(dev->midi_err));
     if (!dev->midi_out) {
         return 0;
     }
@@ -1354,8 +1351,8 @@ int mh_audio_create_virtual_midi_input(MH_AudioDevice* dev, const char* port_nam
         dev->midi_in_virtual = 0;
     }
 
-    char err[256];
-    dev->midi_in = mh_midi_in_open_virtual(port_name, midi_input_callback, dev, err, sizeof(err));
+    dev->midi_err[0] = '\0';
+    dev->midi_in = mh_midi_in_open_virtual(port_name, midi_input_callback, dev, dev->midi_err, sizeof(dev->midi_err));
     if (!dev->midi_in) {
         return 0;
     }
@@ -1377,8 +1374,8 @@ int mh_audio_create_virtual_midi_output(MH_AudioDevice* dev, const char* port_na
         dev->midi_out_virtual = 0;
     }
 
-    char err[256];
-    dev->midi_out = mh_midi_out_open_virtual(port_name, err, sizeof(err));
+    dev->midi_err[0] = '\0';
+    dev->midi_out = mh_midi_out_open_virtual(port_name, dev->midi_err, sizeof(dev->midi_err));
     if (!dev->midi_out) {
         return 0;
     }
@@ -1387,6 +1384,11 @@ int mh_audio_create_virtual_midi_output(MH_AudioDevice* dev, const char* port_na
     dev->midi_out_virtual = 1;
     midi_out_pump_attach(dev);
     return 1;
+}
+
+const char* mh_audio_get_midi_error(MH_AudioDevice* dev) {
+    if (!dev) return "";
+    return dev->midi_err;
 }
 
 int mh_audio_is_midi_input_virtual(MH_AudioDevice* dev) {

@@ -159,6 +159,11 @@ int mh_audio_create_virtual_midi_input(MH_AudioDevice* dev, const char* port_nam
 // Returns 1 on success, 0 on failure (or if platform doesn't support virtual ports)
 int mh_audio_create_virtual_midi_output(MH_AudioDevice* dev, const char* port_name);
 
+// Reason for the last failed MIDI connect or virtual-port create, including
+// the one attempted by mh_audio_open. "" after a success. Valid until the next
+// such call on this device.
+const char* mh_audio_get_midi_error(MH_AudioDevice* dev);
+
 // Check if MIDI input is a virtual port
 // Returns 1 if virtual, 0 if physical port or not connected
 int mh_audio_is_midi_input_virtual(MH_AudioDevice* dev);

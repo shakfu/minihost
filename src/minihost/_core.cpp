@@ -2805,13 +2805,15 @@ public:
     // MIDI connection
     void connect_midi_input(int port_index) {
         if (!mh_audio_connect_midi_input(device_, port_index)) {
-            throw std::runtime_error("Failed to connect MIDI input");
+            throw std::runtime_error(std::string("Failed to connect MIDI input: ") +
+                                     mh_audio_get_midi_error(device_));
         }
     }
 
     void connect_midi_output(int port_index) {
         if (!mh_audio_connect_midi_output(device_, port_index)) {
-            throw std::runtime_error("Failed to connect MIDI output");
+            throw std::runtime_error(std::string("Failed to connect MIDI output: ") +
+                                     mh_audio_get_midi_error(device_));
         }
     }
 
@@ -2834,13 +2836,15 @@ public:
     // Virtual MIDI ports
     void create_virtual_midi_input(const std::string& port_name) {
         if (!mh_audio_create_virtual_midi_input(device_, port_name.c_str())) {
-            throw std::runtime_error("Failed to create virtual MIDI input (may not be supported on this platform)");
+            throw std::runtime_error(std::string("Failed to create virtual MIDI input: ") +
+                                     mh_audio_get_midi_error(device_));
         }
     }
 
     void create_virtual_midi_output(const std::string& port_name) {
         if (!mh_audio_create_virtual_midi_output(device_, port_name.c_str())) {
-            throw std::runtime_error("Failed to create virtual MIDI output (may not be supported on this platform)");
+            throw std::runtime_error(std::string("Failed to create virtual MIDI output: ") +
+                                     mh_audio_get_midi_error(device_));
         }
     }
 

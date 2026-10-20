@@ -12,6 +12,10 @@
 
 - Tests: the MIDI loopback tests also run on Linux, through the ALSA sequencer (`tests/alsa_loopback.py`, ctypes, no new dependency). `tests/test_midi_device_loopback.py` sends MIDI through a running `AudioDevice` and the `MinihostTestFx` pass-through. That covers the ALSA back-end for virtual ports, ports opened by index and `send_midi`. GitHub's hosted runners have no `/dev/snd/seq`, so these tests skip in CI.
 
+### Added
+
+- `mh_audio_get_midi_error()` returns why the last MIDI connect or virtual-port create on a device failed. `AudioDevice.connect_midi_*` and `create_virtual_midi_*` include it in the `RuntimeError`, and the CLIs print it. The device layer used to discard libremidi's reason, so a CoreMIDI refusal on the macOS CI runner showed only "may not be supported on this platform". A separate out-parameter would have broken the existing signatures.
+
 ### Fixed
 
 - Desktop: the metronome and MIDI clock read the transport after it had advanced past the chunk. Every click and clock tick came one chunk early (10.7 ms at 512 samples), and beat 0 and tick 0 were never emitted.

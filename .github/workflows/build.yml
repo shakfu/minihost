@@ -506,7 +506,7 @@ jobs:
           export MINIHOST_TEST_PLUGIN_FX="$PWD/$root/MinihostTestFx_artefacts/Release/VST3/MinihostTestFx.vst3"
           test -e "$MINIHOST_TEST_PLUGIN"
           test -e "$MINIHOST_TEST_PLUGIN_FX"
-          python -m pytest tests/ -v
+          python -m pytest tests/ -v -rs
 
   build-sdist:
     name: Build source distribution
