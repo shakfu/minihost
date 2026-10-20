@@ -530,6 +530,10 @@ jobs:
           export MINIHOST_TEST_PLUGIN_FX="$PWD/$root/MinihostTestFx_artefacts/Release/VST3/MinihostTestFx.vst3"
           python -m pytest tests/test_midi_device_loopback.py tests/test_midiin_lifetime.py -v -rs
           pgrep -lf MIDIServer || echo "no MIDIServer process"
+          echo "--- AU load first, then the device tests, one process ---"
+          python -m pytest -p no:randomly -v -rs \
+            tests/test_api_coverage.py::test_session_open_desc_loads_an_audiounit \
+            tests/test_midi_device_loopback.py || true
 
       # MINIHOST_TEST_PLUGIN has always meant an instrument (MIDI in, audio
       # out) -- the plugin-gated tests render notes through it. The effect
