@@ -518,6 +518,19 @@ jobs:
           print("destinations:", cm.MIDIGetNumberOfDestinations())
           PY
 
+      # Diagnostic: the probe above succeeds but the full suite gets -50, so
+      # run the MIDI files in a fresh process to see whether they pass alone.
+      - name: MIDI tests in a fresh process
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        shell: bash
+        run: |
+          root=build/projects/test_plugin
+          export MINIHOST_TEST_PLUGIN="$PWD/$root/MinihostTestSynth_artefacts/Release/VST3/MinihostTestSynth.vst3"
+          export MINIHOST_TEST_PLUGIN_FX="$PWD/$root/MinihostTestFx_artefacts/Release/VST3/MinihostTestFx.vst3"
+          python -m pytest tests/test_midi_device_loopback.py tests/test_midiin_lifetime.py -v -rs
+          pgrep -lf MIDIServer || echo "no MIDIServer process"
+
       # MINIHOST_TEST_PLUGIN has always meant an instrument (MIDI in, audio
       # out) -- the plugin-gated tests render notes through it. The effect
       # fixture is exported separately for tests that need audio input,
