@@ -167,6 +167,26 @@ static bool opened_ok(const stdx::error& rc, std::string& reason) {
     return false;
 }
 
+// libremidi's open_*() returns ENOTCONN whenever the back-end client failed
+// to open; the cause (e.g. MIDIClientCreate's OSStatus) goes only to on_error.
+template <typename Midi>
+static bool opened_ok(const Midi& m, const stdx::error& rc, const std::string& backend_err,
+                      std::string& reason) {
+    if (opened_ok(rc, reason)) return true;
+    reason += " [";
+    reason += libremidi::get_api_name(m.get_current_api());
+    if (!backend_err.empty()) reason += ": " + backend_err;
+    reason += "]";
+    return false;
+}
+
+// Record libremidi's error text in `sink`, which must outlive the port.
+static libremidi::midi_error_callback capture_error(std::string& sink) {
+    return [&sink](std::string_view msg, const libremidi::source_location&) {
+        sink.assign(msg.data(), msg.size());
+    };
+}
+
 static void set_open_err(char* buf, size_t n, const char* what,
                          const std::string& reason) {
     set_err(buf, n, reason.empty() ? std::string(what).c_str()
@@ -175,6 +195,7 @@ static void set_open_err(char* buf, size_t n, const char* what,
 
 // MIDI input wrapper
 struct MH_MidiIn {
+    std::string backend_err;  // declared first: midi_in's destructor may write it
     std::unique_ptr<libremidi::midi_in> midi_in;
     MH_MidiCallback callback;
     void* user_data;
@@ -182,6 +203,7 @@ struct MH_MidiIn {
 
 // MIDI output wrapper
 struct MH_MidiOut {
+    std::string backend_err;  // declared first: midi_out's destructor may write it
     std::unique_ptr<libremidi::midi_out> midi_out;
 };
 
@@ -306,13 +328,15 @@ MH_MidiIn* mh_midi_in_open(int port_index, MH_MidiCallback callback, void* user_
                 midi_in->callback(msg.bytes.data(), msg.bytes.size(), midi_in->user_data);
             }
         };
+        config.on_error = capture_error(midi_in->backend_err);
 
         // Construct + open on an isolated thread -- open_port() pumps the
         // caller's run loop (see run_isolated).
         std::string reason;
         const bool opened = run_isolated([&]() -> bool {
             midi_in->midi_in = std::make_unique<libremidi::midi_in>(config);
-            return opened_ok(midi_in->midi_in->open_port(ports[port_index]), reason);
+            return opened_ok(*midi_in->midi_in, midi_in->midi_in->open_port(ports[port_index]),
+                             midi_in->backend_err, reason);
         });
         if (!opened) {
             set_open_err(err_buf, err_buf_size, "Failed to open MIDI input port", reason);
@@ -354,11 +378,13 @@ MH_MidiIn* mh_midi_in_open_virtual(const char* port_name, MH_MidiCallback callba
                 midi_in->callback(msg.bytes.data(), msg.bytes.size(), midi_in->user_data);
             }
         };
+        config.on_error = capture_error(midi_in->backend_err);
 
         std::string reason;
         const bool opened = run_isolated([&]() -> bool {
             midi_in->midi_in = std::make_unique<libremidi::midi_in>(config);
-            return opened_ok(midi_in->midi_in->open_virtual_port(port_name), reason);
+            return opened_ok(*midi_in->midi_in, midi_in->midi_in->open_virtual_port(port_name),
+                             midi_in->backend_err, reason);
         });
         if (!opened) {
             set_open_err(err_buf, err_buf_size, "Failed to open virtual MIDI input port "
@@ -397,8 +423,11 @@ MH_MidiOut* mh_midi_out_open(int port_index, char* err_buf, size_t err_buf_size)
         auto* midi_out = new MH_MidiOut();
         std::string reason;
         const bool opened = run_isolated([&]() -> bool {
-            midi_out->midi_out = std::make_unique<libremidi::midi_out>();
-            return opened_ok(midi_out->midi_out->open_port(ports[port_index]), reason);
+            libremidi::output_configuration config;
+            config.on_error = capture_error(midi_out->backend_err);
+            midi_out->midi_out = std::make_unique<libremidi::midi_out>(config);
+            return opened_ok(*midi_out->midi_out, midi_out->midi_out->open_port(ports[port_index]),
+                             midi_out->backend_err, reason);
         });
         if (!opened) {
             set_open_err(err_buf, err_buf_size, "Failed to open MIDI output port", reason);
@@ -425,8 +454,11 @@ MH_MidiOut* mh_midi_out_open_virtual(const char* port_name, char* err_buf, size_
         auto* midi_out = new MH_MidiOut();
         std::string reason;
         const bool opened = run_isolated([&]() -> bool {
-            midi_out->midi_out = std::make_unique<libremidi::midi_out>();
-            return opened_ok(midi_out->midi_out->open_virtual_port(port_name), reason);
+            libremidi::output_configuration config;
+            config.on_error = capture_error(midi_out->backend_err);
+            midi_out->midi_out = std::make_unique<libremidi::midi_out>(config);
+            return opened_ok(*midi_out->midi_out, midi_out->midi_out->open_virtual_port(port_name),
+                             midi_out->backend_err, reason);
         });
         if (!opened) {
             set_open_err(err_buf, err_buf_size, "Failed to open virtual MIDI output port "

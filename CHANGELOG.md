@@ -14,7 +14,7 @@
 
 ### Added
 
-- `mh_audio_get_midi_error()` returns why the last MIDI connect or virtual-port create on a device failed. `AudioDevice.connect_midi_*` and `create_virtual_midi_*` include it in the `RuntimeError`, and the CLIs print it. The device layer used to discard libremidi's reason, so a CoreMIDI refusal on the macOS CI runner showed only "may not be supported on this platform". A separate out-parameter would have broken the existing signatures.
+- `mh_audio_get_midi_error()` returns why the last MIDI connect or virtual-port create on a device failed. `AudioDevice.connect_midi_*` and `create_virtual_midi_*` include it in the `RuntimeError`, and the CLIs print it. The device layer used to discard libremidi's reason, so a CoreMIDI refusal on the macOS CI runner showed only "may not be supported on this platform". A separate out-parameter would have broken the existing signatures. MIDI open errors also name the back-end and add libremidi's `on_error` text. When the back-end client fails to open, libremidi's open call returns only `ENOTCONN` ("Transport endpoint is not connected"); the real cause, such as `MIDIClientCreate`'s OSStatus, goes only to that callback.
 
 ### Fixed
 

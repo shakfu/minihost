@@ -52,6 +52,18 @@ def _send(audio, address, value, settle=0.25):
         time.sleep(settle)
 
 
+def _send_param(audio, address, plugin, value, timeout=5.0):
+    """Send, then wait for `plugin` param 0 to reach `value`. A fixed settle
+    was too short on a loaded CI runner."""
+    with minihost.OscClient("127.0.0.1", audio.osc_port) as client:
+        client.send(address, value)
+        deadline = time.monotonic() + timeout
+        while plugin.get_param(0) != pytest.approx(value, abs=1e-3):
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.01)
+
+
 # -- naming -------------------------------------------------------------------
 
 
@@ -136,7 +148,7 @@ def test_a_named_slot_is_addressable():
         audio.set_slot_name(1, "second")
         audio.connect_osc(0)
         audio.start()
-        _send(audio, "/mh/second/param/0", 0.7)
+        _send_param(audio, "/mh/second/param/0", b, 0.7)
         audio.stop()
 
     assert b.get_param(0) == pytest.approx(0.7, abs=1e-3)
@@ -155,7 +167,7 @@ def test_the_numeric_form_still_works():
         audio.set_slot_name(1, "second")
         audio.connect_osc(0)
         audio.start()
-        _send(audio, "/mh/1/param/0", 0.4)
+        _send_param(audio, "/mh/1/param/0", b, 0.4)
         audio.stop()
 
     assert b.get_param(0) == pytest.approx(0.4, abs=1e-3)
@@ -180,7 +192,7 @@ def test_a_named_slot_survives_reordering():
         audio.set_slot_name(1, "target")
         audio.connect_osc(0)
         audio.start()
-        _send(audio, "/mh/target/param/0", 0.8)
+        _send_param(audio, "/mh/target/param/0", b, 0.8)
         audio.stop()
 
     assert b.get_param(0) == pytest.approx(0.8, abs=1e-3)
@@ -192,7 +204,7 @@ def test_a_named_slot_survives_reordering():
         audio.set_slot_name(0, "target")
         audio.connect_osc(0)
         audio.start()
-        _send(audio, "/mh/target/param/0", 0.8)
+        _send_param(audio, "/mh/target/param/0", b2, 0.8)
         audio.stop()
 
     # The same address reached the plugin the name was attached to, not the
