@@ -545,6 +545,7 @@ jobs:
           export MINIHOST_TEST_PLUGIN_FX="$PWD/$root/MinihostTestFx_artefacts/Release/VST3/MinihostTestFx.vst3"
           test -e "$MINIHOST_TEST_PLUGIN"
           test -e "$MINIHOST_TEST_PLUGIN_FX"
+          if [ "$RUNNER_OS" = macOS ]; then export MINIHOST_COREMIDI_PROBE=1; fi
           python -m pytest tests/ -v -rs
 
   build-sdist:

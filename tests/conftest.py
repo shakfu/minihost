@@ -25,3 +25,38 @@ def pytest_configure(config):
         raise pytest.UsageError(
             "test plugin path does not exist: " + ", ".join(missing)
         )
+
+
+# Diagnostic, opt-in: on macOS CI, MIDIClientCreate starts failing with -50
+# part-way through the suite but not in a fresh process. After each test, open
+# and close a virtual port and report the first test after which that fails.
+_COREMIDI_PROBE = os.environ.get("MINIHOST_COREMIDI_PROBE") == "1"
+_probe_state = {"last_ok": None, "first_bad": None, "error": None}
+
+
+def _probe_coremidi():
+    import minihost
+
+    minihost.MidiIn.open_virtual("mh-conftest-probe", lambda data: None).close()
+
+
+def pytest_runtest_logfinish(nodeid, location):
+    if not _COREMIDI_PROBE or _probe_state["first_bad"]:
+        return
+    try:
+        _probe_coremidi()
+    except RuntimeError as e:
+        _probe_state["first_bad"] = nodeid
+        _probe_state["error"] = str(e)
+    else:
+        _probe_state["last_ok"] = nodeid
+
+
+def pytest_terminal_summary(terminalreporter):
+    if not _COREMIDI_PROBE:
+        return
+    tr = terminalreporter
+    tr.section("CoreMIDI probe")
+    tr.write_line(f"last test with a working client: {_probe_state['last_ok']}")
+    tr.write_line(f"first test after which it failed: {_probe_state['first_bad']}")
+    tr.write_line(f"error: {_probe_state['error']}")
