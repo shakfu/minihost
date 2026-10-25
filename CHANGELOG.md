@@ -14,11 +14,16 @@
 
 - Tests: desktop tests fail with "run `make desktop`" when the located `minihost_desktop` binary is older than its sources. `make test` does not rebuild the desktop, and a binary that predates a new headless flag starts the GUI and times out instead. An explicit `MINIHOST_DESKTOP_BIN` is not checked.
 
+- `make test` builds the VST3 test fixtures first (new `make fixtures` target). It used to rebuild only the extension. The tests then loaded a stale bundle from `build/`, so a fixture change could fail tests that the new source passes.
+>>>>>>> c650a62770724d5aa9dfa255454d0b060521bf97
+
 ### Added
 
 - `mh_audio_get_midi_error()` returns why the last MIDI connect or virtual-port create on a device failed. `AudioDevice.connect_midi_*` and `create_virtual_midi_*` include it in the `RuntimeError`, and the CLIs print it. The device layer used to discard libremidi's reason, so a CoreMIDI refusal on the macOS CI runner showed only "may not be supported on this platform". A separate out-parameter would have broken the existing signatures. MIDI open errors also name the back-end and add libremidi's `on_error` text. When the back-end client fails to open, libremidi's open call returns only `ENOTCONN` ("Transport endpoint is not connected"); the real cause, such as `MIDIClientCreate`'s OSStatus, goes only to that callback.
 
 ### Fixed
+
+- macOS: after a few seconds with no MIDI ports open anywhere on the system, a process could no longer open any MIDI port. launchd stops MIDIServer 2.5-8 s after the last client is disposed. A process that had talked to that server, even only to enumerate ports, then gets an error from every later `MIDIClientCreate` (-2, -50 or -304). It does not recover, even after another process restarts the server. minihost now holds one CoreMIDI client for the life of the process, created before its first CoreMIDI call. This was the "CoreMIDI refuses every new client part-way through the suite" failure on the macOS CI runner.
 
 - Desktop: the metronome and MIDI clock read the transport after it had advanced past the chunk. Every click and clock tick came one chunk early (10.7 ms at 512 samples), and beat 0 and tick 0 were never emitted.
 

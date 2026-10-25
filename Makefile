@@ -1,7 +1,7 @@
 # Makefile for minihost
 # Supports both C/C++ CLI tools and Python bindings
 
-.PHONY: all juce cli sync build rebuild test wheel sdist clean distclean help \
+.PHONY: all juce cli sync build rebuild fixtures test wheel sdist clean distclean help \
 		check publish-test publish lint lint-fix format format-check \
 		typecheck qa docs docs-serve docs-deploy desktop run-desktop tsan \
 		native-tests cli-debug cli-asan diagrams
@@ -36,8 +36,14 @@ build: juce
 # Alias for build
 rebuild: build
 
+# Build the deterministic VST3 fixtures the signal tests load from build/.
+# Without this, a fixture change leaves a stale bundle that tests still find.
+fixtures: juce
+	@cmake -B build -DCMAKE_BUILD_TYPE=Release -DMINIHOST_BUILD_TEST_PLUGIN=ON
+	@cmake --build build --config Release --target MinihostTestFx_VST3 MinihostTestSynth_VST3
+
 # Run Python tests
-test: build
+test: build fixtures
 	@uv run pytest tests/ -v
 
 # ThreadSanitizer stress test for the lock-free SPSC ring buffers and the
@@ -297,7 +303,8 @@ help:
 	@echo "  sync         - Sync Python environment (initial setup)"
 	@echo "  build        - Build/rebuild Python extension"
 	@echo "  rebuild      - Alias for build"
-	@echo "  test         - Run Python tests"
+	@echo "  fixtures     - Build the VST3 test fixtures into build/"
+	@echo "  test         - Run Python tests (builds fixtures first)"
 	@echo "  lint         - Run ruff linter (check only)"
 	@echo "  lint-fix     - Run ruff linter with auto-fix (mutates)"
 	@echo "  format-check - Check formatting (no writes)"

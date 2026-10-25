@@ -21,6 +21,9 @@
 #if defined(__GNUC__) || defined(__clang__)
 #include <cxxabi.h>
 #endif
+#if defined(LIBREMIDI_COREMIDI)
+#include <CoreMIDI/CoreMIDI.h>
+#endif
 
 // Global observer for port enumeration (lazy initialized)
 static std::unique_ptr<libremidi::observer> g_observer;
@@ -113,12 +116,34 @@ static auto run_isolated(Fn&& fn) -> decltype(fn()) {
     return result;
 }
 
+// launchd stops MIDIServer a few seconds (2.5-8 s observed) after the last
+// client in the system is disposed. A process that talked to that server,
+// even only to enumerate ports, cannot create a client afterwards: every
+// MIDIClientCreate fails (-2, -50, -304), even after another process restarts
+// the server. Hold one client for the process lifetime, created before any
+// other CoreMIDI call, so the server outlives the process. Never disposed.
+static void keep_midi_server_alive() {
+#if defined(LIBREMIDI_COREMIDI)
+    static std::once_flag once;
+    std::call_once(once, [] {
+        MIDIClientRef client = 0;
+        MIDIClientCreate(CFSTR("minihost"), nullptr, nullptr, &client);
+    });
+#endif
+}
+
 static std::vector<libremidi::input_port> enumerate_input_ports() {
-    return run_isolated([] { return get_observer().get_input_ports(); });
+    return run_isolated([] {
+        keep_midi_server_alive();
+        return get_observer().get_input_ports();
+    });
 }
 
 static std::vector<libremidi::output_port> enumerate_output_ports() {
-    return run_isolated([] { return get_observer().get_output_ports(); });
+    return run_isolated([] {
+        keep_midi_server_alive();
+        return get_observer().get_output_ports();
+    });
 }
 
 // Copy a message into a caller-supplied error buffer, always NUL-terminated.
@@ -334,6 +359,7 @@ MH_MidiIn* mh_midi_in_open(int port_index, MH_MidiCallback callback, void* user_
         // caller's run loop (see run_isolated).
         std::string reason;
         const bool opened = run_isolated([&]() -> bool {
+            keep_midi_server_alive();
             midi_in->midi_in = std::make_unique<libremidi::midi_in>(config);
             return opened_ok(*midi_in->midi_in, midi_in->midi_in->open_port(ports[port_index]),
                              midi_in->backend_err, reason);
@@ -382,6 +408,7 @@ MH_MidiIn* mh_midi_in_open_virtual(const char* port_name, MH_MidiCallback callba
 
         std::string reason;
         const bool opened = run_isolated([&]() -> bool {
+            keep_midi_server_alive();
             midi_in->midi_in = std::make_unique<libremidi::midi_in>(config);
             return opened_ok(*midi_in->midi_in, midi_in->midi_in->open_virtual_port(port_name),
                              midi_in->backend_err, reason);
@@ -425,6 +452,7 @@ MH_MidiOut* mh_midi_out_open(int port_index, char* err_buf, size_t err_buf_size)
         const bool opened = run_isolated([&]() -> bool {
             libremidi::output_configuration config;
             config.on_error = capture_error(midi_out->backend_err);
+            keep_midi_server_alive();
             midi_out->midi_out = std::make_unique<libremidi::midi_out>(config);
             return opened_ok(*midi_out->midi_out, midi_out->midi_out->open_port(ports[port_index]),
                              midi_out->backend_err, reason);
@@ -456,6 +484,7 @@ MH_MidiOut* mh_midi_out_open_virtual(const char* port_name, char* err_buf, size_
         const bool opened = run_isolated([&]() -> bool {
             libremidi::output_configuration config;
             config.on_error = capture_error(midi_out->backend_err);
+            keep_midi_server_alive();
             midi_out->midi_out = std::make_unique<libremidi::midi_out>(config);
             return opened_ok(*midi_out->midi_out, midi_out->midi_out->open_virtual_port(port_name),
                              midi_out->backend_err, reason);
