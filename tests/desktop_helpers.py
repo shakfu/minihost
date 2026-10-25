@@ -60,7 +60,29 @@ def find_desktop_bin() -> Path | None:
     return max(existing, key=lambda c: c.stat().st_mtime)
 
 
+def stale_reason(binary: Path | None) -> str | None:
+    """Why ``binary`` predates the desktop sources, or None if it does not.
+
+    A binary built before a new headless flag existed starts the GUI instead
+    and the test times out. An explicit ``MINIHOST_DESKTOP_BIN`` is trusted.
+    """
+    if binary is None or os.environ.get("MINIHOST_DESKTOP_BIN"):
+        return None
+    src = REPO_ROOT / "projects" / "minihost_desktop"
+    files = [f for f in src.rglob("*") if f.is_file()]
+    if not files:
+        return None
+    newest = max(files, key=lambda f: f.stat().st_mtime)
+    if binary.stat().st_mtime >= newest.stat().st_mtime:
+        return None
+    return (
+        f"{binary} is older than {newest.relative_to(REPO_ROOT)}; "
+        "run `make desktop` (or set MINIHOST_DESKTOP_BIN)"
+    )
+
+
 DESKTOP_BIN = find_desktop_bin()
+DESKTOP_STALE = stale_reason(DESKTOP_BIN)
 
 skip_if_no_desktop = pytest.mark.skipif(
     DESKTOP_BIN is None,

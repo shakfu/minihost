@@ -1,6 +1,7 @@
 """Session-wide checks shared by every test module."""
 
 import os
+import sys
 
 import pytest
 
@@ -25,3 +26,13 @@ def pytest_configure(config):
         raise pytest.UsageError(
             "test plugin path does not exist: " + ", ".join(missing)
         )
+
+
+def pytest_runtest_setup(item):
+    # Fail, not skip, a desktop test whose binary predates the sources: a
+    # stale binary ignores new flags and the test times out instead.
+    helpers = sys.modules.get("desktop_helpers")
+    if helpers is None or getattr(item.module, "DESKTOP_BIN", None) is None:
+        return
+    if helpers.DESKTOP_STALE:
+        pytest.fail(helpers.DESKTOP_STALE, pytrace=False)
