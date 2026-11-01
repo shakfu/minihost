@@ -105,6 +105,66 @@ def test_live_loop_repeats_file_inputs(tmp_path):
 
 
 @skip_if_no_desktop
+def test_live_small_callbacks_chunk_file_inputs(tmp_path):
+    # A device callback shorter than the project block is the usual case.
+    # The planar input buffers are cleared per channel; a single memset
+    # left channel 1 holding the previous callback's tail.
+    src = _source()
+    proj, out_wav = _project(tmp_path, src)
+    _run(f"--live-selftest={proj}", "--live-callback=100")
+
+    device, _ = audio_io.read_audio(
+        str(proj.with_suffix(".device.wav")), as_=np.ndarray
+    )
+    np.testing.assert_array_equal(device, np.tile(src, 2))
+    rec, _ = audio_io.read_audio(str(out_wav), as_=np.ndarray)
+    np.testing.assert_array_equal(rec, src)
+
+
+@skip_if_no_desktop
+def test_live_device_input_reaches_outputs_with_small_callbacks(tmp_path):
+    src = _source()
+    in_wav = tmp_path / "mic.wav"
+    audio_io.write_audio(str(in_wav), src, SR, bit_depth=32)
+    out_wav = tmp_path / "out.wav"
+    proj = tmp_path / "p.json"
+    proj.write_text(
+        json.dumps(
+            {
+                "minihost_project_version": 1,
+                "sample_rate": SR,
+                "block_size": 256,
+                "nodes": [
+                    {"id": "mic", "kind": "device_input", "channels": 2},
+                    {
+                        "id": "out",
+                        "kind": "output",
+                        "channels": 2,
+                        "sink": str(out_wav),
+                        "bit_depth": 32,
+                    },
+                    {"id": "spk", "kind": "device_output", "channels": 2},
+                ],
+                "edges": [{"src": "mic", "dst": "out"}, {"src": "mic", "dst": "spk"}],
+            }
+        )
+    )
+    # 70 does not divide FRAMES, so the last callback is a partial one.
+    _run(
+        f"--live-selftest={proj}",
+        "--live-callback=70",
+        f"--live-device-input={in_wav}",
+    )
+
+    device, _ = audio_io.read_audio(
+        str(proj.with_suffix(".device.wav")), as_=np.ndarray
+    )
+    np.testing.assert_array_equal(device, np.tile(src, 2))
+    rec, _ = audio_io.read_audio(str(out_wav), as_=np.ndarray)
+    np.testing.assert_array_equal(rec, src)
+
+
+@skip_if_no_desktop
 def test_render_tail_extends_the_render(tmp_path):
     src = _source()
     proj, out_wav = _project(tmp_path, src)

@@ -15,9 +15,12 @@
 - Tests: desktop tests fail with "run `make desktop`" when the located `minihost_desktop` binary is older than its sources. `make test` does not rebuild the desktop, and a binary that predates a new headless flag starts the GUI and times out instead. An explicit `MINIHOST_DESKTOP_BIN` is not checked.
 
 - `make test` builds the VST3 test fixtures first (new `make fixtures` target). It used to rebuild only the extension. The tests then loaded a stale bundle from `build/`, so a fixture change could fail tests that the new source passes.
->>>>>>> c650a62770724d5aa9dfa255454d0b060521bf97
+
+- Tests: `minihost_desktop --live-selftest` takes `--live-callback=<n>` and `--live-device-input=<wav>`, so `tests/test_desktop_live.py` drives the audio callback with a device buffer smaller than the project block and with a `device_input` node fed from a file. `--live-state-selftest` checks that a parameter written to a running plugin is captured into the document (`tests/test_desktop_live_state.py`).
 
 ### Added
+
+- Desktop: live mode is editable. Double-clicking a plugin node while Live runs opens the editor on the running instance, so knob moves are heard. Before, the editor opened a separate instance, and an edit reached the sound only after Capture State and Restart Live. The state of every running plugin is copied into the project on Save, Stop Live, Restart Live, and before the unsaved-changes prompt on Quit, New and Open. Graph edits (add, delete, connect, Properties) restart Live under mute as they are made, and open live editors come back on the new instances; sequencer edits and node moves apply without a restart, as before. While the transport is recording, the restart waits for Stop, because Play would overwrite the takes. `Audio > Apply Edits While Live` turns the automatic restart off.
 
 - `mh_audio_get_midi_error()` returns why the last MIDI connect or virtual-port create on a device failed. `AudioDevice.connect_midi_*` and `create_virtual_midi_*` include it in the `RuntimeError`, and the CLIs print it. The device layer used to discard libremidi's reason, so a CoreMIDI refusal on the macOS CI runner showed only "may not be supported on this platform". A separate out-parameter would have broken the existing signatures. MIDI open errors also name the back-end and add libremidi's `on_error` text. When the back-end client fails to open, libremidi's open call returns only `ENOTCONN` ("Transport endpoint is not connected"); the real cause, such as `MIDIClientCreate`'s OSStatus, goes only to that callback.
 

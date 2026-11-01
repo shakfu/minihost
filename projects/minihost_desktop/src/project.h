@@ -363,6 +363,15 @@ ProjectDocument parseProjectFile(const juce::File& path);
 // Throws ProjectError on I/O failure.
 void saveProjectFile(const juce::File& path, const ProjectDocument& doc);
 
+// The project file text saveProjectFile writes, without the trailing newline.
+juce::String serializeProject(const ProjectDocument& doc);
+
+// serializeProject of `doc` minus what live mode carries without a graph
+// rebuild: canvas layout, sequencer settings (applied in place) and plugin
+// state (captured from the running instances, never reloaded into them).
+// Two documents with equal fingerprints need no Restart Live.
+juce::String liveTopologyFingerprint(const ProjectDocument& doc);
+
 // Owns the built graph, opened plugin instances, and loaded input
 // audio buffers. mh_close runs for every plugin in the destructor.
 struct LoadedProject {
@@ -508,6 +517,11 @@ std::unique_ptr<LoadedProject> loadProject(const juce::File& path);
 // into `doc` plugin specs that have no probe yet (older project files).
 // `loaded` must have been built from `doc`. Returns true if any changed.
 bool fillMissingProbes(ProjectDocument& doc, const LoadedProject& loaded);
+
+// Copies each opened plugin's current state into the `state_b64` of the
+// `doc` plugin node with the same id. Message thread only (mh_get_state).
+// Returns true if any state_b64 changed.
+bool captureLiveState(const LoadedProject& loaded, ProjectDocument& doc);
 // Same, from an in-memory document (the canvas's working copy, which may be
 // unsaved or untitled). File paths in `doc` must already be absolute.
 std::unique_ptr<LoadedProject> loadProject(ProjectDocument doc);

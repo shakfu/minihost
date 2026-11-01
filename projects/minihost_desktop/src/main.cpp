@@ -43,8 +43,17 @@
 //       "frame status data1 data2". --live-reseed adds 1 to every
 //       sequencer's seed halfway through the first take. If plugins
 //       lacked probe data, the project with it filled in is saved as
-//       <project>.probed.json.
+//       <project>.probed.json. --live-callback=<n> sets the device
+//       callback size. --live-device-input=<wav> feeds the file to the
+//       device_input nodes and sets the take length to its length.
 //       Driven by tests/test_desktop_live.py.
+//
+//   minihost_desktop --live-state-selftest=<project.json>
+//       Headless check that a parameter written to a running plugin is
+//       captured into the document (captureLiveState) and that the live
+//       topology fingerprint ignores layout and plugin state. Saves the
+//       captured project as <project>.captured.json beside the first
+//       output sink. Driven by tests/test_desktop_live_state.py.
 //
 //   minihost_desktop --save-roundtrip=<project.json>
 //       Headless parse + re-save to <input>.resaved.json. Exercises the
@@ -170,6 +179,12 @@ struct EditorOptions {
     // window's own plugin.
     juce::String                    toolbar_label;
     std::function<void(MH_Plugin*)> toolbar_action;
+
+    // false: the plugin belongs to the running LiveEngine. The window
+    // shows its editor and never closes it; the owner must close the
+    // window before the engine stops. node_id names the project node.
+    bool         owns_plugin = true;
+    juce::String node_id;
 };
 
 class EditorWindow;  // fwd
@@ -309,7 +324,8 @@ public:
                  juce::AudioProcessor* proc,
                  std::function<void(EditorWindow*)> on_close)
         : juce::DocumentWindow(juce::String("minihost: ")
-                               + juce::File(opts.plugin_path).getFileName(),
+                               + juce::File(opts.plugin_path).getFileName()
+                               + (opts.owns_plugin ? "" : " (live)"),
                                juce::Colours::darkgrey,
                                juce::DocumentWindow::closeButton),
           opts_(std::move(opts)),
@@ -445,11 +461,9 @@ public:
         if (workerTweaker_.joinable())
             workerTweaker_.join();
         editor_.reset();
-        if (plugin_)
-        {
+        if (plugin_ && opts_.owns_plugin)
             mh_close(plugin_);
-            plugin_ = nullptr;
-        }
+        plugin_ = nullptr;
     }
 
     void closeButtonPressed() override
@@ -460,6 +474,7 @@ public:
     }
 
     MH_Plugin* plugin() noexcept { return plugin_; }
+    const EditorOptions& options() const noexcept { return opts_; }
 
 private:
     static constexpr int kToolbarHeight = 32;
@@ -962,6 +977,11 @@ public:
     { on_toggle_loop_ = std::move(cb); }
     void setLooping(bool on) { looping_ = on; menuItemsChanged(); }
 
+    void setOnToggleApplyEditsLive(std::function<void()> cb)
+    { on_toggle_apply_edits_live_ = std::move(cb); }
+    void setApplyEditsLive(bool on)
+    { apply_edits_live_ = on; menuItemsChanged(); }
+
     // Node "Play File" / "Stop File" and Audio > Stop File Playback.
     // Set before the first showProject().
     void setOnPlayFile(std::function<void(const juce::File&)> cb)
@@ -1070,6 +1090,9 @@ public:
                       /*isActive=*/live_running_);
             m.addItem(kMenuLoop, "Loop", /*isEnabled=*/true, /*isTicked=*/looping_);
             m.addSeparator();
+            m.addItem(kMenuApplyEditsLive, "Apply Edits While Live",
+                      /*isEnabled=*/true, /*isTicked=*/apply_edits_live_);
+            m.addSeparator();
             m.addItem(kMenuStopFile, "Stop File Playback");
         }
         else if (menuName == "Help")
@@ -1103,6 +1126,9 @@ public:
             break;
         case kMenuStopFile: if (on_stop_file_) on_stop_file_(); break;
         case kMenuLoop: if (on_toggle_loop_) on_toggle_loop_(); break;
+        case kMenuApplyEditsLive:
+            if (on_toggle_apply_edits_live_) on_toggle_apply_edits_live_();
+            break;
         case kMenuUndo: if (canvas_ != nullptr) canvas_->undo(); break;
         case kMenuRedo: if (canvas_ != nullptr) canvas_->redo(); break;
         case kMenuPluginBrowser:
@@ -1151,6 +1177,7 @@ private:
         kMenuRender,
         kMenuStopFile,
         kMenuLoop,
+        kMenuApplyEditsLive,
     };
 
     // Canvas above, status bar below.
@@ -1265,6 +1292,8 @@ private:
     std::function<LiveEngine*()>       live_engine_getter_;
     std::function<void()>              on_toggle_loop_;
     bool                               looping_ = false;
+    std::function<void()>              on_toggle_apply_edits_live_;
+    bool                               apply_edits_live_ = true;
     std::unique_ptr<project::ProjectDocument> current_doc_;
     juce::File                         current_project_;
     bool                               has_open_project_ = false;
@@ -1474,9 +1503,24 @@ public:
         if (args.containsOption("--live-selftest"))
         {
             const auto path = args.removeValueForOption("--live-selftest");
-            const bool loop   = args.removeOptionIfFound("--live-loop");
-            const bool reseed = args.removeOptionIfFound("--live-reseed");
-            setApplicationReturnValue(runLiveSelfTest(juce::File(path), loop, reseed));
+            LiveSelfTestOptions o;
+            o.loop   = args.removeOptionIfFound("--live-loop");
+            o.reseed = args.removeOptionIfFound("--live-reseed");
+            if (args.containsOption("--live-callback"))
+                o.callback_frames
+                    = args.removeValueForOption("--live-callback").getIntValue();
+            if (args.containsOption("--live-device-input"))
+                o.device_input = juce::File(
+                    args.removeValueForOption("--live-device-input"));
+            setApplicationReturnValue(runLiveSelfTest(juce::File(path), o));
+            quit();
+            return;
+        }
+
+        if (args.containsOption("--live-state-selftest"))
+        {
+            const auto path = args.removeValueForOption("--live-state-selftest");
+            setApplicationReturnValue(runLiveStateSelfTest(juce::File(path)));
             quit();
             return;
         }
@@ -1664,10 +1708,15 @@ public:
                 [this]() { startLive(); },
                 [this]() { stopLive(); },
                 [this]() { transportPlay(); },
-                [this]() { if (live_) live_->stopTransport(); },
+                [this]() { transportStop(); },
                 [this]() { showBpmDialog(); },
                 [this]() { showLoopDialog(); });
             mainWindow_->setOnPluginBrowser([this]() { showPluginBrowser(); });
+            mainWindow_->setOnToggleApplyEditsLive([this]() {
+                apply_edits_live_ = !apply_edits_live_;
+                mainWindow_->setApplyEditsLive(apply_edits_live_);
+                if (apply_edits_live_) maybeApplyLiveEdit();
+            });
             mainWindow_->setOnRenderOpenProject([this]() {
                 if (!mainWindow_) return;
                 auto* doc = mainWindow_->currentDocument();
@@ -1686,7 +1735,8 @@ public:
                     },
                     [this]() { transportPlay(); },
                     [this]() {
-                        if (live_) { live_->stopTransport(); live_->stopPreview(); }
+                        if (live_) live_->stopPreview();
+                        transportStop();
                     },
                     [this]() { toggleLoop(); },
                     [this]() { mainWindow_->renderOpenProject(); } },
@@ -1747,6 +1797,7 @@ public:
                 doc_dirty_ = true;
                 unsaved_changes_ = true;
                 pushSequencerEdits();
+                maybeApplyLiveEdit();
             });
             autosave_enabled_ = true;
             // One sidecar per settings dir, so one instance may own it.
@@ -1801,9 +1852,10 @@ public:
             plugin_browser_window_ = nullptr;
             delete w;
         }
+        // Editors first: a live editor shows a plugin the engine owns.
+        editors_.clear();
         if (live_) live_->stop();
         live_.reset();
-        editors_.clear();   // closes EditorWindows; each mh_close in dtor
         mainWindow_.reset();
     }
 
@@ -1826,6 +1878,8 @@ public:
     void confirmDiscardUnsaved(const juce::String& action,
                                std::function<void()> proceed)
     {
+        // Knob moves in a live editor only reach the document here.
+        syncLiveStateIntoDocument();
         if (!autosave_enabled_ || !unsaved_changes_ || !mainWindow_)
         {
             proceed();
@@ -2345,9 +2399,16 @@ private:
         }
     }
 
+    struct LiveSelfTestOptions {
+        bool       loop            = false;
+        bool       reseed          = false;
+        int        callback_frames = 0;   // 0: 300, or the block size with MIDI outputs
+        juce::File device_input;          // fed to device_input nodes; sets the length
+    };
+
     // Two takes of the project length each, in uneven callback sizes, so
     // the test sees recording, file-input playback and the rewind on Stop.
-    int runLiveSelfTest(const juce::File& project_file, bool loop, bool reseed)
+    int runLiveSelfTest(const juce::File& project_file, const LiveSelfTestOptions& o)
     {
         auto fail = [](const char* m) {
             std::fprintf(stderr, "live-selftest: %s\n", m);
@@ -2355,8 +2416,32 @@ private:
         };
         try {
             const auto doc = project::parseProjectFile(project_file);
+
+            // Device input, de-interleaved; the callback gets per-channel
+            // pointers offset by the frames already played.
+            std::vector<std::vector<float>> dev_in;
+            std::vector<const float*>       dev_in_ptrs;
+            int dev_in_frames = 0;
+            if (o.device_input != juce::File())
+            {
+                char rerr[256] = {0};
+                MH_AudioData* data = mh_audio_read(
+                    o.device_input.getFullPathName().toRawUTF8(), rerr, sizeof(rerr));
+                if (data == nullptr) return fail(rerr);
+                dev_in_frames = (int) data->frames;
+                dev_in.resize(data->channels);
+                for (unsigned c = 0; c < data->channels; ++c)
+                {
+                    dev_in[c].resize(data->frames);
+                    for (unsigned i = 0; i < data->frames; ++i)
+                        dev_in[c][i] = data->data[i * data->channels + c];
+                }
+                mh_audio_data_free(data);
+                dev_in_ptrs.resize(dev_in.size());
+            }
+
             LiveEngine engine;
-            engine.setLooping(loop);
+            engine.setLooping(o.loop);
             juce::String err;
             if (!engine.start(doc, err, /*attach_device=*/false))
                 return fail(err.toRawUTF8());
@@ -2366,13 +2451,14 @@ private:
                     project::saveProjectFile(
                         artifactFile(doc, project_file, ".probed.json"), probed);
             }
-            const int takes  = loop ? 1 : 2;
-            const int frames = loop ? engine.projectFrames() * 5 / 2
-                                    : engine.projectFrames();
+            const int takes  = o.loop ? 1 : 2;
+            const int length = dev_in_frames > 0 ? dev_in_frames : engine.projectFrames();
+            const int frames = o.loop ? length * 5 / 2 : length;
             auto* lp = engine.loadedProject();
             // MIDI outputs are drained per callback, so a callback must be
             // a single render chunk.
-            const int callback = lp->midi_output_node_ids.empty()
+            const int callback = o.callback_frames > 0 ? o.callback_frames
+                               : lp->midi_output_node_ids.empty()
                                ? 300 : std::min(300, lp->doc.block_size);
             juce::String midi_log;
             long long elapsed = 0;
@@ -2392,7 +2478,7 @@ private:
                 // One extra callback after the take carries the Stop note-offs.
                 for (int done = 0; done < frames; done += callback)
                 {
-                    if (reseed && take == 0 && done < frames / 2
+                    if (o.reseed && take == 0 && done < frames / 2
                         && done + callback >= frames / 2)
                         for (auto s : doc.sequencers)
                         {
@@ -2401,8 +2487,11 @@ private:
                                 return fail("updateSequencer() failed");
                         }
                     const int n = std::min(callback, frames - done);
+                    for (size_t c = 0; c < dev_in.size(); ++c)
+                        dev_in_ptrs[c] = dev_in[c].data() + std::min(done, dev_in_frames - n);
                     engine.audioDeviceIOCallbackWithContext(
-                        nullptr, 0, outs, 2, n, ctx);
+                        dev_in_ptrs.empty() ? nullptr : dev_in_ptrs.data(),
+                        (int) dev_in_ptrs.size(), outs, 2, n, ctx);
                     drainMidi(n);
                     // Faster than real time: let the disk writer keep up so
                     // the recorder's 2 s FIFO never drops a block.
@@ -2414,8 +2503,8 @@ private:
                         device.push_back(r[(size_t) i]);
                     }
                 }
-                const long long want_pos = loop ? frames % engine.projectFrames()
-                                                : frames;
+                const long long want_pos = o.loop ? frames % engine.projectFrames()
+                                                  : frames;
                 if (engine.positionSamples() != want_pos)
                     return fail("positionSamples() does not match the playhead");
                 if (engine.recordedFrames() != frames)
@@ -2445,6 +2534,76 @@ private:
             return 0;
         } catch (const std::exception& e) {
             std::fprintf(stderr, "live-selftest: %s\n", e.what());
+            return 1;
+        }
+    }
+
+    // Edits made on a running plugin reach the document through
+    // captureLiveState, which Save, Stop Live and Restart Live call. The
+    // first plugin's parameter 0 is written the way a live editor's knob
+    // reaches the engine; the captured document is saved beside the project.
+    int runLiveStateSelfTest(const juce::File& project_file)
+    {
+        auto fail = [](const char* m) {
+            std::fprintf(stderr, "live-state-selftest: %s\n", m);
+            return 1;
+        };
+        try {
+            auto doc = project::parseProjectFile(project_file);
+            if (doc.plugins.empty()) return fail("project has no plugin node");
+            LiveEngine engine;
+            juce::String err;
+            if (!engine.start(doc, err, /*attach_device=*/false))
+                return fail(err.toRawUTF8());
+            auto* lp = engine.loadedProject();
+
+            if (engine.pluginForNode(doc.plugins[0].id) != lp->plugins[0])
+                return fail("pluginForNode() does not return the live instance");
+            if (engine.pluginForNode("no-such-node") != nullptr)
+                return fail("pluginForNode() found an unknown id");
+
+            // Baseline: the document already holds the loaded state.
+            auto captured = doc;
+            project::captureLiveState(*lp, captured);
+            if (project::captureLiveState(*lp, captured))
+                return fail("captureLiveState() changed an up-to-date document");
+
+            if (!engine.enqueueParamWrite(0, 0, 0.25f))
+                return fail("enqueueParamWrite() failed");
+            // The callback applies the write, and a hosted VST3 hands the
+            // new value to its processor only inside a process block.
+            {
+                const int block = lp->doc.block_size;
+                std::vector<float> l((size_t) block), r((size_t) block);
+                float* outs[2] = { l.data(), r.data() };
+                engine.audioDeviceIOCallbackWithContext(
+                    nullptr, 0, outs, 2, block, juce::AudioIODeviceCallbackContext{});
+            }
+            if (!project::captureLiveState(*lp, captured))
+                return fail("captureLiveState() missed the parameter change");
+
+            // Layout and plugin state do not change the live topology; an
+            // edge does.
+            const auto fp = project::liveTopologyFingerprint(doc);
+            if (project::liveTopologyFingerprint(captured) != fp)
+                return fail("fingerprint changed with plugin state");
+            auto moved = doc;
+            moved.layout[doc.plugins[0].id.toStdString()]
+                = project::NodePosition{ 7.0f, 9.0f };
+            if (project::liveTopologyFingerprint(moved) != fp)
+                return fail("fingerprint changed with layout");
+            if (doc.edges.empty()) return fail("project has no edge to remove");
+            auto rewired = doc;
+            rewired.edges.pop_back();
+            if (project::liveTopologyFingerprint(rewired) == fp)
+                return fail("fingerprint ignored an edge change");
+
+            engine.stop();
+            project::saveProjectFile(
+                artifactFile(doc, project_file, ".captured.json"), captured);
+            return 0;
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "live-state-selftest: %s\n", e.what());
             return 1;
         }
     }
@@ -2890,6 +3049,7 @@ private:
         // Untitled (no path yet) -> fall through to Save As.
         if (path == juce::File())
         { saveCurrentProjectAs(std::move(on_success)); return; }
+        syncLiveStateIntoDocument();
         try {
             project::saveProjectFile(path, *doc);
             // The working copy now matches disk: no unsaved work to recover
@@ -2932,6 +3092,7 @@ private:
                     file = file.withFileExtension("json");
                 auto* doc = mainWindow_->currentDocument();
                 if (doc == nullptr) return;
+                syncLiveStateIntoDocument();
                 try {
                     project::saveProjectFile(file, *doc);
                     clearAutosave();
@@ -2952,15 +3113,8 @@ private:
     void newProject()
     {
         if (!mainWindow_) return;
-        // Stop live mode if active -- the project it's running against
-        // is about to be replaced.
-        if (live_ && live_->isRunning())
-        {
-            live_->stop();
-            mainWindow_->setLiveRunning(false);
-            if (auto* c = mainWindow_->canvas())
-                c->setLiveProject(nullptr);
-        }
+        // The project live mode runs against is about to be replaced.
+        if (live_ && live_->isRunning()) stopLive();
         project::ProjectDocument blank;
         blank.sample_rate = 48000;
         blank.block_size  = 512;
@@ -2971,12 +3125,11 @@ private:
         unsaved_changes_ = false;
     }
 
-    // Opens a transient editor for a plugin referenced by the current
-    // project. The plugin is freshly mh_open'd here (independent of any
-    // render-time instance); state_b64 is restored on open if present.
-    // "Capture State" reads mh_get_state, base64-encodes it, and
-    // writes it back to doc.plugins[plugin_index].state_b64 so
-    // File > Save Project persists the edit.
+    // Opens an editor for a plugin node of the current project. While
+    // live mode runs, the editor is attached to the engine's own instance,
+    // so edits are heard; captureLiveState later copies them into the
+    // document. Otherwise the plugin is freshly mh_open'd with state_b64
+    // restored, and "Capture State" writes its state back.
     void openCanvasPluginEditor(int plugin_index)
     {
         if (!mainWindow_) return;
@@ -2997,24 +3150,6 @@ private:
                 desc_xml = juce::String::fromUTF8(
                     static_cast<const char*>(mb.getData()), (int) mb.getSize());
         }
-        auto loaded = loadPlugin(spec.path.getFullPathName(), desc_xml);
-        if (loaded.plugin == nullptr)
-        {
-            juce::AlertWindow::showMessageBoxAsync(
-                juce::AlertWindow::WarningIcon,
-                "Failed to load plugin",
-                loaded.error);
-            return;
-        }
-
-        if (spec.state_b64.isNotEmpty())
-        {
-            juce::MemoryBlock mb;
-            juce::MemoryOutputStream out(mb, false);
-            if (juce::Base64::convertFromBase64(out, spec.state_b64))
-                mh_set_state(loaded.plugin, mb.getData(),
-                             (int) mb.getSize());
-        }
 
         EditorOptions opts{};
         opts.plugin_path    = spec.path.getFullPathName();
@@ -3022,6 +3157,7 @@ private:
         opts.output_path    = juce::String(kDefaultOut);
         opts.mode           = EditorMode::Interactive;
         opts.toolbar_label  = "Capture State";
+        opts.node_id        = spec.id;
 
         // Captured by value: plugin_index is stable for this dialog;
         // even if the user reorders the document later, the lambda
@@ -3030,6 +3166,43 @@ private:
         opts.toolbar_action = [this, node_id](MH_Plugin* p) {
             captureStateForCanvasPlugin(node_id, p);
         };
+
+        LoadedPlugin loaded;
+        if (live_ && live_->isRunning())
+            loaded.plugin = live_->pluginForNode(spec.id);
+        if (loaded.plugin != nullptr)
+        {
+            // One editor per live instance: createEditorIfNeeded returns
+            // the open editor, which two windows cannot both own.
+            if (auto* open = findLiveEditor(spec.id))
+            {
+                open->toFront(true);
+                return;
+            }
+            loaded.proc = static_cast<juce::AudioProcessor*>(
+                mh_get_juce_processor(loaded.plugin));
+            opts.owns_plugin = false;
+        }
+        else
+        {
+            loaded = loadPlugin(spec.path.getFullPathName(), desc_xml);
+            if (loaded.plugin == nullptr)
+            {
+                juce::AlertWindow::showMessageBoxAsync(
+                    juce::AlertWindow::WarningIcon,
+                    "Failed to load plugin",
+                    loaded.error);
+                return;
+            }
+            if (spec.state_b64.isNotEmpty())
+            {
+                juce::MemoryBlock mb;
+                juce::MemoryOutputStream out(mb, false);
+                if (juce::Base64::convertFromBase64(out, spec.state_b64))
+                    mh_set_state(loaded.plugin, mb.getData(),
+                                 (int) mb.getSize());
+            }
+        }
 
         auto* w = new EditorWindow(
             std::move(opts), loaded.plugin, loaded.proc,
@@ -3041,6 +3214,102 @@ private:
                     }
             });
         editors_.add(w);
+    }
+
+    EditorWindow* findLiveEditor(const juce::String& node_id)
+    {
+        for (auto* w : editors_)
+            if (!w->options().owns_plugin && w->options().node_id == node_id)
+                return w;
+        return nullptr;
+    }
+
+    // Closes every editor attached to the live engine. Returns the node
+    // ids and window bounds so reopenLiveEditors can restore them after
+    // a restart.
+    struct ClosedEditor { juce::String node_id; juce::Rectangle<int> bounds; };
+    std::vector<ClosedEditor> closeLiveEditors()
+    {
+        std::vector<ClosedEditor> closed;
+        for (int i = editors_.size() - 1; i >= 0; --i)
+        {
+            auto* w = editors_[i];
+            if (w->options().owns_plugin) continue;
+            closed.push_back({ w->options().node_id, w->getBounds() });
+            editors_.remove(i);
+        }
+        return closed;
+    }
+
+    void reopenLiveEditors(const std::vector<ClosedEditor>& closed)
+    {
+        if (!mainWindow_) return;
+        auto* doc = mainWindow_->currentDocument();
+        if (doc == nullptr) return;
+        for (const auto& c : closed)
+        {
+            for (size_t i = 0; i < doc->plugins.size(); ++i)
+                if (doc->plugins[i].id == c.node_id)
+                {
+                    openCanvasPluginEditor((int) i);
+                    if (auto* w = findLiveEditor(c.node_id))
+                        w->setBounds(c.bounds);
+                    break;
+                }
+        }
+    }
+
+    // Copies the live instances' state into the document. Returns true if
+    // the document changed; the dirty flags follow.
+    bool syncLiveStateIntoDocument()
+    {
+        if (!live_ || !live_->isRunning() || !mainWindow_) return false;
+        auto* doc = mainWindow_->currentDocument();
+        auto* lp  = live_->loadedProject();
+        if (doc == nullptr || lp == nullptr) return false;
+        if (!project::captureLiveState(*lp, *doc)) return false;
+        doc_dirty_       = true;
+        unsaved_changes_ = true;
+        if (auto* cv = mainWindow_->canvas())
+            cv->notifyDocumentChanged();
+        return true;
+    }
+
+    // Restarts live mode when an edit changed the graph. A sequencer or
+    // layout edit leaves the fingerprint alone and needs nothing. While
+    // recording, the restart waits for Stop: Play overwrites the sinks.
+    void maybeApplyLiveEdit()
+    {
+        if (!apply_edits_live_ || !live_ || !live_->isRunning() || !mainWindow_)
+            return;
+        auto* doc = mainWindow_->currentDocument();
+        if (doc == nullptr) return;
+        if (project::liveTopologyFingerprint(*doc) == live_fingerprint_) return;
+        if (live_->isRecording())
+        {
+            live_restart_pending_ = true;
+            return;
+        }
+        restartLiveForEdit();
+    }
+
+    void restartLiveForEdit()
+    {
+        live_restart_pending_ = false;
+        const bool was_playing = live_ && live_->isTransportPlaying();
+        startLive();
+        if (was_playing && live_ && live_->isRunning())
+        {
+            juce::String err;
+            live_->play(err);
+        }
+    }
+
+    void transportStop()
+    {
+        if (!live_) return;
+        live_->stopTransport();
+        if (live_restart_pending_) restartLiveForEdit();
     }
 
     // Writes the state of `p`, the plugin in the editor whose Capture
@@ -3095,16 +3364,7 @@ private:
     {
         // Stop any live engine first -- switching projects mid-stream
         // would invalidate the audio thread's compiled graph.
-        if (live_ && live_->isRunning())
-        {
-            live_->stop();
-            if (mainWindow_)
-            {
-                mainWindow_->setLiveRunning(false);
-                if (auto* c = mainWindow_->canvas())
-                    c->setLiveProject(nullptr);
-            }
-        }
+        if (live_ && live_->isRunning()) stopLive();
         try {
             auto doc = project::parseProjectFile(project_file);
             if (mainWindow_)
@@ -3162,7 +3422,11 @@ private:
         }
 
         // Topology swap under mute: stop -> reload -> start. Uses the open
-        // document, so unsaved edits are heard.
+        // document, so unsaved edits are heard. The old instances go with
+        // the stop, so their edits and editor windows are collected first.
+        syncLiveStateIntoDocument();
+        const auto closed_editors = closeLiveEditors();
+        live_restart_pending_ = false;
         auto& engine = ensureLiveEngine();
         juce::String err;
         if (!engine.start(*doc, err))
@@ -3191,10 +3455,12 @@ private:
                 unsaved_changes_ = true;
             }
         }
+        live_fingerprint_ = project::liveTopologyFingerprint(*doc);
+        reopenLiveEditors(closed_editors);
         std::fprintf(stderr, "live: started\n");
     }
 
-    // Sequencer settings apply live; other graph edits need Restart Live.
+    // Sequencer settings apply live without a restart.
     void pushSequencerEdits()
     {
         if (!live_ || !live_->isRunning() || !mainWindow_) return;
@@ -3224,6 +3490,9 @@ private:
 
     void stopLive()
     {
+        syncLiveStateIntoDocument();
+        closeLiveEditors();
+        live_restart_pending_ = false;
         if (live_) live_->stop();
         if (mainWindow_)
         {
@@ -3353,6 +3622,12 @@ private:
     juce::OwnedArray<EditorWindow>     editors_;
     std::unique_ptr<MainWindow>        mainWindow_;
     std::unique_ptr<LiveEngine>        live_;
+    // liveTopologyFingerprint of the document live mode last started
+    // from; an edit that changes it restarts the engine (see
+    // maybeApplyLiveEdit). Deferred while recording.
+    juce::String                       live_fingerprint_;
+    bool                               live_restart_pending_ = false;
+    bool                               apply_edits_live_     = true;
     std::unique_ptr<juce::FileChooser> save_chooser_;
 
     // Plugin library (scanned via the Plugin Browser, persisted to

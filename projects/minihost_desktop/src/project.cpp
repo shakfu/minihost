@@ -452,7 +452,7 @@ ProjectDocument parseProjectFile(const juce::File& path)
     return out;
 }
 
-void saveProjectFile(const juce::File& path, const ProjectDocument& doc)
+juce::String serializeProject(const ProjectDocument& doc)
 {
     auto* root = new juce::DynamicObject();
     root->setProperty("minihost_project_version", kSchemaVersion);
@@ -511,8 +511,21 @@ void saveProjectFile(const juce::File& path, const ProjectDocument& doc)
         root->setProperty("layout", juce::var(layout));
     }
 
-    const juce::String text = juce::JSON::toString(juce::var(root),
-        /*allOnOneLine=*/false);
+    return juce::JSON::toString(juce::var(root), /*allOnOneLine=*/false);
+}
+
+juce::String liveTopologyFingerprint(const ProjectDocument& doc)
+{
+    ProjectDocument stripped = doc;
+    stripped.layout.clear();
+    for (auto& s : stripped.sequencers) s.params = SequencerParams{};
+    for (auto& p : stripped.plugins)    p.state_b64.clear();
+    return serializeProject(stripped);
+}
+
+void saveProjectFile(const juce::File& path, const ProjectDocument& doc)
+{
+    const juce::String text = serializeProject(doc);
 
     // replaceWithText ignores a failed write and moveFileTo deletes the
     // target before renaming, so a full disk or a crash could lose the file.
@@ -749,6 +762,34 @@ std::unique_ptr<LoadedProject> loadProject(ProjectDocument document)
 
     g.compile();
     return loaded;
+}
+
+bool captureLiveState(const LoadedProject& loaded, ProjectDocument& doc)
+{
+    bool changed = false;
+    const size_t n = std::min(loaded.doc.plugins.size(), loaded.plugins.size());
+    for (size_t i = 0; i < n; ++i)
+    {
+        MH_Plugin* p = loaded.plugins[i];
+        if (p == nullptr) continue;
+        const auto& id = loaded.doc.plugins[i].id;
+        auto it = std::find_if(doc.plugins.begin(), doc.plugins.end(),
+                               [&id](const PluginNodeSpec& s) { return s.id == id; });
+        if (it == doc.plugins.end()) continue;
+
+        const int size = mh_get_state_size(p);
+        if (size <= 0) continue;
+        std::vector<unsigned char> buf((size_t) size);
+        const int got = mh_get_state(p, buf.data(), size);
+        if (got <= 0) continue;
+        juce::MemoryOutputStream encoded;
+        juce::Base64::convertToBase64(encoded, buf.data(), (size_t) got);
+        const juce::String b64 = encoded.toString();
+        if (b64 == it->state_b64) continue;
+        it->state_b64 = b64;
+        changed = true;
+    }
+    return changed;
 }
 
 bool fillMissingProbes(ProjectDocument& doc, const LoadedProject& loaded)

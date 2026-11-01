@@ -122,6 +122,8 @@ In short: `libminihost` runs the plugin; `libminihost_audio` connects it to spea
 
 Each plugin window carries the host-side controls a plugin's own editor usually leaves out: a factory-program selector, a bypass toggle (backed by the plugin's own bypass parameter where it publishes one), and `.vstpreset` load/save for interchange with other hosts. Offline renders put every plugin into non-realtime mode for the duration, so a bounce uses the plugin's offline code path rather than its realtime one.
 
+While Live runs, a plugin window edits the running instance, and graph edits on the canvas restart the engine as they are made. Plugin state is written back to the project on Save and Stop Live.
+
 Status: functional and pre-release. Both the offline renderer and the realtime engine are built and tested. Not yet done: packaging (code signing, notarization, installers). See [docs/dev/desktop_app.md](docs/dev/desktop_app.md) for the design and [docs/dev/desktop_app_todo.md](docs/dev/desktop_app_todo.md) for per-feature status.
 
 Plugins run **in-process**, the same trust model a DAW uses: a misbehaving plugin can crash the whole app and lose unsaved canvas edits. Two mitigations bound the harm. Plugin *scanning* is out-of-process, so a plugin that crashes while being catalogued takes down only a disposable child. And the working project is **autosaved** to a sidecar every few seconds; after an unclean exit the app offers to recover it on the next launch, so a crash costs at most a few seconds of unsaved editing. Save often regardless.

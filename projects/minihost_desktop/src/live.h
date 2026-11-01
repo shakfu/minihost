@@ -90,6 +90,17 @@ public:
     project::LoadedProject* loadedProject() noexcept
     { return compiled_.get(); }
 
+    // The running instance of plugin node `node_id`, or nullptr when not
+    // running or unknown. Same validity rules as loadedProject().
+    MH_Plugin* pluginForNode(const juce::String& node_id) noexcept
+    {
+        if (compiled_ == nullptr) return nullptr;
+        const auto& specs = compiled_->doc.plugins;
+        for (size_t i = 0; i < specs.size() && i < compiled_->plugins.size(); ++i)
+            if (specs[i].id == node_id) return compiled_->plugins[i];
+        return nullptr;
+    }
+
     // Settings persistence. The desktop app calls these on startup
     // and shutdown to remember the user's device / MIDI choice
     // across launches.
