@@ -764,6 +764,17 @@ std::unique_ptr<LoadedProject> loadProject(ProjectDocument document)
     return loaded;
 }
 
+juce::String encodePluginState(MH_Plugin* p)
+{
+    const int size = mh_get_state_size(p);
+    if (size <= 0) return {};
+    std::vector<unsigned char> buf((size_t) size);
+    if (!mh_get_state(p, buf.data(), size)) return {};  // returns 1, not a length
+    juce::MemoryOutputStream encoded;
+    juce::Base64::convertToBase64(encoded, buf.data(), buf.size());
+    return encoded.toString();
+}
+
 bool captureLiveState(const LoadedProject& loaded, ProjectDocument& doc)
 {
     bool changed = false;
@@ -777,14 +788,8 @@ bool captureLiveState(const LoadedProject& loaded, ProjectDocument& doc)
                                [&id](const PluginNodeSpec& s) { return s.id == id; });
         if (it == doc.plugins.end()) continue;
 
-        const int size = mh_get_state_size(p);
-        if (size <= 0) continue;
-        std::vector<unsigned char> buf((size_t) size);
-        const int got = mh_get_state(p, buf.data(), size);
-        if (got <= 0) continue;
-        juce::MemoryOutputStream encoded;
-        juce::Base64::convertToBase64(encoded, buf.data(), (size_t) got);
-        const juce::String b64 = encoded.toString();
+        const juce::String b64 = encodePluginState(p);
+        if (b64.isEmpty()) continue;
         if (b64 == it->state_b64) continue;
         it->state_b64 = b64;
         changed = true;

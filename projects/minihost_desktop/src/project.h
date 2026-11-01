@@ -518,6 +518,9 @@ std::unique_ptr<LoadedProject> loadProject(const juce::File& path);
 // `loaded` must have been built from `doc`. Returns true if any changed.
 bool fillMissingProbes(ProjectDocument& doc, const LoadedProject& loaded);
 
+// The plugin's current state as base64, or empty on failure. Message thread.
+juce::String encodePluginState(MH_Plugin* p);
+
 // Copies each opened plugin's current state into the `state_b64` of the
 // `doc` plugin node with the same id. Message thread only (mh_get_state).
 // Returns true if any state_b64 changed.

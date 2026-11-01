@@ -688,8 +688,11 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
     const juce::AudioIODeviceCallbackContext& /*context*/)
 {
     // Belt-and-braces: if we're not running or compiled is null,
-    // silence the device output and return.
-    if (!running_.load(std::memory_order_acquire) || compiled_ == nullptr)
+    // silence the device output and return. Likewise while the message
+    // thread reads or restores plugin state; queued MIDI waits.
+    const juce::SpinLock::ScopedTryLockType state_lock(plugin_state_lock_);
+    if (!state_lock.isLocked()
+        || !running_.load(std::memory_order_acquire) || compiled_ == nullptr)
     {
         for (int c = 0; c < numOutputChannels; ++c)
             if (outputChannelData[c] != nullptr)

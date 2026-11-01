@@ -101,6 +101,17 @@ public:
         return nullptr;
     }
 
+    // Runs `fn` with the audio callback kept out of the plugins, for the
+    // calls minihost.h forbids overlapping mh_process (mh_get_state,
+    // mh_set_state). A callback that arrives meanwhile outputs silence and
+    // does not advance the transport or record. Message thread only.
+    template <typename Fn>
+    auto withAudioHeld(Fn&& fn)
+    {
+        const juce::SpinLock::ScopedLockType lock(plugin_state_lock_);
+        return fn();
+    }
+
     // Settings persistence. The desktop app calls these on startup
     // and shutdown to remember the user's device / MIDI choice
     // across launches.
@@ -278,6 +289,9 @@ private:
     std::vector<std::vector<float>>                out_planar_;    // [output_node][ch * block]
     std::vector<std::vector<float*>>               out_ch_ptrs_;
     std::vector<float* const*>                     out_top_ptrs_;
+
+    // Held by withAudioHeld; the audio callback only try-locks it.
+    juce::SpinLock                                 plugin_state_lock_;
 
     std::atomic<bool>                              running_{ false };
     std::atomic<bool>                              rate_mismatch_{ false };

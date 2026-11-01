@@ -185,6 +185,9 @@ struct EditorOptions {
     // window before the engine stops. node_id names the project node.
     bool         owns_plugin = true;
     juce::String node_id;
+    // Runs mh_get_state / mh_set_state calls. Set for a live plugin, where
+    // they must not overlap the audio callback.
+    std::function<void(const std::function<void()>&)> state_guard;
 };
 
 class EditorWindow;  // fwd
@@ -359,7 +362,8 @@ public:
         {
             renderBtn_.setButtonText(opts_.toolbar_label);
             renderBtn_.onClick = [this] {
-                if (opts_.toolbar_action) opts_.toolbar_action(plugin_);
+                if (opts_.toolbar_action)
+                    runStateCall([this] { opts_.toolbar_action(plugin_); });
             };
         }
         else
@@ -479,6 +483,12 @@ public:
 private:
     static constexpr int kToolbarHeight = 32;
 
+    void runStateCall(const std::function<void()>& fn)
+    {
+        if (opts_.state_guard) opts_.state_guard(fn);
+        else                   fn();
+    }
+
     void triggerRender(bool quitWhenDone)
     {
         if (renderBusy_.exchange(true)) return;
@@ -555,9 +565,12 @@ private:
                     showPresetMessage("Could not read preset", err);
                     return;
                 }
-                const bool ok = preset.component_state != nullptr
-                    && mh_set_state(plugin_, preset.component_state,
-                                    preset.component_size) != 0;
+                bool ok = false;
+                runStateCall([&] {
+                    ok = preset.component_state != nullptr
+                      && mh_set_state(plugin_, preset.component_state,
+                                      preset.component_size) != 0;
+                });
                 mh_vstpreset_free(&preset);
 
                 if (!ok)
@@ -607,15 +620,22 @@ private:
                 const auto file = fc.getResult();
                 if (file == juce::File()) return;
 
-                const int size = mh_get_state_size(plugin_);
+                int size = 0;
+                bool read_ok = false;
+                std::vector<char> state;
+                runStateCall([&] {
+                    size = mh_get_state_size(plugin_);
+                    if (size <= 0) return;
+                    state.resize(static_cast<size_t>(size));
+                    read_ok = mh_get_state(plugin_, state.data(), size) != 0;
+                });
                 if (size <= 0)
                 {
                     showPresetMessage("Nothing to save",
                                       "the plugin reports no state");
                     return;
                 }
-                std::vector<char> state(static_cast<size_t>(size));
-                if (!mh_get_state(plugin_, state.data(), size))
+                if (!read_ok)
                 {
                     showPresetMessage("Could not read plugin state", "");
                     return;
@@ -2570,15 +2590,26 @@ private:
 
             if (!engine.enqueueParamWrite(0, 0, 0.25f))
                 return fail("enqueueParamWrite() failed");
-            // The callback applies the write, and a hosted VST3 hands the
-            // new value to its processor only inside a process block.
-            {
-                const int block = lp->doc.block_size;
-                std::vector<float> l((size_t) block), r((size_t) block);
-                float* outs[2] = { l.data(), r.data() };
-                engine.audioDeviceIOCallbackWithContext(
-                    nullptr, 0, outs, 2, block, juce::AudioIODeviceCallbackContext{});
-            }
+            const int block = lp->doc.block_size;
+            std::vector<float> l((size_t) block), r((size_t) block);
+            float* outs[2] = { l.data(), r.data() };
+            const juce::AudioIODeviceCallbackContext ctx{};
+            // The audio callback applies the write, as for a running device.
+            engine.audioDeviceIOCallbackWithContext(nullptr, 0, outs, 2, block, ctx);
+
+            // A callback during a state call stays out of the plugins.
+            if (!engine.play(err)) return fail(err.toRawUTF8());
+            const auto pos = engine.positionSamples();
+            std::fill(l.begin(), l.end(), 1.0f);
+            engine.withAudioHeld([&] {
+                engine.audioDeviceIOCallbackWithContext(nullptr, 0, outs, 2, block, ctx);
+            });
+            if (engine.positionSamples() != pos || engine.recordedFrames() != 0)
+                return fail("callback ran while audio was held");
+            for (float v : l)
+                if (v != 0.0f) return fail("held callback did not output silence");
+            engine.stopTransport();
+
             if (!project::captureLiveState(*lp, captured))
                 return fail("captureLiveState() missed the parameter change");
 
@@ -3182,6 +3213,9 @@ private:
             loaded.proc = static_cast<juce::AudioProcessor*>(
                 mh_get_juce_processor(loaded.plugin));
             opts.owns_plugin = false;
+            opts.state_guard = [this](const std::function<void()>& fn) {
+                live_->withAudioHeld(fn);
+            };
         }
         else
         {
@@ -3267,7 +3301,8 @@ private:
         auto* doc = mainWindow_->currentDocument();
         auto* lp  = live_->loadedProject();
         if (doc == nullptr || lp == nullptr) return false;
-        if (!project::captureLiveState(*lp, *doc)) return false;
+        if (!live_->withAudioHeld([&] { return project::captureLiveState(*lp, *doc); }))
+            return false;
         doc_dirty_       = true;
         unsaved_changes_ = true;
         if (auto* cv = mainWindow_->canvas())
@@ -3326,29 +3361,16 @@ private:
             if (doc->plugins[i].id == node_id) { plugin_index = (int) i; break; }
         if (plugin_index < 0) return;
 
-        const int sz = mh_get_state_size(p);
-        if (sz <= 0)
+        const juce::String encoded = project::encodePluginState(p);
+        if (encoded.isEmpty())
         {
             juce::AlertWindow::showMessageBoxAsync(
                 juce::AlertWindow::WarningIcon,
                 "Capture failed",
-                "Plugin reported zero state size.");
+                "The plugin returned no state.");
             return;
         }
-        std::vector<unsigned char> buf((size_t) sz);
-        const int got = mh_get_state(p, buf.data(), sz);
-        if (got <= 0)
-        {
-            juce::AlertWindow::showMessageBoxAsync(
-                juce::AlertWindow::WarningIcon,
-                "Capture failed",
-                "mh_get_state returned 0.");
-            return;
-        }
-        juce::MemoryOutputStream encoded;
-        juce::Base64::convertToBase64(encoded, buf.data(), (size_t) got);
-        doc->plugins[(size_t) plugin_index].state_b64
-            = encoded.toString();
+        doc->plugins[(size_t) plugin_index].state_b64 = encoded;
         // Capturing state mutates the document outside the canvas edit path
         // (which drives the dirty flags), so mark it dirty here too.
         doc_dirty_       = true;
@@ -3356,8 +3378,7 @@ private:
         if (auto* cv = mainWindow_->canvas())
             cv->notifyDocumentChanged();
         std::fprintf(stderr,
-            "captured %d bytes of state for plugin '%s'\n",
-            got, node_id.toRawUTF8());
+            "captured state for plugin '%s'\n", node_id.toRawUTF8());
     }
 
     void openProjectInCanvas(juce::File project_file)
