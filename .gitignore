@@ -11,6 +11,9 @@ REVIEW.md
 
 thirdparty/JUCE/
 
+# pma
+.pma
+
 # Prerequisites
 *.d
 
