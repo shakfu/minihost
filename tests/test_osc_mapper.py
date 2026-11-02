@@ -169,9 +169,7 @@ def test_the_two_mappers_agree_on_every_curve():
 
         midi_writes, osc_writes = _writes(midi_plugin), _writes(osc_plugin)
         assert [i for i, _ in midi_writes] == [i for i, _ in osc_writes]
-        assert [v for _, v in midi_writes] == pytest.approx(
-            [v for _, v in osc_writes]
-        )
+        assert [v for _, v in midi_writes] == pytest.approx([v for _, v in osc_writes])
 
 
 # -- validation ---------------------------------------------------------------
