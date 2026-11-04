@@ -191,7 +191,8 @@ jobs:
             artifact-name: desktop-macos-universal
             artifact-path: build/projects/minihost_desktop/minihost_desktop.app
           - os: ubuntu-22.04
-            cmake-args: ""
+            # Fixture targets for the full desktop suite (Linux only).
+            cmake-args: -DMINIHOST_BUILD_TEST_PLUGIN=ON
             bin: build/projects/minihost_desktop/minihost_desktop
             run-prefix: "xvfb-run -a"
             artifact-name: desktop-linux-x64
@@ -322,29 +323,43 @@ jobs:
           ${{ matrix.run-prefix }} python -m pytest -v
           tests/test_desktop_pluginbrowser.py
 
-      # The smoke and render-parity tests import the minihost package to compare
-      # the desktop renderer against minihost.render_project(), which forces a
-      # second (headless) build. That output is deterministic audio math, so one
-      # platform is a strong signal -- run these on Linux only to keep the extra
-      # compile to a single runner. scikit-build-core builds the wheel in its own
-      # isolated tree, so this does not disturb the desktop `build/` just made.
-      # Plugin-gated cases (MIDI-chain parity, plugin scan) skip cleanly with no
-      # plugin installed on the runner.
+      # The full desktop suite, Linux only. Most of it imports the minihost
+      # package to compare the desktop renderer against
+      # minihost.render_project(), which forces a second (headless) build; that
+      # output is deterministic audio math, so one platform is a strong signal.
+      # scikit-build-core builds the wheel in its own isolated tree, so this
+      # does not disturb the desktop `build/` just made.
+      #
+      # Every desktop test file runs, by glob: a list here once left most of
+      # them (live engine, recorder, canvas, sequencer, editor sync, Python
+      # parity) unrun in any job. The VST3 fixtures give the plugin-gated cases
+      # a real plugin; only the macOS AudioUnit cases skip. The files run
+      # above also run again here, which costs seconds.
+      - name: Build the test plugin fixtures (Linux only)
+        if: runner.os == 'Linux'
+        run: >
+          cmake --build build --config Release
+          --target MinihostTestFx_VST3 MinihostTestSynth_VST3
+
       - name: Install minihost (headless) + numpy
         if: runner.os == 'Linux'
         run: python -m pip install . numpy
 
-      - name: Run desktop tests (with package, Linux only)
+      - name: Run desktop tests (with package and fixtures, Linux only)
         if: runner.os == 'Linux'
         shell: bash
         timeout-minutes: 20
         env:
           MINIHOST_DESKTOP_BIN: ${{ matrix.bin }}
-        run: >
-          ${{ matrix.run-prefix }} python -m pytest -v
-          tests/test_desktop_smoke.py
-          tests/test_desktop_render_parity.py
-          tests/test_desktop_pluginscan.py
+        run: |
+          set -euo pipefail
+          root=build/projects/test_plugin
+          export MINIHOST_TEST_PLUGIN="$PWD/$root/MinihostTestSynth_artefacts/Release/VST3/MinihostTestSynth.vst3"
+          export MINIHOST_TEST_PLUGIN_FX="$PWD/$root/MinihostTestFx_artefacts/Release/VST3/MinihostTestFx.vst3"
+          test -e "$MINIHOST_TEST_PLUGIN"
+          test -e "$MINIHOST_TEST_PLUGIN_FX"
+          ${{ matrix.run-prefix }} python -m pytest -v -rs \
+            tests/test_desktop_*.py tests/test_project_desktop_kinds.py
 
       # Stage into a clean dir first so the upload has a predictable layout.
       # `cp -R` on the macOS matrix preserves the minihost_desktop.app bundle

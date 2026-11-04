@@ -360,3 +360,82 @@ def test_desktop_save_roundtrip_keeps_plugin_probe(tmp_path):
     }
     assert nodes["synth"]["probe"] == probe
     assert "probe" not in nodes["fx"]  # never probed: nothing invented
+
+
+@skip_if_no_desktop
+def test_desktop_save_writes_relative_paths_inside_the_project(tmp_path):
+    """A desktop save writes files inside the project folder relative to it,
+    so the folder can move; a file outside it stays absolute."""
+    proj_dir = tmp_path / "proj"
+    (proj_dir / "audio").mkdir(parents=True)
+    outside = tmp_path / "shared" / "pad.wav"
+    outside.parent.mkdir()
+    for path in (proj_dir / "audio" / "in.wav", outside):
+        audio_io.write_audio(
+            str(path), np.full((2, 512), 0.1, np.float32), 48000, bit_depth=32
+        )
+    doc = {
+        "minihost_project_version": 1,
+        "sample_rate": 48000,
+        "block_size": 256,
+        "nodes": [
+            {
+                "id": "in",
+                "kind": "input",
+                "channels": 2,
+                "source": str(proj_dir / "audio" / "in.wav"),
+            },
+            {"id": "pad", "kind": "input", "channels": 2, "source": str(outside)},
+            {"id": "mix", "kind": "mix", "num_inputs": 2, "channels": 2},
+            {
+                "id": "out",
+                "kind": "output",
+                "channels": 2,
+                "sink": str(proj_dir / "renders" / "out.wav"),
+                "bit_depth": 32,
+            },
+        ],
+        "edges": [
+            {"src": "in", "dst": "mix", "dst_port": 0},
+            {"src": "pad", "dst": "mix", "dst_port": 1},
+            {"src": "mix", "dst": "out"},
+        ],
+    }
+    proj = proj_dir / "p.json"
+    proj.write_text(json.dumps(doc))
+    res = subprocess.run(
+        [str(DESKTOP_BIN), f"--save-roundtrip={proj}"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert res.returncode == 0, res.stderr
+
+    saved = json.loads((proj_dir / "p.resaved.json").read_text())
+    paths = {
+        n["id"]: n.get("source", n.get("sink"))
+        for n in saved["nodes"]
+        if n["kind"] in ("input", "output")
+    }
+    assert paths == {
+        "in": "audio/in.wav",
+        "pad": str(outside),
+        "out": "renders/out.wav",
+    }
+
+    # Moved, the folder still renders, from Python and from the desktop.
+    moved = tmp_path / "moved"
+    proj_dir.rename(moved)
+    minihost.render_project(moved / "p.resaved.json")
+    py, _ = audio_io.read_audio(str(moved / "renders" / "out.wav"), as_=np.ndarray)
+    np.testing.assert_allclose(py, 0.2, atol=1e-6)
+    (moved / "renders" / "out.wav").unlink()
+    res = subprocess.run(
+        [str(DESKTOP_BIN), f"--render-project={moved / 'p.resaved.json'}"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert res.returncode == 0, res.stderr
+    cpp, _ = audio_io.read_audio(str(moved / "renders" / "out.wav"), as_=np.ndarray)
+    assert np.array_equal(py, cpp)

@@ -14,6 +14,8 @@
 
 - Tests: desktop tests fail with "run `make desktop`" when the located `minihost_desktop` binary is older than its sources. `make test` does not rebuild the desktop, and a binary that predates a new headless flag starts the GUI and times out instead. An explicit `MINIHOST_DESKTOP_BIN` is not checked.
 
+- CI: the Linux desktop job runs every `tests/test_desktop_*.py` file and `tests/test_project_desktop_kinds.py`, against the VST3 fixtures it now builds. It used to run a list of 6 files, and the integration jobs, which run the whole suite, build no desktop binary. So the live engine, recorder, canvas, sequencer, editor-sync and Python-parity tests ran in no job.
+
 - `make test` builds the VST3 test fixtures first (new `make fixtures` target). It used to rebuild only the extension. The tests then loaded a stale bundle from `build/`, so a fixture change could fail tests that the new source passes.
 
 - Tests: `minihost_desktop --live-selftest` takes `--live-callback=<n>` and `--live-device-input=<wav>`, so `tests/test_desktop_live.py` drives the audio callback with a device buffer smaller than the project block and with a `device_input` node fed from a file. `--live-state-selftest` checks that a parameter written to a running plugin is captured into the document (`tests/test_desktop_live_state.py`).
@@ -39,6 +41,16 @@
   A changed state blob prompts for Save only if the plugin reported an edit (a parameter, program or non-parameter state change, or the window's Program, Bypass or Load preset), or if its state encodes the same twice in a row at open. A plugin that encodes differently each time (a timestamp or random id in its state) would otherwise prompt after an untouched open. Its unreported change is still written and autosaved, but a quit without Save drops it. `--editor-sync-selftest=<plugin>` checks the decision against a real editor window (`tests/test_desktop_editor_sync.py`).
 
 - Desktop: a crash-recovery autosave that failed to parse was deleted, even when it held the only copy of the work (for example, one written by a newer build). It is now kept as `autosave-unreadable-<date>.json` beside the settings file, and the alert gives its path.
+
+- Desktop: saving a project wrote every file path as absolute, so a project folder that was moved or shared could not find its audio, sinks or plugins. Paths to files inside the project's folder are now written relative to it, with `/` on every OS; the desktop and Python loaders already resolved relative paths against the project file. Paths outside the folder stay absolute: a relative path out of the folder works only from where it was saved.
+
+- Desktop: a plugin scanner helper that could not start blacklisted every plugin of the scan, because a failed launch looked like a plugin that crashed the helper. The scan now stops without blacklisting anything and says so (an alert in the app, exit 1 from `--scan-plugins --scan-oop`). A reply from the helper that was not XML dropped the plugin without blacklisting it; it is now blacklisted, as a crash is.
+
+- Desktop: the project loader skipped the bounds checks the Python loader makes. A `block_size` of 0 never advanced the render loop, a channel count below 1 sized graph buffers from it, and a negative or non-integer `dst_port` was cast through. `sample_rate`, `block_size`, `duration_seconds`, `dst_port` and every channel and input count are now checked as in Python. A `duration_seconds` whose frame count overflows an `int` is also rejected.
+
+- Desktop: a MIDI file with two note-ons of one pitch before a note-off left the second voice sounding after Stop or a loop wrap. Live mode tracked each note as on or off, so the first note-off cleared it and the release sent nothing. It now counts voices and sends one note-off per voice.
+
+- Desktop: after a tempo change in live mode, plugins got a beat position that disagreed with the sequencer, metronome and MIDI clock. Plugins summed beats block by block at each block's tempo; the others compute `position_samples * bpm`, as the loop wrap and offline renders do. Plugins now get the same formula, so a tempo change moves every consumer's beat position at once. Summing for every consumer instead would keep positions continuous across the change, but the sequencer, metronome and clock would each need a beat offset carried across blocks. Each block also reads the tempo and play state once; it read them up to three times, so a change between reads gave consumers different values.
 
 - Desktop: a block that failed to render in live mode stopped the engine without telling the app. The menu still showed Live as running, and the next Stop or Restart skipped the plugin-state capture, so unsaved plugin edits were lost. The app now stops Live itself, captures the plugins' state first, keeps the recordings made so far, and shows an alert. The audio thread also no longer builds an exception for a failed block, which allocated. `--live-failure-selftest` covers it (`tests/test_desktop_live_failure.py`).
 

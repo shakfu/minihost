@@ -11,6 +11,7 @@
 #include <juce_core/juce_core.h>
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <cstring>
 #include <unordered_map>
@@ -342,14 +343,32 @@ ProjectDocument parseProjectFile(const juce::File& path)
                  + " (this build understands version "
                  + juce::String(kSchemaVersion) + ")");
 
+    // Bounds as in the Python loader. block_size <= 0 never advanced the
+    // render loop, and an unchecked duration overflowed its frame count.
     ProjectDocument out;
-    out.sample_rate = (int) requireDouble(doc, "sample_rate");
+    const double sr = requireDouble(doc, "sample_rate");
+    if (!(std::isfinite(sr) && sr > 0.0 && sr <= (double) INT_MAX))
+        throwErr("sample_rate must be positive, got " + juce::String(sr));
+    out.sample_rate = (int) sr;
+    if (out.sample_rate <= 0)
+        throwErr("sample_rate must be positive, got " + juce::String(sr));
     out.block_size  = requireInt(doc, "block_size");
+    if (out.block_size < 1)
+        throwErr("field block_size must be >= 1, got " + juce::String(out.block_size));
     if (doc.getDynamicObject()->hasProperty("duration_seconds"))
     {
         auto v = doc["duration_seconds"];
         if (!v.isVoid())
-            out.duration_seconds = (double) v;
+        {
+            if (!v.isInt() && !v.isInt64() && !v.isDouble())
+                throwErr("duration_seconds must be a number");
+            const double d = (double) v;
+            if (!(std::isfinite(d) && d >= 0.0))
+                throwErr("duration_seconds must be non-negative, got " + juce::String(d));
+            if (d * (double) out.sample_rate >= (double) INT_MAX)
+                throwErr("duration_seconds is too long for the sample rate");
+            out.duration_seconds = d;
+        }
     }
     if (doc.getDynamicObject()->hasProperty("bpm"))
     {
@@ -389,6 +408,37 @@ ProjectDocument parseProjectFile(const juce::File& path)
         }
     }
 
+    // Counts as in the Python loader; a channel count of 0 or less made
+    // graph buffers of no size, and a large negative one huge ones.
+    auto atLeast = [](const juce::String& what, const juce::String& id,
+                      const char* field, int v, int min) {
+        if (v < min)
+            throwErr(what + " " + id + ": " + field + " must be >= "
+                     + juce::String(min) + ", got " + juce::String(v));
+    };
+    for (const auto& n : out.inputs)         atLeast("input", n.id, "channels", n.channels, 1);
+    for (const auto& n : out.outputs)        atLeast("output", n.id, "channels", n.channels, 1);
+    for (const auto& n : out.device_inputs)  atLeast("device_input", n.id, "channels", n.channels, 1);
+    for (const auto& n : out.device_outputs) atLeast("device_output", n.id, "channels", n.channels, 1);
+    for (const auto& n : out.meters)         atLeast("meter", n.id, "channels", n.channels, 1);
+    for (const auto& n : out.gains)          atLeast("gain", n.id, "channels", n.channels, 1);
+    for (const auto& n : out.buses)          atLeast("bus", n.id, "channels", n.channels, 1);
+    for (const auto& n : out.metronomes)     atLeast("metronome", n.id, "channels", n.channels, 1);
+    for (const auto& n : out.mixes)
+    {
+        atLeast("mix", n.id, "channels", n.channels, 1);
+        atLeast("mix", n.id, "num_inputs", n.num_inputs, 0);
+    }
+    for (const auto& n : out.pick_channels)
+    {
+        atLeast("pick_channel", n.id, "in_channels", n.in_channels, 1);
+        atLeast("pick_channel", n.id, "channel_index", n.channel_index, 0);
+    }
+    for (const auto& n : out.merge_channels)
+        atLeast("merge_channels", n.id, "out_channels", n.out_channels, 1);
+    for (const auto& n : out.midi_merges)
+        atLeast("midi_merge", n.id, "num_inputs", n.num_inputs, 0);
+
     // Project must have at least one audio destination. File renders
     // require an OutputNodeSpec (file sink); live playback can use
     // a DeviceOutputNodeSpec instead. The stricter file-render
@@ -405,7 +455,14 @@ ProjectDocument parseProjectFile(const juce::File& path)
         es.src      = requireString(e, "src");
         es.dst      = requireString(e, "dst");
         if (e.getDynamicObject()->hasProperty("dst_port"))
-            es.dst_port = (int) e["dst_port"];
+        {
+            const auto port = e["dst_port"];
+            if (!(port.isInt() || port.isInt64()) || (juce::int64) port < 0
+                || (juce::int64) port > INT_MAX)
+                throwErr("edge " + es.src + " -> " + es.dst
+                         + ": dst_port must be a non-negative integer");
+            es.dst_port = (int) port;
+        }
         if (e.getDynamicObject()->hasProperty("kind"))
         {
             const auto k = e["kind"].toString();
@@ -452,7 +509,7 @@ ProjectDocument parseProjectFile(const juce::File& path)
     return out;
 }
 
-juce::String serializeProject(const ProjectDocument& doc)
+juce::String serializeProject(const ProjectDocument& doc, const juce::File& base_dir)
 {
     auto* root = new juce::DynamicObject();
     root->setProperty("minihost_project_version", kSchemaVersion);
@@ -473,6 +530,20 @@ juce::String serializeProject(const ProjectDocument& doc)
         };
     for (const auto& entry : nodeRegistry())
         entry.serialize_all(doc, pushNode);
+    // A file inside base_dir is written relative to it, with '/' on every
+    // OS, so the project folder can move. Others stay absolute: a relative
+    // path out of the folder works only from where it was saved.
+    if (base_dir != juce::File())
+        for (auto& n : nodes)
+            for (const char* key : { "source", "sink", "path" })
+            {
+                auto* o = n.getDynamicObject();
+                if (o == nullptr || !o->hasProperty(key)) continue;
+                const juce::File f(o->getProperty(key).toString());
+                if (f.isAChildOf(base_dir))
+                    o->setProperty(key, f.getRelativePathFrom(base_dir)
+                                            .replaceCharacter('\\', '/'));
+            }
     root->setProperty("nodes", nodes);
 
     juce::Array<juce::var> edges;
@@ -526,7 +597,7 @@ juce::String liveTopologyFingerprint(const ProjectDocument& doc)
 
 void saveProjectFile(const juce::File& path, const ProjectDocument& doc)
 {
-    const juce::String text = serializeProject(doc);
+    const juce::String text = serializeProject(doc, path.getParentDirectory());
 
     // replaceWithText ignores a failed write and moveFileTo deletes the
     // target before renaming, so a full disk or a crash could lose the file.

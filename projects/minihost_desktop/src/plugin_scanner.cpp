@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 
 namespace minihost_desktop {
 
@@ -109,9 +110,13 @@ void PluginScannerSubprocess::sendResults (
 
 ScannerCoordinator::ScannerCoordinator()
 {
-    launchWorkerProcess (
-        juce::File::getSpecialLocation (juce::File::currentExecutableFile),
-        kScannerProcessUID, 0, 0);
+    // MINIHOST_SCANNER_WORKER overrides the child executable, so tests can
+    // make the launch fail.
+    auto exe = juce::File::getSpecialLocation (juce::File::currentExecutableFile);
+    if (const auto* env = std::getenv ("MINIHOST_SCANNER_WORKER");
+        env != nullptr && env[0] != '\0')
+        exe = juce::File (juce::String::fromUTF8 (env));
+    launched_ = launchWorkerProcess (exe, kScannerProcessUID, 0, 0);
 }
 
 ScannerCoordinator::Response ScannerCoordinator::getResponse()
@@ -172,27 +177,47 @@ bool OutOfProcessPluginScanner::findPluginTypesFor (
         return true;
     }
 
-    if (addPluginDescriptions (format.getName(), fileOrIdentifier, result))
-        return true;
+    if (skip_rest_) return true;
 
-    // Unrecoverable subprocess (crash / hang): drop it so the next plugin
-    // gets a fresh child. Returning false blacklists this plugin.
+    switch (addPluginDescriptions (format.getName(), fileOrIdentifier, result))
+    {
+    case Outcome::ok:
+        return true;
+    case Outcome::pluginFailed:
+        // The child crashed, hung or answered garbage on this plugin: drop it
+        // so the next plugin gets a fresh child. False blacklists the plugin.
+        superprocess_ = nullptr;
+        return false;
+    case Outcome::scannerFailed:
+        break;
+    }
     superprocess_ = nullptr;
-    return false;
+    skip_rest_ = true;
+    failed_.store (true);
+    const juce::String msg =
+        "The plugin scanner could not start its helper process, so the scan "
+        "stopped at " + fileOrIdentifier + ". No plugin was blacklisted; "
+        "scan again to retry.";
+    std::fprintf (stderr, "scan: %s\n", msg.toRawUTF8());
+    if (on_failure_) on_failure_ (msg);
+    return true;   // neither added nor blacklisted
 }
 
 void OutOfProcessPluginScanner::scanFinished()
 {
     superprocess_ = nullptr;
+    skip_rest_ = false;
 }
 
-bool OutOfProcessPluginScanner::addPluginDescriptions (
+OutOfProcessPluginScanner::Outcome OutOfProcessPluginScanner::addPluginDescriptions (
     const juce::String& formatName,
     const juce::String& fileOrIdentifier,
     juce::OwnedArray<juce::PluginDescription>& result)
 {
     if (superprocess_ == nullptr)
         superprocess_ = std::make_unique<ScannerCoordinator>();
+    if (! superprocess_->launched())
+        return Outcome::scannerFailed;
 
     juce::MemoryBlock block;
     juce::MemoryOutputStream stream { block, true };
@@ -200,13 +225,13 @@ bool OutOfProcessPluginScanner::addPluginDescriptions (
     stream.writeString (fileOrIdentifier);
 
     if (! superprocess_->sendMessageToWorker (block))
-        return false;
+        return Outcome::scannerFailed;
 
     int timeout_ticks = 0;
     for (;;)
     {
         if (shouldExit())
-            return true;
+            return Outcome::ok;
 
         const auto response = superprocess_->getResponse();
 
@@ -217,24 +242,29 @@ bool OutOfProcessPluginScanner::addPluginDescriptions (
                 std::fprintf (stderr,
                     "scan: giving up on %s (%s) after timeout; blacklisting\n",
                     fileOrIdentifier.toRawUTF8(), formatName.toRawUTF8());
-                return false;
+                return Outcome::pluginFailed;
             }
             continue;
         }
 
-        if (response.xml != nullptr)
+        // connectionLost: the child died on this plugin, so blacklist it.
+        if (response.state != ScannerCoordinator::State::gotResult)
+            return Outcome::pluginFailed;
+        // A reply that is not XML would otherwise drop the plugin unseen.
+        if (response.xml == nullptr)
         {
-            for (const auto* item : response.xml->getChildIterator())
-            {
-                auto desc = std::make_unique<juce::PluginDescription>();
-                if (desc->loadFromXml (*item))
-                    result.add (std::move (desc));
-            }
+            std::fprintf (stderr,
+                "scan: malformed reply for %s (%s); blacklisting\n",
+                fileOrIdentifier.toRawUTF8(), formatName.toRawUTF8());
+            return Outcome::pluginFailed;
         }
-
-        // gotResult -> success (even if empty); connectionLost -> the child
-        // died on this plugin, report failure so it is blacklisted.
-        return (response.state == ScannerCoordinator::State::gotResult);
+        for (const auto* item : response.xml->getChildIterator())
+        {
+            auto desc = std::make_unique<juce::PluginDescription>();
+            if (desc->loadFromXml (*item))
+                result.add (std::move (desc));
+        }
+        return Outcome::ok;   // even if empty
     }
 }
 

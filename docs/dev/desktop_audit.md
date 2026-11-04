@@ -1,6 +1,6 @@
 # Desktop App Audit
 
-Status: open; G1-G5, R1-R3 and the parity gap fixed (see CHANGELOG); position A chosen. Date: 2026-11-04, against `cfc1769`. Scope: `projects/minihost_desktop/`, its tests, docs and example projects. Design: [desktop_app.md](desktop_app.md). Per-feature status: [desktop_app_todo.md](desktop_app_todo.md).
+Status: open; G1-G8, R1-R4, R6 and the parity gap fixed (see CHANGELOG); position A chosen. Date: 2026-11-04, against `cfc1769`. Scope: `projects/minihost_desktop/`, its tests, docs and example projects. Design: [desktop_app.md](desktop_app.md). Per-feature status: [desktop_app_todo.md](desktop_app_todo.md).
 
 Method: read the design docs, README, CHANGELOG and examples. Ran the Python loader on example projects and the desktop test suite. Two code reviews read the C++ (about 11k lines): one on the realtime engine, one on the GUI, project I/O and scanner. Five findings were spot-checked against source (G1, G4, G5, R2, R5); all held. The rest are confirmed by reading or marked plausible. Nothing was reproduced at runtime.
 
@@ -62,7 +62,7 @@ Recent work (sequencer, metronome, MIDI clock, live recording, status bar) moves
 
 ### Medium
 
-- **G6. C++ loader validates less than Python** (`project.py:244-258`, `_require_int_at_least`). Missing checks confirmed; effects plausible.
+- **G6. C++ loader validates less than Python** (`project.py:244-258`, `_require_int_at_least`). Missing checks confirmed; effects plausible. **Fixed 2026-11-04.**
 
   - `sample_rate`, `block_size` unbounded (`project.cpp:346-347`). `block_size <= 0` makes `n <= 0`, so `frame` never advances (`project.cpp:~934-946`). Possible hang unless plugin open or prepare rejects it first.
 
@@ -72,9 +72,9 @@ Recent work (sequencer, metronome, MIDI clock, live recording, status bar) moves
 
   - `duration_seconds` may be negative; `(int) lround` overflows above about 12 h at 48 kHz (`project.cpp:629`).
 
-- **G7. One save makes a project non-relocatable.** Paths are parsed relative to the project file but serialized with `getFullPathName()` (`node_registry.cpp:186, 306, 541, 620`). Confirmed. `dialog_apply` builds `juce::File(text)` from user text (`node_registry.cpp:233`); a relative entry hits JUCE's absolute-path assertion. Plausible.
+- **G7. One save makes a project non-relocatable.** Paths are parsed relative to the project file but serialized with `getFullPathName()` (`node_registry.cpp:186, 306, 541, 620`). Confirmed. `dialog_apply` builds `juce::File(text)` from user text (`node_registry.cpp:233`); a relative entry hits JUCE's absolute-path assertion. Plausible. **Save paths fixed 2026-11-04; the Properties dialog part is open.**
 
-- **G8. Scanner spawn failure blacklists every plugin.** The `launchWorkerProcess` result is ignored (`plugin_scanner.cpp:113-115`). On failure `sendMessageToWorker` returns false, so `findPluginTypesFor` returns false (`plugin_scanner.cpp:180-185, 205-206`). Every scanned plugin is blacklisted. A malformed XML reply yields `gotResult` with null xml (`plugin_scanner.cpp:133, 225-236`); that plugin vanishes without being blacklisted. Confirmed.
+- **G8. Scanner spawn failure blacklists every plugin.** The `launchWorkerProcess` result is ignored (`plugin_scanner.cpp:113-115`). On failure `sendMessageToWorker` returns false, so `findPluginTypesFor` returns false (`plugin_scanner.cpp:180-185, 205-206`). Every scanned plugin is blacklisted. A malformed XML reply yields `gotResult` with null xml (`plugin_scanner.cpp:133, 225-236`); that plugin vanishes without being blacklisted. Confirmed. **Fixed 2026-11-04.**
 
 - **G9. Program and Bypass skip the audio guard on live editors.** They call `mh_set_program` / `mh_set_bypass` directly (`main.cpp:396-399, 407-409`). Preset load and Capture use `runStateCall`. `mh_set_program` is documented as safe alongside `mh_process`; bypass is unverified. Plausible.
 
@@ -100,11 +100,11 @@ Recent work (sequencer, metronome, MIDI clock, live recording, status bar) moves
 
   - The status-bar toggle (`main.cpp:1753`) calls `startLive` instead of stop.
 
-- **R4. Beat position and tempo disagree.** The plugin playhead sums beats per block (`live.cpp:771`). The sequencer (`sequencer.h:125, 131`), metronome (`project.cpp:185, 242`) and MIDI clock use `pos_samples * bpm_now`. After a mid-play BPM change they drift apart. At a loop wrap (`live.cpp:782`) plugin beats jump to the absolute formula. BPM is read 3 times per chunk (lines 743, 755, 966) and play state twice (742, 967), though the comment at 740 says once. Confirmed.
+- **R4. Beat position and tempo disagree.** The plugin playhead sums beats per block (`live.cpp:771`). The sequencer (`sequencer.h:125, 131`), metronome (`project.cpp:185, 242`) and MIDI clock use `pos_samples * bpm_now`. After a mid-play BPM change they drift apart. At a loop wrap (`live.cpp:782`) plugin beats jump to the absolute formula. BPM is read 3 times per chunk (lines 743, 755, 966) and play state twice (742, 967), though the comment at 740 says once. Confirmed. **Fixed 2026-11-04.**
 
 - **R5. Stop then Play within one callback.** `stopTransport` and `play` (`live.cpp:515, 443`) both run before the audio thread sees `play=false`. `stopped_now` (line 813) stays false: no note release for file MIDI or the sequencer, no MIDI clock Stop/Start. `rewind_pending_` is checked only at callback top (line 726); mid-callback, the next chunk plays from the old position into the new take. Confirmed by reading; needs a fast double action.
 
-- **R6. `held[]` is a bool, not a count** (`live.cpp:35-36`, `live.h:349`). Overlapping same-pitch notes in a `.mid` (on, on, off) clear `held` at the first off. The second voice gets no note-off at wrap or Stop and hangs. Confirmed.
+- **R6. `held[]` is a bool, not a count** (`live.cpp:35-36`, `live.h:349`). Overlapping same-pitch notes in a `.mid` (on, on, off) clear `held` at the first off. The second voice gets no note-off at wrap or Stop and hangs. Confirmed. **Fixed 2026-11-04.**
 
 - **R7. Metronome and MIDI clock ignore a wrap inside a chunk.** `live.cpp:970-973` pass only `chunk_pos`. Clicks and ticks after `loop_e` use the pre-wrap grid. No Song Position Pointer at the wrap. Confirmed.
 

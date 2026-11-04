@@ -161,3 +161,73 @@ def test_same_tick_midi_events_keep_python_order(tmp_path):
     want = [tuple(e) for e in minihost.midi_file_to_events(str(mid), SR)]
     assert len(want) == 80
     assert got == want
+
+
+def _bounds_doc(tmp_path, **changes):
+    doc = {
+        "minihost_project_version": 1,
+        "sample_rate": SR,
+        "block_size": 256,
+        "duration_seconds": 0.1,
+        "nodes": [
+            {"id": "mix", "kind": "mix", "num_inputs": 1, "channels": 2},
+            {"id": "o", "kind": "output", "channels": 2, "sink": "o.wav"},
+        ],
+        "edges": [{"src": "mix", "dst": "o", "dst_port": 0}],
+    }
+    for key, value in changes.items():
+        if key == "node":
+            doc["nodes"][0].update(value)
+        elif key == "edge":
+            doc["edges"][0].update(value)
+        else:
+            doc[key] = value
+    path = tmp_path / "p.json"
+    path.write_text(json.dumps(doc))
+    return path
+
+
+BOUNDS = {
+    "block_size_zero": ({"block_size": 0}, "block_size"),
+    "block_size_negative": ({"block_size": -4}, "block_size"),
+    "sample_rate_zero": ({"sample_rate": 0}, "sample_rate"),
+    "duration_negative": ({"duration_seconds": -1.0}, "duration_seconds"),
+    "duration_not_a_number": ({"duration_seconds": "5"}, "duration_seconds"),
+    "channels_zero": ({"node": {"channels": 0}}, "channels"),
+    "channels_negative": ({"node": {"channels": -2}}, "channels"),
+    "dst_port_negative": ({"edge": {"dst_port": -1}}, "dst_port"),
+    "dst_port_not_an_int": ({"edge": {"dst_port": "0"}}, "dst_port"),
+}
+
+
+@skip_if_no_desktop
+@pytest.mark.parametrize("case", sorted(BOUNDS))
+def test_both_loaders_reject_out_of_range_fields(tmp_path, case):
+    """The desktop loader skipped Python's bounds checks: a block_size of 0
+    hung the render loop, and a non-positive channel count sized buffers
+    from garbage."""
+    changes, field = BOUNDS[case]
+    proj = _bounds_doc(tmp_path, **changes)
+    with pytest.raises(minihost.ProjectError, match=field):
+        minihost.load_project(proj)
+    res = subprocess.run(
+        [str(DESKTOP_BIN), f"--save-roundtrip={proj}"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert res.returncode != 0, f"desktop accepted {case}"
+    assert field in res.stderr, res.stderr
+
+
+@skip_if_no_desktop
+def test_desktop_rejects_a_duration_that_overflows_its_frame_count(tmp_path):
+    proj = _bounds_doc(tmp_path, duration_seconds=1e9)
+    res = subprocess.run(
+        [str(DESKTOP_BIN), f"--save-roundtrip={proj}"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert res.returncode != 0
+    assert "duration_seconds is too long" in res.stderr

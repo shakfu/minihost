@@ -364,7 +364,10 @@ ProjectDocument parseProjectFile(const juce::File& path);
 void saveProjectFile(const juce::File& path, const ProjectDocument& doc);
 
 // The project file text saveProjectFile writes, without the trailing newline.
-juce::String serializeProject(const ProjectDocument& doc);
+// Paths of files inside `base_dir` are written relative to it; the rest,
+// and every path when base_dir is File(), are absolute.
+juce::String serializeProject(const ProjectDocument& doc,
+                              const juce::File& base_dir = {});
 
 // serializeProject of `doc` minus what live mode carries without a graph
 // rebuild: canvas layout, sequencer settings (applied in place), BPM (set on

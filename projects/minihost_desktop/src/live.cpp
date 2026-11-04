@@ -21,7 +21,7 @@ namespace {
 // and, if `release_first`, at offset 0.
 template <class Range>
 void collectTransportMidi(std::vector<MH_MidiEvent>& out,
-                          std::array<bool, 16 * 128>& held, Range&& range,
+                          std::array<uint16_t, 16 * 128>& held, Range&& range,
                           long long pos, int n, bool play, bool release_first,
                           bool loop_on, long long loop_s, long long loop_e)
 {
@@ -32,12 +32,20 @@ void collectTransportMidi(std::vector<MH_MidiEvent>& out,
         out.push_back(e);
         const int type = e.status & 0xF0;
         const size_t key = (size_t) (e.status & 0x0F) * 128 + (e.data1 & 0x7F);
-        if (type == 0x90 && e.data2 > 0)       held[key] = true;
-        else if (type == 0x80 || type == 0x90) held[key] = false;
+        // A count, not a flag: overlapping note-ons of one pitch are
+        // separate voices, and each needs its note-off.
+        if (type == 0x90 && e.data2 > 0)
+        {
+            if (held[key] < UINT16_MAX) ++held[key];
+        }
+        else if ((type == 0x80 || type == 0x90) && held[key] > 0)
+            --held[key];
     };
     auto release = [&](int off) {
+        // A fixed count: push() drops an event when `out` is full and then
+        // leaves the voice held for the next release.
         for (size_t key = 0; key < held.size(); ++key)
-            if (held[key])
+            for (int v = held[key]; v > 0; --v)
                 push({ 0, (unsigned char) (0x80 | (key / 128)),
                        (unsigned char) (key % 128), 0 }, off);
     };
@@ -421,7 +429,6 @@ void LiveEngine::stop()
     transport_playing_.store(false);
     rewind_pending_.store(false);
     transport_pos_samples_ = 0;
-    transport_pos_beats_   = 0.0;
     published_pos_.store(0);
     compiled_.reset();
 }
@@ -755,7 +762,6 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
     if (rewind_pending_.exchange(false, std::memory_order_acq_rel))
     {
         transport_pos_samples_ = 0;
-        transport_pos_beats_   = 0.0;
     }
 
     // Render in chunks of up to cb_block_size_. Device callback sizes
@@ -781,37 +787,34 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
         // without I/O; on the audio thread it's fine to call.
         {
             const double sr   = (double) compiled_->doc.sample_rate;
-            const double bpm  = transport_bpm_.load(std::memory_order_relaxed);
+            const double bpm  = chunk_bpm;
             MH_TransportInfo ti{};
             ti.bpm                  = bpm;
             ti.time_sig_numerator   = 4;
             ti.time_sig_denominator = 4;
-            ti.position_samples     = transport_pos_samples_;
-            ti.position_beats       = transport_pos_beats_;
+            ti.position_samples     = chunk_pos;
+            // Beats from samples at the current tempo, as the sequencer,
+            // metronome, MIDI clock and offline render compute them. Summed
+            // per chunk, plugins drifted from them after a tempo change.
+            ti.position_beats       = (double) chunk_pos * bpm / (60.0 * sr);
             ti.is_playing           = play ? 1 : 0;
             ti.is_looping           = loop_on ? 1 : 0;
             ti.loop_start_samples   = loop_s;
             ti.loop_end_samples     = loop_e;
             for (MH_Plugin* p : compiled_->plugins)
                 if (p != nullptr) mh_set_transport(p, &ti);
+            last_transport_ = ti;
             if (play)
             {
                 transport_pos_samples_ += n;
-                transport_pos_beats_
-                    += (double) n * bpm / (60.0 * sr);
                 // Wrap inside the loop region. Phase-coherent wrap
                 // is good enough; we don't snap to bar boundaries.
                 if (loop_on && transport_pos_samples_ >= loop_e)
                 {
                     const long long span = loop_e - loop_s;
                     if (span > 0)
-                    {
                         transport_pos_samples_
                             = loop_s + ((transport_pos_samples_ - loop_s) % span);
-                        transport_pos_beats_
-                            = (double) transport_pos_samples_
-                              * bpm / (60.0 * sr);
-                    }
                 }
             }
         }
@@ -992,8 +995,8 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
             // The chunk's start, as for file inputs: the transport has
             // already advanced past this chunk.
             const long long ti_pos = chunk_pos;
-            const double    ti_bpm = transport_bpm_.load();
-            const bool      playing = transport_playing_.load();
+            const double    ti_bpm = chunk_bpm;
+            const bool      playing = play;
             const double    sr =
                 compiled_ ? (double) compiled_->doc.sample_rate : 48000.0;
             compiled_->renderMetronomes(in_planar_, cb_block_size_, n,

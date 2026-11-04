@@ -195,11 +195,11 @@ NOTES = [
 ]
 
 
-def _midi_project(tmp_path, duration):
+def _midi_project(tmp_path, duration, notes=NOTES):
     mf = minihost.MidiFile()
     tpq = mf.ticks_per_quarter
     mf.add_tempo(0, 0, 120.0)
-    for beat, kind, note in NOTES:
+    for beat, kind, note in notes:
         tick = int(beat * tpq)
         if kind == "on":
             mf.add_note_on(0, tick, 0, note, 100)
@@ -285,6 +285,23 @@ def test_live_loops_midi_file_and_releases_held_notes_at_the_wrap(tmp_path):
         if k < 2:
             want.append(((k + 1) * loop, "off", 67))
     want.append((total, "off", 64))  # held at Stop
+    assert _midi_log(proj) == want
+
+
+@skip_if_no_desktop
+def test_live_releases_every_voice_of_an_overlapping_note_on_stop(tmp_path):
+    # Two note-ons for note 60 and one note-off: the second voice still
+    # sounds at Stop. The engine tracked a note as on/off, so the first
+    # note-off cleared it and Stop released nothing.
+    notes = [(0, "on", 60), (0.25, "on", 60), (0.5, "off", 60)]
+    proj = _midi_project(tmp_path, 0.75, notes)
+    take = int(0.75 * SR)
+    _run(f"--live-selftest={proj}")
+
+    want = []
+    for base in (0, take + CALLBACK):
+        want += [(base + int(b * BEAT), k, n) for b, k, n in notes]
+        want.append((base + take, "off", 60))  # Stop releases the second
     assert _midi_log(proj) == want
 
 
@@ -400,3 +417,19 @@ def test_failed_play_keeps_earlier_takes(tmp_path):
     assert "cannot open" in res.stderr
     assert out_wav.read_bytes() == take
     assert not out_wav.with_name("out.wav.part").exists()
+
+
+@skip_if_no_desktop
+def test_live_beats_follow_the_sample_position_after_a_tempo_change(tmp_path):
+    # Plugins summed beats per block, so after a BPM change their playhead
+    # disagreed with the sequencer and metronome, which use
+    # position_samples * bpm.
+    proj, _ = _project(tmp_path, _source())
+    res = subprocess.run(
+        [str(DESKTOP_BIN), f"--live-transport-selftest={proj}"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert res.returncode == 0, f"stdout:{res.stdout}\nstderr:{res.stderr}"
+    assert "live-transport-selftest OK" in res.stderr

@@ -27,7 +27,9 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_events/juce_events.h>
 
+#include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -83,6 +85,9 @@ public:
 
     using juce::ChildProcessCoordinator::sendMessageToWorker;
 
+    // False when the child process could not be started.
+    bool launched() const noexcept { return launched_; }
+
 private:
     void handleMessageFromWorker (const juce::MemoryBlock& mb) override;
     void handleConnectionLost() override;
@@ -92,11 +97,14 @@ private:
     std::unique_ptr<juce::XmlElement> plugin_description_;
     bool connection_lost_ = false;
     bool got_result_      = false;
+    bool launched_        = false;
 };
 
 // The KnownPluginList hook. findPluginTypesFor dispatches one plugin to the
 // child and collects its descriptions. Returning false tells KnownPluginList
 // the plugin is unrecoverable, so it gets blacklisted and the scan continues.
+// A child that cannot be started, or a dead pipe to it, is not the plugin's
+// fault: the rest of that scan is skipped and nothing is blacklisted.
 class OutOfProcessPluginScanner final : public juce::KnownPluginList::CustomScanner
 {
 public:
@@ -109,13 +117,23 @@ public:
                              const juce::String& fileOrIdentifier) override;
     void scanFinished() override;
 
+    // True once any scan through this scanner could not run its child.
+    bool scannerFailed() const noexcept { return failed_.load(); }
+    // Called once per failed scan, on the scanning thread, with a message.
+    void setOnScannerFailure (std::function<void (const juce::String&)> fn)
+    { on_failure_ = std::move (fn); }
+
 private:
-    bool addPluginDescriptions (const juce::String& formatName,
-                                const juce::String& fileOrIdentifier,
-                                juce::OwnedArray<juce::PluginDescription>& result);
+    enum class Outcome { ok, pluginFailed, scannerFailed };
+    Outcome addPluginDescriptions (const juce::String& formatName,
+                                   const juce::String& fileOrIdentifier,
+                                   juce::OwnedArray<juce::PluginDescription>& result);
 
     std::unique_ptr<ScannerCoordinator> superprocess_;
     const bool scan_in_process_;
+    std::atomic<bool> failed_{ false };
+    bool skip_rest_ = false;   // this scan's child could not run
+    std::function<void (const juce::String&)> on_failure_;
 };
 
 } // namespace minihost_desktop

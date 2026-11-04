@@ -73,6 +73,9 @@ public:
     // Clears and returns the failure flag (the timer's check; also tests).
     bool consumeRenderFailure() noexcept
     { return render_failed_.exchange(false, std::memory_order_acq_rel); }
+    // Test hook: the transport the last chunk pushed to the plugins. Not
+    // safe to call while the audio thread runs.
+    const MH_TransportInfo& lastTransportForTest() const noexcept { return last_transport_; }
     // Test hook: the next rendered chunk fails as if the graph had.
     void injectRenderFailureForTest() noexcept
     { inject_failure_.store(true, std::memory_order_release); }
@@ -324,7 +327,7 @@ private:
     std::atomic<bool>                              transport_playing_{ false };
     std::atomic<double>                            transport_bpm_{ 120.0 };
     long long                                      transport_pos_samples_ = 0;
-    double                                         transport_pos_beats_   = 0.0;
+    MH_TransportInfo                               last_transport_{};  // test hook
     std::atomic<long long>                         loop_start_{ 0 };
     std::atomic<long long>                         loop_end_{ 0 };
     std::atomic<bool>                              loop_enabled_{ false };
@@ -362,12 +365,12 @@ private:
     // ----- Transport-driven MIDI sources ----- //
     // File MIDI (midi_input nodes with a .mid source) and sequencers. Per
     // source, `events` holds this chunk's events, `merged` those plus device
-    // MIDI (file sources only), and `held` marks sounding notes,
+    // MIDI (file sources only), and `held` counts sounding voices,
     // [channel * 128 + note], so wraps, Stop and edits can release them.
     struct TransportMidi {
         std::vector<MH_MidiEvent>  events;
         std::vector<MH_MidiEvent>  merged;
-        std::array<bool, 16 * 128> held{};
+        std::array<uint16_t, 16 * 128> held{};
     };
     struct SequencerPlay : TransportMidi {
         project::SequencerParams params;

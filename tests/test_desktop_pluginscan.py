@@ -33,11 +33,16 @@ from pathlib import Path
 
 import pytest
 
+from cli_helpers import find_test_plugin
 from desktop_helpers import DESKTOP_BIN, skip_if_no_desktop
 
 
 def _run_scan(
-    scan_dir: Path, out_xml: Path, fmt: str = "VST3", out_of_process: bool = False
+    scan_dir: Path,
+    out_xml: Path,
+    fmt: str = "VST3",
+    out_of_process: bool = False,
+    env: dict | None = None,
 ):
     argv = [
         str(DESKTOP_BIN),
@@ -47,7 +52,13 @@ def _run_scan(
     ]
     if out_of_process:
         argv.append("--scan-oop")
-    return subprocess.run(argv, capture_output=True, text=True, timeout=120)
+    return subprocess.run(
+        argv,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=None if env is None else dict(os.environ, **env),
+    )
 
 
 def _run_scan_default_path(scan_dir: Path, settings_dir: Path, fmt: str = "VST3"):
@@ -220,3 +231,34 @@ def test_scan_with_an_unknown_format_writes_nothing(tmp_path):
     assert res.returncode == 2
     assert "no format named VST" in res.stderr
     assert out_xml.read_text() == "<KNOWNPLUGINS/>\n"
+
+
+@skip_if_no_desktop
+def test_scan_helper_launch_failure_blacklists_nothing(tmp_path):
+    """A scanner helper that cannot start used to blacklist every plugin of
+    the scan. It now fails the scan, and a later scan finds the plugin."""
+    fx = find_test_plugin("MinihostTestFx", "MINIHOST_TEST_PLUGIN_FX")
+    if not fx or not os.path.exists(fx):
+        pytest.skip("MinihostTestFx not built")
+    src = Path(fx)
+    scan_dir = tmp_path / "plugins"
+    scan_dir.mkdir()
+    shutil.copytree(src, scan_dir / src.name)
+    out_xml = tmp_path / "known.xml"
+
+    res = _run_scan(
+        scan_dir,
+        out_xml,
+        out_of_process=True,
+        env={"MINIHOST_SCANNER_WORKER": str(tmp_path / "no_such_helper")},
+    )
+    assert res.returncode == 1, res.stderr
+    assert "could not start its helper process" in res.stderr
+    root = ET.parse(out_xml).getroot()
+    assert root.findall("BLACKLISTED") == []
+    assert root.findall("PLUGIN") == []
+
+    res = _run_scan(scan_dir, out_xml, out_of_process=True)
+    assert res.returncode == 0, res.stderr
+    plugins = ET.parse(out_xml).getroot().findall("PLUGIN")
+    assert any(src.name in (p.get("file") or "") for p in plugins), res.stderr

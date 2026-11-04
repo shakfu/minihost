@@ -61,6 +61,11 @@
 //       plugins for state capture, and finalizes the take. Driven by
 //       tests/test_desktop_live_failure.py.
 //
+//   minihost_desktop --live-transport-selftest=<project.json>
+//       Headless check that the beat position given to plugins stays
+//       position_samples * bpm after a mid-play tempo change, the grid the
+//       sequencer and metronome use. Driven by tests/test_desktop_live.py.
+//
 //   minihost_desktop --recorder-selftest=<dir>
 //       Drives TakeRecorder through a full FIFO without the writer thread
 //       and checks the files in <dir>: drops hit every output, become
@@ -1613,6 +1618,14 @@ public:
             return;
         }
 
+        if (args.containsOption("--live-transport-selftest"))
+        {
+            const auto path = args.removeValueForOption("--live-transport-selftest");
+            setApplicationReturnValue(runLiveTransportSelfTest(juce::File(path)));
+            quit();
+            return;
+        }
+
         if (args.containsOption("--recorder-selftest"))
         {
             const auto path = args.removeValueForOption("--recorder-selftest");
@@ -1897,8 +1910,18 @@ public:
             // exit() during instantiation-during-scan takes down only a
             // disposable child, not the app. Routes both the interactive
             // PluginListComponent scan and Add Plugin from Library probes.
-            known_plugins_.setCustomScanner(
-                std::make_unique<OutOfProcessPluginScanner>());
+            {
+                auto scanner = std::make_unique<OutOfProcessPluginScanner>();
+                // Runs on the scan thread; the alert goes to the message thread.
+                scanner->setOnScannerFailure([](const juce::String& msg) {
+                    juce::MessageManager::callAsync([msg] {
+                        juce::AlertWindow::showMessageBoxAsync(
+                            juce::AlertWindow::WarningIcon,
+                            "Plugin scan stopped", msg);
+                    });
+                });
+                known_plugins_.setCustomScanner(std::move(scanner));
+            }
             loadKnownPlugins();
             // Persist scan results on the heartbeat, not only at clean exit,
             // so a crash after a scan keeps the scan.
@@ -2079,8 +2102,9 @@ public:
     }
 
     // Crash-recovery sidecar. autosave.json holds the last-snapshotted
-    // ProjectDocument (same schema v1 as a normal save; all file paths are
-    // absolute, so the sidecar's own location is irrelevant to reload).
+    // ProjectDocument (same schema v1 as a normal save; paths are relative
+    // to the sidecar's directory only for files inside it, and the sidecar
+    // is read from where it was written).
     // autosave.meta records the working document's on-disk path (empty for
     // an untitled project) so recovery can re-associate it for Save.
     juce::File autosaveFile() const
@@ -2771,6 +2795,53 @@ private:
         }
     }
 
+    // Plays 3 blocks at the project tempo, changes it, plays one more, and
+    // checks each block's transport against position_samples * bpm.
+    int runLiveTransportSelfTest(const juce::File& project_file)
+    {
+        auto fail = [](const char* m) {
+            std::fprintf(stderr, "live-transport-selftest: %s\n", m);
+            return 1;
+        };
+        try {
+            const auto doc = project::parseProjectFile(project_file);
+            LiveEngine engine;
+            juce::String err;
+            if (!engine.start(doc, err, /*attach_device=*/false))
+                return fail(err.toRawUTF8());
+            engine.setBpm(120.0);
+            if (!engine.play(err)) return fail(err.toRawUTF8());
+            const int n = doc.block_size;
+            const double sr = (double) doc.sample_rate;
+            std::vector<float> l((size_t) n), r((size_t) n);
+            float* outs[2] = { l.data(), r.data() };
+            const juce::AudioIODeviceCallbackContext ctx{};
+            auto check = [&](long long pos, double bpm) {
+                const auto& ti = engine.lastTransportForTest();
+                return ti.is_playing == 1 && ti.position_samples == pos
+                    && ti.bpm == bpm
+                    && ti.position_beats == (double) pos * bpm / (60.0 * sr);
+            };
+            for (int i = 0; i < 3; ++i)
+            {
+                engine.audioDeviceIOCallbackWithContext(nullptr, 0, outs, 2, n, ctx);
+                if (!check((long long) i * n, 120.0))
+                    return fail("transport wrong before the tempo change");
+            }
+            engine.setBpm(97.0);
+            engine.audioDeviceIOCallbackWithContext(nullptr, 0, outs, 2, n, ctx);
+            if (!check(3LL * n, 97.0))
+                return fail("beats drifted from position_samples * bpm after a tempo change");
+            engine.stopTransport();
+            engine.stop();
+            std::fprintf(stderr, "live-transport-selftest OK\n");
+            return 0;
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "live-transport-selftest: %s\n", e.what());
+            return 1;
+        }
+    }
+
     // Two outputs (1 and 2 channels), a 100-frame FIFO and 40-frame blocks,
     // with no writer until block 4. Blocks 2 and 3 do not fit and must come
     // out as 80 frames of silence between blocks 1 and 4, in both files.
@@ -3410,9 +3481,13 @@ private:
         if (out.existsAsFile())
             if (auto existing = juce::XmlDocument::parse(out))
                 list.recreateFromXml(*existing);
+        OutOfProcessPluginScanner* oop = nullptr;
         if (out_of_process)
-            list.setCustomScanner(
-                std::make_unique<OutOfProcessPluginScanner>());
+        {
+            auto scanner = std::make_unique<OutOfProcessPluginScanner>();
+            oop = scanner.get();
+            list.setCustomScanner(std::move(scanner));
+        }
         const auto dead_mans_pedal =
             settingsFile().getSiblingFile("plugin_scan.deadman");
         dead_mans_pedal.getParentDirectory().createDirectory();
@@ -3479,7 +3554,9 @@ private:
         }
         std::fprintf(stderr, "scan: total found %d, failed %d\n",
                      total_found, total_failed);
-        setApplicationReturnValue(wrote ? 0 : 1);
+        // The scanner's helper never ran: the scan is incomplete.
+        const bool scanner_failed = oop != nullptr && oop->scannerFailed();
+        setApplicationReturnValue(wrote && !scanner_failed ? 0 : 1);
         quit();
     }
 
