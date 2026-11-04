@@ -520,6 +520,7 @@ juce::String liveTopologyFingerprint(const ProjectDocument& doc)
     stripped.layout.clear();
     for (auto& s : stripped.sequencers) s.params = SequencerParams{};
     for (auto& p : stripped.plugins)    p.state_b64.clear();
+    stripped.bpm.reset();
     return serializeProject(stripped);
 }
 

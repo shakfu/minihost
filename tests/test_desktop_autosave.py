@@ -17,7 +17,8 @@ recovery data -- is exercised end-to-end through the binary's
 - the snapshot creates both sidecar files,
 - parsing the sidecar reproduces the document byte-for-byte,
 - the meta file records the origin path exactly,
-- clearAutosave removes both files.
+- clearAutosave removes both files,
+- an unreadable sidecar is moved aside with its content intact, not deleted.
 
 Any broken invariant makes the binary exit non-zero.
 

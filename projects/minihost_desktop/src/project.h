@@ -367,8 +367,9 @@ void saveProjectFile(const juce::File& path, const ProjectDocument& doc);
 juce::String serializeProject(const ProjectDocument& doc);
 
 // serializeProject of `doc` minus what live mode carries without a graph
-// rebuild: canvas layout, sequencer settings (applied in place) and plugin
-// state (captured from the running instances, never reloaded into them).
+// rebuild: canvas layout, sequencer settings (applied in place), BPM (set on
+// the transport) and plugin state (captured from the running instances,
+// never reloaded into them).
 // Two documents with equal fingerprints need no Restart Live.
 juce::String liveTopologyFingerprint(const ProjectDocument& doc);
 

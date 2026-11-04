@@ -81,6 +81,12 @@
 //       hermetic sidecar location. Exit 0 on success, 1 on any broken
 //       invariant. Driven by tests/test_desktop_autosave.py.
 //
+//   minihost_desktop --editor-sync-selftest=<plugin.vst3>
+//       Opens a plugin editor window and checks when closing it saves state
+//       and when it asks to Save. Needs a display. Exit 0 on success, 1 on
+//       a broken invariant, 2 on a missing path. Driven by
+//       tests/test_desktop_editor_sync.py.
+//
 //   minihost_desktop --plugin-browser-selftest
 //       GUI self-test of the Plugin Browser dialog's lifetime: open it,
 //       re-request it while open (must reuse, not stack a second window),
@@ -319,7 +325,8 @@ static void startWatchdog(int seconds)
 // Owns one MH_Plugin instance and its JUCE editor. closeButtonPressed
 // invokes `on_close_` so the owner (DesktopApplication or whoever
 // constructed it) can drop the unique_ptr and trigger destruction.
-class EditorWindow : public juce::DocumentWindow
+class EditorWindow : public juce::DocumentWindow,
+                     private juce::AudioProcessorListener
 {
 public:
     EditorWindow(EditorOptions opts,
@@ -358,6 +365,10 @@ public:
             placeholder_.reset(msg);
         }
 
+        // Registered after the editor exists, so its construction does not
+        // count as an edit. Live editors sync via captureLiveState instead.
+        if (opts_.owns_plugin) proc_->addListener(this);
+
         if (opts_.toolbar_label.isNotEmpty() && opts_.toolbar_action)
         {
             renderBtn_.setButtonText(opts_.toolbar_label);
@@ -395,7 +406,7 @@ public:
                                       juce::dontSendNotification);
             programBox_.onChange = [this] {
                 const int index = programBox_.getSelectedId() - 1;
-                if (index >= 0) mh_set_program(plugin_, index);
+                if (index >= 0) { mh_set_program(plugin_, index); markTouched(); }
             };
             programBox_.setBounds(316, 6, 220, kToolbarHeight - 12);
             container->addAndMakeVisible(programBox_);
@@ -409,6 +420,7 @@ public:
                                   juce::dontSendNotification);
         bypassBtn_.onClick = [this] {
             mh_set_bypass(plugin_, bypassBtn_.getToggleState() ? 1 : 0);
+            markTouched();
         };
         bypassBtn_.setBounds(numPrograms > 1 ? 544 : 316, 6, 90, kToolbarHeight - 12);
         container->addAndMakeVisible(bypassBtn_);
@@ -464,6 +476,7 @@ public:
             worker_.join();
         if (workerTweaker_.joinable())
             workerTweaker_.join();
+        if (opts_.owns_plugin && proc_ != nullptr) proc_->removeListener(this);
         editor_.reset();
         if (plugin_ && opts_.owns_plugin)
             mh_close(plugin_);
@@ -480,8 +493,39 @@ public:
     MH_Plugin* plugin() noexcept { return plugin_; }
     const EditorOptions& options() const noexcept { return opts_; }
 
+    // Encoded plugin state at the last point the document was known to
+    // match it (open, capture, sync). Setting it also clears touched().
+    const juce::String& stateBaseline() const noexcept { return state_baseline_; }
+    void setStateBaseline(juce::String s)
+    {
+        state_baseline_ = std::move(s);
+        touched_.store(false, std::memory_order_relaxed);
+    }
+
+    // True once the plugin or this window reported an edit since the last
+    // baseline: a parameter change, a program change, non-parameter state,
+    // or a preset load.
+    bool touched() const noexcept { return touched_.load(std::memory_order_relaxed); }
+
+    // False when two encodes with no edit between them differed at open.
+    // Such a plugin's state blob cannot show whether it was edited.
+    bool stateStable() const noexcept { return state_stable_; }
+    void setStateStable(bool b) noexcept { state_stable_ = b; }
+
 private:
     static constexpr int kToolbarHeight = 32;
+
+    void markTouched() noexcept { touched_.store(true, std::memory_order_relaxed); }
+
+    // May run on any thread, including one the plugin owns.
+    void audioProcessorParameterChanged(juce::AudioProcessor*, int, float) override
+    { markTouched(); }
+    void audioProcessorChanged(juce::AudioProcessor*,
+                               const ChangeDetails& d) override
+    {
+        // Latency and parameter-info updates are not edits.
+        if (d.programChanged || d.nonParameterStateChanged) markTouched();
+    }
 
     void runStateCall(const std::function<void()>& fn)
     {
@@ -580,6 +624,7 @@ private:
                                       "(most often it belongs to a different plugin)");
                     return;
                 }
+                markTouched();
                 // The plugin may have jumped to another program.
                 if (programBox_.getNumItems() > 0)
                     programBox_.setSelectedId(mh_get_program(plugin_) + 1,
@@ -760,6 +805,9 @@ private:
     MH_Plugin*                                  plugin_ = nullptr;
     juce::AudioProcessor*                       proc_   = nullptr;
     std::function<void(EditorWindow*)>          on_close_;
+    juce::String                                state_baseline_;
+    std::atomic<bool>                           touched_{false};
+    bool                                        state_stable_ = true;
     std::unique_ptr<juce::AudioProcessorEditor> editor_;
     std::unique_ptr<juce::Component>            placeholder_;
     juce::TextButton                            renderBtn_;
@@ -1626,6 +1674,24 @@ public:
             return;
         }
 
+        // Editor-close sync decision against a real plugin editor window.
+        // Needs a display, like --plugin-browser-selftest. Driven by
+        // tests/test_desktop_editor_sync.py.
+        if (args.containsOption("--editor-sync-selftest"))
+        {
+            const auto path = args.removeValueForOption("--editor-sync-selftest");
+            if (path.isEmpty())
+            {
+                std::fprintf(stderr, "--editor-sync-selftest requires a plugin path\n");
+                setApplicationReturnValue(2);
+                quit();
+                return;
+            }
+            setApplicationReturnValue(runEditorSyncSelfTest(path));
+            quit();
+            return;
+        }
+
         // Headless plugin scan: register the host formats, scan the given
         // (or default) directories in-process, and write the resulting
         // KnownPluginList to XML. Proves addDefaultFormatsToManager yields
@@ -1806,7 +1872,10 @@ public:
             known_plugins_.setCustomScanner(
                 std::make_unique<OutOfProcessPluginScanner>());
             loadKnownPlugins();
-            owns_library_ = true;   // this process persists the library
+            // Persist scan results on the heartbeat, not only at clean exit,
+            // so a crash after a scan keeps the scan.
+            library_listener_.fn = [this]() { library_dirty_ = true; };
+            known_plugins_.addChangeListener(&library_listener_);
 
             // Autosave: the canvas marks the working document dirty on every
             // edit; a heartbeat timer snapshots it to a sidecar so a plugin
@@ -1817,6 +1886,11 @@ public:
                 doc_dirty_ = true;
                 unsaved_changes_ = true;
                 pushSequencerEdits();
+                // Set BPM, or an undo or redo across it, reaches the
+                // transport here; BPM is outside the restart fingerprint.
+                if (live_)
+                    if (const auto* d = mainWindow_->currentDocument())
+                        live_->setBpm(d->effectiveBpm());
                 maybeApplyLiveEdit();
             });
             autosave_enabled_ = true;
@@ -1828,8 +1902,14 @@ public:
                 + juce::String::toHexString(
                       settingsFile().getFullPathName().hashCode64()));
             owns_sidecar_ = sidecar_lock_->enter(0);
+            // The same lock decides who writes known_plugins.xml; two
+            // writers would each overwrite the other's scan at exit.
+            owns_library_ = owns_sidecar_;
             autosave_timer_ = std::make_unique<CallbackTimer>(
-                [this]() { performAutosave(); });
+                [this]() {
+                    performAutosave();
+                    if (library_dirty_) saveKnownPlugins();
+                });
             autosave_timer_->startTimer(kAutosaveIntervalMs);
 
             // A surviving sidecar means the previous session did not shut
@@ -1840,8 +1920,9 @@ public:
                 juce::AlertWindow::showMessageBoxAsync(
                     juce::AlertWindow::InfoIcon,
                     "Another minihost window is open",
-                    "Crash recovery covers the first window only. Save "
-                    "work in this window yourself.");
+                    "Crash recovery and saving the plugin library cover the "
+                    "first window only. Save work in this window yourself; "
+                    "plugin scans made here are not kept.");
         }
     }
 
@@ -1863,6 +1944,7 @@ public:
         // list) and spawned scan-worker children have an empty member list
         // and must NOT write it back, or they clobber a freshly-scanned
         // library with an empty one.
+        known_plugins_.removeChangeListener(&library_listener_);
         if (owns_library_) saveKnownPlugins();
         // Only if it is still on screen -- a dismissed one is already gone.
         // Component::~Component makes the ModalComponentManager drop its
@@ -1898,8 +1980,8 @@ public:
     void confirmDiscardUnsaved(const juce::String& action,
                                std::function<void()> proceed)
     {
-        // Knob moves in a live editor only reach the document here.
-        syncLiveStateIntoDocument();
+        // Knob moves in an open editor only reach the document here.
+        syncPluginStateIntoDocument();
         if (!autosave_enabled_ || !unsaved_changes_ || !mainWindow_)
         {
             proceed();
@@ -2021,6 +2103,23 @@ public:
         doc_dirty_ = false;
     }
 
+    // Moves an unreadable sidecar to a dated sibling and drops the meta file.
+    // Returns the kept file, or File() if the move failed; the sidecar then
+    // stays where it is.
+    juce::File preserveUnreadableAutosave()
+    {
+        if (!owns_sidecar_) return {};
+        const auto kept = autosaveFile()
+            .getSiblingFile("autosave-unreadable-"
+                            + juce::Time::getCurrentTime()
+                                  .formatted("%Y%m%d-%H%M%S")
+                            + ".json")
+            .getNonexistentSibling();
+        if (!autosaveFile().moveFileTo(kept)) return {};
+        clearAutosave();
+        return kept;
+    }
+
     // On launch, a surviving sidecar means the last session ended without
     // reaching shutdown() (a plugin crash, a kill, a power loss). Offer to
     // reopen it. Recover loads the snapshot and re-associates its original
@@ -2063,12 +2162,22 @@ public:
                             doc_dirty_       = true;
                             unsaved_changes_ = true;
                         } catch (const std::exception& e) {
+                            // The sidecar may be the only copy of the work
+                            // (e.g. written by a newer build): keep it.
+                            const auto kept = preserveUnreadableAutosave();
                             juce::AlertWindow::showMessageBoxAsync(
                                 juce::AlertWindow::WarningIcon,
                                 "Recovery failed",
                                 juce::String("Could not read the autosave "
-                                             "file: ") + e.what());
-                            clearAutosave();
+                                             "file: ") + e.what() + "\n\n"
+                                + (kept == juce::File()
+                                   ? juce::String("It was left in place and "
+                                                  "will be offered again.")
+                                   : "It was kept as "
+                                     + kept.getFullPathName()
+                                     + (orig_path.isEmpty() ? juce::String()
+                                        : " (from " + orig_path + ")")
+                                     + "."));
                         }
                     }
                     else               // Discard
@@ -2086,14 +2195,21 @@ public:
             known_plugins_.recreateFromXml(*xml);
     }
 
+    // XmlElement::writeTo(File) writes a temp file and renames it over the
+    // target. On failure library_dirty_ stays set so the next tick retries.
     void saveKnownPlugins()
     {
+        if (!owns_library_) return;
         if (auto xml = std::unique_ptr<juce::XmlElement>(
                 known_plugins_.createXml()))
         {
             const auto path = knownPluginsFile();
             path.getParentDirectory().createDirectory();
-            xml->writeTo(path);
+            if (xml->writeTo(path))
+                library_dirty_ = false;
+            else
+                std::fprintf(stderr, "failed to save %s\n",
+                             path.getFullPathName().toRawUTF8());
         }
     }
 
@@ -2613,7 +2729,7 @@ private:
             if (!project::captureLiveState(*lp, captured))
                 return fail("captureLiveState() missed the parameter change");
 
-            // Layout and plugin state do not change the live topology; an
+            // Layout, BPM and plugin state do not change the live topology; an
             // edge does.
             const auto fp = project::liveTopologyFingerprint(doc);
             if (project::liveTopologyFingerprint(captured) != fp)
@@ -2623,6 +2739,10 @@ private:
                 = project::NodePosition{ 7.0f, 9.0f };
             if (project::liveTopologyFingerprint(moved) != fp)
                 return fail("fingerprint changed with layout");
+            auto retimed = doc;
+            retimed.bpm = doc.effectiveBpm() + 1.0;
+            if (project::liveTopologyFingerprint(retimed) != fp)
+                return fail("fingerprint changed with bpm");
             if (doc.edges.empty()) return fail("project has no edge to remove");
             auto rewired = doc;
             rewired.edges.pop_back();
@@ -2744,6 +2864,39 @@ private:
             if (hist.canRedo())
                 return fail("redo stack not cleared by new edit");
 
+            // Plugin state and probe survive undo and redo; BPM, an
+            // ordinary edit, does not.
+            {
+                project::ProjectDocument d = doc;
+                project::PluginNodeSpec p;
+                p.id   = "undo_selftest_plugin";
+                p.path = project_file.getSiblingFile("x.vst3");
+                d.plugins.push_back(p);
+                const int bs = d.block_size;
+                const double bpm0 = d.effectiveBpm();
+                UndoHistory h;
+                h.snapshot(d);
+                d.block_size = bs + 1;
+                d.plugins.back().state_b64          = "AAAA";
+                d.plugins.back().probed_in_channels = 2;
+                d.bpm = bpm0 + 1.0;
+                if (!h.undo(d))             return fail("carry: undo false");
+                if (d.block_size != bs)     return fail("carry: edit not undone");
+                if (d.plugins.back().state_b64 != "AAAA")
+                    return fail("carry: undo reverted plugin state");
+                if (d.plugins.back().probed_in_channels != 2)
+                    return fail("carry: undo reverted probe");
+                if (d.effectiveBpm() != bpm0)
+                    return fail("carry: undo did not revert bpm");
+                d.plugins.back().state_b64 = "BBBB";
+                if (!h.redo(d))             return fail("carry: redo false");
+                if (d.block_size != bs + 1) return fail("carry: edit not redone");
+                if (d.plugins.back().state_b64 != "BBBB")
+                    return fail("carry: redo reverted plugin state");
+                if (d.effectiveBpm() != bpm0 + 1.0)
+                    return fail("carry: redo did not reapply bpm");
+            }
+
             std::fprintf(stderr, "undo-selftest OK\n");
             setApplicationReturnValue(0);
             quit();
@@ -2784,6 +2937,76 @@ private:
     //   5. the same holds a second time round, and the final dismissal
     //      leaves nothing for shutdown() to free.
     // Exit 0 on success, 1 on any broken invariant.
+    // Opens a non-live editor on `plugin_path` and checks syncEditorState:
+    // an untouched open is clean, a reported edit is an Edit, and an
+    // unreported state change is Noise on an unstable plugin and an Edit on
+    // a stable one. Returns the exit code.
+    int runEditorSyncSelfTest(const juce::String& plugin_path)
+    {
+        auto fail = [](const juce::String& m) {
+            std::fprintf(stderr, "editor-sync-selftest FAIL: %s\n", m.toRawUTF8());
+            return 1;
+        };
+        auto loaded = loadPlugin(plugin_path);
+        if (loaded.plugin == nullptr) return fail(loaded.error);
+        if (mh_get_num_params(loaded.plugin) < 1)
+        {
+            mh_close(loaded.plugin);
+            return fail("plugin has no parameters");
+        }
+
+        EditorOptions opts{};
+        opts.plugin_path    = plugin_path;
+        opts.mode           = EditorMode::Interactive;
+        opts.toolbar_label  = "Capture State";
+        opts.toolbar_action = [](MH_Plugin*) {};
+        opts.node_id        = "fx";
+        // Owns and closes loaded.plugin.
+        auto w = std::make_unique<EditorWindow>(
+            std::move(opts), loaded.plugin, loaded.proc,
+            [](EditorWindow*) {});
+        armEditorBaseline(*w);
+
+        project::ProjectDocument doc;
+        project::PluginNodeSpec spec;
+        spec.id        = "fx";
+        spec.path      = juce::File(plugin_path);
+        spec.state_b64 = w->stateBaseline();
+        doc.plugins.push_back(spec);
+        auto& state = doc.plugins.back().state_b64;
+
+        if (!w->stateStable())         return fail("fixture state is not stable");
+        if (w->touched())              return fail("touched right after open");
+        if (syncEditorState(*w, doc) != EditorSync::None)
+            return fail("untouched open was not clean");
+
+        // A host-notified parameter change is a reported edit.
+        mh_set_param(loaded.plugin, 0, 0.25f);
+        if (!w->touched())             return fail("parameter change not reported");
+        const juce::String before = state;
+        if (syncEditorState(*w, doc) != EditorSync::Edit)
+            return fail("reported edit was not an Edit");
+        if (state == before)           return fail("Edit did not write the state");
+        if (w->touched())              return fail("sync did not clear touched");
+
+        // An unreported change (setValue only) on an unstable plugin is Noise.
+        w->setStateStable(false);
+        mh_set_param_rt(loaded.plugin, 0, 0.75f);
+        if (w->touched())              return fail("silent change was reported");
+        if (syncEditorState(*w, doc) != EditorSync::Noise)
+            return fail("unreported change on unstable plugin was not Noise");
+
+        // The same change on a stable plugin is an Edit.
+        w->setStateStable(true);
+        mh_set_param_rt(loaded.plugin, 0, 0.5f);
+        if (syncEditorState(*w, doc) != EditorSync::Edit)
+            return fail("unreported change on stable plugin was not an Edit");
+
+        w.reset();
+        std::fprintf(stderr, "editor-sync-selftest OK\n");
+        return 0;
+    }
+
     void runPluginBrowserSelfTest()
     {
         // Formats registered as in the GUI shell, so PluginListComponent is
@@ -2957,6 +3180,24 @@ private:
                 || autosaveMetaFile().existsAsFile())
                 return fail("clearAutosave left a file behind");
 
+            // An unreadable sidecar is moved aside, never deleted.
+            const juce::String junk = "{ not a project";
+            autosaveFile().replaceWithText(junk);
+            autosaveMetaFile().replaceWithText(orig_path.getFullPathName());
+            bool threw = false;
+            try { project::parseProjectFile(autosaveFile()); }
+            catch (const std::exception&) { threw = true; }
+            if (!threw) return fail("junk sidecar parsed");
+            const juce::File kept = preserveUnreadableAutosave();
+            if (kept == juce::File())
+                return fail("preserveUnreadableAutosave did not move it");
+            if (kept.loadFileAsString() != junk)
+                return fail("kept sidecar content differs");
+            if (autosaveFile().existsAsFile()
+                || autosaveMetaFile().existsAsFile())
+                return fail("unreadable sidecar left in place");
+            kept.deleteFile();
+
             std::fprintf(stderr, "autosave-selftest OK\n");
             setApplicationReturnValue(0);
             quit();
@@ -3080,7 +3321,7 @@ private:
         // Untitled (no path yet) -> fall through to Save As.
         if (path == juce::File())
         { saveCurrentProjectAs(std::move(on_success)); return; }
-        syncLiveStateIntoDocument();
+        syncPluginStateIntoDocument();
         try {
             project::saveProjectFile(path, *doc);
             // The working copy now matches disk: no unsaved work to recover
@@ -3123,7 +3364,7 @@ private:
                     file = file.withFileExtension("json");
                 auto* doc = mainWindow_->currentDocument();
                 if (doc == nullptr) return;
-                syncLiveStateIntoDocument();
+                syncPluginStateIntoDocument();
                 try {
                     project::saveProjectFile(file, *doc);
                     clearAutosave();
@@ -3146,13 +3387,14 @@ private:
         if (!mainWindow_) return;
         // The project live mode runs against is about to be replaced.
         if (live_ && live_->isRunning()) stopLive();
+        closeCanvasEditors();
         project::ProjectDocument blank;
         blank.sample_rate = 48000;
         blank.block_size  = 512;
         mainWindow_->showProject(std::move(blank), juce::File());
-        // A fresh empty project has nothing unsaved yet; don't autosave it
-        // or prompt to save it on quit until the user actually edits.
-        doc_dirty_       = false;
+        // A fresh empty project has nothing unsaved yet. The old sidecar
+        // holds the replaced document; left behind, a crash would offer it.
+        clearAutosave();
         unsaved_changes_ = false;
     }
 
@@ -3241,13 +3483,94 @@ private:
         auto* w = new EditorWindow(
             std::move(opts), loaded.plugin, loaded.proc,
             [this](EditorWindow* victim) {
+                // A non-live editor's instance dies with the window.
+                syncEditorIntoDocument(*victim);
                 for (int i = 0; i < editors_.size(); ++i)
                     if (editors_[i] == victim) {
                         editors_.remove(i);
                         break;
                     }
             });
+        if (w->options().owns_plugin) armEditorBaseline(*w);
         editors_.add(w);
+    }
+
+    // Records the open-time state and whether it encodes stably: two
+    // encodes with no edit between them that differ mean the blob alone
+    // cannot show an edit.
+    static void armEditorBaseline(EditorWindow& w)
+    {
+        const juce::String b1 = project::encodePluginState(w.plugin());
+        const juce::String b2 = project::encodePluginState(w.plugin());
+        w.setStateBaseline(b1);
+        w.setStateStable(b1 == b2);
+    }
+
+    // Edit: an edit to save (Save prompt). Noise: the blob changed with no
+    // reported edit on a plugin that encodes unstably; kept in the document
+    // and autosaved, but not prompted for.
+    enum class EditorSync { None, Noise, Edit };
+
+    // Writes a non-live canvas editor's plugin state into its node of `doc`
+    // if it changed since the window's baseline.
+    static EditorSync syncEditorState(EditorWindow& w,
+                                      project::ProjectDocument& doc)
+    {
+        const auto& o = w.options();
+        if (!o.owns_plugin || o.node_id.isEmpty() || w.plugin() == nullptr)
+            return EditorSync::None;
+        const juce::String enc = project::encodePluginState(w.plugin());
+        if (enc.isEmpty() || enc == w.stateBaseline()) return EditorSync::None;
+        for (auto& p : doc.plugins)
+            if (p.id == o.node_id)
+            {
+                const bool edit = w.touched() || w.stateStable();
+                w.setStateBaseline(enc);
+                if (p.state_b64 == enc) return EditorSync::None;
+                p.state_b64 = enc;
+                return edit ? EditorSync::Edit : EditorSync::Noise;
+            }
+        return EditorSync::None;
+    }
+
+    // syncEditorState on the open document, then the dirty flags. Returns
+    // true if the document changed.
+    bool syncEditorIntoDocument(EditorWindow& w)
+    {
+        if (!mainWindow_) return false;
+        auto* doc = mainWindow_->currentDocument();
+        if (doc == nullptr) return false;
+        const auto r = syncEditorState(w, *doc);
+        if (r == EditorSync::None) return false;
+        doc_dirty_ = true;
+        if (r == EditorSync::Edit) unsaved_changes_ = true;
+        if (auto* cv = mainWindow_->canvas())
+            cv->notifyDocumentChanged();
+        return true;
+    }
+
+    // Copies every open editor's plugin state into the document: non-live
+    // windows by baseline, live instances via captureLiveState.
+    bool syncPluginStateIntoDocument()
+    {
+        bool changed = false;
+        for (auto* w : editors_)
+            changed |= syncEditorIntoDocument(*w);
+        changed |= syncLiveStateIntoDocument();
+        return changed;
+    }
+
+    // Closes the non-live canvas editors. Called when the document is
+    // replaced, after its state was synced: a node id in the next document
+    // must not receive another project's plugin state.
+    void closeCanvasEditors()
+    {
+        for (int i = editors_.size() - 1; i >= 0; --i)
+        {
+            const auto& o = editors_[i]->options();
+            if (o.owns_plugin && o.node_id.isNotEmpty())
+                editors_.remove(i);
+        }
     }
 
     EditorWindow* findLiveEditor(const juce::String& node_id)
@@ -3371,6 +3694,8 @@ private:
             return;
         }
         doc->plugins[(size_t) plugin_index].state_b64 = encoded;
+        for (auto* w : editors_)
+            if (w->plugin() == p) w->setStateBaseline(encoded);
         // Capturing state mutates the document outside the canvas edit path
         // (which drives the dirty flags), so mark it dirty here too.
         doc_dirty_       = true;
@@ -3388,10 +3713,12 @@ private:
         if (live_ && live_->isRunning()) stopLive();
         try {
             auto doc = project::parseProjectFile(project_file);
+            closeCanvasEditors();
             if (mainWindow_)
                 mainWindow_->showProject(std::move(doc), project_file);
-            // Just loaded from disk: the working copy matches the file.
-            doc_dirty_       = false;
+            // Just loaded from disk: the working copy matches the file, and
+            // the old sidecar belongs to the replaced document.
+            clearAutosave();
             unsaved_changes_ = false;
         } catch (const std::exception& e) {
             juce::AlertWindow::showMessageBoxAsync(
@@ -3445,7 +3772,7 @@ private:
         // Topology swap under mute: stop -> reload -> start. Uses the open
         // document, so unsaved edits are heard. The old instances go with
         // the stop, so their edits and editor windows are collected first.
-        syncLiveStateIntoDocument();
+        syncPluginStateIntoDocument();
         const auto closed_editors = closeLiveEditors();
         live_restart_pending_ = false;
         auto& engine = ensureLiveEngine();
@@ -3627,12 +3954,14 @@ private:
                         const double bpm
                             = aw->getTextEditorContents("bpm").getDoubleValue();
                         auto* d = mainWindow_ ? mainWindow_->currentDocument() : nullptr;
-                        if (bpm > 0.0 && bpm < 1000.0 && d != nullptr)
+                        if (bpm > 0.0 && bpm < 1000.0 && d != nullptr
+                            && bpm != d->effectiveBpm())
                         {
+                            // An undo step; the edit callback marks the
+                            // document dirty and sets the transport.
+                            if (auto* cv = mainWindow_->canvas())
+                                cv->recordExternalEdit();
                             d->bpm = bpm;
-                            doc_dirty_ = true;
-                            unsaved_changes_ = true;
-                            if (live_) live_->setBpm(bpm);
                         }
                     }
                     delete aw;
@@ -3673,9 +4002,17 @@ private:
     // top of initialise()); keeps the child's IPC connection alive.
     std::unique_ptr<PluginScannerSubprocess> scanner_subprocess_;
 
-    // True only in the GUI app-shell, which loads/owns known_plugins_ and is
-    // the only process that should persist it on shutdown.
+    // True only in the GUI app-shell instance holding sidecar_lock_: the one
+    // process that persists known_plugins_.
     bool owns_library_ = false;
+    // Raised by known_plugins_ change messages; the heartbeat saves.
+    bool library_dirty_ = false;
+    struct LibraryListener : juce::ChangeListener {
+        std::function<void()> fn;
+        void changeListenerCallback(juce::ChangeBroadcaster*) override
+        { if (fn) fn(); }
+    };
+    LibraryListener library_listener_;
 
     // Autosave / crash recovery. The heartbeat timer writes autosaveFile()
     // when doc_dirty_ is set; the flag is raised by canvas edits (via

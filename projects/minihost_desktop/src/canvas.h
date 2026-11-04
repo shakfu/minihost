@@ -116,6 +116,10 @@ public:
     bool canUndo() const { return undo_history_.canUndo(); }
     bool canRedo() const { return undo_history_.canRedo(); }
 
+    // For document edits made outside the canvas (e.g. Set BPM): records
+    // an undo step and notifies like a canvas edit. Call before mutating.
+    void recordExternalEdit() { recordUndo(); }
+
     // Applies one scripted edit through the code the mouse, context menu
     // and Properties dialog use. Used by `minihost_desktop --canvas-script`
     // to test canvas edits without a window. Ops (JSON objects):

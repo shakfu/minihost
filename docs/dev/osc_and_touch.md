@@ -1,8 +1,6 @@
 # OSC support and generated touch surfaces
 
-Status: all six phases implemented. See CHANGELOG.md for what each
-landed as, and the per-phase notes below for where the code and this plan
-diverged. See the per-phase notes in section 4, and CHANGELOG.md for what each landed as. Companion to [desktop_app.md](desktop_app.md) in intent: a design that gets committed before the code, so the ordering decisions are arguable in review rather than discovered halfway through.
+Status: all six phases implemented. See CHANGELOG.md for what each landed as, and the per-phase notes below for where the code and this plan diverged. See the per-phase notes in section 4, and CHANGELOG.md for what each landed as. Companion to [desktop_app.md](desktop_app.md) in intent: a design that gets committed before the code, so the ordering decisions are arguable in review rather than discovered halfway through.
 
 Goal: minihost speaks OSC natively, MIDI CC gains 14-bit resolution, and a script turns any plugin into a tablet control surface bound to one or both.
 
@@ -184,9 +182,7 @@ Python: `minihost.OscServer` / `minihost.OscClient` in `_core.cpp`, context-mana
 
 ### Phase 2 -- OSC mapping, unified with MIDI mapping -- DONE
 
-Landed with the shared core keyed on a normalized float plus a source
-identity, per section 7. `--osc-feedback` moved to Phase 4, where the
-feedback machinery it would drive actually lives.
+Landed with the shared core keyed on a normalized float plus a source identity, per section 7. `--osc-feedback` moved to Phase 4, where the feedback machinery it would drive actually lives.
 
 `src/minihost/control.py` grows an `OscMapper` alongside `MidiMapper`, and both should share a resolution/curve/range core rather than duplicating `_CCMapping.normalize`.
 
@@ -202,32 +198,15 @@ feedback machinery it would drive actually lives.
 
 ### Phase 3 -- 14-bit CC pairs -- DONE
 
-**One rule below changed during implementation, and the plan was wrong.**
-This section originally specified: "On MSB receipt: store it, reset the
-cached LSB to 0, emit `msb << 7`." That produces a sawtooth. A controller
-re-sending an unchanged `(MSB, LSB)` pair -- which is what a controller
-sending full pairs does on every message -- would emit `msb << 7` and then
+**One rule below changed during implementation, and the plan was wrong.** This section originally specified: "On MSB receipt: store it, reset the cached LSB to 0, emit `msb << 7`." That produces a sawtooth. A controller re-sending an unchanged `(MSB, LSB)` pair -- which is what a controller sending full pairs does on every message -- would emit `msb << 7` and then
 `(msb << 7) | lsb` forever, oscillating by up to 1/128 of the range at
-message rate. The plan justified the transient by saying Phase 0 coalescing
-hides it, which is true only when both halves land in the same audio block:
-a pair takes about 2 ms on the wire against a 5.3 ms block at 48 kHz/256, so
-they usually do, but not reliably.
+message rate. The plan justified the transient by saying Phase 0 coalescing hides it, which is true only when both halves land in the same audio block: a pair takes about 2 ms on the wire against a 5.3 ms block at 48 kHz/256, so they usually do, but not reliably.
 
-The implemented rule keeps the last LSB instead. An unchanged pair therefore
-emits an unchanged value, and the worst case is a stale fine position for the
-microseconds until the LSB arrives -- an error of at most one coarse step,
-never a periodic wobble. `tests/test_midi_14bit.py::test_a_repeated_pair_emits_a_stable_value`
-is the test that decides it.
+The implemented rule keeps the last LSB instead. An unchanged pair therefore emits an unchanged value, and the worst case is a stale fine position for the microseconds until the LSB arrives -- an error of at most one coarse step, never a periodic wobble. `tests/test_midi_14bit.py::test_a_repeated_pair_emits_a_stable_value` is the test that decides it.
 
-One case the plan did not cover: an LSB arriving before any MSB has been
-seen. Emitting it alone reads as `msb = 0` and slams the parameter to the
-bottom of its range, so it is held until an MSB gives it a coarse position to
-refine.
+One case the plan did not cover: an LSB arriving before any MSB has been seen. Emitting it alone reads as `msb = 0` and slams the parameter to the bottom of its range, so it is held until an MSB gives it a coarse position to refine.
 
-The CLI spelling is `--map14` with the same grammar as `--map`, rather than
-the `channel:cc14:param:...` form sketched below -- a separate flag keeps the
-existing spec parser untouched and leaves no ambiguity about which field is
-the controller number.
+The CLI spelling is `--map14` with the same grammar as `--map`, rather than the `channel:cc14:param:...` form sketched below -- a separate flag keeps the existing spec parser untouched and leaves no ambiguity about which field is the controller number.
 
 
 Per the MIDI spec, CC 0-31 carry the MSB and CC 32-63 carry the LSB for controller n, i.e. the pair is `(n, n + 32)` for n in 0..31.
@@ -258,13 +237,7 @@ Non-goal for this phase: RPN/NRPN (CC 98/99/6/38). It is a different mechanism, 
 
 ### Phase 4 -- feedback, host to surface -- DONE
 
-Implemented by polling rather than by hooking the parameter-value callback
-the plan proposed. The callback is a single slot the Python `Plugin` binding
-already occupies, it fires on whatever thread changed the parameter
-(including the audio thread), and a surface cannot use more than ~30 updates
-a second anyway -- so its precision would have to be rate-limited back down
-to what polling produces directly. The echo hazard the plan identified is
-handled with the source identity Phase 2 put in the shared core.
+Implemented by polling rather than by hooking the parameter-value callback the plan proposed. The callback is a single slot the Python `Plugin` binding already occupies, it fires on whatever thread changed the parameter (including the audio thread), and a surface cannot use more than ~30 updates a second anyway -- so its precision would have to be rate-limited back down to what polling produces directly. The echo hazard the plan identified is handled with the source identity Phase 2 put in the shared core.
 
 
 Without this a generated surface is write-only: load a preset and every fader lies.
@@ -281,9 +254,7 @@ Rate-limit the feedback stream (30 Hz per parameter is plenty for a moving fader
 
 ### Phase 5 -- transport -- DONE
 
-Both halves landed together: the live playhead the plan called out as
-missing, and the OSC addresses on top of it. A command ring rather than
-atomics, because this project avoids C11 `<stdatomic.h>` on purpose.
+Both halves landed together: the live playhead the plan called out as missing, and the OSC addresses on top of it. A command ring rather than atomics, because this project avoids C11 `<stdatomic.h>` on purpose.
 
 
 Larger than it looks, and worth calling out before anyone commits to it.
@@ -311,10 +282,7 @@ Recommend splitting job 1 into its own TODO entry under Tier 1 or 2 independent 
 
 ### Phase 6 -- surface generation -- DONE
 
-Landed as designed, on `ui_json` schema 2 with a `case`/`when` branch table.
-One detail the plan did not anticipate: two branches per widget kind rather
-than three total, because a parameter past the CC limit has no controller
-number and `each` cannot conditionally include a message.
+Landed as designed, on `ui_json` schema 2 with a `case`/`when` branch table. One detail the plan did not anticipate: two branches per widget kind rather than three total, because a parameter past the CC limit has no controller number and `each` cannot conditionally include a message.
 
 
 The user-facing deliverable: `minihost touch <plugin>` writes a layout and the matching map file, and they agree by construction.
@@ -588,8 +556,11 @@ Two rules to respect when adopting it. A branch under a repeat's `of` is one nod
 **Conditions for adopting it, none of which hold yet:**
 
 1. A released py2tosc carries schema 3. Emitting it now would produce descriptions that `pip install 'minihost[touch]'` -- which resolves to 0.5.2 -- refuses with a `SchemaError`.
+
 2. `pyproject.toml`'s `touch` extra floor moves from `>=0.5.2` to that release, and `CIBW_TEST_REQUIRES` with it.
+
 3. `tests/check_json.py` is re-copied. The vendored one is from 0.5.2 and does not know schema 3, so it would report a schema newer than its tables know -- which is the vendoring banner's stated re-copy trigger working as intended.
+
 4. `build_layout` stamps what `required_schema` computes, which it already does not hardcode.
 
 Until then the generator emits schema 2, which every release from 0.5.2 onward keeps building -- files are durable and readers advance.
@@ -602,15 +573,11 @@ One observation from the design discussion, kept because it explains the shape o
 
 ## 7. Surface transports: why not a web page over Web MIDI
 
-Asked before Phase 2, because if a browser UI were the better target then the
-mapping layer should be built facing it. It is not, but the reasoning is worth
-keeping so it does not get re-litigated.
+Asked before Phase 2, because if a browser UI were the better target then the mapping layer should be built facing it. It is not, but the reasoning is worth keeping so it does not get re-litigated.
 
 ### The constraint everything follows from
 
-**A browser cannot send UDP.** No page will ever speak OSC to minihost
-directly. That leaves exactly three transports from a surface to this process,
-and they reach different devices:
+**A browser cannot send UDP.** No page will ever speak OSC to minihost directly. That leaves exactly three transports from a surface to this process, and they reach different devices:
 
 | transport | reaches | new minihost code | resolution |
 |---|---|---|---|
@@ -620,81 +587,46 @@ and they reach different devices:
 
 ### Web MIDI does not reach an iPad
 
-Safari on iOS/iPadOS does not support the Web MIDI API -- not in any version
-through 26.6 -- and Safari on macOS does not either, through 27 and Technology
-Preview. WebKit has declined to ship it for years on fingerprinting grounds,
-since MIDI devices report unique identifying IDs, and there is no published
-roadmap. Support is Chrome 43+, Edge 79+, Firefox 108+ and Chrome on Android.
+Safari on iOS/iPadOS does not support the Web MIDI API -- not in any version through 26.6 -- and Safari on macOS does not either, through 27 and Technology Preview. WebKit has declined to ship it for years on fingerprinting grounds, since MIDI devices report unique identifying IDs, and there is no published roadmap. Support is Chrome 43+, Edge 79+, Firefox 108+ and Chrome on Android.
 
-Reaching for Chrome on the iPad does not help: every iPadOS browser is WebKit
-underneath, outside the EU alternative-engine carve-out.
+Reaching for Chrome on the iPad does not help: every iPadOS browser is WebKit underneath, outside the EU alternative-engine carve-out.
 
-So for the case that motivates a touch surface at all -- a tablet on a stand
-driving a plugin -- Web MIDI is unavailable on the dominant tablet. That is
-the whole answer to "should this replace `.tosc`": it cannot, because it does
-not run where `.tosc` runs.
+So for the case that motivates a touch surface at all -- a tablet on a stand driving a plugin -- Web MIDI is unavailable on the dominant tablet. That is the whole answer to "should this replace `.tosc`": it cannot, because it does not run where `.tosc` runs.
 
-Sources: <https://caniuse.com/midi>,
-<https://developer.mozilla.org/en-US/docs/Web/API/Navigator/requestMIDIAccess>
+Sources: <https://caniuse.com/midi>, <https://developer.mozilla.org/en-US/docs/Web/API/Navigator/requestMIDIAccess>
 
 ### Where it does win, and it is free to try
 
-`mh_audio_create_virtual_midi_input` already exists, so a page calling
-`requestMIDIAccess()` and sending CC reaches `MidiMapper` today with **no new
-minihost code at all**. Against `.tosc` it also wins on:
+`mh_audio_create_virtual_midi_input` already exists, so a page calling `requestMIDIAccess()` and sending CC reaches `MidiMapper` today with **no new minihost code at all**. Against `.tosc` it also wins on:
 
 - Generation. Emitting HTML is trivial next to generating a zip of XML.
+
 - Iteration. Reload the page; no transfer to a device, no paid app.
-- Display. Parameter names with units, value curves, meters -- things a
-  TouchOSC layout does poorly or not at all.
 
-Two costs to know before starting. `requestMIDIAccess()` requires a secure
-context, so `https://` or `http://localhost` rather than `file://` in
-practice, which means serving the page from somewhere. And virtual MIDI ports
-do not exist natively on Windows -- libremidi's WinMM backend cannot create
-one -- so Windows users need loopMIDI or an equivalent driver.
+- Display. Parameter names with units, value curves, meters -- things a TouchOSC layout does poorly or not at all.
 
-Worth a short prototype on those terms: a virtual MIDI input, eight
-`<input type="range">`, `output.send([0xB0, cc, value])`. If it is pleasant on
-a laptop second screen it is a free win. It is simply not the iPad answer and
-should not be planned as one.
+Two costs to know before starting. `requestMIDIAccess()` requires a secure context, so `https://` or `http://localhost` rather than `file://` in practice, which means serving the page from somewhere. And virtual MIDI ports do not exist natively on Windows -- libremidi's WinMM backend cannot create one -- so Windows users need loopMIDI or an equivalent driver.
+
+Worth a short prototype on those terms: a virtual MIDI input, eight `<input type="range">`, `output.send([0xB0, cc, value])`. If it is pleasant on a laptop second screen it is a free win. It is simply not the iPad answer and should not be planned as one.
 
 ### If a browser UI is what is actually wanted, WebSocket is the one
 
-It beats Web MIDI on every axis except the dependency: it runs on iPad,
-carries float32 so the 7-bit problem never arises, needs no virtual MIDI
-driver on Windows, satisfies the secure-context rule automatically when served
-from localhost, and makes Phase 4's feedback direction fall out of the same
-connection instead of needing a second channel.
+It beats Web MIDI on every axis except the dependency: it runs on iPad, carries float32 so the 7-bit problem never arises, needs no virtual MIDI driver on Windows, satisfies the secure-context rule automatically when served from localhost, and makes Phase 4's feedback direction fall out of the same connection instead of needing a second channel.
 
-The cost is an HTTP/WebSocket server, which is a real new dependency and the
-reason this is not being adopted now. One licensing trap if it ever is:
-**Mongoose is dual GPLv2/commercial, and GPLv2-only is incompatible with this
-project's GPL-3.0-or-later.** civetweb (MIT) is the clean choice.
+The cost is an HTTP/WebSocket server, which is a real new dependency and the reason this is not being adopted now. One licensing trap if it ever is: **Mongoose is dual GPLv2/commercial, and GPLv2-only is incompatible with this project's GPL-3.0-or-later.** civetweb (MIT) is the clean choice.
 
-The honest counterweight is touch UX. A web page handles continuous controls
-worse than a native touch app: multitouch fader ergonomics have to be built by
-hand, browser chrome eats screen, pull-to-refresh fights vertical drags, and
-the screen sleeps. TouchOSC solved all of that years ago, and for performance
-use the gap is not small.
+The honest counterweight is touch UX. A web page handles continuous controls worse than a native touch app: multitouch fader ergonomics have to be built by hand, browser chrome eats screen, pull-to-refresh fights vertical drags, and the screen sleeps. TouchOSC solved all of that years ago, and for performance use the gap is not small.
 
 ### What this means for Phase 2
 
-Nothing gets decided now, and nothing needs to be. All three transports are
-the same parameter table with different back ends, which section 4's Phase 6
-already separates.
+Nothing gets decided now, and nothing needs to be. All three transports are the same parameter table with different back ends, which section 4's Phase 6 already separates.
 
-The one constraint worth adopting immediately, because it is free today and
-expensive later: **the shared resolution/curve/range core should key on a
-normalized float plus a source identity, not on CC numbers or OSC addresses.**
-Then a Web MIDI or WebSocket back end is a new adapter rather than a refactor.
-Phase 1's numeric `/mh/param/<index>` addressing already has that shape.
+The one constraint worth adopting immediately, because it is free today and expensive later: **the shared resolution/curve/range core should key on a normalized float plus a source identity, not on CC numbers or OSC addresses.** Then a Web MIDI or WebSocket back end is a new adapter rather than a refactor. Phase 1's numeric `/mh/param/<index>` addressing already has that shape.
 
 
 ## 8. Open questions
 
-Kept as a record of what was decided, not only what is undecided. Four of the
-five are now closed.
+Kept as a record of what was decided, not only what is undecided. Four of the five are now closed.
 
 - ~~**Chain addressing binds to slot position.**~~ **Closed before 0.8.0.** The framing in this plan was wrong about *why* it mattered: chains cannot be reordered at runtime, so it looked like a hazard waiting on a feature that does not exist. The real exposure is that the generated layout is the durable artefact and outlives the script that builds the chain -- edit the construction order and every saved address repoints in silence. Fixed by caller-assigned slot names (`mh_audio_set_slot_name`), addressed as `/mh/<name>/param/<index>`, with the numeric form kept unchanged. Deriving the name from the plugin was considered and rejected: `MH_Plugin` exposes no name, and duplicates in one chain would have to be numbered, which is positional again.
 

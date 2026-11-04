@@ -2,6 +2,8 @@
 
 Tracks work for the `minihost-desktop` binary described in [desktop_app.md](desktop_app.md). Library-level work (CLI, Python bindings, C ABI improvements not specifically driven by the desktop app) lives in the root [TODO.md](../../TODO.md).
 
+Open defects and gaps from the 2026-11-04 audit are listed in [desktop_audit.md](desktop_audit.md).
+
 Ordered roughly by dependency: items lower in a tier generally depend on items above them.
 
 ## Phase 0 - Prove the stack

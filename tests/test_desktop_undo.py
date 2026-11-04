@@ -9,7 +9,8 @@ binary's ``--undo-selftest`` mode, which asserts the full contract:
 - a mutation changes the serialized document,
 - undo restores the pre-edit bytes exactly,
 - redo re-applies the edit exactly,
-- a fresh edit clears the redo stack.
+- a fresh edit clears the redo stack,
+- plugin state and probe data are carried across undo and redo; BPM is undone.
 
 Any broken invariant makes the binary exit non-zero.
 

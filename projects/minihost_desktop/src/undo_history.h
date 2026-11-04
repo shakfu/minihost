@@ -14,6 +14,11 @@
 // state for redo); redo() reverses it. Any fresh snapshot() clears the redo
 // stack, matching the standard editor contract.
 //
+// Plugin state and probe data are not undone: undo and redo carry them from
+// the current document into the restored one (carryForward). They mirror the
+// plugin instances, which a snapshot restore does not reach, so restoring
+// them would leave the document disagreeing with the running plugin.
+//
 // GUI-free and header-only so it can be unit-tested headlessly (see the
 // --undo-selftest binary mode and tests/test_desktop_undo.py).
 
@@ -52,6 +57,7 @@ public:
     {
         if (undo_.empty()) return false;
         redo_.push_back(current);
+        carryForward(current, undo_.back());
         current = std::move(undo_.back());
         undo_.pop_back();
         return true;
@@ -63,9 +69,29 @@ public:
     {
         if (redo_.empty()) return false;
         undo_.push_back(current);
+        carryForward(current, redo_.back());
         current = std::move(redo_.back());
         redo_.pop_back();
         return true;
+    }
+
+    // Copy the non-undoable fields of `from` into `to`. Plugins match by id
+    // and plugin identity; a node absent from `from` keeps its snapshot.
+    static void carryForward(const project::ProjectDocument& from,
+                             project::ProjectDocument& to)
+    {
+        for (auto& p : to.plugins)
+            for (const auto& q : from.plugins)
+                if (p.id == q.id && p.path == q.path
+                    && p.descriptor == q.descriptor)
+                {
+                    p.state_b64           = q.state_b64;
+                    p.probed_in_channels  = q.probed_in_channels;
+                    p.probed_out_channels = q.probed_out_channels;
+                    p.accepts_midi        = q.accepts_midi;
+                    p.produces_midi       = q.produces_midi;
+                    break;
+                }
     }
 
     // Drop all history (e.g. when a different document is loaded).

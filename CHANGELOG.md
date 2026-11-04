@@ -26,6 +26,20 @@
 
 ### Fixed
 
+- Desktop: the scanned plugin library was saved only at clean exit, so a crash after a scan lost the scan. Changes are now saved on the 5 s autosave heartbeat. Only the first instance writes `known_plugins.xml`; a second instance used to overwrite the first one's list when it quit.
+
+- Desktop: Undo reverted plugin state that Capture State, live-state sync or the Start Live probe had written. Undo restores a whole-document snapshot, and these paths changed the document without recording one. Plugin state and probe data now carry over into the restored document. Recording an undo step at each site was the alternative, but undo would then restore the document and not the running plugin, and live sync on every Save would add steps the user never made.
+
+- Desktop: Set BPM is an undo step. Before, it recorded none, so the next Undo also reverted the tempo. Undo and redo of it set the live transport, and a BPM change no longer counts as a topology edit that restarts Live.
+
+- Desktop: closing a plugin editor opened while Live was off discarded its edits unless Capture State was pressed first. The editor's state is now written into the project on close, Save, Start Live, and before the unsaved-changes prompt. It is written only if it changed since the editor opened. New and Open close these editors, so a node in the next project cannot receive another project's state.
+
+  A changed state blob prompts for Save only if the plugin reported an edit (a parameter, program or non-parameter state change, or the window's Program, Bypass or Load preset), or if its state encodes the same twice in a row at open. A plugin that encodes differently each time (a timestamp or random id in its state) would otherwise prompt after an untouched open. Its unreported change is still written and autosaved, but a quit without Save drops it. `--editor-sync-selftest=<plugin>` checks the decision against a real editor window (`tests/test_desktop_editor_sync.py`).
+
+- Desktop: a crash-recovery autosave that failed to parse was deleted, even when it held the only copy of the work (for example, one written by a newer build). It is now kept as `autosave-unreadable-<date>.json` beside the settings file, and the alert gives its path.
+
+- Desktop: New and Open left the previous document's autosave in place. After Don't Save and a crash, the next launch offered the discarded edits with the old path, and Save wrote them over that file. New and Open now delete the autosave.
+
 - Desktop: Capture State stored 1 byte of the plugin's state. `mh_get_state` returns 1 on success, and the app used that as the length. A project saved after a capture lost the plugin's settings: a VST3 ignores that byte, so the next load or render failed with "state rejected".
 
 - macOS: after a few seconds with no MIDI ports open anywhere on the system, a process could no longer open any MIDI port. launchd stops MIDIServer 2.5-8 s after the last client is disposed. A process that had talked to that server, even only to enumerate ports, then gets an error from every later `MIDIClientCreate` (-2, -50 or -304). It does not recover, even after another process restarts the server. minihost now holds one CoreMIDI client for the life of the process, created before its first CoreMIDI call. This was the "CoreMIDI refuses every new client part-way through the suite" failure on the macOS CI runner.
