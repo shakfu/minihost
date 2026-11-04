@@ -46,7 +46,8 @@
 //       <project>.probed.json. --live-callback=<n> sets the device
 //       callback size. --live-device-input=<wav> feeds the file to the
 //       device_input nodes and sets the take length to its length.
-//       Driven by tests/test_desktop_live.py.
+//       --live-restart plays the second take right after Stop, with no
+//       callback between them. Driven by tests/test_desktop_live.py.
 //
 //   minihost_desktop --live-state-selftest=<project.json>
 //       Headless check that a parameter written to a running plugin is
@@ -64,7 +65,8 @@
 //   minihost_desktop --live-transport-selftest=<project.json>
 //       Headless check that the beat position given to plugins stays
 //       position_samples * bpm after a mid-play tempo change, the grid the
-//       sequencer and metronome use. Driven by tests/test_desktop_live.py.
+//       sequencer and metronome use, and that a restart after a graph edit
+//       keeps the playhead and loop region. Driven by tests/test_desktop_live.py.
 //
 //   minihost_desktop --recorder-selftest=<dir>
 //       Drives TakeRecorder through a full FIFO without the writer thread
@@ -421,6 +423,8 @@ public:
             }
             programBox_.setSelectedId(mh_get_program(plugin_) + 1,
                                       juce::dontSendNotification);
+            // mh_set_program and mh_set_bypass may overlap processing
+            // (class 2 in minihost.h), so neither goes through runStateCall.
             programBox_.onChange = [this] {
                 const int index = programBox_.getSelectedId() - 1;
                 if (index >= 0) { mh_set_program(plugin_, index); markTouched(); }
@@ -509,6 +513,8 @@ public:
 
     MH_Plugin* plugin() noexcept { return plugin_; }
     const EditorOptions& options() const noexcept { return opts_; }
+    // The node was renamed; capture and sync follow it.
+    void setNodeId(const juce::String& id) { opts_.node_id = id; }
 
     // Encoded plugin state at the last point the document was known to
     // match it (open, capture, sync). Setting it also clears touched().
@@ -995,12 +1001,16 @@ public:
                 canvas_->setOnAddPluginRequested(on_add_plugin_requested_);
             canvas_->setOnPlayFile(on_play_file_);
             canvas_->setOnStopFile(on_stop_file_);
+            canvas_->setOnNodeRenamed(on_node_renamed_);
             status_bar_ = std::make_unique<StatusBar>(
                 status_actions_, live_engine_getter_, *canvas_);
             project_view_.addAndMakeVisible(canvas_.get());
             project_view_.addAndMakeVisible(status_bar_.get());
         }
         canvas_->setDocument(current_doc_.get());
+        canvas_->setProjectDirectory(project_path == juce::File()
+                                         ? juce::File()
+                                         : project_path.getParentDirectory());
         // setContentNonOwned releases the previous content (welcomeLabel)
         // without deleting it (we still own it).
         setContentNonOwned(&project_view_, /*resizeToFit=*/false);
@@ -1018,6 +1028,7 @@ public:
     void retitleAfterSaveAs(const juce::File& project_path)
     {
         current_project_ = project_path;
+        if (canvas_) canvas_->setProjectDirectory(project_path.getParentDirectory());
         setName("minihost: " + project_path.getFileName());
         menuItemsChanged();
     }
@@ -1085,6 +1096,11 @@ public:
     // working document dirty for autosave.
     void setOnDocumentEditedExternal(std::function<void()> cb)
     { on_doc_edited_external_ = std::move(cb); }
+    void setOnNodeRenamed(CanvasComponent::RenamedCb cb)
+    {
+        on_node_renamed_ = std::move(cb);
+        if (canvas_) canvas_->setOnNodeRenamed(on_node_renamed_);
+    }
 
     ~MainWindow() override
     {
@@ -1365,6 +1381,7 @@ private:
     std::function<void()>              on_add_plugin_requested_;
     std::function<void()>              on_request_open_plugin_;
     std::function<void()>              on_doc_edited_external_;
+    CanvasComponent::RenamedCb         on_node_renamed_;
     std::function<void()>              on_render_open_project_;
     std::function<void(const juce::File&)> on_play_file_;
     std::function<void()>              on_stop_file_;
@@ -1591,6 +1608,7 @@ public:
             LiveSelfTestOptions o;
             o.loop   = args.removeOptionIfFound("--live-loop");
             o.reseed = args.removeOptionIfFound("--live-reseed");
+            o.restart = args.removeOptionIfFound("--live-restart");
             if (args.containsOption("--live-callback"))
                 o.callback_frames
                     = args.removeValueForOption("--live-callback").getIntValue();
@@ -1933,6 +1951,11 @@ public:
             // crash costs at most kAutosaveIntervalMs of unsaved editing. Only
             // the GUI shell participates (headless modes share the settings
             // dir but must not touch a crashed session's recovery file).
+            mainWindow_->setOnNodeRenamed(
+                [this](const juce::String& old_id, const juce::String& new_id) {
+                    for (auto* w : editors_)
+                        if (w->options().node_id == old_id) w->setNodeId(new_id);
+                });
             mainWindow_->setOnDocumentEditedExternal([this]() {
                 doc_dirty_ = true;
                 unsaved_changes_ = true;
@@ -2590,6 +2613,8 @@ private:
     struct LiveSelfTestOptions {
         bool       loop            = false;
         bool       reseed          = false;
+        // Play again right after Stop, with no callback between them.
+        bool       restart         = false;
         int        callback_frames = 0;   // 0: 300, or the block size with MIDI outputs
         juce::File device_input;          // fed to device_input nodes; sets the length
     };
@@ -2700,7 +2725,9 @@ private:
                 engine.stopTransport();
                 if (engine.isRecording())
                     return fail("isRecording() true after stopTransport()");
-                // Render one callback stopped, to flush note-offs.
+                // Render one callback stopped, to flush note-offs. With
+                // restart, the next take's Play comes first.
+                if (o.restart && take + 1 < takes) continue;
                 engine.audioDeviceIOCallbackWithContext(nullptr, 0, outs, 2,
                                                         callback, ctx);
                 drainMidi(callback);
@@ -2796,7 +2823,8 @@ private:
     }
 
     // Plays 3 blocks at the project tempo, changes it, plays one more, and
-    // checks each block's transport against position_samples * bpm.
+    // checks each block's transport against position_samples * bpm. Then
+    // restarts as a graph edit does and checks the transport survives.
     int runLiveTransportSelfTest(const juce::File& project_file)
     {
         auto fail = [](const char* m) {
@@ -2832,6 +2860,25 @@ private:
             engine.audioDeviceIOCallbackWithContext(nullptr, 0, outs, 2, n, ctx);
             if (!check(3LL * n, 97.0))
                 return fail("beats drifted from position_samples * bpm after a tempo change");
+
+            // A restart after a graph edit keeps the playhead and a
+            // narrowed loop region; a plain start resets both.
+            const long long pos = engine.positionSamples();
+            engine.setLoop(n, 50LL * n, true);
+            if (!engine.start(doc, err, false, /*keep_transport=*/true))
+                return fail(err.toRawUTF8());
+            if (engine.positionSamples() != pos) return fail("restart rewound the playhead");
+            if (engine.loopStart() != n || engine.loopEnd() != 50LL * n || !engine.loopEnabled())
+                return fail("restart reset a narrowed loop region");
+            if (!engine.play(err)) return fail(err.toRawUTF8());
+            engine.audioDeviceIOCallbackWithContext(nullptr, 0, outs, 2, n, ctx);
+            if (engine.lastTransportForTest().position_samples != pos)
+                return fail("playback after a restart did not resume at the playhead");
+            if (!engine.start(doc, err, false))
+                return fail(err.toRawUTF8());
+            if (engine.positionSamples() != 0 || engine.loopStart() != 0
+                || engine.loopEnd() != engine.projectFrames())
+                return fail("a plain start kept the old transport");
             engine.stopTransport();
             engine.stop();
             std::fprintf(stderr, "live-transport-selftest OK\n");
@@ -2993,6 +3040,14 @@ private:
             if (project::liveTopologyFingerprint(rewired) == fp)
                 return fail("fingerprint ignored an edge change");
 
+            // A write queued before a restart must not reach the new project.
+            if (!engine.enqueueParamWrite(0, 0, 0.9f))
+                return fail("enqueueParamWrite() failed");
+            if (!engine.start(doc, err, /*attach_device=*/false))
+                return fail(err.toRawUTF8());
+            if (engine.drainParamWritesForTest() != 0)
+                return fail("a parameter write survived a restart");
+
             engine.stop();
             project::saveProjectFile(
                 artifactFile(doc, project_file, ".captured.json"), captured);
@@ -3026,10 +3081,13 @@ private:
         const auto script = juce::JSON::parse(script_file);
         const auto dir = script_file.getParentDirectory();
         try {
-            auto doc = project::parseProjectFile(
-                dir.getChildFile(script["project"].toString()));
+            const auto project_file = dir.getChildFile(script["project"].toString());
+            auto doc = project::parseProjectFile(project_file);
             CanvasComponent canvas;
             canvas.setDocument(&doc);
+            // As for a saved project; "untitled": true leaves it unset.
+            if (!(bool) script["untitled"])
+                canvas.setProjectDirectory(project_file.getParentDirectory());
 
             bool all_ok = true;
             juce::Array<juce::var> results;
@@ -3245,6 +3303,31 @@ private:
         mh_set_param_rt(loaded.plugin, 0, 0.5f);
         if (syncEditorState(*w, doc) != EditorSync::Edit)
             return fail("unreported change on stable plugin was not an Edit");
+
+        // A rename in Properties moves the editor to the new id, so its
+        // edits still reach the node. The app's handler does the same.
+        CanvasComponent canvas;
+        canvas.setDocument(&doc);
+        canvas.setOnNodeRenamed([&](const juce::String& o, const juce::String& n) {
+            if (w->options().node_id == o) w->setNodeId(n);
+        });
+        auto* fields = new juce::DynamicObject();
+        fields->setProperty("id", "fx2");
+        auto* op = new juce::DynamicObject();
+        op->setProperty("op", "properties");
+        op->setProperty("id", "fx");
+        op->setProperty("fields", juce::var(fields));
+        juce::StringArray warnings;
+        juce::String op_error;
+        if (!canvas.applyScriptOp(juce::var(op), warnings, op_error))
+            return fail("rename failed: " + op_error);
+        if (w->options().node_id != "fx2") return fail("editor did not follow the rename");
+        mh_set_param(loaded.plugin, 0, 0.125f);
+        if (syncEditorState(*w, doc) != EditorSync::Edit
+            || doc.plugins.back().id != "fx2"
+            || doc.plugins.back().state_b64 != w->stateBaseline())
+            return fail("edit after a rename did not reach the renamed node");
+        canvas.setDocument(nullptr);
 
         w.reset();
         std::fprintf(stderr, "editor-sync-selftest OK\n");
@@ -3682,12 +3765,15 @@ private:
         opts.toolbar_label  = "Capture State";
         opts.node_id        = spec.id;
 
-        // Captured by value: plugin_index is stable for this dialog;
-        // even if the user reorders the document later, the lambda
-        // re-resolves by id below.
-        const juce::String node_id = spec.id;
-        opts.toolbar_action = [this, node_id](MH_Plugin* p) {
-            captureStateForCanvasPlugin(node_id, p);
+        // The node id is read from the window at click time: a rename
+        // moves it (setOnNodeRenamed).
+        opts.toolbar_action = [this](MH_Plugin* p) {
+            for (auto* w : editors_)
+                if (w->plugin() == p)
+                {
+                    captureStateForCanvasPlugin(w->options().node_id, p);
+                    return;
+                }
         };
 
         LoadedPlugin loaded;
@@ -3711,6 +3797,14 @@ private:
         }
         else
         {
+            // One editor per node: two would each overwrite the node's
+            // state with their own on capture and close.
+            for (auto* w : editors_)
+                if (w->options().owns_plugin && w->options().node_id == spec.id)
+                {
+                    w->toFront(true);
+                    return;
+                }
             loaded = loadPlugin(spec.path.getFullPathName(), desc_xml);
             if (loaded.plugin == nullptr)
             {
@@ -3907,7 +4001,7 @@ private:
     {
         live_restart_pending_ = false;
         const bool was_playing = live_ && live_->isTransportPlaying();
-        startLive();
+        startLive(/*keep_transport=*/true);
         if (was_playing && live_ && live_->isRunning())
         {
             juce::String err;
@@ -3935,7 +4029,15 @@ private:
         int plugin_index = -1;
         for (size_t i = 0; i < doc->plugins.size(); ++i)
             if (doc->plugins[i].id == node_id) { plugin_index = (int) i; break; }
-        if (plugin_index < 0) return;
+        if (plugin_index < 0)
+        {
+            // Deleted, or removed by an undo: say so rather than do nothing.
+            juce::AlertWindow::showMessageBoxAsync(
+                juce::AlertWindow::WarningIcon, "Capture failed",
+                "Node '" + node_id + "' is no longer in the project, so its "
+                "state was not captured.");
+            return;
+        }
 
         const juce::String encoded = project::encodePluginState(p);
         if (encoded.isEmpty())
@@ -4036,7 +4138,9 @@ private:
         opts.launchAsync();
     }
 
-    void startLive()
+    // keep_transport: a restart after a graph edit, which keeps the
+    // playhead and a narrowed loop region.
+    void startLive(bool keep_transport = false)
     {
         if (!mainWindow_) return;
         auto* doc = mainWindow_->currentDocument();
@@ -4057,7 +4161,7 @@ private:
         live_restart_pending_ = false;
         auto& engine = ensureLiveEngine();
         juce::String err;
-        if (!engine.start(*doc, err))
+        if (!engine.start(*doc, err, /*attach_device=*/true, keep_transport))
         {
             mainWindow_->setLiveRunning(false);
             // start() freed the previous LoadedProject before failing.

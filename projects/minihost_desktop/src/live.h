@@ -47,6 +47,8 @@
 
 namespace minihost_desktop {
 
+class PreviewSource;   // live.cpp
+
 class LiveEngine : public juce::AudioIODeviceCallback,
                    private juce::Timer
 {
@@ -61,8 +63,10 @@ public:
     // running (will stop the previous run first).
     // attach_device=false skips the device callback; the caller then
     // drives audioDeviceIOCallbackWithContext itself (headless selftest).
+    // keep_transport=true (a restart after a graph edit) keeps the
+    // playhead and a narrowed loop region from the run it replaces.
     bool start(const project::ProjectDocument& doc, juce::String& error,
-               bool attach_device = true);
+               bool attach_device = true, bool keep_transport = false);
     void stop();
     bool isRunning() const noexcept { return running_.load(); }
 
@@ -162,15 +166,14 @@ public:
     // Loop region in samples. start_samples < end_samples enables
     // looping; setting end_samples <= start_samples (or is_looping
     // false) disables.
+    // Message thread. The audio thread reads the three values together.
     void setLoop(long long start_samples,
                  long long end_samples,
                  bool is_looping) noexcept
     {
-        loop_start_.store(start_samples);
-        loop_end_.store(end_samples);
         loop_wanted_.store(is_looping);
-        loop_enabled_.store(is_looping
-                            && start_samples < end_samples);
+        writeLoop(start_samples, end_samples,
+                  is_looping && start_samples < end_samples);
     }
     // The Loop toggle. Start Live sets the loop region to the project
     // length (Set Loop Region can narrow it). Also loops Play File.
@@ -249,6 +252,40 @@ public:
     void audioDeviceError(const juce::String& errorMessage) override;
 
 private:
+    // Loop region, written by the message thread and read by the audio
+    // thread under a seqlock: an odd sequence means a write is in progress.
+    // Four separate stores let one block see a new start with an old end.
+    struct LoopRegion { long long start = 0, end = 0; bool enabled = false; };
+    void writeLoop(long long start, long long end, bool enabled) noexcept
+    {
+        const auto seq = loop_seq_.load(std::memory_order_relaxed);
+        loop_seq_.store(seq + 1, std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_release);
+        loop_start_.store(start, std::memory_order_relaxed);
+        loop_end_.store(end, std::memory_order_relaxed);
+        loop_enabled_.store(enabled, std::memory_order_relaxed);
+        loop_seq_.store(seq + 2, std::memory_order_release);
+    }
+    // Audio thread. Falls back to the previous block's region if a write
+    // keeps overlapping the read.
+    LoopRegion readLoop() noexcept
+    {
+        for (int tries = 0; tries < 4; ++tries)
+        {
+            const auto seq = loop_seq_.load(std::memory_order_acquire);
+            if (seq & 1u) continue;
+            LoopRegion r{ loop_start_.load(std::memory_order_relaxed),
+                          loop_end_.load(std::memory_order_relaxed),
+                          loop_enabled_.load(std::memory_order_relaxed) };
+            std::atomic_thread_fence(std::memory_order_acquire);
+            if (loop_seq_.load(std::memory_order_relaxed) == seq)
+                return last_loop_ = r;
+        }
+        return last_loop_;
+    }
+    std::atomic<uint32_t>                          loop_seq_{ 0 };
+    LoopRegion                                     last_loop_;   // audio thread
+
     void detachCallback();
     void initialiseDeviceManagerOnce();
 
@@ -286,11 +323,12 @@ private:
     std::vector<std::pair<juce::File, juce::File>> recording_files_;
     juce::String                                   take_problem_;
     std::atomic<bool>                              recording_{ false };
-    std::atomic<bool>                              rewind_pending_{ false };
+    std::atomic<uint32_t>                          stop_count_{ 0 };   // stopTransport calls
+    uint32_t                                       seen_stops_ = 0;    // audio thread
 
     // ----- File preview ----- //
     juce::AudioBuffer<float>                       preview_buffer_;
-    std::unique_ptr<juce::MemoryAudioSource>       preview_source_;
+    std::unique_ptr<PreviewSource>                 preview_source_;
     juce::AudioTransportSource                     preview_transport_;
     juce::AudioSourcePlayer                        preview_player_;
     bool                                           preview_attached_ = false;

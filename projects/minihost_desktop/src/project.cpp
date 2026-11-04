@@ -176,11 +176,37 @@ void LoadedProject::updateMeters(float* const* const* out_buffers, int nframes)
     }
 }
 
+namespace {
+// Calls seg(start_sample, local_offset, length) for each part of the block
+// [pos, pos + n), continuing from the loop start where it reaches the loop
+// end, as collectTransportMidi in live.cpp does.
+template <class Seg>
+void forEachLoopSegment(long long pos, int n, const LoopSpan& loop,
+                        Seg&& seg)
+{
+    const bool on = loop.on && loop.end > loop.start;
+    if (on && pos >= loop.end)
+        pos = loop.start + (pos - loop.start) % (loop.end - loop.start);
+    int local = 0;
+    while (local < n)
+    {
+        int len = n - local;
+        const bool wraps = on && pos + len >= loop.end;
+        if (wraps) len = (int) (loop.end - pos);
+        seg(pos, local, len);
+        local += len;
+        if (!wraps) break;
+        pos = loop.start;
+    }
+}
+} // namespace
+
 void LoadedProject::renderMetronomes(std::vector<std::vector<float>>& planar_inputs,
                                      int block_size,
                                      int nframes,
                                      long long pos_samples,
-                                     double sr, double bpm, bool playing)
+                                     double sr, double bpm, bool playing,
+                                     LoopSpan loop)
 {
     if (metronome_buffer_indices.empty()) return;
     const double samples_per_beat = (bpm > 0.0)
@@ -239,27 +265,31 @@ void LoadedProject::renderMetronomes(std::vector<std::vector<float>>& planar_inp
             st.phase_samples = render_click(0, st.phase_samples);
 
         // 2. Find beat onsets that fall within this block and start
-        //    clicks at them. Use 64-bit math throughout.
-        const long long first_beat_idx = (long long) std::ceil(
-            (double) pos_samples / samples_per_beat);
-        for (long long b = first_beat_idx; ; ++b)
-        {
-            const long long beat_pos
-                = (long long) std::llround((double) b * samples_per_beat);
-            const long long off = beat_pos - pos_samples;
-            if (off < 0)         continue;
-            if (off >= nframes)  break;
-            // Starting a new click overrides any in-flight one (rare
-            // unless decay_ms approaches samples_per_beat).
-            st.phase_samples = render_click((int) off, 0);
-        }
+        //    clicks at them, per loop segment. 64-bit math throughout.
+        forEachLoopSegment(pos_samples, nframes, loop,
+            [&](long long seg_pos, int local, int len) {
+                const long long first_beat_idx = (long long) std::ceil(
+                    (double) seg_pos / samples_per_beat);
+                for (long long b = first_beat_idx; ; ++b)
+                {
+                    const long long beat_pos
+                        = (long long) std::llround((double) b * samples_per_beat);
+                    const long long off = beat_pos - seg_pos;
+                    if (off < 0)     continue;
+                    if (off >= len)  break;
+                    // Starting a new click overrides any in-flight one
+                    // (rare unless decay_ms approaches samples_per_beat).
+                    st.phase_samples = render_click(local + (int) off, 0);
+                }
+            });
     }
 }
 
 void LoadedProject::stageMidiClocks(MH_PluginGraph* g_handle,
                                     int nframes,
                                     long long pos_samples,
-                                    double sr, double bpm, bool playing)
+                                    double sr, double bpm, bool playing,
+                                    bool restarted, LoopSpan loop)
 {
     if (midi_clock_node_ids.empty()) return;
     const double samples_per_tick = (bpm > 0.0)
@@ -273,6 +303,12 @@ void LoadedProject::stageMidiClocks(MH_PluginGraph* g_handle,
 
         // Transport-edge events: Start (0xFA) on rising edge,
         // Stop (0xFC) on falling edge. Sample offset 0.
+        if (restarted && st.was_playing)
+        {
+            MH_MidiEvent e{}; e.sample_offset = 0; e.status = 0xFC;
+            buf.push_back(e);
+            st.was_playing = false;   // the Start below follows
+        }
         if (playing && !st.was_playing)
         {
             MH_MidiEvent e{}; e.sample_offset = 0; e.status = 0xFA;
@@ -283,25 +319,50 @@ void LoadedProject::stageMidiClocks(MH_PluginGraph* g_handle,
             MH_MidiEvent e{}; e.sample_offset = 0; e.status = 0xFC;
             buf.push_back(e);
         }
+        const bool continuing = playing && st.was_playing && !restarted;
         st.was_playing = playing;
+        if (!playing) { st.next_pos = -1; }
 
-        // 24-PPQN clock ticks while playing.
+        // 24-PPQN clock ticks while playing, per loop segment. A segment
+        // that does not start where the last one ended is a jump: a Song
+        // Position Pointer (16th notes since 0) tells the receiver.
         if (playing && samples_per_tick > 0.0)
         {
-            const long long first_tick = (long long) std::ceil(
-                (double) pos_samples / samples_per_tick);
-            for (long long t = first_tick; ; ++t)
-            {
-                const long long tick_pos = (long long) std::llround(
-                    (double) t * samples_per_tick);
-                const long long off = tick_pos - pos_samples;
-                if (off < 0)        continue;
-                if (off >= nframes) break;
-                MH_MidiEvent e{};
-                e.sample_offset = (int) off;
-                e.status        = 0xF8;
-                buf.push_back(e);
-            }
+            bool first = true;
+            forEachLoopSegment(pos_samples, nframes, loop,
+                [&](long long seg_pos, int local, int len) {
+                    const bool jumped = st.next_pos >= 0 && seg_pos != st.next_pos
+                                        && (continuing || !first);
+                    first = false;
+                    st.next_pos = seg_pos + len;
+                    if (jumped && buf.size() < buf.capacity())
+                    {
+                        const long long sixteenths = (long long) std::floor(
+                            (double) seg_pos * 4.0 * bpm / (60.0 * sr));
+                        const int spp = (int) std::clamp(sixteenths, 0LL, 16383LL);
+                        MH_MidiEvent e{};
+                        e.sample_offset = local;
+                        e.status = 0xF2;
+                        e.data1  = (unsigned char) (spp & 0x7F);
+                        e.data2  = (unsigned char) ((spp >> 7) & 0x7F);
+                        buf.push_back(e);
+                    }
+                    const long long first_tick = (long long) std::ceil(
+                        (double) seg_pos / samples_per_tick);
+                    for (long long t = first_tick; ; ++t)
+                    {
+                        const long long tick_pos = (long long) std::llround(
+                            (double) t * samples_per_tick);
+                        const long long off = tick_pos - seg_pos;
+                        if (off < 0)    continue;
+                        if (off >= len) break;
+                        if (buf.size() == buf.capacity()) break;   // never reallocate
+                        MH_MidiEvent e{};
+                        e.sample_offset = local + (int) off;
+                        e.status        = 0xF8;
+                        buf.push_back(e);
+                    }
+                });
         }
 
         mh_graph_set_midi_input_events(

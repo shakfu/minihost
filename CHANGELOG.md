@@ -52,6 +52,19 @@
 
 - Desktop: after a tempo change in live mode, plugins got a beat position that disagreed with the sequencer, metronome and MIDI clock. Plugins summed beats block by block at each block's tempo; the others compute `position_samples * bpm`, as the loop wrap and offline renders do. Plugins now get the same formula, so a tempo change moves every consumer's beat position at once. Summing for every consumer instead would keep positions continuous across the change, but the sequencer, metronome and clock would each need a beat offset carried across blocks. Each block also reads the tempo and play state once; it read them up to three times, so a change between reads gave consumers different values.
 
+- Desktop: Stop followed by Play before the next audio callback did not end the take for the audio thread, which still saw the transport playing. Held notes were not released, the MIDI clock sent no Stop or Start, and a callback rendered in several blocks rewound only at its next start. A Stop now increments a counter that every block checks. The MIDI clock sends Stop then Start when both fall within one block.
+
+- Desktop: the metronome and MIDI clock placed beats and ticks from the block's start only, so after a loop wrap inside a block they stayed on the pre-wrap grid and missed the beat at the loop start. They now split the block at the wrap, as file MIDI and sequencers do. The clock also sends a Song Position Pointer when the position jumps, so external gear follows the loop.
+
+- Desktop: a graph edit while Live played restarted the engine with the loop region reset to the whole project and the playhead at 0. The restart now keeps the playhead and a loop region narrowed with Set Loop Region.
+
+- Desktop: smaller live and editor fixes:
+  - Starting Live discards parameter writes queued for the previous project; they are by plugin index, so one could reach a different plugin.
+  - The loop region (start, end, on) is read by the audio thread under a seqlock, so a block cannot pair a new start with an old end. Play File's loop flag is now atomic; JUCE's `MemoryAudioSource` kept it in a plain bool the device read while the Loop toggle wrote it.
+  - A plugin editor follows its node when the node is renamed in Properties. Before, Capture State and the close-time capture looked the node up by the old id and did nothing. Capture State now says so when the node is gone.
+  - Opening a plugin's editor while Live is off brings the open one to the front rather than opening a second, which could overwrite the first one's captures.
+  - A relative path typed in Properties resolves against the project folder; an untitled project asks for an absolute path. `juce::File` was built straight from the text, which needs an absolute path.
+
 - Desktop: a block that failed to render in live mode stopped the engine without telling the app. The menu still showed Live as running, and the next Stop or Restart skipped the plugin-state capture, so unsaved plugin edits were lost. The app now stops Live itself, captures the plugins' state first, keeps the recordings made so far, and shows an alert. The audio thread also no longer builds an exception for a failed block, which allocated. `--live-failure-selftest` covers it (`tests/test_desktop_live_failure.py`).
 
 - Desktop: when the disk fell behind while recording several file outputs, one take could drop a block that another kept. The files were then offset from each other for good, and later audio in a take moved earlier. All outputs now share one FIFO, so a block is kept or dropped for every take at once. A dropped block is written as silence of the same length, so each take keeps the transport's timing. An alert reports dropped audio or a failed disk write when the take closes; before, only a line on stderr did. `--recorder-selftest` covers it (`tests/test_desktop_recorder.py`).

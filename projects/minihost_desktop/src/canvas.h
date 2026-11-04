@@ -62,6 +62,15 @@ public:
     void setOnPlayFile(PlayFileCb cb) { on_play_file_ = std::move(cb); }
     void setOnStopFile(std::function<void()> cb) { on_stop_file_ = std::move(cb); }
 
+    // A node's id changed in Properties (old id, new id). The app moves
+    // open plugin editors to the new id.
+    using RenamedCb = std::function<void(const juce::String&, const juce::String&)>;
+    void setOnNodeRenamed(RenamedCb cb) { on_node_renamed_ = std::move(cb); }
+
+    // The saved project's folder, or File() when untitled. A relative path
+    // typed in Properties resolves against it.
+    void setProjectDirectory(const juce::File& dir) { project_dir_ = dir; }
+
     // What the engine is doing, drawn as node markers: file inputs and
     // device outputs while the transport plays, output nodes while they
     // record, and the node whose file Play File is playing.
@@ -290,6 +299,8 @@ private:
     // note plays, the playing step outlined.
     void paintSequencerSteps(juce::Graphics& g, const NodeLayout& n) const;
     std::function<void()>     on_stop_file_;
+    RenamedCb                 on_node_renamed_;
+    juce::File                project_dir_;
     std::vector<NodeLayout>   nodes_;
     std::vector<EdgeLayout>   edges_;
 

@@ -40,10 +40,17 @@ def _project(tmp_path, nodes, edges=()):
     return proj
 
 
-def _script(tmp_path, proj, ops, ok=True):
+def _script(tmp_path, proj, ops, ok=True, untitled=False):
     script = tmp_path / "script.json"
     script.write_text(
-        json.dumps({"project": proj.name, "ops": ops, "save": "saved.json"})
+        json.dumps(
+            {
+                "project": proj.name,
+                "ops": ops,
+                "save": "saved.json",
+                "untitled": untitled,
+            }
+        )
     )
     res = subprocess.run(
         [str(DESKTOP_BIN), f"--canvas-script={script}"],
@@ -175,3 +182,30 @@ def test_malformed_op_fails_the_script(tmp_path):
     proj = _project(tmp_path, [{"id": "a", "kind": "gain", "channels": 2, "gain": 1.0}])
     results, _ = _script(tmp_path, proj, [{"op": "delete", "id": "nope"}], ok=False)
     assert results[0] == {"ok": False, "error": "no node nope", "warnings": []}
+
+
+def _input_project(tmp_path):
+    src = tmp_path / "in.wav"
+    src.write_bytes(b"")  # parsing does not read it
+    return _project(
+        tmp_path, [{"id": "in", "kind": "input", "channels": 2, "source": str(src)}]
+    )
+
+
+def test_relative_path_in_properties_resolves_against_the_project(tmp_path):
+    proj = _input_project(tmp_path)
+    op = {"op": "properties", "id": "in", "fields": {"source": "audio/drums.wav"}}
+    results, saved = _script(tmp_path, proj, [op])
+    assert results[0]["warnings"] == []
+    (node,) = [n for n in saved["nodes"] if n["id"] == "in"]
+    # Absolute in the document, relative again on save.
+    assert node["source"] == "audio/drums.wav"
+
+
+def test_relative_path_in_properties_of_an_untitled_project_warns(tmp_path):
+    proj = _input_project(tmp_path)
+    op = {"op": "properties", "id": "in", "fields": {"source": "audio/drums.wav"}}
+    results, saved = _script(tmp_path, proj, [op], untitled=True)
+    assert any("Path is relative" in w for w in results[0]["warnings"])
+    (node,) = [n for n in saved["nodes"] if n["id"] == "in"]
+    assert node["source"] == "in.wav"  # unchanged

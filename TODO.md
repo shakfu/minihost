@@ -4,6 +4,8 @@
 
 ## High
 
+- [ ] **Desktop: fan-in latency compensation in the project graph** (`minihost_graph_v2.h:24`). Where branches with different plugin latencies meet at a mix, they sum misaligned, so a parallel-FX project (`examples/projects/08_parallel_fx.json`) renders out of phase in both the desktop and `minihost.render_project`. Insert a per-path delay at each fan-in, sized from `mh_get_latency_samples` at compile time, and allocated there, not on the audio thread. `MinihostTestFx`'s `latency` parameter gives branches exact, known latencies for a test. Related to, but separate from, the `PluginBus` item under Medium: that is a different executor.
+
 ## Medium
 
 - [x] Verify the affine-op set is complete beyond what the suite exercises. Done 2026-10-04 for VST3: `MinihostTestFx` logs control callbacks made off its constructing thread, and `tests/test_thread_affinity.py` drives every `Plugin` control op from the Python thread. It found `mh_get_tail_seconds` and `mh_supports_double` unmarshaled, plus a per-block support query in `mh_process_double`; all fixed (see CHANGELOG). AU is not covered: the fixture is VST3-only. Original note: `set_track_properties` turned out to be affine and now goes through `runOnMsg`; param gestures and the remaining rarely-used control ops are still unchecked. The deterministic fixture makes this testable.
@@ -48,6 +50,18 @@
 
 - [ ] **Performance benchmarks** -- audio processing hot-path benchmarks to catch regressions.
 
+- [ ] **Desktop: split `projects/minihost_desktop/src/main.cpp`** (about 4,000 lines). Start with a document controller (`document_controller.{h,cpp}`) that owns `doc_dirty_` and `unsaved_changes_`. Both flags are set by hand at many sites, which caused the autosave and undo data-loss bugs fixed on 2026-11-04. Then split by concern:
+  - `editor_window.{h,cpp}`: `EditorWindow`, `loadPlugin`
+  - `main_window.{h,cpp}`: `MainWindow`
+  - `render_controller.cpp`: `ProjectRenderJob`, render options and artifacts
+  - `plugin_library.cpp`: library, browser, picker, scan
+  - `live_controller.cpp`: canvas editors, live control, transport dialogs
+  - `cli.cpp`: the headless-mode dispatch, as a table rather than an if-chain
+  - `selftests.cpp`: the `--*-selftest` modes
+  - `editor_probe.cpp`: `renderToFile`, `ParamTweakTimer`, watchdog
+
+- [ ] **Desktop: parameter automation in project files.** The design doc's schema has an `automation` list, and the graph already takes it (`mh_graph_v2_set_node_automation`), but neither the desktop loader (`project.cpp`) nor `minihost/project.py` reads it. Add it to both, with a bit-identical render test like `tests/test_project_desktop_kinds.py`.
+
 ### Developer experience
 
 - [x] **CI integration test plugin** -- done. `projects/test_plugin` builds two deterministic VST3 fixtures (`MinihostTestFx`: pass-through / exact gain / exact sample delay / sidechain / MIDI passthrough; `MinihostTestSynth`: monophonic sine instrument), behind `-DMINIHOST_BUILD_TEST_PLUGIN=ON`. The `integration` job in `build.yml` builds them on Linux and macOS and runs the suite with `MINIHOST_TEST_PLUGIN` (the synth, which is what the plugin-gated tests have always meant) and `MINIHOST_TEST_PLUGIN_FX`. Skips went 405 -> 116.
@@ -81,6 +95,16 @@
 - [x] **Audio-thread diagnostics in the desktop app** Fixed 2026-10-04: the audio thread sets flags; a message-thread timer prints them. The silence scan stays on the audio thread; it is bounded and lock-free. Original note: (review L6). `live.cpp` scans every output buffer for a non-zero sample on *every* callback, and keeps doing so for as long as the project is silent; `fprintf` on the audio thread is acknowledged in comments but still an RT violation. Move both behind a lock-free flag consumed by the GUI timer.
 
 ## Low
+
+- [ ] **Desktop: canvas editing.** No zoom, pan, copy and paste, or recent-files menu; large graphs are hard to edit.
+
+- [ ] **Desktop: metronome in offline renders.** It is silent offline by design, so live and offline output differ. Decide whether an offline render should include it.
+
+- [ ] **Desktop: untested fixes from 2026-11-04.**
+  - The loop-region seqlock (`LiveEngine::writeLoop` / `readLoop`) needs two threads to fail; only a TSAN run would cover it (the `make tsan` target covers the ring buffers only).
+  - Reusing the open non-live editor when a node is double-clicked again (`openCanvasPluginEditor`) needs the main window, so no headless test reaches it.
+
+- [ ] **Desktop: who is the target user?** The author, plugin developers, or sound designers. The answer decides how much of the canvas and live work above is worth doing. Packaging and opt-in crash reporting are tracked in [docs/dev/desktop_app_todo.md](docs/dev/desktop_app_todo.md).
 
 - [ ] **MIDI/OSC input odds and ends** (`build/audit-osc-midi/`):
   - (Fixed 2026-09-25.) A failed `MidiFile.load()` left the object mutated: a header declaring 65535 tracks returns False with `num_tracks` = 65535 and the previous contents gone (confirmed). Parse into a temporary and swap on success.

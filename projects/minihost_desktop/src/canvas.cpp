@@ -1193,6 +1193,22 @@ void CanvasComponent::applyPropertiesDialog(juce::AlertWindow& aw,
                  + "\". Node ids must be unique.");
         return;
     }
+    // A typed relative path resolves against the project folder, as the
+    // loader resolves one read from the file. juce::File needs it absolute.
+    for (const char* key : { "source", "sink" })
+        if (auto* te = aw.getTextEditor(key))
+        {
+            const auto text = te->getText().trim();
+            if (text.isEmpty() || juce::File::isAbsolutePath(text)) continue;
+            if (project_dir_ == juce::File())
+            {
+                warn("Path is relative",
+                     "\"" + text + "\" is relative and the project is not saved "
+                     "yet. Enter an absolute path, or save the project first.");
+                return;
+            }
+            te->setText(project_dir_.getChildFile(text).getFullPathName(), false);
+        }
 
     NodeKindEntry::RenameFn rename =
         [this](const juce::String& old_id, const juce::String& nid) {
@@ -1207,6 +1223,7 @@ void CanvasComponent::applyPropertiesDialog(juce::AlertWindow& aw,
                 doc_->layout[nid.toStdString()] = it->second;
                 doc_->layout.erase(it);
             }
+            if (on_node_renamed_) on_node_renamed_(old_id, nid);
         };
 
     recordUndo();

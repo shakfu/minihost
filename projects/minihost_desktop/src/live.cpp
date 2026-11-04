@@ -79,6 +79,54 @@ void collectTransportMidi(std::vector<MH_MidiEvent>& out,
 } // namespace
 
 
+// juce::MemoryAudioSource, with its loop flag and position atomic: the Loop
+// toggle sets the flag on the message thread while the device reads it.
+class PreviewSource final : public juce::PositionableAudioSource
+{
+public:
+    PreviewSource(const juce::AudioBuffer<float>& buffer, bool loop)
+        : buffer_(buffer), loop_(loop) {}
+
+    void prepareToPlay(int, double) override { pos_.store(0); }
+    void releaseResources() override {}
+
+    void getNextAudioBlock(const juce::AudioSourceChannelInfo& info) override
+    {
+        auto& dst = *info.buffer;
+        const juce::int64 n = buffer_.getNumSamples();
+        const int m = info.numSamples;
+        if (n == 0) { info.clearActiveBufferRegion(); return; }
+        const int channels = std::min(dst.getNumChannels(), buffer_.getNumChannels());
+        const bool loop = loop_.load(std::memory_order_relaxed);
+        juce::int64 i = pos_.load(std::memory_order_relaxed);
+        int done = 0;
+        while ((i < n || loop) && done < m)
+        {
+            const int len = (int) std::min<juce::int64>(m - done, n - (i % n));
+            int ch = 0;
+            for (; ch < channels; ++ch)
+                dst.copyFrom(ch, info.startSample + done, buffer_, ch, (int) (i % n), len);
+            for (; ch < dst.getNumChannels(); ++ch)
+                dst.clear(ch, info.startSample + done, len);
+            done += len;
+            i += len;
+        }
+        if (done < m) dst.clear(info.startSample + done, m - done);
+        pos_.store(i, std::memory_order_relaxed);
+    }
+
+    void setNextReadPosition(juce::int64 p) override { pos_.store(p); }
+    juce::int64 getNextReadPosition() const override { return pos_.load(); }
+    juce::int64 getTotalLength() const override { return buffer_.getNumSamples(); }
+    bool isLooping() const override { return loop_.load(); }
+    void setLooping(bool on) override { loop_.store(on); }
+
+private:
+    const juce::AudioBuffer<float>& buffer_;
+    std::atomic<juce::int64>        pos_{ 0 };
+    std::atomic<bool>               loop_;
+};
+
 LiveEngine::LiveEngine() {}
 
 LiveEngine::~LiveEngine()
@@ -224,9 +272,18 @@ void LiveEngine::initialiseDeviceManagerOnce()
 }
 
 bool LiveEngine::start(const project::ProjectDocument& doc,
-                       juce::String& error, bool attach_device)
+                       juce::String& error, bool attach_device,
+                       bool keep_transport)
 {
     if (attach_device) initialiseDeviceManagerOnce();
+    // Read before stop() resets them. A region other than the whole old
+    // project was narrowed by Set Loop Region and is kept as is.
+    const bool keep = keep_transport && compiled_ != nullptr;
+    const long long kept_pos = published_pos_.load();
+    const long long kept_ls  = loop_start_.load();
+    const long long kept_le  = loop_end_.load();
+    const bool narrowed = keep
+        && !(kept_ls == 0 && kept_le == compiled_->duration_frames);
     stop();
 
     try {
@@ -350,6 +407,13 @@ bool LiveEngine::start(const project::ProjectDocument& doc,
     // The Loop toggle covers the whole project until Set Loop Region
     // narrows it.
     setLoop(0, compiled_->duration_frames, loop_wanted_.load());
+    if (narrowed) setLoop(kept_ls, kept_le, loop_wanted_.load());
+    if (keep)
+    {
+        // The callback is not attached yet, so this thread owns the position.
+        transport_pos_samples_ = kept_pos;
+        published_pos_.store(kept_pos);
+    }
 
     midi_scratch_.reserve(256);
     midi_chunk_.reserve(256);
@@ -368,12 +432,17 @@ bool LiveEngine::start(const project::ProjectDocument& doc,
     }
     SequencerUpdate stale;
     while (seq_queue_.pop(stale)) {}   // edits for a previous project
+    // Parameter writes are positional: one queued for the previous project
+    // would land on whichever plugin now has that index.
+    ParamWriteCommand stale_param;
+    while (param_queue_.pop(stale_param)) {}
     // The MIDI input stays open while Live is stopped. Drop what it queued,
     // or the first callbacks replay it all at offset 0. The callback is
     // detached, so this thread is the ring's only consumer.
     midi_tail_.store(midi_head_.load(std::memory_order_acquire),
                      std::memory_order_release);
     was_playing_ = false;
+    seen_stops_  = stop_count_.load();   // stops before this run are done
     last_bpm_    = 0.0;
     running_.store(true, std::memory_order_release);
     if (attach_device)
@@ -427,7 +496,6 @@ void LiveEngine::stop()
     rate_mismatch_.store(false, std::memory_order_relaxed);
     mismatched_device_rate_.store(0.0, std::memory_order_relaxed);
     transport_playing_.store(false);
-    rewind_pending_.store(false);
     transport_pos_samples_ = 0;
     published_pos_.store(0);
     compiled_.reset();
@@ -452,7 +520,8 @@ bool LiveEngine::updateSequencer(const juce::String& id,
 void LiveEngine::setLooping(bool on)
 {
     loop_wanted_.store(on);
-    loop_enabled_.store(on && loop_start_.load() < loop_end_.load());
+    const long long s0 = loop_start_.load(), s1 = loop_end_.load();
+    writeLoop(s0, s1, on && s0 < s1);
     if (preview_source_ != nullptr) preview_source_->setLooping(on);
 }
 
@@ -540,7 +609,9 @@ bool LiveEngine::play(juce::String& error)
 void LiveEngine::stopTransport()
 {
     transport_playing_.store(false);
-    rewind_pending_.store(true);
+    // A count, not a flag: each block checks it, so a Stop and Play that
+    // land within one callback still rewind and release.
+    stop_count_.fetch_add(1, std::memory_order_acq_rel);
     closeRecorders();
 }
 
@@ -601,8 +672,8 @@ bool LiveEngine::startPreview(const juce::File& file, juce::String& error)
     const double file_rate = (double) ad->sample_rate;
     mh_audio_data_free(ad);
 
-    preview_source_ = std::make_unique<juce::MemoryAudioSource>(
-        preview_buffer_, /*copyMemory=*/false, loop_wanted_.load());
+    preview_source_ = std::make_unique<PreviewSource>(
+        preview_buffer_, loop_wanted_.load());
     preview_file_ = file;
     preview_transport_.setSource(preview_source_.get(), 0, nullptr,
                                  file_rate, preview_buffer_.getNumChannels());
@@ -759,11 +830,6 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
     midi_prev_cb_ns_ = cb_ns;
     std::size_t midi_next = 0;
 
-    if (rewind_pending_.exchange(false, std::memory_order_acq_rel))
-    {
-        transport_pos_samples_ = 0;
-    }
-
     // Render in chunks of up to cb_block_size_. Device callback sizes
     // are usually small (64-1024) so a single chunk is the norm.
     int frames_left = numSamples;
@@ -772,15 +838,22 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
     {
         const int n = std::min(frames_left, cb_block_size_);
 
+        // A Stop since the last block rewinds and ends the take, even if
+        // Play followed it before this block.
+        const uint32_t stops = stop_count_.load(std::memory_order_acquire);
+        const bool stopped_since = stops != seen_stops_;
+        seen_stops_ = stops;
+        if (stopped_since) transport_pos_samples_ = 0;
+
         // Transport state for this chunk, read once so file playback,
         // recording and the plugin playhead agree.
         const bool      play    = transport_playing_.load(std::memory_order_relaxed);
         const double    chunk_bpm = transport_bpm_.load(std::memory_order_relaxed);
         const long long chunk_pos = transport_pos_samples_;
-        const long long loop_s  = loop_start_.load(std::memory_order_relaxed);
-        const long long loop_e  = loop_end_.load(std::memory_order_relaxed);
-        const bool      loop_on = loop_enabled_.load(std::memory_order_relaxed)
-                                  && loop_e > loop_s;
+        const LoopRegion loop   = readLoop();
+        const long long loop_s  = loop.start;
+        const long long loop_e  = loop.end;
+        const bool      loop_on = loop.enabled && loop_e > loop_s;
 
         // Push transport info to every plugin node before rendering.
         // mh_set_transport copies into the plugin's internal state
@@ -842,7 +915,7 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
         // replaces, so they are staged once, below.
         auto* graph = compiled_->graph->handle();
         const auto& fmis = compiled_->file_midi_inputs;
-        const bool stopped_now = was_playing_ && !play;
+        const bool stopped_now = was_playing_ && (!play || stopped_since);
         for (size_t k = 0; k < fmis.size(); ++k)
         {
             auto& f = file_midi_[k];
@@ -999,10 +1072,12 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
             const bool      playing = play;
             const double    sr =
                 compiled_ ? (double) compiled_->doc.sample_rate : 48000.0;
+            const project::LoopSpan span{ loop_on, loop_s, loop_e };
             compiled_->renderMetronomes(in_planar_, cb_block_size_, n,
-                                        ti_pos, sr, ti_bpm, playing);
+                                        ti_pos, sr, ti_bpm, playing, span);
             compiled_->stageMidiClocks(compiled_->graph->handle(),
-                                       n, ti_pos, sr, ti_bpm, playing);
+                                       n, ti_pos, sr, ti_bpm, playing,
+                                       stopped_since && play, span);
         }
 
         // A failed render stops the engine; the timer tells the app on the

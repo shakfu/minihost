@@ -273,6 +273,21 @@ def test_live_plays_midi_file_and_releases_held_notes_on_stop(tmp_path):
 
 
 @skip_if_no_desktop
+def test_live_stop_and_play_in_one_callback_rewinds_and_releases(tmp_path):
+    # Stop and Play before the next callback: the engine saw the transport
+    # still playing, so it neither rewound in time nor released note 67.
+    proj = _midi_project(tmp_path, 1.25)
+    take = int(1.25 * SR)
+    _run(f"--live-selftest={proj}", "--live-restart")
+
+    want = _file_events(0, 0, take)
+    want.append((take, "off", 67))  # released as the second take starts
+    want += _file_events(take, 0, take)
+    want.append((2 * take, "off", 67))
+    assert _midi_log(proj) == want
+
+
+@skip_if_no_desktop
 def test_live_loops_midi_file_and_releases_held_notes_at_the_wrap(tmp_path):
     loop = int(1.01 * SR)  # wraps mid-callback; note 67 held at the end
     proj = _midi_project(tmp_path, 1.01)
@@ -424,6 +439,8 @@ def test_live_beats_follow_the_sample_position_after_a_tempo_change(tmp_path):
     # Plugins summed beats per block, so after a BPM change their playhead
     # disagreed with the sequencer and metronome, which use
     # position_samples * bpm.
+    # The selftest also restarts the engine as a graph edit does: that
+    # reset the loop region to the whole project and rewound to 0.
     proj, _ = _project(tmp_path, _source())
     res = subprocess.run(
         [str(DESKTOP_BIN), f"--live-transport-selftest={proj}"],
@@ -433,3 +450,107 @@ def test_live_beats_follow_the_sample_position_after_a_tempo_change(tmp_path):
     )
     assert res.returncode == 0, f"stdout:{res.stdout}\nstderr:{res.stderr}"
     assert "live-transport-selftest OK" in res.stderr
+
+
+# 0.66 s: the wrap falls inside a 256-frame block, and 1920 samples after
+# the beat-1 click has decayed, so clicks stay separate.
+LOOP = 31680
+
+
+def _loop_project(tmp_path, nodes, edges):
+    in_wav = tmp_path / "in.wav"
+    audio_io.write_audio(str(in_wav), np.zeros((2, LOOP), np.float32), SR, bit_depth=32)
+    proj = tmp_path / "p.json"
+    proj.write_text(
+        json.dumps(
+            {
+                "minihost_project_version": 1,
+                "sample_rate": SR,
+                "block_size": 256,
+                "bpm": 120,
+                "nodes": [
+                    {"id": "in", "kind": "input", "channels": 2, "source": str(in_wav)},
+                    {"id": "spk", "kind": "device_output", "channels": 2},
+                    *nodes,
+                ],
+                "edges": [{"src": "in", "dst": "spk"}, *edges],
+            }
+        )
+    )
+    return proj
+
+
+@skip_if_no_desktop
+def test_live_metronome_clicks_on_the_loop_start_after_a_wrap(tmp_path):
+    # The metronome placed clicks by the block's start only, so after a
+    # wrap inside a block it stayed on the pre-wrap grid and missed the
+    # beat at the loop start.
+    out_wav = tmp_path / "out.wav"
+    proj = _loop_project(
+        tmp_path,
+        [
+            {"id": "click", "kind": "metronome", "channels": 2},
+            {
+                "id": "out",
+                "kind": "output",
+                "channels": 2,
+                "sink": str(out_wav),
+                "bit_depth": 32,
+            },
+        ],
+        [{"src": "click", "dst": "out"}],
+    )
+    _run(f"--live-selftest={proj}", "--live-loop")
+    rec, _ = audio_io.read_audio(str(out_wav), as_=np.ndarray)
+    assert rec.shape[1] == LOOP * 5 // 2
+
+    sounding = np.flatnonzero(np.abs(rec[0]) > 0)
+    starts = sounding[np.insert(np.diff(sounding) > 1000, 0, True)]
+    beat = SR // 2
+    want = [
+        p * LOOP + b + 1
+        for p in range(3)
+        for b in (0, beat)
+        if p * LOOP + b < len(rec[0])
+    ]
+    np.testing.assert_array_equal(starts, want)
+
+
+@skip_if_no_desktop
+def test_live_midi_clock_follows_a_loop_wrap(tmp_path):
+    # Clock ticks after a wrap inside a block used the pre-wrap grid, and
+    # nothing told the receiver the position had jumped.
+    proj = _loop_project(
+        tmp_path,
+        [
+            {"id": "clock", "kind": "midi_clock"},
+            {"id": "mo", "kind": "midi_output"},
+            {
+                "id": "out",
+                "kind": "output",
+                "channels": 2,
+                "sink": str(tmp_path / "out.wav"),
+                "bit_depth": 24,
+            },
+        ],
+        [
+            {"src": "clock", "dst": "mo", "kind": "midi"},
+            {"src": "in", "dst": "out"},
+        ],
+    )
+    _run(f"--live-selftest={proj}", "--live-loop")
+    events = [
+        tuple(int(x) for x in line.split())
+        for line in proj.with_suffix(".midi.txt").read_text().splitlines()
+    ]
+    tick = SR * 60 // (120 * 24)  # 1000 samples
+    take = LOOP * 5 // 2
+    want = [(0, 0xFA, 0, 0)]
+    for p in range(3):
+        if p:
+            want.append((p * LOOP, 0xF2, 0, 0))  # back to position 0
+        for t in range(0, LOOP, tick):
+            if p * LOOP + t < take:
+                want.append((p * LOOP + t, 0xF8, 0, 0))
+    want.append((take, 0xFC, 0, 0))  # Stop
+    assert events == want

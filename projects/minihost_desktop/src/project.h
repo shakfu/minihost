@@ -378,6 +378,9 @@ juce::String liveTopologyFingerprint(const ProjectDocument& doc);
 
 // Owns the built graph, opened plugin instances, and loaded input
 // audio buffers. mh_close runs for every plugin in the destructor.
+// A loop region for the live generators: on, start and end in samples.
+struct LoopSpan { bool on = false; long long start = 0, end = 0; };
+
 struct LoadedProject {
     LoadedProject() = default;
     LoadedProject(const LoadedProject&) = delete;
@@ -482,11 +485,15 @@ struct LoadedProject {
     // then channel 1, ...). `block_size` is the stride between
     // channels. Audio-thread safe (no allocations; only updates
     // internal phase counters).
+    // `loop`: the active loop region. A block that crosses its end
+    // continues from its start, so beats after the wrap fall on the
+    // looped grid.
     void renderMetronomes(std::vector<std::vector<float>>& planar_inputs,
                           int block_size,
                           int nframes,
                           long long pos_samples,
-                          double sr, double bpm, bool playing);
+                          double sr, double bpm, bool playing,
+                          LoopSpan loop = {});
 
     // -- MIDI clock support -- //
     // For each MidiClockNodeSpec, the graph node id of its dedicated
@@ -498,7 +505,8 @@ struct LoadedProject {
 
     // Per-midi-clock running state for transport-edge detection.
     struct MidiClockState {
-        bool was_playing = false;
+        bool      was_playing = false;
+        long long next_pos    = -1;   // where the last block ended; -1 none
     };
     std::vector<MidiClockState>        midi_clock_states;
 
@@ -508,11 +516,15 @@ struct LoadedProject {
     // Builds the next block's MIDI clock events (Start / Stop /
     // 24-PPQN Clock ticks) per midi_clock node, stages them on the
     // graph via mh_graph_set_midi_input_events, and updates the
-    // per-node "was_playing" edge-detection state.
+    // per-node "was_playing" edge-detection state. `restarted`: a Stop and
+    // a Play both fell since the last block, so Stop then Start is sent.
+    // A jump in position while playing (a loop wrap, inside the block or
+    // at its start) sends a Song Position Pointer.
     void stageMidiClocks(struct MH_PluginGraph* graph,
                          int nframes,
                          long long pos_samples,
-                         double sr, double bpm, bool playing);
+                         double sr, double bpm, bool playing,
+                         bool restarted = false, LoopSpan loop = {});
 };
 
 std::unique_ptr<LoadedProject> loadProject(const juce::File& path);
