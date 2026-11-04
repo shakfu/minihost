@@ -7,7 +7,7 @@ uv run python examples/projects/make_examples.py
 make run-desktop    # then File > Open Project...
 ```
 
-Each graph writes to `build/out/projects/<name>.wav` at the repo root and plays to the speakers. Press Play in the status bar to hear and record, or Cmd+R to render offline.
+Each graph writes to `build/out/projects/<name>.wav` at the repo root and plays to the speakers. Press Play in the status bar to hear and record, or Cmd+R to render offline. `uv run minihost render examples/projects/<name>.json` renders the same file from Python, sample for sample.
 
 | File | Graph | What to check |
 |-|-|-|
@@ -28,4 +28,3 @@ Each graph writes to `build/out/projects/<name>.wav` at the repo root and plays 
 Known gaps these examples expose:
 
 - The metronome is not rendered offline (`06_metronome`).
-- Graph edits during live mode take effect only after Stop Live and Start Live.

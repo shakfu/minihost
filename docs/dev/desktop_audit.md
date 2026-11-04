@@ -150,9 +150,9 @@ Untested realtime behaviour:
 
 - ~~[desktop_app_todo.md](desktop_app_todo.md): "same schema, same semantics" (see section 1).~~ True since the parity fix.
 
-- [desktop_app.md](desktop_app.md) status line lists undo/redo and the plugin browser as deferred. Both exist.
+- [desktop_app.md](desktop_app.md) status line lists undo/redo and the plugin browser as deferred. Both exist. **Fixed 2026-11-04.**
 
-- `examples/projects/README.md`: "Graph edits during live mode take effect only after Stop Live and Start Live". Live now restarts on edit.
+- `examples/projects/README.md`: "Graph edits during live mode take effect only after Stop Live and Start Live". Live now restarts on edit. **Fixed 2026-11-04.**
 
 - `live.h:21-22`: recorder "does no mutex'd work" (see R1).
 
