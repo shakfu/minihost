@@ -32,6 +32,7 @@ add_executable(minihost_desktop
     src/status_bar.cpp
     src/node_registry.cpp
     src/plugin_scanner.cpp
+    src/take_recorder.cpp
 )
 
 target_include_directories(minihost_desktop PRIVATE

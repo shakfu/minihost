@@ -57,6 +57,18 @@ Schema notes:
       MIDI edges live in the same `edges` list, tagged `"kind": "midi"`
       (audio edges are the default / `"kind": "audio"`). A MIDI edge can
       drive any plugin node that accepts MIDI.
+    - Routing nodes: `gain` (`channels`, `gain`), `bus` (`channels`),
+      `pick_channel` (`in_channels`, `channel_index`) and `merge_channels`
+      (`out_channels`, one mono input per `dst_port`).
+    - `sequencer`: a MIDI source that plays notes in a scale on the step
+      grid of the top-level `bpm` (default 120). Fields as written by the
+      desktop app (`steps`, `rate`, `root`, `scale`, `octaves`, `density`,
+      `gate`, `velocity_min`, `velocity_max`, `mutate`, `seed`, `channel`);
+      notes match the desktop's renders sample for sample.
+    - Live-only nodes load and render as in the desktop's offline render:
+      `device_input` and `metronome` are silent, `device_output` and
+      `meter` are discarded, and `midi_clock` sends nothing. A project
+      still needs one file `output` to render.
     - `duration_seconds` is optional; when omitted, the render length is
       the maximum length across input source files. If both are missing
       (no input nodes, no duration), loading fails.
@@ -65,11 +77,10 @@ Schema notes:
       edited node positions. Missing entries auto-layout; old project
       files without `layout` continue to parse unchanged.
 
-MIDI routing (input/output/filter/transpose/velocity-curve/merge nodes and
-`"kind": "midi"` edges) is supported; the schema mirrors what the desktop
-app already understands, so projects round-trip between the two. Still
-omitted: parameter automation and plugin sidechain buses (tracked in
-docs/dev/desktop_app_todo.md).
+Every node kind the desktop app writes is accepted, so a project built in
+the app renders here with the same result (tests/test_project_desktop_kinds.py).
+Still omitted from both: parameter automation and plugin sidechain buses
+(tracked in docs/dev/desktop_app_todo.md).
 """
 
 from __future__ import annotations
@@ -83,7 +94,7 @@ from pathlib import Path
 from typing import Any
 
 import minihost
-from minihost import audio_io
+from minihost import _sequencer, audio_io
 from minihost.render import midi_file_to_events
 
 
@@ -190,6 +201,36 @@ class _MidiMergeNode:
 
 
 @dataclass
+class _LiveOnlyAudioNode:
+    """A node with audio only in the desktop's live mode. Offline, an input
+    of this kind (`device_input`, `metronome`) is silent and an output
+    (`device_output`, `meter`) is discarded."""
+
+    id: str
+    channels: int
+
+
+@dataclass
+class _RoutingNode:
+    """`gain`, `bus`, `pick_channel` or `merge_channels`."""
+
+    id: str
+    kind: str
+    channels: int = 2  # gain, bus
+    gain: float = 1.0  # gain
+    in_channels: int = 2  # pick_channel
+    channel_index: int = 0  # pick_channel
+    out_channels: int = 2  # merge_channels
+
+
+@dataclass
+class _SequencerNode:
+    id: str
+    params: _sequencer.SequencerParams
+    node_id: int = -1
+
+
+@dataclass
 class LoadedProject:
     """Result of `load_project`. Holds the built (compiled) PluginGraph,
     references to the Plugin objects (so the caller can keep them
@@ -207,6 +248,14 @@ class LoadedProject:
     # output, writing any node that has a `sink` to a .mid file.
     midi_inputs: list[_MidiInputNode] = field(default_factory=list)
     midi_outputs: list[_MidiOutputNode] = field(default_factory=list)
+    # Sequencer nodes; the renderer generates their notes per block.
+    sequencers: list[_SequencerNode] = field(default_factory=list)
+    # Live-only audio nodes: silent inputs and discarded outputs. The graph
+    # still has them, so the renderer passes buffers for them.
+    silent_inputs: list[_LiveOnlyAudioNode] = field(default_factory=list)
+    discarded_outputs: list[_LiveOnlyAudioNode] = field(default_factory=list)
+    # Tempo for sequencers (`bpm`, default 120).
+    bpm: float = 120.0
     # Optional canvas layout. Keyed by node id; values are (x, y)
     # tuples in canvas coordinates. Missing entries auto-layout.
     layout: dict[str, tuple[float, float]] = field(default_factory=dict)
@@ -257,6 +306,12 @@ def load_project(project_path: str | Path) -> LoadedProject:
             f"duration_seconds must be non-negative, got {duration_seconds}"
         )
 
+    bpm = doc.get("bpm", 120.0)
+    if isinstance(bpm, bool) or not isinstance(bpm, (int, float)):
+        raise ProjectError("bpm must be a number")
+    if not (0.0 < bpm < 1000.0):
+        raise ProjectError(f"bpm must be in (0, 1000), got {bpm}")
+
     project_dir = project_path.parent
 
     # First pass: parse nodes by kind.
@@ -268,6 +323,10 @@ def load_project(project_path: str | Path) -> LoadedProject:
     midi_outputs: list[_MidiOutputNode] = []
     midi_procs: list[_MidiProcessorNode] = []
     midi_merges: list[_MidiMergeNode] = []
+    routing: list[_RoutingNode] = []
+    sequencers: list[_SequencerNode] = []
+    silent_inputs: list[_LiveOnlyAudioNode] = []
+    discarded_outputs: list[_LiveOnlyAudioNode] = []
     node_by_id: dict[str, tuple[str, Any]] = {}  # id -> (kind, dataclass)
 
     for raw in nodes_raw:
@@ -397,11 +456,48 @@ def load_project(project_path: str | Path) -> LoadedProject:
             mm = _MidiMergeNode(id=nid, num_inputs=num_inputs)
             midi_merges.append(mm)
             node_by_id[nid] = ("midi_merge", mm)
+        elif kind in ("device_input", "metronome", "device_output", "meter"):
+            # Defaults as in the desktop app; a metronome is mono.
+            default_ch = 1 if kind == "metronome" else 2
+            live = _LiveOnlyAudioNode(
+                id=nid, channels=_optional_int_at_least(raw, "channels", 1, default_ch)
+            )
+            if kind in ("device_input", "metronome"):
+                silent_inputs.append(live)
+            else:
+                discarded_outputs.append(live)
+            node_by_id[nid] = (kind, live)
+        elif kind in ("gain", "bus", "pick_channel", "merge_channels"):
+            rn = _RoutingNode(id=nid, kind=kind)
+            if kind in ("gain", "bus"):
+                rn.channels = _optional_int_at_least(raw, "channels", 1, 2)
+            if kind == "gain":
+                rn.gain = float(_optional_number(raw, "gain", 1.0))
+            if kind == "pick_channel":
+                rn.in_channels = _optional_int_at_least(raw, "in_channels", 1, 2)
+                rn.channel_index = _optional_int_at_least(raw, "channel_index", 0, 0)
+            if kind == "merge_channels":
+                rn.out_channels = _optional_int_at_least(raw, "out_channels", 1, 2)
+            routing.append(rn)
+            node_by_id[nid] = (kind, rn)
+        elif kind == "midi_clock":
+            # Clock ticks follow the live transport; offline it sends none,
+            # as in the desktop renderer.
+            mc = _MidiInputNode(id=nid)
+            midi_inputs.append(mc)
+            node_by_id[nid] = ("midi_clock", mc)
+        elif kind == "sequencer":
+            seq = _SequencerNode(id=nid, params=_parse_sequencer(nid, raw))
+            sequencers.append(seq)
+            node_by_id[nid] = ("sequencer", seq)
         else:
             raise ProjectError(f"unknown node kind {kind!r}")
 
     if not outputs:
-        raise ProjectError("project has no output nodes")
+        raise ProjectError(
+            "project has no output nodes to render "
+            "(device_output and meter nodes are live-only)"
+        )
 
     # Load input audio so we can validate sample rates and decide the
     # render duration before building the graph. numpy is loaded lazily
@@ -501,8 +597,12 @@ def load_project(project_path: str | Path) -> LoadedProject:
         # Build the graph.
         g = minihost.PluginGraph(block, float(sr))
         id_to_nodeid: dict[str, int] = {}
+        # Graph inputs and outputs take buffers in creation order: file
+        # inputs, then silent ones; file outputs, then discarded ones.
         for inp in inputs:
             id_to_nodeid[inp.id] = g.add_input(inp.channels)
+        for live in silent_inputs:
+            id_to_nodeid[live.id] = g.add_input(live.channels)
         for pl in plugins:
             id_to_nodeid[pl.id] = g.add_plugin(pl.plugin)  # type: ignore[arg-type]
         for mx in mixes:
@@ -512,6 +612,25 @@ def load_project(project_path: str | Path) -> LoadedProject:
             id_to_nodeid[mx.id] = nid
         for out in outputs:
             id_to_nodeid[out.id] = g.add_output(out.channels)
+        for live in discarded_outputs:
+            id_to_nodeid[live.id] = g.add_output(live.channels)
+        for rn in routing:
+            try:
+                if rn.kind == "gain":
+                    rid = g.add_mix(1, rn.channels)
+                    g.set_mix_gain(rid, 0, rn.gain)
+                elif rn.kind == "bus":
+                    rid = g.add_mix(1, rn.channels)
+                elif rn.kind == "pick_channel":
+                    rid = g.add_pick_channel(rn.in_channels, rn.channel_index)
+                else:
+                    rid = g.add_merge_channels(rn.out_channels)
+            except RuntimeError as exc:
+                raise ProjectError(f"{rn.kind} {rn.id!r}: {exc}") from exc
+            id_to_nodeid[rn.id] = rid
+        for seq in sequencers:
+            seq.node_id = g.add_midi_input()
+            id_to_nodeid[seq.id] = seq.node_id
         for mi in midi_inputs:
             mi.node_id = g.add_midi_input()
             id_to_nodeid[mi.id] = mi.node_id
@@ -590,6 +709,10 @@ def load_project(project_path: str | Path) -> LoadedProject:
         plugins=plugins,
         midi_inputs=midi_inputs,
         midi_outputs=midi_outputs,
+        sequencers=sequencers,
+        silent_inputs=silent_inputs,
+        discarded_outputs=discarded_outputs,
+        bpm=float(bpm),
         layout=layout,
     )
 
@@ -689,8 +812,15 @@ def _render_loaded(p: LoadedProject, *, progress_callback=None) -> None:
     in_bufs: list = []
     for n in p.inputs:
         in_bufs.append(np.zeros((n.channels, block), dtype=np.float32))
+    # Live-only inputs stay zero; live-only outputs are rendered and dropped.
+    silent_bufs = [
+        np.zeros((n.channels, block), dtype=np.float32) for n in p.silent_inputs
+    ]
     out_scratch: list = [
         np.zeros((n.channels, block), dtype=np.float32) for n in p.outputs
+    ]
+    discard_bufs = [
+        np.zeros((n.channels, block), dtype=np.float32) for n in p.discarded_outputs
     ]
 
     # Accumulate the whole output in memory for v1. Streaming write is
@@ -727,8 +857,19 @@ def _render_loaded(p: LoadedProject, *, progress_callback=None) -> None:
                 cur += 1
             midi_cursors[ci] = cur
             p.graph.set_midi_input_events(mi.node_id, block_events)
+        # Sequencers: notes still sounding when the render ends are not
+        # released, as in the desktop renderer.
+        for seq in p.sequencers:
+            notes = _sequencer.events(
+                seq.params, float(p.sample_rate), p.bpm, frame, block_end
+            )
+            p.graph.set_midi_input_events(
+                seq.node_id, [(at - frame, st, d1, d2) for at, st, d1, d2 in notes]
+            )
         # Render.
-        p.graph.render_block(in_bufs, out_scratch, n_frames)
+        p.graph.render_block(
+            in_bufs + silent_bufs, out_scratch + discard_bufs, n_frames
+        )
         # Capture audio outputs.
         for accum, scratch in zip(out_accum, out_scratch):
             accum[:, frame : frame + n_frames] = scratch[:, :n_frames]
@@ -809,6 +950,43 @@ def _resolve(project_dir: Path, value: str) -> Path:
     returned as given.
     """
     return (project_dir / value).resolve()
+
+
+def _optional_int_at_least(d: dict, key: str, minimum: int, default: int) -> int:
+    if key not in d:
+        return default
+    return _require_int_at_least(d, key, minimum)
+
+
+def _optional_number(d: dict, key: str, default: float) -> float:
+    val = _optional_field(d, key, (int, float), default)
+    if not math.isfinite(val):
+        raise ProjectError(f"field {key!r} must be finite, got {val}")
+    return val
+
+
+def _parse_sequencer(nid: str, raw: dict) -> _sequencer.SequencerParams:
+    """Read a sequencer node's settings and clamp them, as the desktop does."""
+    p = _sequencer.SequencerParams()
+    p.steps = _optional_field(raw, "steps", int, p.steps)
+    p.rate = float(_optional_number(raw, "rate", p.rate))
+    p.root = _optional_field(raw, "root", int, p.root)
+    p.octaves = _optional_field(raw, "octaves", int, p.octaves)
+    p.density = float(_optional_number(raw, "density", p.density))
+    p.gate = float(_optional_number(raw, "gate", p.gate))
+    p.vel_min = _optional_field(raw, "velocity_min", int, p.vel_min)
+    p.vel_max = _optional_field(raw, "velocity_max", int, p.vel_max)
+    p.mutate = float(_optional_number(raw, "mutate", p.mutate))
+    p.seed = _sequencer.seed_from_json(_optional_number(raw, "seed", p.seed))
+    p.channel = _optional_field(raw, "channel", int, p.channel)
+    p.scale = _optional_field(raw, "scale", str, p.scale)
+    if p.scale not in _sequencer.SCALES:
+        raise ProjectError(
+            f"sequencer {nid!r}: unknown scale {p.scale!r} "
+            f"(one of {', '.join(_sequencer.SCALES)})"
+        )
+    _sequencer.clamp_params(p)
+    return p
 
 
 def _require_int_at_least(d: dict, key: str, minimum: int) -> int:

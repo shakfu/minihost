@@ -55,6 +55,18 @@
 //       captured project as <project>.captured.json beside the first
 //       output sink. Driven by tests/test_desktop_live_state.py.
 //
+//   minihost_desktop --live-failure-selftest=<project.json>
+//       Headless check of a failed render while recording: the engine
+//       stops, outputs silence, reports the failure once, keeps its
+//       plugins for state capture, and finalizes the take. Driven by
+//       tests/test_desktop_live_failure.py.
+//
+//   minihost_desktop --recorder-selftest=<dir>
+//       Drives TakeRecorder through a full FIFO without the writer thread
+//       and checks the files in <dir>: drops hit every output, become
+//       silence in order, and the take keeps its length. Driven by
+//       tests/test_desktop_recorder.py.
+//
 //   minihost_desktop --save-roundtrip=<project.json>
 //       Headless parse + re-save to <input>.resaved.json. Exercises the
 //       C++ project writer against the Python parser without UI input.
@@ -1593,6 +1605,22 @@ public:
             return;
         }
 
+        if (args.containsOption("--live-failure-selftest"))
+        {
+            const auto path = args.removeValueForOption("--live-failure-selftest");
+            setApplicationReturnValue(runLiveFailureSelfTest(juce::File(path)));
+            quit();
+            return;
+        }
+
+        if (args.containsOption("--recorder-selftest"))
+        {
+            const auto path = args.removeValueForOption("--recorder-selftest");
+            setApplicationReturnValue(runRecorderSelfTest(juce::File(path)));
+            quit();
+            return;
+        }
+
         // Headless save round-trip: parse, immediately save to
         // <input>.resaved.json. Used to verify the C++ saveProjectFile
         // path against the Python parser without needing UI input.
@@ -1816,7 +1844,7 @@ public:
             mainWindow_->setStatusBar(
                 StatusBar::Actions{
                     [this]() {
-                        if (live_ && live_->isRunning()) stopLive();
+                        if (live_ && live_->loadedProject() != nullptr) stopLive();
                         else                             startLive();
                     },
                     [this]() { transportPlay(); },
@@ -2678,6 +2706,151 @@ private:
     // captureLiveState, which Save, Stop Live and Restart Live call. The
     // first plugin's parameter 0 is written the way a live editor's knob
     // reaches the engine; the captured document is saved beside the project.
+    // A failed render stops the engine mid-take. The first plugin's
+    // parameter 0, written before the failure, must still be capturable
+    // after it; the take holds only the frames before it.
+    int runLiveFailureSelfTest(const juce::File& project_file)
+    {
+        auto fail = [](const char* m) {
+            std::fprintf(stderr, "live-failure-selftest: %s\n", m);
+            return 1;
+        };
+        try {
+            const auto doc = project::parseProjectFile(project_file);
+            if (doc.outputs.empty()) return fail("project has no output node");
+            LiveEngine engine;
+            juce::String err;
+            if (!engine.start(doc, err, /*attach_device=*/false))
+                return fail(err.toRawUTF8());
+            auto* lp = engine.loadedProject();
+            if (lp->plugins.empty()) return fail("project has no plugin");
+            if (!engine.play(err)) return fail(err.toRawUTF8());
+
+            const int n = doc.block_size;
+            std::vector<float> l((size_t) n), r((size_t) n);
+            float* outs[2] = { l.data(), r.data() };
+            const juce::AudioIODeviceCallbackContext ctx{};
+            // The write is applied, as a live editor's would be, by the next
+            // callback; the plugin sees it in that block's process().
+            if (!engine.enqueueParamWrite(0, 0, 0.25f))
+                return fail("enqueueParamWrite() failed");
+            for (int i = 0; i < 3; ++i)
+                engine.audioDeviceIOCallbackWithContext(nullptr, 0, outs, 2, n, ctx);
+            if (!engine.isRunning()) return fail("stopped before the failure");
+            if (engine.consumeRenderFailure()) return fail("failure before injection");
+
+            engine.injectRenderFailureForTest();
+            std::fill(l.begin(), l.end(), 1.0f);
+            std::fill(r.begin(), r.end(), 1.0f);
+            engine.audioDeviceIOCallbackWithContext(nullptr, 0, outs, 2, n, ctx);
+            for (int i = 0; i < n; ++i)
+                if (l[(size_t) i] != 0.0f || r[(size_t) i] != 0.0f)
+                    return fail("failed callback did not output silence");
+            if (engine.isRunning())             return fail("still running after failure");
+            if (!engine.consumeRenderFailure()) return fail("failure not reported");
+            if (engine.consumeRenderFailure())  return fail("failure reported twice");
+            if (engine.loadedProject() != lp)   return fail("project freed on failure");
+
+            // The app's handler captures state before stopping.
+            auto captured = doc;
+            if (!engine.withAudioHeld([&] { return project::captureLiveState(*lp, captured); }))
+                return fail("state not capturable after failure");
+
+            // Later callbacks are silent and record nothing.
+            engine.audioDeviceIOCallbackWithContext(nullptr, 0, outs, 2, n, ctx);
+            if (engine.recordedFrames() != 3LL * n)
+                return fail("take length is not the frames before the failure");
+            engine.stopTransport();
+            engine.stop();
+            project::saveProjectFile(
+                artifactFile(doc, project_file, ".captured.json"), captured);
+            return 0;
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "live-failure-selftest: %s\n", e.what());
+            return 1;
+        }
+    }
+
+    // Two outputs (1 and 2 channels), a 100-frame FIFO and 40-frame blocks,
+    // with no writer until block 4. Blocks 2 and 3 do not fit and must come
+    // out as 80 frames of silence between blocks 1 and 4, in both files.
+    // Block k holds the value k + 1 (output 0) and -(k + 1) (output 1).
+    int runRecorderSelfTest(const juce::File& dir)
+    {
+        auto fail = [](const juce::String& m) {
+            std::fprintf(stderr, "recorder-selftest: %s\n", m.toRawUTF8());
+            return 1;
+        };
+        dir.createDirectory();
+        const int chans[2] = { 1, 2 };
+        const int block = 40;
+        std::vector<std::unique_ptr<juce::AudioFormatWriter>> writers;
+        for (int i = 0; i < 2; ++i)
+        {
+            const auto f = dir.getChildFile("take" + juce::String(i) + ".wav");
+            f.deleteFile();
+            std::unique_ptr<juce::OutputStream> stream
+                = std::make_unique<juce::FileOutputStream>(f);
+            auto w = juce::WavAudioFormat().createWriterFor(stream,
+                juce::AudioFormatWriterOptions{}
+                    .withSampleRate(48000.0).withNumChannels(chans[i])
+                    .withBitsPerSample(32));
+            if (w == nullptr) return fail("cannot create writer");
+            writers.push_back(std::move(w));
+        }
+        TakeRecorder rec(std::move(writers), 100);
+
+        std::vector<float> data[2][2];
+        auto writeBlock = [&](int k) {
+            const float* ch[2][2];
+            for (int i = 0; i < 2; ++i)
+                for (int c = 0; c < chans[i]; ++c)
+                {
+                    data[i][c].assign((size_t) block,
+                                      (float) ((i == 0 ? 1 : -1) * (k + 1)));
+                    ch[i][c] = data[i][c].data();
+                }
+            const float* const* outs[2] = { ch[0], ch[1] };
+            rec.write(outs, block);
+        };
+        writeBlock(0);
+        writeBlock(1);
+        writeBlock(2);   // FIFO has 20 free: dropped
+        writeBlock(3);   // 20 frames of owed silence fit, then dropped
+        if (rec.droppedFrames() != 2 * block) return fail("drops not counted");
+        rec.drain();
+        writeBlock(4);   // the remaining 60 frames of silence, then data
+        if (rec.droppedFrames() != 2 * block) return fail("block 4 dropped");
+        if (rec.frames() != 5 * block)        return fail("frames() wrong");
+        rec.finish();
+        if (rec.backlog() != 0)               return fail("backlog after finish");
+
+        const float expect_block[5] = { 1, 2, 0, 0, 5 };
+        for (int i = 0; i < 2; ++i)
+        {
+            const auto f = dir.getChildFile("take" + juce::String(i) + ".wav");
+            char err[256] = { 0 };
+            MH_AudioData* ad = mh_audio_read(f.getFullPathName().toRawUTF8(),
+                                             err, sizeof(err));
+            if (ad == nullptr) return fail(err);
+            const bool len_ok = ad->frames == (unsigned) (5 * block)
+                             && (int) ad->channels == chans[i];
+            bool data_ok = true;
+            for (unsigned t = 0; len_ok && t < ad->frames; ++t)
+                for (unsigned c = 0; c < ad->channels; ++c)
+                {
+                    const float want = (i == 0 ? 1.0f : -1.0f)
+                                     * expect_block[t / (unsigned) block];
+                    if (ad->data[t * ad->channels + c] != want) data_ok = false;
+                }
+            mh_audio_data_free(ad);
+            if (!len_ok)  return fail("take " + juce::String(i) + " has the wrong length");
+            if (!data_ok) return fail("take " + juce::String(i) + " content or order is wrong");
+        }
+        std::fprintf(stderr, "recorder-selftest OK\n");
+        return 0;
+    }
+
     int runLiveStateSelfTest(const juce::File& project_file)
     {
         auto fail = [](const char* m) {
@@ -3386,7 +3559,7 @@ private:
     {
         if (!mainWindow_) return;
         // The project live mode runs against is about to be replaced.
-        if (live_ && live_->isRunning()) stopLive();
+        if (live_ && live_->loadedProject() != nullptr) stopLive();
         closeCanvasEditors();
         project::ProjectDocument blank;
         blank.sample_rate = 48000;
@@ -3620,7 +3793,9 @@ private:
     // the document changed; the dirty flags follow.
     bool syncLiveStateIntoDocument()
     {
-        if (!live_ || !live_->isRunning() || !mainWindow_) return false;
+        // loadedProject, not isRunning: after a render failure the engine
+        // is stopped but its plugins hold the user's edits.
+        if (!live_ || live_->loadedProject() == nullptr || !mainWindow_) return false;
         auto* doc = mainWindow_->currentDocument();
         auto* lp  = live_->loadedProject();
         if (doc == nullptr || lp == nullptr) return false;
@@ -3667,6 +3842,7 @@ private:
     {
         if (!live_) return;
         live_->stopTransport();
+        reportTakeProblem();
         if (live_restart_pending_) restartLiveForEdit();
     }
 
@@ -3710,7 +3886,7 @@ private:
     {
         // Stop any live engine first -- switching projects mid-stream
         // would invalidate the audio thread's compiled graph.
-        if (live_ && live_->isRunning()) stopLive();
+        if (live_ && live_->loadedProject() != nullptr) stopLive();
         try {
             auto doc = project::parseProjectFile(project_file);
             closeCanvasEditors();
@@ -3730,8 +3906,35 @@ private:
 
     LiveEngine& ensureLiveEngine()
     {
-        if (!live_) live_ = std::make_unique<LiveEngine>();
+        if (!live_)
+        {
+            live_ = std::make_unique<LiveEngine>();
+            live_->setOnRenderFailure([this]() { handleLiveRenderFailure(); });
+        }
         return *live_;
+    }
+
+    // The audio thread stopped the engine after a block failed to render.
+    // The plugins are still loaded, so stopLive can capture their state.
+    void handleLiveRenderFailure()
+    {
+        stopLive();
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::AlertWindow::WarningIcon,
+            "Live mode stopped",
+            "The graph failed to render a block, so live mode stopped. "
+            "Plugin edits were copied into the project; save to keep them. "
+            "Recordings made so far were kept.");
+    }
+
+    // Tells the user about a take that dropped audio or failed to write.
+    void reportTakeProblem()
+    {
+        if (!live_) return;
+        const auto msg = live_->consumeTakeProblem();
+        if (msg.isNotEmpty())
+            juce::AlertWindow::showMessageBoxAsync(
+                juce::AlertWindow::WarningIcon, "Recording problem", msg);
     }
 
     void showAudioSettings()
@@ -3842,6 +4045,7 @@ private:
         closeLiveEditors();
         live_restart_pending_ = false;
         if (live_) live_->stop();
+        reportTakeProblem();
         if (mainWindow_)
         {
             mainWindow_->setLiveRunning(false);

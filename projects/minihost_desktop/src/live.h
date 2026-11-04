@@ -19,12 +19,16 @@
 // Threading:
 //   - start()/stop()/play()/stopTransport() are message-thread only.
 //   - The audio callback runs on the device thread. It does no
-//     mutex'd work and no allocations after start().
+//     mutex'd work and no allocations after start(). Recording goes
+//     through TakeRecorder's lock-free FIFO; a writer thread polls it.
+//   - A block the graph fails to render stops the engine. The message-
+//     thread timer then calls the setOnRenderFailure handler.
 
 #pragma once
 
 #include "project.h"
 #include "rt_param_queue.h"
+#include "take_recorder.h"
 
 #include "minihost_midi.h"
 
@@ -35,8 +39,11 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <mutex>
+#include <thread>
+#include <utility>
 
 namespace minihost_desktop {
 
@@ -58,6 +65,17 @@ public:
                bool attach_device = true);
     void stop();
     bool isRunning() const noexcept { return running_.load(); }
+
+    // Called on the message thread after the audio thread stopped the
+    // engine because a block failed to render. The plugins and the loaded
+    // project stay until stop(), so their state can still be captured.
+    void setOnRenderFailure(std::function<void()> fn) { on_render_failure_ = std::move(fn); }
+    // Clears and returns the failure flag (the timer's check; also tests).
+    bool consumeRenderFailure() noexcept
+    { return render_failed_.exchange(false, std::memory_order_acq_rel); }
+    // Test hook: the next rendered chunk fails as if the graph had.
+    void injectRenderFailureForTest() noexcept
+    { inject_failure_.store(true, std::memory_order_release); }
 
     /** True when the audio device is running at a different sample rate than
         the loaded project was built for.
@@ -164,11 +182,16 @@ public:
     double    projectSampleRate() const noexcept
     { return compiled_ ? (double) compiled_->doc.sample_rate : 0.0; }
     bool      isRecording() const noexcept { return recording_.load(); }
-    // Frames accepted for recording (a block the FIFO could not take is
-    // dropped and not counted), and those not yet written to disk.
-    long long recordedFrames() const noexcept { return recorded_frames_.load(); }
-    long long recordingBacklog() const noexcept
-    { return recorded_frames_.load() - written_.frames.load(); }
+    // The current or last take: transport frames recorded (a dropped block
+    // counts, and is silence on disk), dropped frames, frames not yet on
+    // disk, and whether a disk write failed. Message thread.
+    long long recordedFrames() const noexcept { return take_ ? take_->frames() : 0; }
+    long long droppedFrames() const noexcept { return take_ ? take_->droppedFrames() : 0; }
+    long long recordingBacklog() const noexcept { return take_ ? take_->backlog() : 0; }
+    bool      recordingWriteFailed() const noexcept { return take_ && take_->writeFailed(); }
+    // A message about the take that just closed (dropped audio or a failed
+    // disk write), once; empty when there was none.
+    juce::String consumeTakeProblem() { return std::exchange(take_problem_, {}); }
     const juce::File& previewFile() const noexcept { return preview_file_; }
     double    previewPositionSeconds() const;
     double    previewLengthSeconds() const
@@ -241,30 +264,25 @@ private:
     bool                                           attached_ = false;
 
     // ----- Recording (file output nodes, while the transport plays) ----- //
-    // recorders_[i] records doc.outputs[i]. Swapped on the message thread
-    // under recorder_lock_; the audio thread only try-locks it, so a
-    // block that collides with a swap is dropped rather than blocking.
+    // take_ records doc.outputs, in order. The audio thread reaches it
+    // through audio_take_ under a try-lock of recorder_lock_, so a block
+    // that collides with a swap is skipped rather than waited on. The
+    // writer thread drains writer_take_ under writer_mutex_.
     void closeRecorders();
-    juce::TimeSliceThread                          writer_thread_{ "minihost recorder" };
-    std::vector<std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter>> recorders_;
-    // (part file, sink) per recorder. A take is written to the part file
+    void writerLoop();
+    std::shared_ptr<TakeRecorder>                  take_;          // message thread
+    TakeRecorder*                                  audio_take_ = nullptr;
+    juce::SpinLock                                 recorder_lock_;
+    std::shared_ptr<TakeRecorder>                  writer_take_;
+    std::mutex                                     writer_mutex_;
+    std::thread                                    writer_thread_;
+    std::atomic<bool>                              writer_quit_{ false };
+    // (part file, sink) per output. A take is written to the part file
     // and moved over the sink when it closes, so a Play that fails to open
     // a later sink leaves every earlier take in place.
     std::vector<std::pair<juce::File, juce::File>> recording_files_;
-    juce::SpinLock                                 recorder_lock_;
-    std::atomic<long long>                         dropped_frames_{ 0 };
+    juce::String                                   take_problem_;
     std::atomic<bool>                              recording_{ false };
-    std::atomic<long long>                         recorded_frames_{ 0 };
-
-    // Counts frames the writer thread has written (first recorder).
-    struct WrittenCounter : juce::AudioFormatWriter::ThreadedWriter::IncomingDataReceiver
-    {
-        std::atomic<long long> frames{ 0 };
-        void reset(int, double, juce::int64) override {}
-        void addBlock(juce::int64, const juce::AudioBuffer<float>&, int, int n) override
-        { frames.fetch_add(n, std::memory_order_relaxed); }
-    };
-    WrittenCounter                                 written_;
     std::atomic<bool>                              rewind_pending_{ false };
 
     // ----- File preview ----- //
@@ -294,6 +312,9 @@ private:
     juce::SpinLock                                 plugin_state_lock_;
 
     std::atomic<bool>                              running_{ false };
+    std::atomic<bool>                              render_failed_{ false };
+    std::atomic<bool>                              inject_failure_{ false };
+    std::function<void()>                          on_render_failure_;
     std::atomic<bool>                              rate_mismatch_{ false };
     std::atomic<double>                            mismatched_device_rate_{ 0.0 };
     int                                            cb_block_size_ = 0;

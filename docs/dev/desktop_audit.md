@@ -1,12 +1,14 @@
 # Desktop App Audit
 
-Status: open; G1-G5 fixed (see CHANGELOG). Date: 2026-11-04, against `cfc1769`. Scope: `projects/minihost_desktop/`, its tests, docs and example projects. Design: [desktop_app.md](desktop_app.md). Per-feature status: [desktop_app_todo.md](desktop_app_todo.md).
+Status: open; G1-G5, R1-R3 and the parity gap fixed (see CHANGELOG); position A chosen. Date: 2026-11-04, against `cfc1769`. Scope: `projects/minihost_desktop/`, its tests, docs and example projects. Design: [desktop_app.md](desktop_app.md). Per-feature status: [desktop_app_todo.md](desktop_app_todo.md).
 
 Method: read the design docs, README, CHANGELOG and examples. Ran the Python loader on example projects and the desktop test suite. Two code reviews read the C++ (about 11k lines): one on the realtime engine, one on the GUI, project I/O and scanner. Five findings were spot-checked against source (G1, G4, G5, R2, R5); all held. The rest are confirmed by reading or marked plausible. Nothing was reproduced at runtime.
 
 ## 1. Value
 
 ### The parity claim is false
+
+**Fixed 2026-11-04:** Python accepts every desktop kind; `tests/test_project_desktop_kinds.py` checks bit-identical renders.
 
 README: a graph built in the app "renders identically from the command line". This holds only for a subset of projects.
 
@@ -84,13 +86,13 @@ Recent work (sequencer, metronome, MIDI clock, live recording, status bar) moves
 
 ## 3. Defects: realtime engine
 
-- **R1. Mutex on the audio thread while recording.** `live.cpp:1022` calls `ThreadedWriter::write`, which calls `timeSliceThread.notify()` (`juce_AudioFormatWriter.cpp:264`), which takes `std::lock_guard<std::mutex>` (`juce_WaitableEvent.cpp:71`). One lock per chunk per file output. The comment at `live.h:21-22` ("does no mutex'd work") is wrong. Confirmed.
+- **R1. Mutex on the audio thread while recording.** `live.cpp:1022` calls `ThreadedWriter::write`, which calls `timeSliceThread.notify()` (`juce_AudioFormatWriter.cpp:264`), which takes `std::lock_guard<std::mutex>` (`juce_WaitableEvent.cpp:71`). One lock per chunk per file output. The comment at `live.h:21-22` ("does no mutex'd work") is wrong. Confirmed. **Fixed 2026-11-04.**
 
-- **R2. FIFO overflow corrupts takes.** `live.cpp:1020-1024`: `all &= write(...)` per recorder. If one of two recorders drops a block, the files are offset by n frames for good. Dropped blocks are not replaced with silence. `recordingBacklog()` (`live.h:170`) uses the first recorder's count and goes wrong after a partial drop, possibly negative. The only report is one stderr line at close (`live.cpp:538`). Confirmed.
+- **R2. FIFO overflow corrupts takes.** `live.cpp:1020-1024`: `all &= write(...)` per recorder. If one of two recorders drops a block, the files are offset by n frames for good. Dropped blocks are not replaced with silence. `recordingBacklog()` (`live.h:170`) uses the first recorder's count and goes wrong after a partial drop, possibly negative. The only report is one stderr line at close (`live.cpp:538`). Confirmed. **Fixed 2026-11-04.**
 
-- **R3. Audio-thread failure is permanent and invisible.** `renderBlock` throws `std::runtime_error` on failure (`minihost_graph_v2.hpp:226`), allocating on the audio thread. The catch (`live.cpp:1002-1010`) sets `running_=false` but keeps `compiled_`. Confirmed effects:
+- **R3. Audio-thread failure is permanent and invisible.** **Fixed 2026-11-04.** `renderBlock` throws `std::runtime_error` on failure (`minihost_graph_v2.hpp:226`), allocating on the audio thread. The catch (`live.cpp:1002-1010`) sets `running_=false` but keeps `compiled_`. Confirmed effects:
 
-  - The status bar still shows Live.
+  - The menu still shows Live as running (`setLiveRunning` is never cleared). Correction: the status bar reads `isRunning()` and did show Live off.
 
   - `syncLiveStateIntoDocument` (`main.cpp:3300`) returns early, so uncaptured plugin edits are lost on Restart or Stop.
 
@@ -146,7 +148,7 @@ Untested realtime behaviour:
 
 ## 5. Documentation drift
 
-- [desktop_app_todo.md](desktop_app_todo.md): "same schema, same semantics" (see section 1).
+- ~~[desktop_app_todo.md](desktop_app_todo.md): "same schema, same semantics" (see section 1).~~ True since the parity fix.
 
 - [desktop_app.md](desktop_app.md) status line lists undo/redo and the plugin browser as deferred. Both exist.
 
@@ -172,11 +174,11 @@ Untested realtime behaviour:
 
 ## 7. Recommended order
 
-1. Choose position A or B. Under A: make Python accept every kind, or skip `device_*` with a clear message. Add a CI test that loads every example in Python.
+1. ~~Choose position A or B.~~ A chosen and done 2026-11-04.
 
 2. ~~Fix G1-G5.~~ Done 2026-11-04.
 
-3. Fix R2 and R3 so failures reach the GUI. Then R1.
+3. ~~Fix R2 and R3 so failures reach the GUI. Then R1.~~ Done 2026-11-04.
 
 4. Add fan-in latency compensation.
 

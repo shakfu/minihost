@@ -80,8 +80,23 @@ LiveEngine::~LiveEngine()
     stopPreview();
     if (preview_attached_) dm_.removeAudioCallback(&preview_player_);
     preview_player_.setSource(nullptr);
-    writer_thread_.stopThread(2000);
+    writer_quit_.store(true);
+    if (writer_thread_.joinable()) writer_thread_.join();
     setMidiInputDevice({});  // closes any open mh_midi_in
+}
+
+// Polls rather than waits on a signal: signalling from the audio thread
+// would take a mutex. 5 ms of polling is far inside the 2 s FIFO.
+void LiveEngine::writerLoop()
+{
+    while (!writer_quit_.load())
+    {
+        {
+            const std::lock_guard<std::mutex> lock(writer_mutex_);
+            if (writer_take_) writer_take_->drain();
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
 }
 
 void LiveEngine::setMidiInputDevice(const juce::String& port_name)
@@ -358,8 +373,9 @@ bool LiveEngine::start(const project::ProjectDocument& doc,
         dm_.addAudioCallback(this);
         attached_ = true;
     }
-    if (!(first_midi_logged_ && first_audio_logged_))
-        startTimer(250);
+    render_failed_.store(false);
+    inject_failure_.store(false);
+    startTimer(100);   // diagnostics and the render-failure check
     return true;
 }
 
@@ -391,12 +407,13 @@ void LiveEngine::timerCallback()
             "(plugin chain is generating audio)\n");
         first_audio_logged_ = true;
     }
-    if (first_midi_logged_ && first_audio_logged_)
-        stopTimer();
+    if (consumeRenderFailure() && on_render_failure_)
+        on_render_failure_();   // may call stop()
 }
 
 void LiveEngine::stop()
 {
+    stopTimer();
     detachCallback();
     closeRecorders();
     rate_mismatch_.store(false, std::memory_order_relaxed);
@@ -449,7 +466,7 @@ bool LiveEngine::play(juce::String& error)
     }
     if (transport_playing_.load()) return true;
 
-    std::vector<std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter>> recs;
+    std::vector<std::unique_ptr<juce::AudioFormatWriter>> recs;
     std::vector<std::pair<juce::File, juce::File>> files;
     // On failure, close what opened and drop its part files.
     auto fail = [&recs, &files] {
@@ -491,23 +508,24 @@ bool LiveEngine::play(juce::String& error)
             stream.reset();  // close it before fail() deletes the part file
             return fail();
         }
-        // Two seconds of FIFO absorbs disk stalls.
-        recs.push_back(std::make_unique<juce::AudioFormatWriter::ThreadedWriter>(
-            writer.release(), writer_thread_, doc.sample_rate * 2));
+        recs.push_back(std::move(writer));
     }
-    if (!recs.empty() && !writer_thread_.isThreadRunning())
-        writer_thread_.startThread();
-    written_.frames.store(0);
-    if (!recs.empty()) recs.front()->setDataReceiver(&written_);
-
+    take_.reset();
+    if (!recs.empty())
     {
+        // Two seconds of FIFO absorbs disk stalls.
+        take_ = std::make_shared<TakeRecorder>(std::move(recs), doc.sample_rate * 2);
+        if (!writer_thread_.joinable())
+            writer_thread_ = std::thread([this] { writerLoop(); });
+        {
+            const std::lock_guard<std::mutex> lock(writer_mutex_);
+            writer_take_ = take_;
+        }
         const juce::SpinLock::ScopedLockType lock(recorder_lock_);
-        recorders_ = std::move(recs);
+        audio_take_ = take_.get();
     }
     recording_files_ = std::move(files);
-    dropped_frames_.store(0);
-    recorded_frames_.store(0);
-    recording_.store(!recorders_.empty());
+    recording_.store(take_ != nullptr);
     transport_playing_.store(true);
     return true;
 }
@@ -521,24 +539,35 @@ void LiveEngine::stopTransport()
 
 void LiveEngine::closeRecorders()
 {
-    std::vector<std::unique_ptr<juce::AudioFormatWriter::ThreadedWriter>> old;
     {
         const juce::SpinLock::ScopedLockType lock(recorder_lock_);
-        old.swap(recorders_);
+        audio_take_ = nullptr;
+    }
+    {
+        const std::lock_guard<std::mutex> lock(writer_mutex_);
+        writer_take_.reset();
     }
     recording_.store(false);
-    // Destroying a ThreadedWriter flushes its FIFO and closes the file.
-    old.clear();
+    // Kept until the next Play so the status bar can still report it.
+    if (take_) take_->finish();
     for (const auto& [part, sink] : recording_files_)
         if (!part.replaceFileIn(sink))
             std::fprintf(stderr, "[live] could not move %s to %s\n",
                          part.getFullPathName().toRawUTF8(),
                          sink.getFullPathName().toRawUTF8());
     recording_files_.clear();
-    if (const auto dropped = dropped_frames_.exchange(0); dropped > 0)
-        std::fprintf(stderr,
-            "[live] recording dropped %lld frames (disk too slow)\n",
-            dropped);
+    take_problem_.clear();
+    if (take_ && take_->writeFailed())
+        take_problem_ = "A disk write failed while recording; the takes end "
+                        "early.";
+    else if (take_ && take_->droppedFrames() > 0 && compiled_ != nullptr)
+        take_problem_ = "The disk fell behind while recording: "
+            + juce::String((double) take_->droppedFrames()
+                           / compiled_->doc.sample_rate, 2)
+            + " s of audio was replaced by silence. The takes keep their "
+              "length and stay aligned.";
+    if (take_problem_.isNotEmpty())
+        std::fprintf(stderr, "[live] %s\n", take_problem_.toRawUTF8());
 }
 
 bool LiveEngine::startPreview(const juce::File& file, juce::String& error)
@@ -973,11 +1002,26 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
                                        n, ti_pos, sr, ti_bpm, playing);
         }
 
+        // A failed render stops the engine; the timer tells the app on the
+        // message thread. Silence for the rest of the callback.
+        auto failRest = [&] {
+            for (int c = 0; c < numOutputChannels; ++c)
+                if (outputChannelData[c] != nullptr)
+                    std::memset(outputChannelData[c] + offset, 0,
+                                (size_t) (numSamples - offset)
+                                * sizeof(float));
+            running_.store(false, std::memory_order_release);
+            render_failed_.store(true, std::memory_order_release);
+        };
         try {
-            compiled_->graph->renderBlock(
-                in_top_ptrs_.data(),  (int) in_top_ptrs_.size(),
-                out_top_ptrs_.data(), (int) out_top_ptrs_.size(),
-                n);
+            // The C call, not the wrapper: throwing allocates.
+            const bool rendered
+                = !inject_failure_.exchange(false, std::memory_order_acq_rel)
+                  && mh_graph_render_block(compiled_->graph->handle(),
+                         in_top_ptrs_.data(),  (int) in_top_ptrs_.size(),
+                         out_top_ptrs_.data(), (int) out_top_ptrs_.size(),
+                         n) != 0;
+            if (!rendered) { failRest(); return; }
             // Surface per-channel peak from each meter node's buffer
             // to the GUI via lock-free atomics. Cheap; we already
             // touched these samples in the graph.
@@ -1000,13 +1044,7 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
                     first_audio_seen_.store(true, std::memory_order_release);
             }
         } catch (...) {
-            // Anything throwing on the audio thread means stop now.
-            for (int c = 0; c < numOutputChannels; ++c)
-                if (outputChannelData[c] != nullptr)
-                    std::memset(outputChannelData[c] + offset, 0,
-                                (size_t) (numSamples - offset)
-                                * sizeof(float));
-            running_.store(false, std::memory_order_release);
+            failRest();   // plugin code that threw
             return;
         }
 
@@ -1015,14 +1053,8 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
         if (play)
         {
             const juce::SpinLock::ScopedTryLockType lock(recorder_lock_);
-            if (lock.isLocked() && !recorders_.empty())
-            {
-                bool all = true;
-                for (size_t i = 0; i < recorders_.size(); ++i)
-                    all &= recorders_[i]->write(out_ch_ptrs_[i].data(), n);
-                if (all) recorded_frames_.fetch_add(n, std::memory_order_relaxed);
-                else     dropped_frames_.fetch_add(n, std::memory_order_relaxed);
-            }
+            if (lock.isLocked() && audio_take_ != nullptr)
+                audio_take_->write(out_top_ptrs_.data(), n);
         }
 
         // Route to the device output. If the project has any
