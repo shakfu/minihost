@@ -443,7 +443,7 @@ def test_plugin_transport_rejects_nan_tempo():
     [
         "dev = minihost.AudioDevice(p)",
         "dev = minihost.AudioDevice(p); dev.start()",
-        "c = minihost.PluginChain([p]); dev = minihost.AudioDevice(c)",
+        "c = minihost.PluginChain([p]); dev = minihost.AudioDevice(c, sample_rate=48000)",
     ],
 )
 def test_exit_with_an_open_audio_device_does_not_hang(open_device):

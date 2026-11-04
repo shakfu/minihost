@@ -48,7 +48,8 @@ def find_desktop_bin() -> Path | None:
     """
     env = os.environ.get("MINIHOST_DESKTOP_BIN")
     if env:
-        p = Path(env)
+        # Absolute, so tests that pass `cwd=` still find a relative env path.
+        p = Path(env).resolve()
         return p if p.exists() else None
 
     candidates = [
