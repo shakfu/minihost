@@ -34,8 +34,13 @@ Schema notes:
       "fastest"; see `audio_io.resample`.
     - Output nodes have a `sink` path (WAV/FLAC). Optional `bit_depth`
       (default 24).
+    - Optional top-level `automation`: a list of
+      `{"node": plugin_id, "param": index or name, "points": [[seconds,
+      value], ...]}`. Values are normalized (0..1) and ramp linearly
+      between points. See `_automation`.
     - Plugin nodes have a `path`. Optional `state_b64` for persisted
-      plugin state. Plugin's I/O channel counts are read from the
+      plugin state. Optional `bypass: true` passes audio and MIDI
+      through and adds no latency. Plugin's I/O channel counts are read from the
       plugin itself; the schema does not duplicate them.
     - Every path in a project -- input `source`, output `sink`, plugin
       `path`, MIDI `source` / `sink` -- is relative to the directory
@@ -72,6 +77,11 @@ Schema notes:
     - `duration_seconds` is optional; when omitted, the render length is
       the maximum length across input source files. If both are missing
       (no input nodes, no duration), loading fails.
+    - `chain`: a saved subgraph (`nodes`, `edges`), expanded at load into
+      nodes with ids `<chain id>/<inner id>`. Its `audio_inlet`,
+      `audio_outlet`, `midi_inlet` and `midi_outlet` nodes are its only
+      connections. See
+      `chain_library` and docs/dev/chains.md.
     - Optional `layout` object: `{node_id: {"x": float, "y": float}}`.
       Used by the desktop app's node-graph canvas to remember user-
       edited node positions. Missing entries auto-layout; old project
@@ -94,7 +104,7 @@ from pathlib import Path
 from typing import Any
 
 import minihost
-from minihost import _sequencer, audio_io
+from minihost import _automation, _sequencer, audio_io, chain_library
 from minihost.render import midi_file_to_events
 
 
@@ -150,6 +160,7 @@ class _PluginNode:
     # base64-encoded juce::PluginDescription XML. Set for plugins with no
     # usable file path (AudioUnits); loaded via Plugin.from_descriptor.
     descriptor: str | None = None
+    bypass: bool = False
     plugin: minihost.Plugin | None = field(repr=False, default=None)
 
 
@@ -221,6 +232,7 @@ class _RoutingNode:
     in_channels: int = 2  # pick_channel
     channel_index: int = 0  # pick_channel
     out_channels: int = 2  # merge_channels
+    num_inputs: int = 1  # bus: 0 for a chain port with no cable in
 
 
 @dataclass
@@ -259,6 +271,11 @@ class LoadedProject:
     # Optional canvas layout. Keyed by node id; values are (x, y)
     # tuples in canvas coordinates. Missing entries auto-layout.
     layout: dict[str, tuple[float, float]] = field(default_factory=dict)
+    # Parameter automation: graph node id -> lanes of (param index,
+    # change samples, values). See `_automation`.
+    automation: dict[int, list[tuple[int, list[int], list[float]]]] = field(
+        default_factory=dict
+    )
 
 
 # -- loader ----------------------------------------------------------- #
@@ -296,6 +313,12 @@ def load_project(project_path: str | Path) -> LoadedProject:
     block = _require_int_at_least(doc, "block_size", 1)
     nodes_raw = _require_field(doc, "nodes", list)
     edges_raw = _require_field(doc, "edges", list)
+    try:
+        nodes_raw, edges_raw = chain_library.expand(nodes_raw, edges_raw)
+    except ValueError as exc:
+        raise ProjectError(str(exc)) from exc
+    # Node ids with a cable in; a chain port without one passes silence.
+    fed = {e.get("dst") for e in edges_raw if isinstance(e, dict)}
     duration_seconds = doc.get("duration_seconds")
     if duration_seconds is not None and not isinstance(duration_seconds, (int, float)):
         raise ProjectError("duration_seconds must be a number")
@@ -379,6 +402,7 @@ def load_project(project_path: str | Path) -> LoadedProject:
                     path=_resolve(project_dir, _require_field(raw, "path", str)),
                     state_b64=_optional_field(raw, "state_b64", str, None),
                 )
+            pl_node.bypass = _optional_field(raw, "bypass", bool, False)
             plugins.append(pl_node)
             node_by_id[nid] = ("plugin", pl_node)
         elif kind == "mix":
@@ -451,8 +475,13 @@ def load_project(project_path: str | Path) -> LoadedProject:
             )
             midi_procs.append(mp)
             node_by_id[nid] = ("midi_processor", mp)
-        elif kind == "midi_merge":
-            num_inputs = _require_int_at_least(raw, "num_inputs", 0)
+        elif kind in ("midi_merge", "midi_inlet", "midi_outlet"):
+            # A chain's MIDI port is a merge of its one cable, or of none.
+            num_inputs = (
+                _require_int_at_least(raw, "num_inputs", 0)
+                if kind == "midi_merge"
+                else int(nid in fed)
+            )
             mm = _MidiMergeNode(id=nid, num_inputs=num_inputs)
             midi_merges.append(mm)
             node_by_id[nid] = ("midi_merge", mm)
@@ -467,9 +496,20 @@ def load_project(project_path: str | Path) -> LoadedProject:
             else:
                 discarded_outputs.append(live)
             node_by_id[nid] = (kind, live)
-        elif kind in ("gain", "bus", "pick_channel", "merge_channels"):
-            rn = _RoutingNode(id=nid, kind=kind)
-            if kind in ("gain", "bus"):
+        elif kind in (
+            "gain",
+            "bus",
+            "audio_inlet",
+            "audio_outlet",
+            "pick_channel",
+            "merge_channels",
+        ):
+            # A chain's audio port is a bus of its one cable, or of none.
+            is_port = kind in ("audio_inlet", "audio_outlet")
+            rn = _RoutingNode(id=nid, kind="bus" if is_port else kind)
+            if is_port:
+                rn.num_inputs = int(nid in fed)
+            if kind in ("gain", "bus") or is_port:
                 rn.channels = _optional_int_at_least(raw, "channels", 1, 2)
             if kind == "gain":
                 rn.gain = float(_optional_number(raw, "gain", 1.0))
@@ -498,6 +538,11 @@ def load_project(project_path: str | Path) -> LoadedProject:
             "project has no output nodes to render "
             "(device_output and meter nodes are live-only)"
         )
+
+    try:
+        lanes = _automation.parse(doc.get("automation", []), {p.id for p in plugins})
+    except ValueError as exc:
+        raise ProjectError(str(exc)) from exc
 
     # Load input audio so we can validate sample rates and decide the
     # render duration before building the graph. numpy is loaded lazily
@@ -605,6 +650,8 @@ def load_project(project_path: str | Path) -> LoadedProject:
             id_to_nodeid[live.id] = g.add_input(live.channels)
         for pl in plugins:
             id_to_nodeid[pl.id] = g.add_plugin(pl.plugin)  # type: ignore[arg-type]
+            if pl.bypass:
+                g.set_node_bypass(id_to_nodeid[pl.id], True)
         for mx in mixes:
             nid = g.add_mix(mx.num_inputs, mx.channels)
             for i, gv in enumerate(mx.gains):
@@ -620,7 +667,7 @@ def load_project(project_path: str | Path) -> LoadedProject:
                     rid = g.add_mix(1, rn.channels)
                     g.set_mix_gain(rid, 0, rn.gain)
                 elif rn.kind == "bus":
-                    rid = g.add_mix(1, rn.channels)
+                    rid = g.add_mix(rn.num_inputs, rn.channels)
                 elif rn.kind == "pick_channel":
                     rid = g.add_pick_channel(rn.in_channels, rn.channel_index)
                 else:
@@ -676,6 +723,21 @@ def load_project(project_path: str | Path) -> LoadedProject:
             g.compile()
         except RuntimeError as exc:
             raise ProjectError(f"graph does not compile: {exc}") from exc
+
+        # Automation: per plugin node, its lanes as (param, samples, values).
+        plugin_by_id = {p.id: p for p in plugins}
+        automation: dict[int, list[tuple[int, list[int], list[float]]]] = {}
+        for i, lane in enumerate(lanes):
+            try:
+                param = _automation.resolve_param(
+                    plugin_by_id[lane.node].plugin, lane.param
+                )
+            except ValueError as exc:
+                raise ProjectError(f"automation[{i}] ({lane.node}): {exc}") from exc
+            changes = _automation.expand(lane.points, float(sr))
+            automation.setdefault(id_to_nodeid[lane.node], []).append(
+                (param, [c[0] for c in changes], [c[1] for c in changes])
+            )
     except BaseException:
         if g is not None:
             g.close()
@@ -714,6 +776,7 @@ def load_project(project_path: str | Path) -> LoadedProject:
         discarded_outputs=discarded_outputs,
         bpm=float(bpm),
         layout=layout,
+        automation=automation,
     )
 
 
@@ -866,6 +929,11 @@ def _render_loaded(p: LoadedProject, *, progress_callback=None) -> None:
             p.graph.set_midi_input_events(
                 seq.node_id, [(at - frame, st, d1, d2) for at, st, d1, d2 in notes]
             )
+        # Automation changes inside this block.
+        for node_id, node_lanes in p.automation.items():
+            changes = _automation.block_changes(node_lanes, frame, block_end)
+            if changes:
+                p.graph.set_node_automation(node_id, changes)
         # Render.
         p.graph.render_block(
             in_bufs + silent_bufs, out_scratch + discard_bufs, n_frames

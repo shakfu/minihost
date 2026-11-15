@@ -4,7 +4,7 @@
 
 ## High
 
-- [ ] **Desktop: fan-in latency compensation in the project graph** (`minihost_graph_v2.h:24`). Where branches with different plugin latencies meet at a mix, they sum misaligned, so a parallel-FX project (`examples/projects/08_parallel_fx.json`) renders out of phase in both the desktop and `minihost.render_project`. Insert a per-path delay at each fan-in, sized from `mh_get_latency_samples` at compile time, and allocated there, not on the audio thread. `MinihostTestFx`'s `latency` parameter gives branches exact, known latencies for a test. Related to, but separate from, the `PluginBus` item under Medium: that is a different executor.
+- [x] **Desktop: fan-in latency compensation in the project graph.** Done 2026-11-15 in `mh_graph` (C ABI 2.11.0), so the desktop, Live and `minihost.render_project` all get it; see CHANGELOG. MIDI paths are still not compensated.
 
 ## Medium
 
@@ -14,7 +14,7 @@
 
 - [ ] Truly *parallel* loading (not just non-blocking) would need out-of-process hosting; still a separate future feature.
 
-- [ ] **Parallel-branch latency compensation** (`MH_PluginBus`, `minihost_graph.cpp:209-262`). The bus sums branches sample-aligned and `mh_bus_get_latency_samples` returns only the max (`:346-355`), so branches with differing plugin latencies phase-misalign. **Deferred** in the 2026-07-07 wave, deliberately: a correct fix needs (a) a control-thread prepare step that reads each branch's latency and sizes per-branch delay lines, (b) RT-safe ring buffers in the process loop (no audio-thread allocation), (c) handling of dynamic latency changes (plugins report latency updates via callback), and (d) MIDI-output offset compensation for delayed branches. **The fixture blocker is gone**: `MinihostTestFx` (`projects/test_plugin`) has a `latency` parameter that both reports and applies an exact sample delay, so two branches with different, known latencies can now be built and the misalignment measured -- `tests/test_fixture_signal.py` shows the pattern. Lowest user value in the tier (niche parallel-routing nicety), highest correctness risk -- hence its own focused pass. A plugin changing its latency mid-session now does reach the host, so (c) has what it needs.
+- [ ] **Parallel-branch latency compensation** (`MH_PluginBus`, `minihost_graph.cpp:209-262`). The bus sums branches sample-aligned and `mh_bus_get_latency_samples` returns only the max (`:346-355`), so branches with differing plugin latencies phase-misalign. **Deferred** in the 2026-07-07 wave, deliberately: a correct fix needs (a) a control-thread prepare step that reads each branch's latency and sizes per-branch delay lines, (b) RT-safe ring buffers in the process loop (no audio-thread allocation), (c) handling of dynamic latency changes (plugins report latency updates via callback), and (d) MIDI-output offset compensation for delayed branches. **The fixture blocker is gone**: `MinihostTestFx` (`projects/test_plugin`) has a `latency` parameter that both reports and applies an exact sample delay, so two branches with different, known latencies can now be built and the misalignment measured -- `tests/test_fixture_signal.py` shows the pattern. Lowest user value in the tier (niche parallel-routing nicety), highest correctness risk -- hence its own focused pass. A plugin changing its latency mid-session now does reach the host, so (c) has what it needs. `mh_graph` solved (a)-(c) on 2026-11-15 (per-input rings sized at compile, lengths set each block from `mh_get_latency_samples_rt`); the bus can follow the same pattern.
 
 - [x] **Adopt `ui_json` schema 3 in `minihost touch` once py2tosc releases it.** Done with py2tosc 0.6.0 (see CHANGELOG); the CI test pin moved to `>=0.6.0` on 2026-10-18. Original note: Schema 3 lets a choice stand among *bindings*, not just in place of a node, and lets a branch hold a list -- including an empty one. That is exactly what Phase 6 worked around: a parameter past the 128th has no CC to bind, `each` could not conditionally omit a message, so `touch.py::_branch_table` doubles every widget kind into a `...NoCc` twin. Six complete templates for two independent questions; schema 3 nests them and makes it five, and the growth is additive rather than multiplicative (a third question: seven against twelve). py2tosc's own schema-3 fixture is this case verbatim and its changelog names minihost as the caller that prompted the change.
 
@@ -60,7 +60,7 @@
   - `selftests.cpp`: the `--*-selftest` modes
   - `editor_probe.cpp`: `renderToFile`, `ParamTweakTimer`, watchdog
 
-- [ ] **Desktop: parameter automation in project files.** The design doc's schema has an `automation` list, and the graph already takes it (`mh_graph_v2_set_node_automation`), but neither the desktop loader (`project.cpp`) nor `minihost/project.py` reads it. Add it to both, with a bit-identical render test like `tests/test_project_desktop_kinds.py`.
+- [x] **Desktop: parameter automation in project files.** Done 2026-11-15 (see CHANGELOG). Lanes are read from the file only: there is no way to draw them or record them from an editor in the app yet.
 
 ### Developer experience
 
@@ -96,7 +96,20 @@
 
 ## Low
 
-- [ ] **Desktop: canvas editing.** No zoom, pan, copy and paste, or recent-files menu; large graphs are hard to edit.
+- [x] **Desktop: canvas editing.** Zoom, pan, copy and paste, recent files and more done 2026-11-15 (see CHANGELOG).
+
+- [ ] **Desktop: GUI paths from 2026-11-15 with no automated test.** The `--canvas-script` ops reach the canvas code behind them, but these need a window or a device:
+  - the quick-add popup's keyboard handling, and the properties panel's Return / focus-loss commits (the script op calls the same commit directly);
+  - accessibility: the per-node proxies have not been checked with VoiceOver;
+  - window bounds, recent files and New from Template (window bounds were checked by hand: they are saved on quit and restored);
+  - A/B Compare's render-then-capture flow and device playback (`--ab-selftest` covers the comparison and switching);
+  - the plugin CPU share, which needs Live (`PluginGraph.node_time` is tested);
+  - chains: the Save as Chain name dialog and replace prompt, the box's right-click menu, the open chain's bar, Escape and Cmd+Up (opening and closing are tested through script ops).
+
+- [ ] **Chains: planned features** (`docs/dev/chains.md`).
+  - Macro parameters on the chain box, mapped to inner plugin parameters.
+  - Nested chains.
+  - Renaming a chain (today: ungroup, then save the nodes as a new chain).
 
 - [ ] **Desktop: metronome in offline renders.** It is silent offline by design, so live and offline output differ. Decide whether an offline render should include it.
 

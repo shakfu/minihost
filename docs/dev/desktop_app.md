@@ -139,10 +139,12 @@ Parameter changes from the editor reach `MH_Plugin` through JUCE's existing `Aud
   ],
   "automation": [
     {"node": "comp", "param": "Threshold",
-     "points": [[0.0, -20.0], [5.0, -8.0]]}
+     "points": [[0.0, 0.2], [5.0, 0.6]]}
   ]
 }
 ```
+
+Automation values are normalized (0..1), not plain units: the host cannot convert a plain value for every plugin. See `src/minihost/_automation.py`.
 
 An input whose file rate differs from `sample_rate` is an error unless it sets `"resample": true`. Optional `"resample_quality"` (`"best"` default, `"medium"`, `"fastest"`) picks the converter; an unknown value fails the load in both the desktop app and `minihost.load_project`.
 

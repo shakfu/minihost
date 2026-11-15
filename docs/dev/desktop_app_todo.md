@@ -169,7 +169,7 @@ Decision recorded in [desktop_app.md](desktop_app.md#crash-resilience-decided): 
 
 Items the design doc lists as deferred. Surfaced here so they're not forgotten, but not scheduled.
 
-- [ ] **Latency compensation across fan-in paths.** Insert per-path delay at fan-in points using `mh_get_latency`.
+- [x] **Latency compensation across fan-in paths.** Done 2026-11-15 in `mh_graph`; MIDI paths are not compensated.
 
 - [ ] **Feedback loops** with a one-block delay node on the back-edge.
 

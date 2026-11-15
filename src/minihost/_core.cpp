@@ -2534,6 +2534,20 @@ public:
         return out;
     }
 
+    nb::tuple node_time(int node) {
+        double seconds = 0.0;
+        long long frames = 0;
+        if (!mh_graph_get_node_time(graph_, node, &seconds, &frames))
+            throw std::runtime_error("node_time failed (graph not compiled, or bad node)");
+        return nb::make_tuple(seconds, frames);
+    }
+
+    void set_node_bypass(int node, bool bypass) {
+        if (!mh_graph_set_node_bypass(graph_, node, bypass ? 1 : 0))
+            throw std::runtime_error(
+                "set_node_bypass failed (not a plugin node, or graph compiled)");
+    }
+
     void set_mix_gain(int mix_node, int input_index, float gain) {
         if (!mh_graph_set_mix_gain(graph_, mix_node, input_index, gain))
             throw std::runtime_error(
@@ -5137,6 +5151,14 @@ NB_MODULE(_core, m) {
              "except for mix nodes, where it selects one of "
              "num_inputs slots. Channel counts must match. Fan-out "
              "from a source is allowed; fan-in requires a mix node.")
+        .def("node_time", &PluginGraph::node_time, nb::arg("node"),
+             "(seconds spent processing the node, frames rendered), both "
+             "since compile. Their ratio over an interval is the node's "
+             "share of the real-time budget.")
+        .def("set_node_bypass", &PluginGraph::set_node_bypass,
+             nb::arg("node"), nb::arg("bypass"),
+             "Bypass a plugin node: audio and MIDI pass through and it adds "
+             "no latency. Call before compile.")
         .def("set_mix_gain", &PluginGraph::set_mix_gain,
              nb::arg("mix_node"), nb::arg("input_index"), nb::arg("gain"),
              "Set the per-input gain (linear, default 1.0) on a mix "

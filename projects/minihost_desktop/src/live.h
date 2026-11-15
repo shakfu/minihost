@@ -48,6 +48,7 @@
 namespace minihost_desktop {
 
 class PreviewSource;   // live.cpp
+class AbSource;        // ab_compare.h
 
 class LiveEngine : public juce::AudioIODeviceCallback,
                    private juce::Timer
@@ -223,6 +224,13 @@ public:
     // same reader as project inputs; resampled to the device rate.
     bool startPreview(const juce::File& file, juce::String& error);
     void stopPreview();
+
+    // Plays two renders in step, as Play File does: setAbSelection
+    // switches between them at the next device block, at the same
+    // position. Stopped by stopPreview.
+    void startAbPreview(juce::AudioBuffer<float> a, juce::AudioBuffer<float> b,
+                        double sample_rate);
+    void setAbSelection(bool b);
     bool isPreviewing() const { return preview_transport_.isPlaying(); }
 
     // Applies new settings to the running sequencer node `id` at the next
@@ -329,6 +337,8 @@ private:
     // ----- File preview ----- //
     juce::AudioBuffer<float>                       preview_buffer_;
     std::unique_ptr<PreviewSource>                 preview_source_;
+    juce::AudioBuffer<float>                       ab_a_, ab_b_;
+    std::unique_ptr<AbSource>                      ab_source_;
     juce::AudioTransportSource                     preview_transport_;
     juce::AudioSourcePlayer                        preview_player_;
     bool                                           preview_attached_ = false;

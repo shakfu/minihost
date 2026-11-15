@@ -1,6 +1,7 @@
 // live.cpp -- see live.h for design.
 
 #include "live.h"
+#include "ab_compare.h"
 
 #include "midi_ringbuffer.h"
 #include "minihost_audiofile.h"
@@ -523,6 +524,7 @@ void LiveEngine::setLooping(bool on)
     const long long s0 = loop_start_.load(), s1 = loop_end_.load();
     writeLoop(s0, s1, on && s0 < s1);
     if (preview_source_ != nullptr) preview_source_->setLooping(on);
+    if (ab_source_ != nullptr) ab_source_->setLooping(on);
 }
 
 double LiveEngine::previewPositionSeconds() const
@@ -695,7 +697,33 @@ void LiveEngine::stopPreview()
     // is not reading the source when it is released.
     preview_transport_.setSource(nullptr);
     preview_source_.reset();
+    ab_source_.reset();
     preview_file_ = juce::File();
+}
+
+void LiveEngine::startAbPreview(juce::AudioBuffer<float> a, juce::AudioBuffer<float> b,
+                                double sample_rate)
+{
+    initialiseDeviceManagerOnce();
+    stopPreview();
+    ab_a_ = std::move(a);
+    ab_b_ = std::move(b);
+    ab_source_ = std::make_unique<AbSource>(ab_a_, ab_b_, loop_wanted_.load());
+    preview_transport_.setSource(ab_source_.get(), 0, nullptr, sample_rate,
+                                 std::max(ab_a_.getNumChannels(), ab_b_.getNumChannels()));
+    if (!preview_attached_)
+    {
+        preview_player_.setSource(&preview_transport_);
+        dm_.addAudioCallback(&preview_player_);
+        preview_attached_ = true;
+    }
+    preview_transport_.setPosition(0.0);
+    preview_transport_.start();
+}
+
+void LiveEngine::setAbSelection(bool b)
+{
+    if (ab_source_) ab_source_->select(b);
 }
 
 void LiveEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
@@ -896,6 +924,12 @@ void LiveEngine::audioDeviceIOCallbackWithContext(
         // rendering this block. RT-safe (lock-free queue + RT-safe
         // setValue on each AudioProcessorParameter).
         drainParamWrites_(/*max=*/64);
+
+        // Automation follows the transport; a start re-sends each value.
+        if (play)
+            compiled_->stageAutomation(chunk_pos, n,
+                                       project::LoopSpan{ loop_on, loop_s, loop_e },
+                                       !was_playing_ || stopped_since);
 
         // This chunk's share of the drained MIDI, rebased to the chunk.
         midi_chunk_.clear();

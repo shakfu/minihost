@@ -103,6 +103,21 @@ public:
             throwErr("connect", err);
     }
 
+    // {seconds processing `node`, frames rendered}, both since compile.
+    std::pair<double, long long> nodeTime(NodeId node) const
+    {
+        double s = 0.0;
+        long long f = 0;
+        mh_graph_get_node_time(g_, node, &s, &f);
+        return { s, f };
+    }
+
+    void setNodeBypass(NodeId node, bool bypass)
+    {
+        if (!mh_graph_set_node_bypass(g_, node, bypass ? 1 : 0))
+            throw std::runtime_error("set_node_bypass failed (not a plugin node, or compiled)");
+    }
+
     void setMixGain(NodeId mix_node, int input_index, float gain)
     {
         if (!mh_graph_set_mix_gain(g_, mix_node, input_index, gain))

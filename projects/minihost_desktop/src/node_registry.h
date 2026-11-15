@@ -46,7 +46,7 @@ struct CanvasNodeInfo {
 // (position within the kind's vector, e.g. doc.inputs[idx]).
 struct NodeKindEntry {
     juce::String kind_string;       // JSON "kind" field
-    juce::Colour colour;            // canvas node background
+    juce::Colour colour;            // canvas node accent (by category)
 
     // -- iteration --
     // doc.<this kind>.size().

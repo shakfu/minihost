@@ -3,6 +3,10 @@
 
 #include "minihost_graph_v2.h"
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <memory>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -30,11 +34,17 @@ struct MidiEdge {
 // Per-plugin midi-out capture buffer (events).
 constexpr int kMidiBufCapacity = MH_GRAPH_MIDI_OUTPUT_CAPACITY;
 
+// Longest delay latency compensation applies, in samples (a power of two:
+// ring indices wrap with a mask). 0.68 s at 48 kHz.
+constexpr int kMaxCompensation = 1 << 15;
+
 struct Node {
     MH_NodeKind kind;
 
     // For plugin nodes only.
     MH_Plugin*  plugin = nullptr;
+    // Host-level bypass: input copied to output, MIDI passed through.
+    bool        bypass = false;
 
     // Channel counts. Output is the node's single output port; input
     // counts are per dst_port for mix nodes (all equal), or a single
@@ -58,6 +68,10 @@ struct Node {
         int         pool_index;    // index into pool_storage_, when !from_caller
     };
     std::vector<InputRef> input_sources;
+
+    // Delay lines (indices into MH_PluginGraph::delays) that align this
+    // node's inputs; run just before the node.
+    std::vector<int> input_delays;
 
     // Resolved at compile: the buffer this node writes to.
     //  - input  : not used at render time (we read straight from caller)
@@ -145,6 +159,28 @@ struct MH_PluginGraph {
     std::vector<std::vector<float>>   pool_storage;
     std::vector<std::vector<float*>>  pool_ptrs;        // [pool][channel] -> frame_ptr
 
+    // Latency compensation. Each input of a fan-in node goes through a
+    // delay line into its own pool entry (index >= nodes.size()).
+    struct DelayLine {
+        bool               from_caller  = false;
+        int                caller_index = -1;
+        int                pool_index   = -1;   // source, when !from_caller
+        MH_NodeId          src_node     = -1;
+        int                out_pool     = -1;   // delayed copy
+        int                channels     = 0;
+        int                delay        = 0;    // samples, < kMaxCompensation
+        int                write        = 0;
+        std::vector<float> ring;                // channels * kMaxCompensation
+    };
+    std::vector<DelayLine> delays;
+
+    // Load metering: nanoseconds spent in each node's processing and
+    // frames rendered, since compile. Written by render_block, read by
+    // mh_graph_get_node_time on any thread.
+    std::unique_ptr<std::atomic<long long>[]> node_ns;
+    std::atomic<long long>                    frames_rendered{ 0 };
+    std::vector<int>       node_latency;        // per node: output latency in samples
+
     // Pending MIDI for the next render_block call, indexed by node id.
     // Caller-owned pointers; cleared after each render_block.
     struct PendingMidi { const MH_MidiEvent* events; int count; };
@@ -228,6 +264,39 @@ int findEdge(const std::vector<Edge>& edges, MH_NodeId dst, int port)
         if (edges[i].dst_node == dst && edges[i].dst_port == port)
             return (int) i;
     return -1;
+}
+
+} // namespace
+
+namespace {
+
+// Sets every delay line's length from the plugins' current latencies, read
+// lock-free. A node's output latency is the latest of its audio inputs
+// plus its own (plugins that are not bypassed); each input of a fan-in node
+// is delayed by how much earlier it arrives. MIDI is not compensated.
+// Audio thread; O(nodes + edges), no allocation.
+void updateCompensation(MH_PluginGraph& g)
+{
+    for (MH_NodeId id : g.schedule)
+    {
+        const auto& n = g.nodes[(size_t) id];
+        int latest = 0;
+        for (int port = 0; port < n.num_input_ports; ++port)
+        {
+            const int eidx = findEdge(g.edges, id, port);
+            if (eidx >= 0)
+                latest = std::max(latest, g.node_latency[(size_t) g.edges[(size_t) eidx].src_node]);
+        }
+        for (int di : n.input_delays)
+        {
+            auto& dl = g.delays[(size_t) di];
+            dl.delay = std::min(latest - g.node_latency[(size_t) dl.src_node],
+                                kMaxCompensation - 1);
+        }
+        const int own = n.kind == MH_NODE_PLUGIN && !n.bypass
+                      ? std::max(0, mh_get_latency_samples_rt(n.plugin)) : 0;
+        g.node_latency[(size_t) id] = latest + own;
+    }
 }
 
 } // namespace
@@ -483,10 +552,10 @@ extern "C" MH_NodeId mh_graph_add_mix(MH_PluginGraph* g,
     if (g == nullptr) { setErr(err_buf, err_buf_size, "null graph"); return -1; }
     if (g->compiled)  { setErr(err_buf, err_buf_size,
                                "graph already compiled"); return -1; }
-    if (num_inputs <= 0 || channels <= 0)
+    if (num_inputs < 0 || channels <= 0)
     {
         setErr(err_buf, err_buf_size,
-               "mix num_inputs and channels must be positive");
+               "mix num_inputs must be >= 0 and channels positive");
         return -1;
     }
     Node n;
@@ -538,10 +607,10 @@ extern "C" MH_NodeId mh_graph_add_midi_merge(
     if (g == nullptr) { setErr(err_buf, err_buf_size, "null graph"); return -1; }
     if (g->compiled)  { setErr(err_buf, err_buf_size,
                                "graph already compiled"); return -1; }
-    if (num_inputs <= 0)
+    if (num_inputs < 0)
     {
         setErr(err_buf, err_buf_size,
-               "midi_merge num_inputs must be positive");
+               "midi_merge num_inputs must be >= 0");
         return -1;
     }
     Node n;
@@ -620,6 +689,16 @@ extern "C" int mh_graph_connect(MH_PluginGraph* g,
     Edge e{ src, src_port, dst, dst_port, sn.output_channels };
     if (existing >= 0) g->edges[(size_t) existing] = e;
     else               g->edges.push_back(e);
+    return 1;
+}
+
+extern "C" int mh_graph_set_node_bypass(MH_PluginGraph* g, MH_NodeId node, int bypass)
+{
+    if (g == nullptr || g->compiled) return 0;
+    if (!inRange(node, (int) g->nodes.size())) return 0;
+    auto& n = g->nodes[(size_t) node];
+    if (n.kind != MH_NODE_PLUGIN) return 0;
+    n.bypass = bypass != 0;
     return 1;
 }
 
@@ -919,6 +998,52 @@ extern "C" int mh_graph_compile(MH_PluginGraph* g,
             n.midi_out_buf.assign((size_t) kMidiBufCapacity, MH_MidiEvent{});
     }
 
+    // 7. Latency compensation. Every input of a node with two or more
+    //    wired audio inputs reads through a delay line, whose length
+    //    render_block sets each block from the plugins' current latencies
+    //    (see updateCompensation). The rings are sized here, so a latency
+    //    change needs no allocation; one past kMaxCompensation is clamped.
+    g->node_latency.assign((size_t) N, 0);
+    g->delays.clear();
+    for (int id = 0; id < N; ++id)
+    {
+        auto& n = g->nodes[(size_t) id];
+        n.input_delays.clear();
+        int wired = 0;
+        for (int port = 0; port < n.num_input_ports; ++port)
+            if (findEdge(g->edges, id, port) >= 0) ++wired;
+        if (wired < 2) continue;
+        for (int port = 0; port < n.num_input_ports; ++port)
+        {
+            const int eidx = findEdge(g->edges, id, port);
+            if (eidx < 0) continue;
+            const auto& e = g->edges[(size_t) eidx];
+            auto& ref = n.input_sources[(size_t) port];
+            MH_PluginGraph::DelayLine dl;
+            dl.from_caller  = ref.from_caller;
+            dl.caller_index = ref.caller_index;
+            dl.pool_index   = ref.pool_index;
+            dl.src_node     = e.src_node;
+            dl.channels     = e.channels;
+            dl.ring.assign((size_t) e.channels * (size_t) kMaxCompensation, 0.0f);
+            dl.out_pool     = (int) g->pool_storage.size();
+            const int F = g->max_block_size;
+            g->pool_storage.emplace_back((size_t) e.channels * (size_t) F, 0.0f);
+            g->pool_ptrs.emplace_back((size_t) e.channels);
+            for (int c = 0; c < e.channels; ++c)
+                g->pool_ptrs.back()[(size_t) c] = g->pool_storage.back().data() + (size_t) c * F;
+            ref.from_caller  = false;
+            ref.caller_index = -1;
+            ref.pool_index   = dl.out_pool;
+            n.input_delays.push_back((int) g->delays.size());
+            g->delays.push_back(std::move(dl));
+        }
+    }
+
+    g->node_ns = std::make_unique<std::atomic<long long>[]>((size_t) N);
+    for (int i = 0; i < N; ++i) g->node_ns[(size_t) i].store(0, std::memory_order_relaxed);
+    g->frames_rendered.store(0, std::memory_order_relaxed);
+
     g->schedule = std::move(order);
     g->pending_midi.assign((size_t) N, MH_PluginGraph::PendingMidi{nullptr, 0});
     g->pending_auto.assign((size_t) N, MH_PluginGraph::PendingAuto{nullptr, 0});
@@ -1015,9 +1140,32 @@ extern "C" int mh_graph_render_block(MH_PluginGraph* g,
     if (num_input_nodes  > 0 && input_buffers  == nullptr) return 0;
     if (num_output_nodes > 0 && output_buffers == nullptr) return 0;
 
+    if (!g->delays.empty()) updateCompensation(*g);
+
     for (MH_NodeId id : g->schedule)
     {
         Node& n = g->nodes[(size_t) id];
+
+        for (int di : n.input_delays)
+        {
+            auto& dl = g->delays[(size_t) di];
+            for (int c = 0; c < dl.channels; ++c)
+            {
+                const float* src = dl.from_caller
+                    ? input_buffers[(size_t) dl.caller_index][c]
+                    : g->pool_ptrs[(size_t) dl.pool_index][(size_t) c];
+                float* dst  = g->pool_ptrs[(size_t) dl.out_pool][(size_t) c];
+                float* ring = dl.ring.data() + (size_t) c * (size_t) kMaxCompensation;
+                int    w    = dl.write;
+                for (int i = 0; i < nframes; ++i)
+                {
+                    ring[w] = src[i];
+                    dst[i]  = ring[(w - dl.delay) & (kMaxCompensation - 1)];
+                    w = (w + 1) & (kMaxCompensation - 1);
+                }
+            }
+            dl.write = (dl.write + nframes) & (kMaxCompensation - 1);
+        }
 
         switch (n.kind)
         {
@@ -1092,7 +1240,6 @@ extern "C" int mh_graph_render_block(MH_PluginGraph* g,
             }
 
             float** out_ptrs_raw = g->pool_ptrs[(size_t) id].data();
-            (void) out_ch;
 
             // Resolve MIDI input: incoming MIDI edge (port 0) wins;
             // otherwise fall back to events staged via set_node_midi
@@ -1142,7 +1289,29 @@ extern "C" int mh_graph_render_block(MH_PluginGraph* g,
                 midi_out_cap = (int) n.midi_out_buf.size();
             }
 
+            if (n.bypass)
+            {
+                // Matching channels pass through; extra outputs are silent.
+                for (int c = 0; c < out_ch; ++c)
+                {
+                    float* dst = out_ptrs_raw[c];
+                    if (in_table != nullptr && c < in_ch)
+                        std::memcpy(dst, in_table[c], (size_t) nframes * sizeof(float));
+                    else
+                        std::memset(dst, 0, (size_t) nframes * sizeof(float));
+                }
+                if (capture_midi_out)
+                {
+                    const int keep = std::min(midi_in_n, midi_out_cap);
+                    for (int i = 0; i < keep; ++i) midi_out_ptr[i] = midi_in_evts[i];
+                    n.midi_out_count = keep;
+                    n.midi_dropped  += midi_in_n - keep;
+                }
+                break;
+            }
+
             const auto& autm = g->pending_auto[(size_t) id];
+            const auto t0 = std::chrono::steady_clock::now();
             int r;
             if (autm.count > 0)
                 r = mh_process_auto(
@@ -1162,6 +1331,10 @@ extern "C" int mh_graph_render_block(MH_PluginGraph* g,
                                     nframes, midi_in_evts, midi_in_n);
             else
                 r = mh_process(n.plugin, in_table, out_ptrs_raw, nframes);
+            g->node_ns[(size_t) id].fetch_add(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - t0).count(),
+                std::memory_order_relaxed);
             if (!r) return 0;
             if (capture_midi_out)
             {
@@ -1427,6 +1600,18 @@ extern "C" int mh_graph_render_block(MH_PluginGraph* g,
             node.staged_midi_count  = 0;
         }
     }
+    g->frames_rendered.fetch_add(nframes, std::memory_order_relaxed);
+    return 1;
+}
+
+extern "C" int mh_graph_get_node_time(MH_PluginGraph* g, MH_NodeId node,
+                                      double* seconds_out, long long* frames_out)
+{
+    if (g == nullptr || !g->compiled || !inRange(node, (int) g->nodes.size())) return 0;
+    if (seconds_out != nullptr)
+        *seconds_out = (double) g->node_ns[(size_t) node].load(std::memory_order_relaxed) * 1e-9;
+    if (frames_out != nullptr)
+        *frames_out = g->frames_rendered.load(std::memory_order_relaxed);
     return 1;
 }
 

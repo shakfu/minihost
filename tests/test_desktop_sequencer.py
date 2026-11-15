@@ -296,4 +296,5 @@ def test_start_live_fills_missing_plugin_probe(tmp_path):
         "out_channels": 2,
         "accepts_midi": True,
         "produces_midi": False,
+        "latency": 0,
     }

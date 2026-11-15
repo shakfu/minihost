@@ -7,6 +7,9 @@
 //       Editor windows are opened on demand via the file chooser; each
 //       loads its own MH_Plugin and is independently closeable.
 //
+//   minihost_desktop <project.json>
+//       App shell with the project open.
+//
 //   minihost_desktop <plugin_path> [output.wav]
 //       Interactive single-plugin shortcut: opens an EditorWindow on
 //       the supplied plugin (no MainWindow). The window has a
@@ -78,13 +81,20 @@
 //       Headless parse + re-save to <input>.resaved.json. Exercises the
 //       C++ project writer against the Python parser without UI input.
 //
+//   minihost_desktop --ab-selftest
+//       Checks the A/B Compare null test and switching (ab_compare.h).
+//       Exit 0 on success. Driven by tests/test_desktop_ab.py.
+//
 //   minihost_desktop --canvas-script=<script.json>
 //       Headless canvas edits. The script is
 //       {"project": path, "ops": [...], "save": path}, paths relative to
 //       the script. Loads the project into a CanvasComponent, applies each
 //       op through CanvasComponent::applyScriptOp (see canvas.h), saves
 //       the result, and prints {"results": [{"ok", "error", "warnings"}]}
-//       to stdout. Exit 1 if an op is malformed or load/save fails.
+//       to stdout. Two ops are handled here: "snapshot" writes the canvas
+//       (and, with "panel": true, the properties panel) to a PNG, and
+//       {"op":"panel"[,"field":k,"value":v]} lists the selected node's
+//       panel fields and sets one through the panel. Exit 1 if an op is malformed or load/save fails.
 //       Driven by tests/test_desktop_canvas.py.
 //
 //   minihost_desktop --undo-selftest=<project.json>
@@ -147,7 +157,9 @@
 #include "minihost_audiofile.h"
 #include "minihost_midi.h"
 #include "minihost_version.h"
+#include "ab_window.h"
 #include "canvas.h"
+#include "properties_panel.h"
 #include "live.h"
 #include "plugin_scanner.h"
 #include "project.h"
@@ -966,8 +978,12 @@ public:
         // swaps (e.g. on Open Project / New Project), corrupting the
         // heap.
         setContentNonOwned(&welcomeLabel_, /*resizeToFit=*/false);
-        setSize(640, 360);
-        centreWithSize(getWidth(), getHeight());
+        setResizeLimits(640, 400, 16384, 16384);
+        // 80% of the display, so a 5-column graph fits on a laptop.
+        // A saved size replaces this (restoreWindowStateFromString).
+        const auto area = workArea();
+        centreWithSize(juce::jlimit(960, 1600, area.getWidth()  * 4 / 5),
+                       juce::jlimit(600, 1000, area.getHeight() * 4 / 5));
         setVisible(true);
     }
 
@@ -1004,8 +1020,26 @@ public:
             canvas_->setOnNodeRenamed(on_node_renamed_);
             status_bar_ = std::make_unique<StatusBar>(
                 status_actions_, live_engine_getter_, *canvas_);
+            properties_panel_ = std::make_unique<PropertiesPanel>(*canvas_);
+            properties_panel_->setExtraRows(extra_rows_);
+            canvas_->setOnSelectionChanged([this]() {
+                properties_panel_->refresh();
+                menuItemsChanged();
+            });
+            canvas_->setOnShowProperties([this]() {
+                setPropertiesPanelVisible(true);
+                properties_panel_->focusFirstField();
+            });
+            canvas_->setOnOpenProjectFile([this](const juce::File& f) {
+                if (on_open_project_) on_open_project_(f.getFullPathName());
+            });
+            canvas_->setPluginListProvider(plugin_list_);
             project_view_.addAndMakeVisible(canvas_.get());
             project_view_.addAndMakeVisible(status_bar_.get());
+            project_view_.addAndMakeVisible(properties_panel_.get());
+            project_view_.canvas = canvas_.get();
+            project_view_.status = status_bar_.get();
+            project_view_.panel  = properties_panel_.get();
         }
         canvas_->setDocument(current_doc_.get());
         canvas_->setProjectDirectory(project_path == juce::File()
@@ -1018,8 +1052,86 @@ public:
                 + (project_path == juce::File()
                        ? juce::String("(untitled)")
                        : project_path.getFileName()));
-        setSize(std::max(800, getWidth()), std::max(500, getHeight()));
+        if (project_path != juce::File()) addRecent(project_path);
+        project_view_.resized();
+        properties_panel_->refresh();
         menuItemsChanged();
+    }
+
+    // The display's usable area (no menu bar or dock) under the window.
+    juce::Rectangle<int> workArea() const
+    {
+        if (const auto* d = juce::Desktop::getInstance().getDisplays()
+                                .getDisplayForRect(getScreenBounds()))
+            return d->userArea;
+        return { 0, 0, 1280, 800 };
+    }
+
+    void setPropertiesPanelVisible(bool v)
+    {
+        project_view_.show_panel = v;
+        project_view_.resized();
+        menuItemsChanged();
+    }
+
+    // The app's scanned plugin list (quick-add) and plugin panel rows.
+    void setPluginListProvider(CanvasComponent::PluginListFn fn)
+    {
+        plugin_list_ = std::move(fn);
+        if (canvas_) canvas_->setPluginListProvider(plugin_list_);
+    }
+    void setPropertiesExtraRows(PropertiesPanel::ExtraRowsFn fn)
+    {
+        extra_rows_ = std::move(fn);
+        if (properties_panel_) properties_panel_->setExtraRows(extra_rows_);
+    }
+    PropertiesPanel* propertiesPanel() noexcept { return properties_panel_.get(); }
+
+    void setOnAbCompare(std::function<void()> cb) { on_ab_compare_ = std::move(cb); }
+
+    // File > New from Template opens one of these as an untitled project.
+    void setOnOpenTemplate(std::function<void(const juce::File&)> cb)
+    { on_open_template_ = std::move(cb); }
+
+    // Recently opened projects, kept in `store` (one path per line).
+    void setRecentFilesStore(const juce::File& store)
+    {
+        recent_store_ = store;
+        recent_.setMaxNumberOfItems(10);
+        recent_.restoreFromString(store.loadFileAsString());
+    }
+    void addRecent(const juce::File& f)
+    {
+        recent_.addFile(f);
+        if (recent_store_ != juce::File())
+        {
+            recent_store_.getParentDirectory().createDirectory();
+            recent_store_.replaceWithText(recent_.toString());
+        }
+    }
+
+    // Example projects shipped beside the app: Resources/examples in the
+    // macOS bundle, examples/ next to the executable elsewhere.
+    static juce::Array<juce::File> templateFiles()
+    {
+        const auto exe = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+       #if JUCE_MAC
+        const auto dir = exe.getParentDirectory().getSiblingFile("Resources").getChildFile("examples");
+       #else
+        const auto dir = exe.getParentDirectory().getChildFile("examples");
+       #endif
+        auto files = dir.findChildFiles(juce::File::findFiles, false, "*.json");
+        files.sort();
+        return files;
+    }
+
+    // "08_parallel_fx" -> "Parallel fx"
+    static juce::String templateName(const juce::File& f)
+    {
+        auto s = f.getFileNameWithoutExtension()
+                     .trimCharactersAtStart("0123456789").trimCharactersAtStart("_")
+                     .replaceCharacter('_', ' ');
+        return s.substring(0, 1).toUpperCase() + s.substring(1);
     }
 
     // Called after Save As assigns a path to a previously-untitled
@@ -1028,6 +1140,7 @@ public:
     void retitleAfterSaveAs(const juce::File& project_path)
     {
         current_project_ = project_path;
+        addRecent(project_path);
         if (canvas_) canvas_->setProjectDirectory(project_path.getParentDirectory());
         setName("minihost: " + project_path.getFileName());
         menuItemsChanged();
@@ -1132,7 +1245,7 @@ public:
     // ----- juce::MenuBarModel ----- //
     juce::StringArray getMenuBarNames() override
     {
-        return { "File", "Edit", "Plugins", "Audio", "Help" };
+        return { "File", "Edit", "View", "Plugins", "Audio", "Help" };
     }
 
     juce::PopupMenu getMenuForIndex(int /*topLevelMenuIndex*/,
@@ -1142,7 +1255,21 @@ public:
         if (menuName == "File")
         {
             m.addItem(kMenuNewProject,    "New Project");
+            juce::PopupMenu templates;
+            const auto tfiles = templateFiles();
+            for (int i = 0; i < tfiles.size(); ++i)
+                templates.addItem(kMenuTemplateBase + i, templateName(tfiles[i]));
+            m.addSubMenu("New from Template", templates, !tfiles.isEmpty());
             m.addItem(kMenuOpenProject,   "Open Project...");
+            juce::PopupMenu recent;
+            recent_.createPopupMenuItems(recent, kMenuRecentBase,
+                                         /*showFullPaths=*/false, /*dontAddNonExistentFiles=*/true);
+            if (recent_.getNumFiles() > 0)
+            {
+                recent.addSeparator();
+                recent.addItem(kMenuClearRecent, "Clear Menu");
+            }
+            m.addSubMenu("Open Recent", recent, recent_.getNumFiles() > 0);
             m.addItem(kMenuSaveProject,   "Save Project",
                       /*isActive=*/has_open_project_);
             m.addItem(kMenuSaveProjectAs, "Save Project As...",
@@ -1160,8 +1287,29 @@ public:
         {
             const bool can_undo = canvas_ != nullptr && canvas_->canUndo();
             const bool can_redo = canvas_ != nullptr && canvas_->canRedo();
+            const bool sel = canvas_ != nullptr && canvas_->hasSelection();
             m.addItem(kMenuUndo, "Undo    Cmd+Z",       /*isActive=*/can_undo);
             m.addItem(kMenuRedo, "Redo    Cmd+Shift+Z", /*isActive=*/can_redo);
+            m.addSeparator();
+            m.addItem(kMenuCut,       "Cut          Cmd+X", sel);
+            m.addItem(kMenuCopy,      "Copy         Cmd+C", sel);
+            m.addItem(kMenuPaste,     "Paste        Cmd+V", canvas_ != nullptr && canvas_->canPaste());
+            m.addItem(kMenuDuplicate, "Duplicate    Cmd+D", sel);
+            m.addItem(kMenuDelete,    "Delete       Delete", sel);
+            m.addItem(kMenuSelectAll, "Select All   Cmd+A", canvas_ != nullptr);
+            m.addSeparator();
+            m.addItem(kMenuQuickAdd,  "Add Node...  Cmd+K", has_open_project_);
+            m.addItem(kMenuSaveChain, "Save Selection as Chain...  Cmd+G", sel);
+        }
+        else if (menuName == "View")
+        {
+            const bool on = canvas_ != nullptr && has_open_project_;
+            m.addItem(kMenuZoomIn,     "Zoom In          Cmd+=", on);
+            m.addItem(kMenuZoomOut,    "Zoom Out         Cmd+-", on);
+            m.addItem(kMenuActualSize, "Actual Size      Cmd+1", on);
+            m.addItem(kMenuFit,        "Fit to Window    Cmd+0", on);
+            m.addSeparator();
+            m.addItem(kMenuShowPanel, "Properties Panel", on, project_view_.show_panel);
         }
         else if (menuName == "Plugins")
         {
@@ -1195,6 +1343,7 @@ public:
                       /*isEnabled=*/true, /*isTicked=*/apply_edits_live_);
             m.addSeparator();
             m.addItem(kMenuStopFile, "Stop File Playback");
+            m.addItem(kMenuAbCompare, "A/B Compare...", has_open_project_);
         }
         else if (menuName == "Help")
         {
@@ -1205,6 +1354,20 @@ public:
 
     void menuItemSelected(int menuItemID, int /*topLevelMenuIndex*/) override
     {
+        if (menuItemID >= kMenuRecentBase && menuItemID < kMenuRecentBase + 100)
+        {
+            const auto f = recent_.getFile(menuItemID - kMenuRecentBase);
+            if (on_open_project_) on_open_project_(f.getFullPathName());
+            return;
+        }
+        if (menuItemID >= kMenuTemplateBase && menuItemID < kMenuTemplateBase + 1000)
+        {
+            const auto files = templateFiles();
+            const int i = menuItemID - kMenuTemplateBase;
+            if (i < files.size() && on_open_template_) on_open_template_(files[i]);
+            return;
+        }
+        auto* c = canvas_.get();
         switch (menuItemID)
         {
         case kMenuOpenPlugin:
@@ -1226,12 +1389,30 @@ public:
             renderOpenProject();
             break;
         case kMenuStopFile: if (on_stop_file_) on_stop_file_(); break;
+        case kMenuAbCompare: if (on_ab_compare_) on_ab_compare_(); break;
         case kMenuLoop: if (on_toggle_loop_) on_toggle_loop_(); break;
         case kMenuApplyEditsLive:
             if (on_toggle_apply_edits_live_) on_toggle_apply_edits_live_();
             break;
         case kMenuUndo: if (canvas_ != nullptr) canvas_->undo(); break;
         case kMenuRedo: if (canvas_ != nullptr) canvas_->redo(); break;
+        case kMenuCut:        if (c) c->cutSelection();       break;
+        case kMenuCopy:       if (c) c->copySelection();      break;
+        case kMenuPaste:      if (c) c->paste();              break;
+        case kMenuDuplicate:  if (c) c->duplicateSelection(); break;
+        case kMenuSaveChain:  if (c) c->promptSaveAsChain(); break;
+        case kMenuDelete:     if (c) c->deleteSelection();    break;
+        case kMenuSelectAll:  if (c) c->selectAll();          break;
+        case kMenuQuickAdd:   if (c) c->showQuickAdd();       break;
+        case kMenuZoomIn:     if (c) c->zoomBy(1.25f);        break;
+        case kMenuZoomOut:    if (c) c->zoomBy(1.0f / 1.25f); break;
+        case kMenuActualSize: if (c) c->resetZoom();          break;
+        case kMenuFit:        if (c) c->fitToView();          break;
+        case kMenuShowPanel:  setPropertiesPanelVisible(!project_view_.show_panel); break;
+        case kMenuClearRecent:
+            recent_.clear();
+            if (recent_store_ != juce::File()) recent_store_.replaceWithText({});
+            break;
         case kMenuPluginBrowser:
             if (on_plugin_browser_) on_plugin_browser_(); break;
         case kMenuAddLibraryPlugin:
@@ -1279,19 +1460,40 @@ private:
         kMenuStopFile,
         kMenuLoop,
         kMenuApplyEditsLive,
+        kMenuCut,
+        kMenuCopy,
+        kMenuPaste,
+        kMenuDuplicate,
+        kMenuDelete,
+        kMenuSelectAll,
+        kMenuQuickAdd,
+        kMenuSaveChain,
+        kMenuZoomIn,
+        kMenuZoomOut,
+        kMenuActualSize,
+        kMenuFit,
+        kMenuShowPanel,
+        kMenuClearRecent,
+        kMenuAbCompare,
+        kMenuRecentBase   = 1000,
+        kMenuTemplateBase = 2000,
     };
 
-    // Canvas above, status bar below.
+    // Canvas and properties panel above, status bar below.
     struct ProjectView : juce::Component
     {
+        juce::Component* canvas = nullptr;
+        juce::Component* status = nullptr;
+        juce::Component* panel  = nullptr;
+        bool             show_panel = true;
         void resized() override
         {
+            if (canvas == nullptr) return;
             auto r = getLocalBounds();
-            if (getNumChildComponents() == 2)
-            {
-                getChildComponent(1)->setBounds(r.removeFromBottom(StatusBar::kHeight));
-                getChildComponent(0)->setBounds(r);
-            }
+            status->setBounds(r.removeFromBottom(StatusBar::kHeight));
+            panel->setVisible(show_panel);
+            if (show_panel) panel->setBounds(r.removeFromRight(PropertiesPanel::kWidth));
+            canvas->setBounds(r);
         }
     };
 
@@ -1387,9 +1589,17 @@ private:
     std::function<void()>              on_stop_file_;
     juce::Label                        welcomeLabel_;
     std::unique_ptr<juce::FileChooser> chooser_;
+    juce::TooltipWindow                tooltip_window_;  // shows canvas pin and button tooltips
     std::unique_ptr<CanvasComponent>   canvas_;
     std::unique_ptr<StatusBar>         status_bar_;
+    std::unique_ptr<PropertiesPanel>   properties_panel_;  // after canvas_: it refers to it
     ProjectView                        project_view_;
+    CanvasComponent::PluginListFn      plugin_list_;
+    PropertiesPanel::ExtraRowsFn       extra_rows_;
+    std::function<void(const juce::File&)> on_open_template_;
+    std::function<void()>              on_ab_compare_;
+    juce::RecentlyOpenedFilesList      recent_;
+    juce::File                         recent_store_;
     StatusBar::Actions                 status_actions_;
     std::function<LiveEngine*()>       live_engine_getter_;
     std::function<void()>              on_toggle_loop_;
@@ -1418,12 +1628,16 @@ public:
 class ProjectRenderJob : public juce::ThreadWithProgressWindow
 {
 public:
+    // `done`, when set, replaces the success alert and is called with
+    // whether the sinks were written; a failure still shows an alert.
     static void launch(project::ProjectDocument doc,
                        const juce::String& title,
-                       project::RenderOptions options = {})
+                       project::RenderOptions options = {},
+                       std::function<void(bool)> done = {})
     {
         // Lifetime: deletes itself in threadComplete(), or in cancelAll().
         auto* job = new ProjectRenderJob(std::move(doc), title, options);
+        job->done_ = std::move(done);
         job->launchThread();
     }
 
@@ -1476,7 +1690,8 @@ public:
 
     void threadComplete(bool /*userPressedCancel*/) override
     {
-        if (succeeded_)
+        if (done_) done_(succeeded_);
+        if (succeeded_ && !done_)
         {
             juce::String body = "Rendered:\n";
             for (const auto& kv : written_sinks_)
@@ -1486,7 +1701,7 @@ public:
                 juce::AlertWindow::InfoIcon,
                 "Render complete", body);
         }
-        else
+        else if (!succeeded_)
         {
             juce::AlertWindow::showMessageBoxAsync(
                 juce::AlertWindow::WarningIcon,
@@ -1523,6 +1738,7 @@ private:
     bool                    succeeded_ = false;
     juce::String            error_;
     std::vector<std::pair<juce::String, juce::File>> written_sinks_;
+    std::function<void(bool)> done_;
 };
 
 // -------------------------------------------------------------------- //
@@ -1670,6 +1886,13 @@ public:
             return;
         }
 
+        if (args.removeOptionIfFound("--ab-selftest"))
+        {
+            setApplicationReturnValue(runAbSelfTest());
+            quit();
+            return;
+        }
+
         if (args.containsOption("--canvas-script"))
         {
             const auto path = args.removeValueForOption("--canvas-script");
@@ -1784,6 +2007,16 @@ public:
             if (cli.probe_iters < 1) cli.probe_iters = 1;
         }
 
+        // A project file argument opens in the app shell, not as a plugin.
+        juce::File project_arg;
+        if (args.arguments.size() == 1
+            && args.arguments[0].text.endsWithIgnoreCase(".json"))
+        {
+            project_arg = juce::File::getCurrentWorkingDirectory()
+                              .getChildFile(args.arguments[0].text);
+            args.arguments.clear();
+        }
+
         const bool has_plugin_arg = args.arguments.size() >= 1;
         if (has_plugin_arg)
         {
@@ -1857,6 +2090,13 @@ public:
                 [this]() { showBpmDialog(); },
                 [this]() { showLoopDialog(); });
             mainWindow_->setOnPluginBrowser([this]() { showPluginBrowser(); });
+            mainWindow_->setPluginListProvider([this]() { return known_plugins_.getTypes(); });
+            mainWindow_->setOnAbCompare([this]() { showAbCompare(); });
+            mainWindow_->setRecentFilesStore(settingsFile().getSiblingFile("recent_projects.txt"));
+            mainWindow_->setOnOpenTemplate([this](const juce::File& f) {
+                confirmDiscardUnsaved("starting a new project",
+                                      [this, f]() { openTemplate(f); });
+            });
             mainWindow_->setOnToggleApplyEditsLive([this]() {
                 apply_edits_live_ = !apply_edits_live_;
                 mainWindow_->setApplyEditsLive(apply_edits_live_);
@@ -1967,6 +2207,9 @@ public:
                         live_->setBpm(d->effectiveBpm());
                 maybeApplyLiveEdit();
             });
+            const auto state = windowStateFile().loadFileAsString();
+            if (state.isNotEmpty())
+                mainWindow_->restoreWindowStateFromString(state);
             autosave_enabled_ = true;
             // One sidecar per settings dir, so one instance may own it.
             // A second instance would offer the first one's live sidecar
@@ -1997,6 +2240,8 @@ public:
                     "Crash recovery and saving the plugin library cover the "
                     "first window only. Save work in this window yourself; "
                     "plugin scans made here are not kept.");
+            if (project_arg != juce::File())
+                openProjectInCanvas(project_arg);
         }
     }
 
@@ -2028,10 +2273,20 @@ public:
             plugin_browser_window_ = nullptr;
             delete w;
         }
+        if (auto* w = ab_window_.getComponent())
+        {
+            ab_window_ = nullptr;
+            delete w;
+        }
         // Editors first: a live editor shows a plugin the engine owns.
         editors_.clear();
         if (live_) live_->stop();
         live_.reset();
+        if (mainWindow_)
+        {
+            windowStateFile().getParentDirectory().createDirectory();
+            windowStateFile().replaceWithText(mainWindow_->getWindowStateAsString());
+        }
         mainWindow_.reset();
     }
 
@@ -2122,6 +2377,12 @@ public:
     juce::File knownPluginsFile() const
     {
         return settingsFile().getSiblingFile("known_plugins.xml");
+    }
+
+    // The main window's bounds, kept across launches.
+    juce::File windowStateFile() const
+    {
+        return settingsFile().getSiblingFile("window_state.txt");
     }
 
     // Crash-recovery sidecar. autosave.json holds the last-snapshotted
@@ -2293,6 +2554,38 @@ public:
     // Each probe runs out-of-process via the OutOfProcessPluginScanner
     // installed in initialise(); a dead-man's-pedal file additionally lets a
     // scan that crashed on a bad plugin skip it on the next attempt.
+    // Audio > A/B Compare: renders the open document into two slots.
+    void showAbCompare()
+    {
+        if (auto* existing = ab_window_.getComponent()) { existing->toFront(true); return; }
+        AbComparePanel::Hooks hooks;
+        hooks.outputs = [this]() {
+            std::vector<std::pair<juce::String, juce::File>> out;
+            if (mainWindow_ != nullptr)
+                if (const auto* doc = mainWindow_->currentDocument())
+                    for (const auto& o : doc->outputs) out.emplace_back(o.id, o.sink);
+            return out;
+        };
+        hooks.render = [this](std::function<void(bool)> done) {
+            if (mainWindow_ == nullptr || mainWindow_->currentDocument() == nullptr) return;
+            ProjectRenderJob::launch(*mainWindow_->currentDocument(), "for A/B", {}, std::move(done));
+        };
+        hooks.play = [this](juce::AudioBuffer<float> a, juce::AudioBuffer<float> b, double sr) {
+            ensureLiveEngine().startAbPreview(std::move(a), std::move(b), sr);
+        };
+        hooks.select = [this](bool b) { if (live_) live_->setAbSelection(b); };
+        hooks.stop   = [this]() { if (live_) live_->stopPreview(); };
+
+        juce::DialogWindow::LaunchOptions opts;
+        opts.content.setOwned(new AbComparePanel(std::move(hooks)));
+        opts.dialogTitle            = "A/B Compare";
+        opts.dialogBackgroundColour = juce::Colour(0xff222428);
+        opts.escapeKeyTriggersCloseButton = true;
+        opts.useNativeTitleBar      = true;
+        opts.resizable              = true;
+        ab_window_ = opts.launchAsync();
+    }
+
     void showPluginBrowser()
     {
         if (auto* existing = plugin_browser_window_.getComponent())
@@ -3076,6 +3369,94 @@ private:
         }
     }
 
+    // {"op":"snapshot","path":p,"width":w,"height":h}: paints the canvas
+    // offscreen at w x h (default 1280 x 800) and writes a PNG; p is
+    // relative to the script.
+    static bool snapshotCanvas(CanvasComponent& canvas, const juce::var& op,
+                               const juce::File& dir, juce::String& error)
+    {
+        const int w = op.hasProperty("width")  ? (int) op["width"]  : 1280;
+        const int h = op.hasProperty("height") ? (int) op["height"] : 800;
+        if (w < 1 || h < 1 || w > 8192 || h > 8192)
+        { error = "snapshot size out of range"; return false; }
+        // "panel": true draws the properties panel to the right, as the
+        // app lays it out.
+        juce::Component holder;
+        holder.setSize(w, h);
+        holder.addAndMakeVisible(canvas);
+        std::unique_ptr<PropertiesPanel> panel;
+        if ((bool) op["panel"])
+        {
+            panel = std::make_unique<PropertiesPanel>(canvas);
+            holder.addAndMakeVisible(*panel);
+            panel->setBounds(w - PropertiesPanel::kWidth, 0, PropertiesPanel::kWidth, h);
+            panel->rebuildNow();
+            canvas.setBounds(0, 0, w - PropertiesPanel::kWidth, h);
+        }
+        else canvas.setBounds(0, 0, w, h);
+        const auto img = holder.createComponentSnapshot(holder.getLocalBounds());
+        holder.removeChildComponent(&canvas);
+        const auto file = dir.getChildFile(op["path"].toString());
+        file.deleteFile();
+        juce::FileOutputStream out(file);
+        if (!out.openedOk() || !juce::PNGImageFormat().writeImageToStream(img, out))
+        { error = "cannot write " + file.getFullPathName(); return false; }
+        return true;
+    }
+
+    // Checks compareAudio and AbSource (ab_compare.h). Exit 0 or 1.
+    static int runAbSelfTest()
+    {
+        int failures = 0;
+        auto check = [&](bool ok, const char* what) {
+            if (!ok) { std::fprintf(stderr, "ab selftest: %s\n", what); ++failures; }
+        };
+        juce::AudioBuffer<float> a(2, 1000), b(2, 1000);
+        for (int c = 0; c < 2; ++c)
+            for (int i = 0; i < 1000; ++i)
+            {
+                a.setSample(c, i, (float) i / 1000.0f);
+                b.setSample(c, i, -(float) i / 1000.0f);
+            }
+        auto same = a;
+        check(compareAudio(a, same).nulls(), "identical renders do not null");
+        same.setSample(1, 500, same.getSample(1, 500) + 0.5f);
+        const auto d = compareAudio(a, same);
+        check(std::abs(d.peak_db - 20.0 * std::log10(0.5)) < 1e-6, "peak of a 0.5 step");
+        check(std::abs(d.rms_db - 10.0 * std::log10(0.25 / 2000.0)) < 1e-6, "rms of a 0.5 step");
+        check(!d.length_differs, "equal lengths reported as different");
+        juce::AudioBuffer<float> short_b(2, 600);
+        short_b.clear();
+        check(compareAudio(a, short_b).length_differs && compareAudio(a, short_b).frames == 600,
+              "length difference");
+
+        // A switch mid-play continues from the same position in the other render.
+        AbSource src(a, b, /*loop=*/false);
+        juce::AudioBuffer<float> out(2, 100);
+        juce::AudioSourceChannelInfo info(&out, 0, 100);
+        src.getNextAudioBlock(info);
+        check(out.getSample(0, 99) == a.getSample(0, 99), "A plays first");
+        src.select(true);
+        src.getNextAudioBlock(info);
+        check(out.getSample(0, 0) == b.getSample(0, 100)
+                  && out.getSample(1, 99) == b.getSample(1, 199),
+              "B continues at the same position");
+
+        // The shorter render is silent past its end; looping wraps.
+        AbSource tail(a, short_b, /*loop=*/true);
+        tail.select(true);
+        tail.setNextReadPosition(550);
+        tail.getNextAudioBlock(info);
+        check(out.getSample(0, 60) == 0.0f, "silence past the shorter render");
+        tail.select(false);
+        tail.setNextReadPosition(950);
+        tail.getNextAudioBlock(info);
+        check(out.getSample(0, 49) == a.getSample(0, 999) && out.getSample(0, 50) == a.getSample(0, 0),
+              "loop wraps to the start");
+        std::printf("ab selftest: %d failures\n", failures);
+        return failures == 0 ? 0 : 1;
+    }
+
     int runCanvasScript(const juce::File& script_file)
     {
         const auto script = juce::JSON::parse(script_file);
@@ -3096,9 +3477,25 @@ private:
                 {
                     juce::StringArray warnings;
                     juce::String error;
-                    const bool ok = canvas.applyScriptOp(op, warnings, error);
-                    all_ok = all_ok && ok;
                     auto* r = new juce::DynamicObject();
+                    juce::var keep(r);
+                    const auto name = op["op"].toString();
+                    bool ok = false;
+                    if (name == "snapshot") ok = snapshotCanvas(canvas, op, dir, error);
+                    else if (name == "panel")
+                    {
+                        // Edits the selected node through the side panel.
+                        PropertiesPanel panel(canvas);
+                        panel.rebuildNow();
+                        juce::Array<juce::var> keys;
+                        for (const auto& k : panel.fieldKeys()) keys.add(k);
+                        r->setProperty("fields", keys);
+                        ok = !op.hasProperty("field")
+                          || panel.setField(op["field"].toString(), op["value"].toString());
+                        if (!ok) error = "no field " + op["field"].toString();
+                    }
+                    else ok = canvas.applyScriptOp(op, warnings, error, *r);
+                    all_ok = all_ok && ok;
                     r->setProperty("ok", ok);
                     r->setProperty("error", error);
                     juce::Array<juce::var> w;
@@ -3319,7 +3716,8 @@ private:
         op->setProperty("fields", juce::var(fields));
         juce::StringArray warnings;
         juce::String op_error;
-        if (!canvas.applyScriptOp(juce::var(op), warnings, op_error))
+        juce::DynamicObject op_result;
+        if (!canvas.applyScriptOp(juce::var(op), warnings, op_error, op_result))
             return fail("rename failed: " + op_error);
         if (w->options().node_id != "fx2") return fail("editor did not follow the rename");
         mh_set_param(loaded.plugin, 0, 0.125f);
@@ -3713,6 +4111,25 @@ private:
                         e.what());
                 }
             });
+    }
+
+    // An example project opened as an untitled document: Save asks where
+    // to put it, and the example itself is never overwritten.
+    void openTemplate(const juce::File& f)
+    {
+        if (!mainWindow_) return;
+        if (live_ && live_->loadedProject() != nullptr) stopLive();
+        try {
+            auto doc = project::parseProjectFile(f);
+            closeCanvasEditors();
+            mainWindow_->showProject(std::move(doc), juce::File());
+            clearAutosave();
+            doc_dirty_ = true;
+            unsaved_changes_ = true;
+        } catch (const std::exception& e) {
+            juce::AlertWindow::showMessageBoxAsync(
+                juce::AlertWindow::WarningIcon, "Failed to open template", e.what());
+        }
     }
 
     void newProject()
@@ -4377,6 +4794,7 @@ private:
     // unique_ptr here would dangle on the next showPluginBrowser() and
     // double-free at shutdown; SafePointer nulls itself on that deletion.
     juce::Component::SafePointer<juce::DialogWindow> plugin_browser_window_;
+    juce::Component::SafePointer<juce::DialogWindow> ab_window_;
     std::unique_ptr<juce::FileChooser>  plugin_chooser_;
 
     // Drives --plugin-browser-selftest one step per tick so the message

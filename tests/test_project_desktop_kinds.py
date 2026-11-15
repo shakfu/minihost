@@ -284,3 +284,175 @@ def test_every_example_project_matches_desktop(tmp_path):
             )
         compared += 1
     assert compared > 0
+
+
+def _bypassed_synth_doc(synth: str) -> dict:
+    # A bypassed instrument passes its (absent) audio input through: silence.
+    doc = _sequencer_doc(synth)
+    doc["nodes"][1]["bypass"] = True
+    return doc
+
+
+@requires_synth
+def test_bypass_reaches_the_python_graph(tmp_path):
+    proj = tmp_path / "p.json"
+    proj.write_text(json.dumps(_bypassed_synth_doc(SYNTH)))
+    minihost.render_project(proj)
+    out, _ = audio_io.read_audio(str(tmp_path / "out.wav"), as_=np.ndarray)
+    assert out.shape[1] > 0
+    assert not np.any(out)
+
+
+@skip_if_no_desktop
+@requires_synth
+def test_bypass_matches_desktop(tmp_path):
+    ((py, cpp),) = _render_both(tmp_path, _bypassed_synth_doc(SYNTH), ["out.wav"])
+    assert py.shape == cpp.shape
+    assert not np.any(cpp)
+
+
+def test_bypass_must_be_a_boolean(tmp_path):
+    proj = tmp_path / "p.json"
+    doc = _sequencer_doc("synth.vst3")
+    doc["nodes"][1]["bypass"] = "yes"
+    proj.write_text(json.dumps(doc))
+    with pytest.raises(minihost.ProjectError, match="bypass"):
+        minihost.load_project(proj)
+
+
+# ----- parameter automation ----- #
+
+FX = find_test_plugin("MinihostTestFx", "MINIHOST_TEST_PLUGIN_FX")
+requires_fx = pytest.mark.skipif(
+    not FX or not os.path.exists(FX), reason="MinihostTestFx not built"
+)
+
+
+def _automation_doc(src: Path, lanes: list) -> dict:
+    return {
+        "minihost_project_version": 1,
+        "sample_rate": SR,
+        "block_size": 512,
+        "nodes": [
+            {"id": "in", "kind": "input", "channels": 2, "source": str(src)},
+            {"id": "fx", "kind": "plugin", "path": FX},
+            {
+                "id": "out",
+                "kind": "output",
+                "channels": 2,
+                "sink": "out.wav",
+                "bit_depth": 32,
+            },
+        ],
+        "edges": [{"src": "in", "dst": "fx"}, {"src": "fx", "dst": "out"}],
+        "automation": lanes,
+    }
+
+
+def _ones(tmp_path: Path, frames: int = 24000) -> Path:
+    path = tmp_path / "ones.wav"
+    audio_io.write_audio(
+        str(path), np.ones((2, frames), dtype=np.float32), SR, bit_depth=32
+    )
+    return path
+
+
+_RAMP = [{"node": "fx", "param": "gain", "points": [[0.0, 0.0], [0.25, 1.0]]}]
+
+
+@requires_fx
+def test_automation_ramps_a_parameter(tmp_path):
+    proj = tmp_path / "p.json"
+    proj.write_text(json.dumps(_automation_doc(_ones(tmp_path), _RAMP)))
+    minihost.render_project(proj)
+    out, _ = audio_io.read_audio(str(tmp_path / "out.wav"), as_=np.ndarray)
+    # One change every 64 samples along 12000 samples; the fixture's gain
+    # snaps to steps of 0.01.
+    k = np.arange(out.shape[1]) // 64
+    expected = np.round(np.minimum(k * 64 / 12000, 1.0) / 0.01) * 0.01
+    assert np.allclose(out[0], expected, atol=0.006)
+    assert np.all(out[:, :64] == 0.0)
+    assert np.all(out[:, 12000:] == 1.0)
+
+
+@skip_if_no_desktop
+@requires_fx
+def test_automation_matches_desktop(tmp_path):
+    src = _ones(tmp_path)
+    lanes = [
+        *_RAMP,
+        # By index, with a jump (two points at one time) and a point past a
+        # block boundary.
+        {"node": "fx", "param": 2, "points": [[0.1, 0.0], [0.1, 0.7], [0.3, 0.2]]},
+    ]
+    ((py, cpp),) = _render_both(tmp_path, _automation_doc(src, lanes), ["out.wav"])
+    assert np.any(py != py[0, 0])
+    assert py.shape == cpp.shape
+    assert np.array_equal(py, cpp)
+
+
+@pytest.mark.parametrize(
+    ("lane", "message"),
+    [
+        ({"node": "out", "param": 0, "points": [[0, 0]]}, "not a plugin node"),
+        ({"node": "fx", "param": -1, "points": [[0, 0]]}, ">= 0"),
+        ({"node": "fx", "param": 0, "points": []}, "non-empty"),
+        ({"node": "fx", "param": 0, "points": [[0, 2]]}, r"\[0, 1\]"),
+        ({"node": "fx", "param": 0, "points": [[-1, 0]]}, "time must be >= 0"),
+        ({"node": "fx", "param": 0, "points": [[0]]}, r"\[seconds, value\]"),
+    ],
+)
+def test_automation_lanes_are_checked(tmp_path, lane, message):
+    proj = tmp_path / "p.json"
+    doc = _automation_doc(tmp_path / "x.wav", [lane])
+    doc["nodes"][1]["path"] = "fx.vst3"
+    proj.write_text(json.dumps(doc))
+    with pytest.raises(minihost.ProjectError, match=message):
+        minihost.load_project(proj)
+
+
+@requires_fx
+@pytest.mark.parametrize(
+    ("param", "message"),
+    [("Nope", "no parameter named 'Nope'"), (100000, "out of range")],
+)
+def test_automation_param_must_exist(tmp_path, param, message):
+    proj = tmp_path / "p.json"
+    lane = {"node": "fx", "param": param, "points": [[0, 0]]}
+    proj.write_text(json.dumps(_automation_doc(_ones(tmp_path), [lane])))
+    with pytest.raises(minihost.ProjectError, match=message):
+        minihost.load_project(proj)
+
+
+@skip_if_no_desktop
+@requires_fx
+def test_desktop_rejects_an_unknown_automation_param(tmp_path):
+    proj = tmp_path / "p.json"
+    lane = {"node": "fx", "param": "Nope", "points": [[0, 0]]}
+    proj.write_text(json.dumps(_automation_doc(_ones(tmp_path), [lane])))
+    res = subprocess.run(
+        [str(DESKTOP_BIN), f"--render-project={proj}"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert res.returncode != 0
+    assert "no parameter named 'Nope'" in res.stdout + res.stderr
+
+
+@skip_if_no_desktop
+def test_desktop_save_keeps_automation(tmp_path):
+    proj = tmp_path / "p.json"
+    lanes = [{"node": "fx", "param": "Gain", "points": [[0.0, 0.25], [1.5, 0.75]]}]
+    doc = _automation_doc(tmp_path / "x.wav", lanes)
+    doc["nodes"][1]["path"] = "fx.vst3"
+    proj.write_text(json.dumps(doc))
+    res = subprocess.run(
+        [str(DESKTOP_BIN), f"--save-roundtrip={proj}"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert res.returncode == 0, res.stderr
+    saved = json.loads((tmp_path / "p.resaved.json").read_text())
+    assert saved["automation"] == lanes

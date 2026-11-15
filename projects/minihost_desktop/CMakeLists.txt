@@ -28,6 +28,10 @@ add_executable(minihost_desktop
     src/main.cpp
     src/project.cpp
     src/canvas.cpp
+    src/properties_panel.cpp
+    src/quick_add.cpp
+    src/chain_library.cpp
+    src/ab_window.cpp
     src/live.cpp
     src/status_bar.cpp
     src/node_registry.cpp
@@ -96,3 +100,14 @@ if(APPLE)
         "-framework CoreAudioKit"
     )
 endif()
+
+# The example projects ship with the app as File > New from Template.
+set(MINIHOST_EXAMPLES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../examples/projects")
+if(APPLE)
+    set(MINIHOST_EXAMPLES_DEST "$<TARGET_BUNDLE_CONTENT_DIR:minihost_desktop>/Resources/examples")
+else()
+    set(MINIHOST_EXAMPLES_DEST "$<TARGET_FILE_DIR:minihost_desktop>/examples")
+endif()
+add_custom_command(TARGET minihost_desktop POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${MINIHOST_EXAMPLES_DIR}" "${MINIHOST_EXAMPLES_DEST}"
+    VERBATIM)

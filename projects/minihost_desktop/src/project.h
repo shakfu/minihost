@@ -96,6 +96,8 @@ struct PluginNodeSpec {
     // probe). Authoritative values come from mh_get_info at load time.
     bool         accepts_midi   = false;
     bool         produces_midi  = false;
+    // Latency reported when probed, in samples; -1 = unknown.
+    int          probed_latency = -1;
 
     // DEPRECATED: legacy "fan out live MIDI to every plugin" flag from
     // the pre-MIDI-routing format. New projects use MidiInputNodeSpec
@@ -104,6 +106,10 @@ struct PluginNodeSpec {
     // receives_midi=true, a synthetic MIDI input is materialized and
     // wired to those plugins.
     bool         receives_midi  = true;
+
+    // Host-level bypass: audio and MIDI pass through, no latency. Saved as
+    // "bypass": true; both renderers honour it.
+    bool         bypass         = false;
 };
 
 struct MidiInputNodeSpec {
@@ -180,6 +186,18 @@ struct GainNodeSpec {
 struct BusNodeSpec {
     juce::String id;
     int          channels = 2;
+};
+
+// A chain's audio inlet or outlet: a pass-through that only a chain may
+// hold (docs/dev/chains.md).
+struct AudioPortNodeSpec {
+    juce::String id;
+    int          channels = 2;
+};
+
+// A chain's MIDI inlet or outlet.
+struct MidiPortNodeSpec {
+    juce::String id;
 };
 
 // Extracts a single channel from an `in_channels` source into a
@@ -321,6 +339,31 @@ struct EdgeSpec {
 
 struct NodePosition { float x = 0.0f; float y = 0.0f; };
 
+// A saved subgraph in the project (docs/dev/chains.md). Its nodes are
+// ordinary nodes whose ids start with "<id>/"; this holds what they do not:
+// the library name and the ports, in ids local to the chain.
+struct ChainSpec {
+    juce::String id;
+    juce::String source;  // library name it came from; informational
+};
+
+// One automated parameter of a plugin node: the top-level "automation"
+// list. Values are normalized (0..1) and ramp linearly between points.
+// Mirrors src/minihost/_automation.py.
+struct AutomationLane {
+    juce::String node;
+    juce::var    param;    // index (int) or name (string)
+    std::vector<std::pair<double, double>> points;  // (seconds, value), sorted
+};
+
+// A ramp step between two points, in samples.
+constexpr int kAutomationStep = 64;
+
+// The (sample, value) changes a lane sends, sorted by sample. Same
+// arithmetic as _automation.expand, so both renderers match bit for bit.
+std::vector<std::pair<long long, double>>
+expandAutomation(const std::vector<std::pair<double, double>>& points, double sample_rate);
+
 struct ProjectDocument {
     int                    sample_rate = 0;
     int                    block_size  = 0;
@@ -339,6 +382,10 @@ struct ProjectDocument {
     std::vector<MeterNodeSpec>        meters;
     std::vector<GainNodeSpec>            gains;
     std::vector<BusNodeSpec>             buses;
+    std::vector<AudioPortNodeSpec>       audio_inlets;
+    std::vector<AudioPortNodeSpec>       audio_outlets;
+    std::vector<MidiPortNodeSpec>        midi_inlets;
+    std::vector<MidiPortNodeSpec>        midi_outlets;
     std::vector<PickChannelNodeSpec>     pick_channels;
     std::vector<MergeChannelsNodeSpec>   merge_channels;
     std::vector<MetronomeNodeSpec>       metronomes;
@@ -349,14 +396,23 @@ struct ProjectDocument {
     std::vector<MidiVelocityCurveNodeSpec> midi_velocity_curves;
     std::vector<MidiMergeNodeSpec>         midi_merges;
     std::vector<EdgeSpec>             edges;
+    std::vector<AutomationLane>       automation;
+    std::vector<ChainSpec>            chains;
 
     // Optional canvas layout. Keyed by node id. Auto-layout fills in
     // any node missing from this map. The canvas writes back here on
     // user drags; saveProjectFile serializes the whole map.
-    std::unordered_map<std::string, NodePosition> layout;
+    using Layout = std::unordered_map<std::string, NodePosition>;
+    Layout layout;
 };
 
 ProjectDocument parseProjectFile(const juce::File& path);
+
+// Parse a project already read as JSON. Relative paths resolve against
+// `project_dir`. `require_output` false accepts a project with no output,
+// as the canvas allows while editing.
+ProjectDocument parseProject(const juce::var& doc, const juce::File& project_dir,
+                             bool require_output = true);
 
 // Serialize a ProjectDocument back to disk. Writes to a `.tmp` file and
 // renames; the destination is only replaced once the write succeeds.
@@ -388,6 +444,8 @@ struct LoadedProject {
     ~LoadedProject();
 
     std::unique_ptr<minihost::PluginGraph> graph;
+    // Graph node of each document node, by id.
+    std::unordered_map<std::string, MH_NodeId> node_ids;
     std::vector<MH_Plugin*>            plugins;          // owned
     ProjectDocument                    doc;
     int                                duration_frames = 0;
@@ -440,11 +498,17 @@ struct LoadedProject {
     // timer. Indexed by position in doc.meters; channels match
     // doc.meters[i].channels.
     struct MeterState {
-        std::vector<std::atomic<float>> peak;
-        explicit MeterState(int channels) : peak((size_t) channels)
+        std::vector<std::atomic<float>> peak;  // last block
+        // Highest peak since the GUI last read it (take()), so a peak in
+        // a block between two repaints is not lost.
+        std::vector<std::atomic<float>> held;
+        explicit MeterState(int channels)
+            : peak((size_t) channels), held((size_t) channels)
         {
             for (auto& p : peak) p.store(0.0f, std::memory_order_relaxed);
+            for (auto& h : held) h.store(0.0f, std::memory_order_relaxed);
         }
+        float take(int c) { return held[(size_t) c].exchange(0.0f, std::memory_order_relaxed); }
     };
     std::vector<std::unique_ptr<MeterState>> meter_states;
 
@@ -488,6 +552,25 @@ struct LoadedProject {
     // `loop`: the active loop region. A block that crosses its end
     // continues from its start, so beats after the wrap fall on the
     // looped grid.
+    // -- Automation -- //
+    struct AutomatedNode {
+        MH_NodeId node = -1;
+        struct Lane {
+            int                    param = 0;
+            std::vector<long long> samples;
+            std::vector<float>     values;
+        };
+        std::vector<Lane>           lanes;    // file order
+        std::vector<MH_ParamChange> scratch;  // reserved at load
+    };
+    std::vector<AutomatedNode> automation;
+
+    // Stages each automated node's changes in [pos, pos + n) on the graph.
+    // Follows `loop` as renderMetronomes does; after a wrap, and at offset
+    // 0 when `resend`, each lane re-sends the value in effect. Audio-thread
+    // safe: a change past the reserved scratch is dropped.
+    void stageAutomation(long long pos, int n, LoopSpan loop = {}, bool resend = false);
+
     void renderMetronomes(std::vector<std::vector<float>>& planar_inputs,
                           int block_size,
                           int nframes,

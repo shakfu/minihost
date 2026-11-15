@@ -380,3 +380,189 @@ def test_process_audio_sees_a_latency_reported_just_before():
         assert int(np.argmax(np.abs(out[0]))) == 100
     finally:
         plugin.close()
+
+
+def _latent(delay):
+    """The fixture with `delay` samples of latency, reported to the host."""
+    plugin = _open()
+    plugin.set_param(P_LATENCY, delay / _LATENCY_MAX)
+    silence = np.zeros((2, BLOCK), dtype=np.float32)
+    plugin.process(silence, np.zeros_like(silence))  # applies and reports it
+    assert _await_latency(plugin, delay)
+    return plugin
+
+
+def _impulse_through(g, blocks=2):
+    """Render an impulse at sample 0 through a 1-in, 1-out graph."""
+    outs = []
+    for b in range(blocks):
+        src = np.zeros((2, BLOCK), dtype=np.float32)
+        if b == 0:
+            src[:, 0] = 1.0
+        out = np.zeros_like(src)
+        g.render_block([src], [out], BLOCK)
+        outs.append(out)
+    return np.concatenate(outs, axis=1)
+
+
+@requires_fx
+def test_graph_aligns_a_dry_branch_with_a_latent_one():
+    # Fan-in used to sum misaligned: an impulse came out at 0 (dry) and at
+    # 100 (through the plugin), a comb filter.
+    delay = 100
+    plugin = _latent(delay)
+    try:
+        g = minihost.PluginGraph(BLOCK, SR)
+        a_in = g.add_input(2)
+        fx = g.add_plugin(plugin)
+        mix = g.add_mix(2, 2)
+        a_out = g.add_output(2)
+        g.connect(a_in, fx)
+        g.connect(fx, mix, dst_port=0)
+        g.connect(a_in, mix, dst_port=1)
+        g.connect(mix, a_out)
+        g.compile()
+        out = _impulse_through(g)
+        expected = np.zeros_like(out)
+        expected[:, delay] = 2.0
+        assert np.allclose(out, expected, atol=1e-6)
+    finally:
+        plugin.close()
+
+
+@requires_fx
+def test_graph_aligns_branches_with_different_latencies_across_blocks():
+    # Two latent branches (70 and 600 samples, the second longer than a
+    # block): the shorter one is delayed by the difference.
+    a, b = _latent(70), _latent(600)
+    try:
+        g = minihost.PluginGraph(BLOCK, SR)
+        a_in = g.add_input(2)
+        fa, fb = g.add_plugin(a), g.add_plugin(b)
+        mix = g.add_mix(2, 2)
+        a_out = g.add_output(2)
+        g.connect(a_in, fa)
+        g.connect(a_in, fb)
+        g.connect(fa, mix, dst_port=0)
+        g.connect(fb, mix, dst_port=1)
+        g.connect(mix, a_out)
+        g.compile()
+        out = _impulse_through(g, blocks=3)
+        expected = np.zeros_like(out)
+        expected[:, 600] = 2.0
+        assert np.allclose(out, expected, atol=1e-6)
+    finally:
+        a.close()
+        b.close()
+
+
+@requires_fx
+def test_graph_without_fan_in_adds_no_delay():
+    delay = 100
+    plugin = _latent(delay)
+    try:
+        g = minihost.PluginGraph(BLOCK, SR)
+        a_in = g.add_input(2)
+        fx = g.add_plugin(plugin)
+        a_out = g.add_output(2)
+        g.connect(a_in, fx)
+        g.connect(fx, a_out)
+        g.compile()
+        out = _impulse_through(g)
+        assert np.flatnonzero(out[0]).tolist() == [delay]
+    finally:
+        plugin.close()
+
+
+def _dry_and_latent_graph(plugin, bypass=False):
+    """input -> plugin -> mix[0], input -> mix[1] -> output."""
+    g = minihost.PluginGraph(BLOCK, SR)
+    a_in = g.add_input(2)
+    fx = g.add_plugin(plugin)
+    mix = g.add_mix(2, 2)
+    a_out = g.add_output(2)
+    g.connect(a_in, fx)
+    g.connect(fx, mix, dst_port=0)
+    g.connect(a_in, mix, dst_port=1)
+    g.connect(mix, a_out)
+    if bypass:
+        g.set_node_bypass(fx, True)
+    g.compile()
+    return g
+
+
+@requires_fx
+def test_graph_follows_a_latency_change_after_compile():
+    plugin = _open()
+    try:
+        g = _dry_and_latent_graph(plugin)
+        delay = 300
+        plugin.set_param(P_LATENCY, delay / _LATENCY_MAX)
+        silence = np.zeros((2, BLOCK), dtype=np.float32)
+        g.render_block(
+            [silence], [np.zeros_like(silence)], BLOCK
+        )  # applies and reports it
+        assert _await_latency(plugin, delay)
+        out = _impulse_through(g)
+        expected = np.zeros_like(out)
+        expected[:, delay] = 2.0
+        assert np.allclose(out, expected, atol=1e-6)
+    finally:
+        plugin.close()
+
+
+@requires_fx
+def test_bypassed_plugin_passes_audio_and_adds_no_latency():
+    plugin = _latent(100)
+    try:
+        plugin.set_param(P_GAIN, 0.0)  # audible if the plugin ran
+        g = _dry_and_latent_graph(plugin, bypass=True)
+        out = _impulse_through(g)
+        expected = np.zeros_like(out)
+        expected[:, 0] = 2.0
+        assert np.allclose(out, expected, atol=1e-6)
+    finally:
+        plugin.close()
+
+
+@requires_fx
+def test_bypass_is_refused_after_compile_and_on_other_nodes():
+    plugin = _open()
+    try:
+        g = minihost.PluginGraph(BLOCK, SR)
+        a_in = g.add_input(2)
+        fx = g.add_plugin(plugin)
+        a_out = g.add_output(2)
+        g.connect(a_in, fx)
+        g.connect(fx, a_out)
+        with pytest.raises(RuntimeError, match="not a plugin node"):
+            g.set_node_bypass(a_in, True)
+        g.compile()
+        with pytest.raises(RuntimeError, match="compiled"):
+            g.set_node_bypass(fx, True)
+    finally:
+        plugin.close()
+
+
+@requires_fx
+def test_graph_reports_time_spent_in_each_node():
+    plugin = _open()
+    try:
+        g = minihost.PluginGraph(BLOCK, SR)
+        a_in = g.add_input(2)
+        fx = g.add_plugin(plugin)
+        a_out = g.add_output(2)
+        g.connect(a_in, fx)
+        g.connect(fx, a_out)
+        with pytest.raises(RuntimeError, match="not compiled"):
+            g.node_time(fx)
+        g.compile()
+        src = _ramp()
+        for _ in range(3):
+            g.render_block([src], [np.zeros_like(src)], BLOCK)
+        seconds, frames = g.node_time(fx)
+        assert frames == 3 * BLOCK
+        assert 0.0 < seconds < 1.0
+        assert g.node_time(a_in) == (0.0, 3 * BLOCK)
+    finally:
+        plugin.close()

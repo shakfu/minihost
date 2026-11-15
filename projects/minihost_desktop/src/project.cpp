@@ -2,6 +2,7 @@
 
 #include "project.h"
 
+#include "chain_library.h"
 #include "minihost_audiofile.h"
 #include "node_registry.h"
 #include "sequencer.h"
@@ -172,6 +173,10 @@ void LoadedProject::updateMeters(float* const* const* out_buffers, int nframes)
                 if (a > peak) peak = a;
             }
             state->peak[(size_t) c].store(peak, std::memory_order_relaxed);
+            auto& held = state->held[(size_t) c];
+            float prev = held.load(std::memory_order_relaxed);
+            while (peak > prev
+                   && !held.compare_exchange_weak(prev, peak, std::memory_order_relaxed)) {}
         }
     }
 }
@@ -200,6 +205,57 @@ void forEachLoopSegment(long long pos, int n, const LoopSpan& loop,
     }
 }
 } // namespace
+
+std::vector<std::pair<long long, double>>
+expandAutomation(const std::vector<std::pair<double, double>>& points, double sample_rate)
+{
+    std::vector<std::pair<long long, double>> at, out;
+    for (const auto& [t, v] : points) at.emplace_back(std::llround(t * sample_rate), v);
+    if (at.empty()) return out;
+    if (at[0].first > 0) out.emplace_back(0, at[0].second);
+    for (size_t i = 0; i < at.size(); ++i)
+    {
+        const auto [s0, v0] = at[i];
+        if (i + 1 == at.size()) { out.emplace_back(s0, v0); break; }
+        const auto [s1, v1] = at[i + 1];
+        for (long long s = s0; s < s1; s += kAutomationStep)
+            out.emplace_back(s, v0 + (v1 - v0) * (double) (s - s0) / (double) (s1 - s0));
+    }
+    return out;
+}
+
+void LoadedProject::stageAutomation(long long pos, int n, LoopSpan loop, bool resend)
+{
+    for (auto& a : automation)
+    {
+        a.scratch.clear();
+        auto push = [&a](int off, int param, float v) {
+            if (a.scratch.size() < a.scratch.capacity())
+                a.scratch.push_back({ off, param, v });
+        };
+        forEachLoopSegment(pos, n, loop, [&](long long s0, int local, int len) {
+            for (const auto& lane : a.lanes)
+            {
+                const auto& sm = lane.samples;
+                const auto lo = std::lower_bound(sm.begin(), sm.end(), s0);
+                const auto hi = std::lower_bound(lo, sm.end(), s0 + len);
+                // The value in effect at s0, unless a change lands there.
+                if ((local > 0 || resend) && lo != sm.begin() && (lo == sm.end() || *lo != s0))
+                    push(local, lane.param, lane.values[(size_t) (lo - sm.begin() - 1)]);
+                for (auto it = lo; it != hi; ++it)
+                    push(local + (int) (*it - s0), lane.param,
+                         lane.values[(size_t) (it - sm.begin())]);
+            }
+        });
+        // Stable insertion sort by offset: std::stable_sort may allocate.
+        for (size_t i = 1; i < a.scratch.size(); ++i)
+            for (size_t j = i; j > 0 && a.scratch[j - 1].sample_offset > a.scratch[j].sample_offset; --j)
+                std::swap(a.scratch[j - 1], a.scratch[j]);
+        if (!a.scratch.empty())
+            mh_graph_set_node_automation(graph->handle(), a.node,
+                                         a.scratch.data(), (int) a.scratch.size());
+    }
+}
 
 void LoadedProject::renderMetronomes(std::vector<std::vector<float>>& planar_inputs,
                                      int block_size,
@@ -394,6 +450,12 @@ ProjectDocument parseProjectFile(const juce::File& path)
             throwErr("invalid JSON in " + path.getFullPathName());
         doc = parsed;
     }
+    return parseProject(doc, path.getParentDirectory());
+}
+
+ProjectDocument parseProject(const juce::var& doc, const juce::File& project_dir,
+                             bool require_output)
+{
     if (!doc.isObject())
         throwErr("project root must be an object");
 
@@ -439,10 +501,10 @@ ProjectDocument parseProjectFile(const juce::File& path)
         out.bpm = bpm;
     }
 
-    const auto project_dir = path.getParentDirectory();
-
     std::unordered_set<std::string> ids;
     auto nodes = requireArray(doc, "nodes");
+    auto edges = requireArray(doc, "edges");
+    chains::expand(nodes, edges, out.chains);
     for (const auto& n : nodes)
     {
         if (!n.isObject()) throwErr("node entry must be an object");
@@ -484,6 +546,8 @@ ProjectDocument parseProjectFile(const juce::File& path)
     for (const auto& n : out.meters)         atLeast("meter", n.id, "channels", n.channels, 1);
     for (const auto& n : out.gains)          atLeast("gain", n.id, "channels", n.channels, 1);
     for (const auto& n : out.buses)          atLeast("bus", n.id, "channels", n.channels, 1);
+    for (const auto& n : out.audio_inlets)   atLeast("audio_inlet", n.id, "channels", n.channels, 1);
+    for (const auto& n : out.audio_outlets)  atLeast("audio_outlet", n.id, "channels", n.channels, 1);
     for (const auto& n : out.metronomes)     atLeast("metronome", n.id, "channels", n.channels, 1);
     for (const auto& n : out.mixes)
     {
@@ -504,11 +568,10 @@ ProjectDocument parseProjectFile(const juce::File& path)
     // require an OutputNodeSpec (file sink); live playback can use
     // a DeviceOutputNodeSpec instead. The stricter file-render
     // requirement is checked separately in renderProject.
-    if (out.outputs.empty() && out.device_outputs.empty())
+    if (require_output && out.outputs.empty() && out.device_outputs.empty())
         throwErr("project has no output nodes "
                  "(needs at least one file 'output' or 'device_output')");
 
-    auto edges = requireArray(doc, "edges");
     for (const auto& e : edges)
     {
         if (!e.isObject()) throwErr("edge entry must be an object");
@@ -535,6 +598,51 @@ ProjectDocument parseProjectFile(const juce::File& path)
         out.edges.push_back(std::move(es));
     }
 
+    // Optional parameter automation; checked as _automation.parse does.
+    if (doc.getDynamicObject()->hasProperty("automation"))
+    {
+        const auto* lanes = doc["automation"].getArray();
+        if (lanes == nullptr) throwErr("automation must be a list");
+        for (int i = 0; i < lanes->size(); ++i)
+        {
+            const auto& item = (*lanes)[i];
+            const auto where = "automation[" + juce::String(i) + "]";
+            if (!item.isObject()) throwErr(where + " must be an object");
+            AutomationLane lane;
+            lane.node = item["node"].toString();
+            const bool is_plugin = item["node"].isString()
+                && std::any_of(out.plugins.begin(), out.plugins.end(),
+                               [&](const PluginNodeSpec& p) { return p.id == lane.node; });
+            if (!is_plugin)
+                throwErr(where + ": node '" + lane.node + "' is not a plugin node");
+            lane.param = item["param"];
+            if (!(lane.param.isInt() || lane.param.isInt64() || lane.param.isString()))
+                throwErr(where + ": param must be an index or a name");
+            if (!lane.param.isString() && (int64_t) lane.param < 0)
+                throwErr(where + ": param index must be >= 0");
+            const auto* points = item["points"].getArray();
+            if (points == nullptr || points->isEmpty())
+                throwErr(where + ": points must be a non-empty list");
+            for (const auto& p : *points)
+            {
+                const auto* tv = p.getArray();
+                auto number = [](const juce::var& v) {
+                    return (v.isInt() || v.isInt64() || v.isDouble())
+                        && std::isfinite((double) v);
+                };
+                if (tv == nullptr || tv->size() != 2 || !number((*tv)[0]) || !number((*tv)[1]))
+                    throwErr(where + ": each point must be [seconds, value]");
+                const double t = (double) (*tv)[0], v = (double) (*tv)[1];
+                if (t < 0.0) throwErr(where + ": point time must be >= 0");
+                if (v < 0.0 || v > 1.0) throwErr(where + ": point value must be in [0, 1]");
+                lane.points.emplace_back(t, v);
+            }
+            std::stable_sort(lane.points.begin(), lane.points.end(),
+                             [](const auto& a, const auto& b) { return a.first < b.first; });
+            out.automation.push_back(std::move(lane));
+        }
+    }
+
     // Optional canvas layout. Entries for unknown ids are silently
     // dropped (defensive: hand-edited files, schema drift).
     if (doc.getDynamicObject()->hasProperty("layout"))
@@ -549,6 +657,8 @@ ProjectDocument parseProjectFile(const juce::File& path)
                 for (int k = 0; k < c; ++k)
                     known.insert(entry.id_at(out, k).toStdString());
             }
+            for (const auto& c : out.chains)  // a chain's box
+                known.insert(c.id.toStdString());
 
             auto* dyn = layout_var.getDynamicObject();
             for (const auto& kv : dyn->getProperties())
@@ -605,7 +715,6 @@ juce::String serializeProject(const ProjectDocument& doc, const juce::File& base
                     o->setProperty(key, f.getRelativePathFrom(base_dir)
                                             .replaceCharacter('\\', '/'));
             }
-    root->setProperty("nodes", nodes);
 
     juce::Array<juce::var> edges;
     for (const auto& e : doc.edges)
@@ -628,7 +737,26 @@ juce::String serializeProject(const ProjectDocument& doc, const juce::File& base
         }
         edges.add(juce::var(o));
     }
+    chains::fold(nodes, edges, doc.chains, doc.layout);
+    root->setProperty("nodes", nodes);
     root->setProperty("edges", edges);
+
+    if (!doc.automation.empty())
+    {
+        juce::Array<juce::var> lanes;
+        for (const auto& lane : doc.automation)
+        {
+            auto* o = new juce::DynamicObject();
+            o->setProperty("node", lane.node);
+            o->setProperty("param", lane.param);
+            juce::Array<juce::var> points;
+            for (const auto& [t, v] : lane.points)
+                points.add(juce::Array<juce::var>{ t, v });
+            o->setProperty("points", points);
+            lanes.add(juce::var(o));
+        }
+        root->setProperty("automation", lanes);
+    }
 
     if (!doc.layout.empty())
     {
@@ -696,6 +824,21 @@ std::unique_ptr<LoadedProject> loadProject(ProjectDocument document)
     auto loaded = std::make_unique<LoadedProject>();
     loaded->doc = std::move(document);
     auto& doc = loaded->doc;
+
+    // A port only connects a chain to the outside.
+    auto inChain = [&doc](const juce::String& id) {
+        return std::any_of(doc.chains.begin(), doc.chains.end(), [&](const ChainSpec& c) {
+            return id.startsWith(c.id + "/") && !id.substring(c.id.length() + 1).contains("/");
+        });
+    };
+    auto check = [&](const auto& ports, const char* kind) {
+        for (const auto& p : ports)
+            if (!inChain(p.id)) throwErr(kind + (" " + p.id) + " is outside a chain");
+    };
+    check(doc.audio_inlets, "audio_inlet");
+    check(doc.audio_outlets, "audio_outlet");
+    check(doc.midi_inlets, "midi_inlet");
+    check(doc.midi_outlets, "midi_outlet");
 
     // Read input audio.
     for (auto& in : doc.inputs)
@@ -831,6 +974,7 @@ std::unique_ptr<LoadedProject> loadProject(ProjectDocument document)
         for (int i = 0; i < c; ++i)
             entry.load_one(doc, i, g, id_to_node, *loaded);
     }
+    for (const auto& [id, node] : id_to_node) loaded->node_ids[id] = node;
 
     for (const auto& e : doc.edges)
     {
@@ -894,6 +1038,67 @@ std::unique_ptr<LoadedProject> loadProject(ProjectDocument document)
     }
 
     g.compile();
+
+    // Automation: resolve each lane's parameter and expand its points.
+    for (size_t i = 0; i < doc.automation.size(); ++i)
+    {
+        const auto& lane = doc.automation[i];
+        const auto where = "automation[" + juce::String((int) i) + "] (" + lane.node + "): ";
+        size_t k = 0;
+        while (k < doc.plugins.size() && doc.plugins[k].id != lane.node) ++k;
+        MH_Plugin* p = loaded->plugins[k];
+        const int count = mh_get_num_params(p);
+        int param = -1;
+        if (lane.param.isString())
+        {
+            // Case-insensitive, first match: as the Python Plugin.find_param.
+            const auto want = lane.param.toString().toStdString();
+            auto lower = [](std::string s) {
+                for (auto& c : s) c = (char) std::tolower((unsigned char) c);
+                return s;
+            };
+            for (int j = 0; j < count && param < 0; ++j)
+            {
+                MH_ParamInfo info{};
+                if (mh_get_param_info(p, j, &info) && lower(info.name) == lower(want))
+                    param = j;
+            }
+            if (param < 0)
+                throwErr(where + "no parameter named '" + lane.param.toString() + "'");
+        }
+        else
+        {
+            param = (int) lane.param;
+            if (param >= count)
+                throwErr(where + "param index " + juce::String(param)
+                         + " out of range (plugin has " + juce::String(count) + ")");
+        }
+        const auto node = id_to_node[lane.node.toStdString()];
+        auto it = std::find_if(loaded->automation.begin(), loaded->automation.end(),
+                               [&](const auto& a) { return a.node == node; });
+        if (it == loaded->automation.end())
+        {
+            loaded->automation.push_back({});
+            it = std::prev(loaded->automation.end());
+            it->node = node;
+        }
+        LoadedProject::AutomatedNode::Lane l;
+        l.param = param;
+        for (const auto& [s, v] : expandAutomation(lane.points, (double) doc.sample_rate))
+        {
+            l.samples.push_back(s);
+            l.values.push_back((float) v);
+        }
+        it->lanes.push_back(std::move(l));
+    }
+    for (auto& a : loaded->automation)
+    {
+        size_t points = 0;
+        for (const auto& lane : doc.automation) points += lane.points.size();
+        a.scratch.reserve(a.lanes.size()
+                              * (size_t) (doc.block_size / kAutomationStep + 8)
+                          + points);
+    }
     return loaded;
 }
 
@@ -937,7 +1142,14 @@ bool fillMissingProbes(ProjectDocument& doc, const LoadedProject& loaded)
     for (size_t i = 0; i < n; ++i)
     {
         auto& spec = doc.plugins[i];
-        if (spec.probed_in_channels >= 0 || spec.id != loaded.doc.plugins[i].id)
+        if (spec.id != loaded.doc.plugins[i].id || loaded.plugins[i] == nullptr)
+            continue;
+        if (spec.probed_latency < 0)
+        {
+            spec.probed_latency = std::max(0, mh_get_latency_samples(loaded.plugins[i]));
+            changed = true;
+        }
+        if (spec.probed_in_channels >= 0)
             continue;
         MH_Info info{};
         if (loaded.plugins[i] == nullptr || !mh_get_info(loaded.plugins[i], &info))
@@ -1112,6 +1324,8 @@ bool renderProject(LoadedProject& proj,
                 proj.graph->handle(), proj.sequencer_node_ids[q],
                 buf.empty() ? nullptr : buf.data(), (int) buf.size());
         }
+
+        proj.stageAutomation(frame, n);
 
         // Stage inputs.
         for (size_t i = 0; i < proj.doc.inputs.size(); ++i)

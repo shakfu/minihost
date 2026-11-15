@@ -21,7 +21,9 @@
 //     edge per dst node; fan-out allowed. Plugin nodes accept MIDI on
 //     an implicit MIDI input port (when accepts_midi=1) and produce
 //     MIDI on an implicit MIDI output port (when produces_midi=1).
-//   - No latency compensation across fan-in paths.
+//   - Latency compensation at fan-in: inputs that arrive earlier are
+//     delayed to match. Follows each plugin's reported latency block by
+//     block, up to 32768 samples. MIDI is not compensated.
 //   - No feedback loops.
 //
 // Threading:
@@ -126,7 +128,8 @@ MH_NodeId mh_graph_add_output(MH_PluginGraph* g, int channels,
 
 // Add a mix node: sums `num_inputs` inputs (each `channels` channels)
 // with per-input gains (default 1.0) into one `channels`-channel
-// output. Use mh_graph_set_mix_gain to override gains.
+// output. Use mh_graph_set_mix_gain to override gains. With 0 inputs
+// it outputs silence.
 MH_NodeId mh_graph_add_mix(MH_PluginGraph* g,
                               int num_inputs, int channels,
                               char* err_buf, size_t err_buf_size);
@@ -178,7 +181,8 @@ int mh_graph_set_midi_processor_params(MH_PluginGraph* g, MH_NodeId node,
 // separate MIDI input ports (0..num_inputs-1) into one output
 // stream, sorted by sample_offset (stable across ports). The
 // canonical fan-in primitive for MIDI; pair with
-// mh_graph_connect_midi_port to wire each source.
+// mh_graph_connect_midi_port to wire each source. With 0 inputs it
+// emits no events.
 MH_NodeId mh_graph_add_midi_merge(MH_PluginGraph* g, int num_inputs,
                                      char* err_buf, size_t err_buf_size);
 
@@ -211,6 +215,12 @@ int mh_graph_connect(MH_PluginGraph* g,
                         MH_NodeId src, int src_port,
                         MH_NodeId dst, int dst_port,
                         char* err_buf, size_t err_buf_size);
+
+// Bypass a plugin node: its audio input is copied to its output (output
+// channels past the input's are silent), its MIDI input passes through as
+// its MIDI output, and it adds no latency. Call before compile. Returns 1 on success, 0 if the node
+// is not a plugin or the graph is already compiled.
+int mh_graph_set_node_bypass(MH_PluginGraph* g, MH_NodeId node, int bypass);
 
 // Set the per-input gain on a mix node (default 1.0). Linear gain.
 // Returns 1 on success, 0 on failure.
@@ -350,6 +360,15 @@ int mh_graph_get_midi_output_events(MH_PluginGraph* g, MH_NodeId node,
 // success, 0 if node is not a MIDI_OUTPUT or out of range.
 int mh_graph_get_midi_output_dropped(MH_PluginGraph* g, MH_NodeId node,
                                         int* dropped_out);
+
+// Load metering. *seconds_out: wall-clock time spent processing `node`
+// since compile (plugin nodes; 0 for others). *frames_out: frames the graph
+// has rendered since compile. Their ratio over an interval is the node's
+// share of the real-time budget. Safe on any thread while rendering.
+// Either pointer may be NULL. Returns 1 on success, 0 for an uncompiled
+// graph or a bad node.
+int mh_graph_get_node_time(MH_PluginGraph* g, MH_NodeId node,
+                           double* seconds_out, long long* frames_out);
 
 // Introspection.
 int mh_graph_num_nodes(MH_PluginGraph* g);

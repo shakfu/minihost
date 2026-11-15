@@ -4,6 +4,17 @@
 
 ### Changed
 
+- Desktop: nodes are coloured by category, not by kind. Sources, plugins, audio routing, MIDI, sinks and meters each get one accent, drawn as a header band on a dark body. The 20 per-kind fills had no grouping, and white text on the lighter ones was hard to read. The node id is the bold title, and the kind's detail is the subtitle. Nodes are 150x48, down from 160x64; a node with more than 2 input ports, MIDI included, grows 12 px per extra port so the ports stay apart. Ports sit below the header, and the selection is drawn in white.
+
+- Desktop: the main window opens at 80% of the display (960x600 to 1600x1000), not 640x360, and keeps its bounds across launches (`window_state.txt` beside the settings file). A project that does not fit at 100% opens zoomed out to fit.
+
+- Graph (C ABI 2.11.0): where branches meet at a mix, merge or plugin, `mh_graph` delays the inputs that arrive earlier, so branches through plugins with different latencies sum aligned. Before, a parallel-FX graph such as `examples/projects/08_parallel_fx.json` with a latent plugin rendered as a comb filter in the desktop app, Live and `minihost.render_project`. Renders of such graphs change.
+- Graph: `mh_graph_add_mix` and `mh_graph_add_midi_merge` accept 0 inputs, giving silence or no events. A chain inlet or outlet with no cable in loads this way, so it passes silence instead of failing the render.
+
+  The delays follow each plugin's reported latency block by block, up to 32768 samples, from rings sized at compile. Reading latency once at compile was simpler, but a VST3 reports a latency it sets after loading state, or while playing, only when JUCE's message queue runs, so a compile-time value can be stale. MIDI is not compensated.
+
+- Tests: `--canvas-script` has ops for the selection, clipboard, moves onto cables, file drops, quick add, meters, problems and the view, plus `snapshot` (the canvas as a PNG, optionally with the properties panel) and `panel`. `--ab-selftest` checks A/B Compare.
+
 - Python 3.12 or later is required. Releases ship one `cp312-abi3` wheel per platform, built against the Python limited API, where they used to ship one wheel per CPython version. The same wheel installs on 3.12, 3.13, 3.14 and later. Python 3.10 and 3.11 are no longer supported.
 
 - Python 3.15 is supported and tested in CI. CI tests the abi3 wheel on 3.12 and 3.15 only. cibuildwheel is pinned to 4.3.0, which supports 3.15.
@@ -22,6 +33,50 @@
 
 ### Added
 
+- Chains: a saved subgraph of processing nodes, kept in a library and reused across projects. On the desktop canvas a chain is one box with a pin per inlet and outlet; double-click opens it to edit its nodes, Esc closes it. Save Selection as Chain (Cmd+G) groups the selected nodes into a box and writes `<settings dir>/chains/<name>.mhchain`; Insert Chain, Cmd+K and dropping a `.mhchain` file add one; the box's menu offers Update from Library and Ungroup. A project embeds a copy, so editing the library does not change existing projects or their renders; a reference to the library file was rejected for that reason. Both renderers expand a `chain` node at load into ordinary nodes named `<chain>/<node>`, so bypass, automation, latency compensation and meters apply to them unchanged. Python reads and writes the library through `minihost.chain_library`. Format: `docs/dev/chains.md`.
+
+  Inlets and outlets are `audio_inlet`, `audio_outlet`, `midi_inlet` and `midi_outlet` nodes, valid only inside a chain; two audio inlets make a sidechain. Grouping adds them from the cables that cross the selection, and the add menu of an open chain adds more. An outside edge names the chain and a port index, `dst_port` for an inlet and `src_port` for an outlet, counted per kind in file order; the desktop app writes them top to bottom as placed inside the chain, and hovering a pin shows its port's id. It may not name a node inside the chain: addressing inner nodes by full id was rejected because it ties the project's edges to the chain's contents, which Update from Library replaces. Project I/O nodes cannot join a chain.
+
+  ```json
+  {"id": "vox", "kind": "chain", "source": "Vocal", "nodes": [
+    {"id": "in", "kind": "audio_inlet"},
+    {"id": "key", "kind": "audio_inlet", "channels": 1},
+    {"id": "comp", "kind": "plugin", "path": "Comp.vst3"},
+    {"id": "out", "kind": "audio_outlet"}], "edges": [...]},
+  {"src": "kick", "dst": "vox", "dst_port": 1}
+  ```
+
+- Desktop: canvas navigation and editing.
+  - Scroll pans; Cmd+scroll or pinch zooms; Cmd+0 fits the graph; View menu.
+  - Right-click or double-click adds a node at that point. Cmd+K opens a search box over every node kind and scanned plugin.
+  - Dragging on empty space selects several nodes. Cut, Copy, Paste and Duplicate (Cmd+X/C/V/D) keep the edges between copied nodes. Arrow keys move the selection.
+  - A lone node dropped on a cable is inserted there, as one undo step.
+  - Files dropped on the canvas become nodes: audio an input, `.mid` a MIDI input, a plugin bundle a plugin node. A project file opens.
+
+- Desktop: a properties side panel replaces the Properties dialogs. A field applies on Return, on losing focus or when a choice changes, as one undo step. For plugins it also shows latency, CPU share while Live runs, and the number of automated parameters; the node shows the same in short.
+
+- Desktop: the canvas marks what the graph compiler would reject. An unconnected required input is a red port with a "!" badge on the node; an audio cable between different channel counts is red and labelled, e.g. "2ch > 1ch". Before, both surfaced only when a render or Start Live failed.
+
+- Desktop: each node is an accessible element (title, kind, connections, problems) that takes keyboard focus. Tab moves between nodes; Return opens a plugin's editor or another node's properties. Before, the canvas was one image to a screen reader and unreachable from the keyboard.
+
+- Desktop: File > Open Recent (10 projects, `recent_projects.txt` beside the settings file) and File > New from Template, which opens one of the example projects as an untitled document. The build copies `examples/projects` beside the app. `minihost_desktop project.json` opens a project.
+
+- Desktop: Audio > A/B Compare. Render the project into slot A, edit, render into B, then play and switch between them (A, B or Tab) at the same position. It shows the RMS and peak level of the difference, a null test.
+
+- Plugin bypass in project files: `"bypass": true` on a plugin node passes its audio and MIDI through and adds no latency, in the desktop app and `minihost.render_project`. New `mh_graph_set_node_bypass` and `PluginGraph.set_node_bypass`. A host-level bypass over the plugin's own bypass parameter (`mh_set_bypass`), which not every plugin has and which may keep the plugin's latency.
+
+- Parameter automation in project files, in the desktop app (offline and Live, following the transport and loop) and `minihost.render_project`:
+
+  ```json
+  "automation": [{"node": "fx", "param": "Gain", "points": [[0.0, 0.0], [2.5, 1.0]]}]
+  ```
+
+  Values are normalized and ramp linearly between points, sent every 64 samples. `param` is an index or a name, matched as `Plugin.find_param` does. Both renderers expand a lane the same way and render bit-identical files. The CLI's automation file format allows times in percent and text values, which depend on the render length and on each plugin's text parsing; seconds and normalized values do not.
+
+- Desktop meters read in dBFS (-60 to 0), hold each peak for 1.5 s, and light a clip indicator at 0 dBFS that stays until the meter is clicked or the transport starts. The audio thread now keeps the highest peak since the canvas last read it; the canvas read only the last block's peak at 30 Hz and missed about two blocks in three.
+
+- `mh_graph_get_node_time` and `PluginGraph.node_time`: time spent processing a node and frames rendered since compile, for load meters.
+
 - Desktop: live mode is editable. Double-clicking a plugin node while Live runs opens the editor on the running instance, so knob moves are heard. Before, the editor opened a separate instance, and an edit reached the sound only after Capture State and Restart Live. The state of every running plugin is copied into the project on Save, Stop Live, Restart Live, and before the unsaved-changes prompt on Quit, New and Open. Graph edits (add, delete, connect, Properties) restart Live under mute as they are made, and open live editors come back on the new instances; sequencer edits and node moves apply without a restart, as before. While the transport is recording, the restart waits for Stop, because Play would overwrite the takes. `Audio > Apply Edits While Live` turns the automatic restart off. Reading or restoring plugin state must not overlap processing, so the device outputs silence during a Save or a preset load while Live runs; a plugin with a large state drops out for as long as it takes to serialize.
 
 - `minihost.load_project` and `render_project` accept every node kind the desktop app writes. Before, Python raised "unknown node kind" for 10 of the app's 20 kinds, so no example project and no project with a speaker output rendered from Python or `minihost render`. New: `gain`, `bus`, `pick_channel`, `merge_channels` and `sequencer` render as in the app, and the top-level `bpm` is read. The live-only kinds render as the app's offline render does: `device_input` and `metronome` are silent, `device_output` and `meter` are discarded, and `midi_clock` sends nothing. The sequencer is a port of the app's generator; it matches the app's notes sample for sample, including `std::llround`'s half-away-from-zero rounding where Python's `round()` rounds half to even. `tests/test_project_desktop_kinds.py` renders each kind, the sequencer and every example project in both renderers and requires bit-identical files.
@@ -29,6 +84,10 @@
 - `mh_audio_get_midi_error()` returns why the last MIDI connect or virtual-port create on a device failed. `AudioDevice.connect_midi_*` and `create_virtual_midi_*` include it in the `RuntimeError`, and the CLIs print it. The device layer used to discard libremidi's reason, so a CoreMIDI refusal on the macOS CI runner showed only "may not be supported on this platform". A separate out-parameter would have broken the existing signatures. MIDI open errors also name the back-end and add libremidi's `on_error` text. When the back-end client fails to open, libremidi's open call returns only `ENOTCONN` ("Transport endpoint is not connected"); the real cause, such as `MIDIClientCreate`'s OSStatus, goes only to that callback.
 
 ### Fixed
+
+- Desktop: a node added to a project with a saved layout was placed at the first auto-layout slot of its column, often on top of a saved node. It now takes the next free slot.
+
+- Desktop: a meter node's label was drawn over its level bars. The bars are now a strip under the label.
 
 - Desktop: the scanned plugin library was saved only at clean exit, so a crash after a scan lost the scan. Changes are now saved on the 5 s autosave heartbeat. Only the first instance writes `known_plugins.xml`; a second instance used to overwrite the first one's list when it quit.
 

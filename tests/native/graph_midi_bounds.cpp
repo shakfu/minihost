@@ -5,7 +5,7 @@
 // pytest suite passed over it. Here the graph is built under ASan, so any
 // read or write past a MIDI buffer aborts the run.
 //
-// minihost_graph_v2.cpp calls seven mh_* plugin functions. They are stubbed
+// minihost_graph_v2.cpp calls eight mh_* plugin functions. They are stubbed
 // below with an instrument that echoes its MIDI input, stopping at the output
 // capacity as mh_process_midi_io does. No JUCE. Built and run by
 // `make native-tests`.
@@ -21,6 +21,8 @@
 struct MH_Plugin {
     int out_ch = 1;
     int dropped = 0;  // output events past capacity, last call
+    int latency = 0;  // reported, in samples
+    int in_ch = 0;
 };
 
 namespace {
@@ -39,6 +41,7 @@ extern "C" {
 int mh_get_info(MH_Plugin* p, MH_Info* info) {
     std::memset(info, 0, sizeof(*info));
     info->num_output_ch = p->out_ch;
+    info->num_input_ch  = p->in_ch;
     info->accepts_midi  = 1;
     info->produces_midi = 1;
     return 1;
@@ -74,6 +77,8 @@ int mh_process_midi_io(MH_Plugin* p, const float* const*,
 }
 
 int mh_get_midi_out_dropped(MH_Plugin* p) { return p ? p->dropped : 0; }
+
+int mh_get_latency_samples_rt(MH_Plugin* p) { return p ? p->latency : 0; }
 
 int mh_process_auto(MH_Plugin* p, const float* const* in,
                     float* const* outputs, int nframes,
@@ -375,7 +380,42 @@ void test_processor_params_are_checked() {
 
 } // namespace
 
+// Latency compensation rings: a fan-in whose plugin branch reports more
+// latency than the rings hold, and blocks that wrap them, run under ASan.
+void test_compensation_rings_stay_in_bounds() {
+    MH_Plugin fx;
+    fx.in_ch   = 1;
+    fx.latency = 40000;  // past the 32768-sample cap: clamped
+    MH_PluginGraph* g = mh_graph_create(kBlock, kRate, nullptr, 0);
+    const MH_NodeId in  = mh_graph_add_input(g, 1, nullptr, 0);
+    const MH_NodeId p   = mh_graph_add_plugin(g, &fx, nullptr, 0);
+    const MH_NodeId mix = mh_graph_add_mix(g, 2, 1, nullptr, 0);
+    const MH_NodeId out = mh_graph_add_output(g, 1, nullptr, 0);
+    mh_graph_connect(g, in, 0, p, 0, nullptr, 0);
+    mh_graph_connect(g, p, 0, mix, 0, nullptr, 0);
+    mh_graph_connect(g, in, 0, mix, 1, nullptr, 0);
+    mh_graph_connect(g, mix, 0, out, 0, nullptr, 0);
+    char err[256] = {};
+    EXPECT(mh_graph_compile(g, err, sizeof err), "compile: %s", err);
+    float buf_in[kBlock] = {}, buf_out[kBlock] = {};
+    const float* in_ch[1] = {buf_in};
+    float* out_ch[1] = {buf_out};
+    const float* const* ins[1] = {in_ch};
+    float* const* outs[1] = {out_ch};
+    for (int b = 0; b < 1200; ++b) {  // 76800 samples: the ring wraps twice
+        buf_in[0] = 1.0f;
+        EXPECT(mh_graph_render_block(g, ins, 1, outs, 1, kBlock), "render %d", b);
+        if (b == 600) fx.latency = 100;  // a change while playing
+    }
+    double seconds = -1.0;
+    long long frames = -1;
+    EXPECT(mh_graph_get_node_time(g, p, &seconds, &frames) && frames == 1200LL * kBlock,
+           "node time frames %lld", frames);
+    mh_graph_close(g);
+}
+
 int main() {
+    test_compensation_rings_stay_in_bounds();
     test_direct_overflow();
     test_small_caller_capacity();
     test_processor_overflow();

@@ -270,7 +270,7 @@ g.compile()
 g.render_block([in_buf], [out_buf], nframes)
 ```
 
-Key methods: `add_input`, `add_output`, `add_plugin`, `add_mix`, `add_pick_channel`, `add_merge_channels`, `add_midi_input`, `add_midi_output`, `add_midi_processor`, `add_midi_merge`, `connect`, `connect_midi`, `connect_midi_port`, `set_mix_gain`, `set_node_automation`, `set_midi_input_events`, `set_node_midi`, `get_midi_output_events`, `compile`, `render_block`, `close`. See `_core.pyi` for full signatures.
+Key methods: `add_input`, `add_output`, `add_plugin`, `add_mix`, `add_pick_channel`, `add_merge_channels`, `add_midi_input`, `add_midi_output`, `add_midi_processor`, `add_midi_merge`, `connect`, `connect_midi`, `connect_midi_port`, `set_mix_gain`, `set_node_bypass`, `set_node_automation`, `set_midi_input_events`, `set_node_midi`, `get_midi_output_events`, `compile`, `render_block`, `node_time`, `close`. See `_core.pyi` for full signatures.
 
 `set_node_midi(node_id, events)` (added in 0.7.0) stages MIDI straight onto a plugin node, with no `MIDI_INPUT` node and no edge -- for graphs that drive a plugin directly instead of wiring a MIDI topology. If the node has an incoming MIDI edge, the edge wins and the staged events are ignored for that block.
 
@@ -899,6 +899,29 @@ Parse JSON automation file into parameter change events compatible with `Plugin.
 Keyframe time formats: `"1000"` (sample offset), `"1.5s"` (seconds), `"50%"` (percentage of total length). Linear interpolation between keyframes at block boundaries.
 
 ---
+
+## Chain Library
+
+Saved chains: subgraphs of processing nodes that a project embeds as a `chain` node. Format and design: `docs/dev/chains.md`.
+
+```python
+from minihost import chain_library
+
+vocal = chain_library.read("Vocal")          # by library name, or a .mhchain path
+nodes.append(chain_library.node(vocal, "vox"))  # a copy, as a project node
+edges += [{"src": "in", "dst": "vox"}, {"src": "vox", "dst": "out"}]  # first inlet, first outlet
+edges.append({"src": "kick", "dst": "vox", "dst_port": 1})  # second audio inlet
+chain_library.write("Vocal 2", vocal)
+```
+
+| Function | Description |
+|----------|-------------|
+| `library_dir()` | `chains/` beside the desktop settings file (`MINIHOST_DESKTOP_SETTINGS_DIR` overrides) |
+| `names(directory=None)` | Library chain names, sorted |
+| `read(name_or_path, directory=None)` | Validated chain dict; relative plugin paths made absolute. Raises `ValueError` |
+| `write(name, chain, directory=None)` | Validate and write `<name>.mhchain`; returns the path |
+| `node(chain, node_id)` | A project `chain` node holding a deep copy of `chain` |
+| `expand(nodes, edges)` | Flatten `chain` nodes, as `load_project` does. Raises `ValueError` for an edge that names a node inside a chain |
 
 ## VST3 Presets
 

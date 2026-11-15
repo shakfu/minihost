@@ -81,6 +81,12 @@ extern "C" {
 #endif
 
 // API version components. Bump per the policy described above.
+// 2.11.0: added mh_graph_set_node_bypass and mh_graph_get_node_time (per-node
+//   processing time, for load meters). mh_graph_compile now compensates
+//   latency where branches meet: an input that arrives earlier than the
+//   node's other inputs is delayed by the difference, so parallel branches
+//   through plugins with different latencies sum aligned instead of as a
+//   comb filter. Rendered output of such graphs changes.
 // 2.10.0: added mh_process_sidechain_midi_io. mh_process_sidechain was the
 //   only process entry point without MIDI, so an instrument with a sidechain
 //   could not be played (additive).
@@ -145,7 +151,7 @@ extern "C" {
 //   mh_graph_* (parallel bus) -> mh_bus_* / MH_PluginGraph -> MH_PluginBus,
 //   and mh_graph_v2_* (DAG) -> mh_graph_* / MH_GraphV2 -> MH_PluginGraph.
 #define MH_API_VERSION_MAJOR 2
-#define MH_API_VERSION_MINOR 10
+#define MH_API_VERSION_MINOR 11
 #define MH_API_VERSION_PATCH 0
 
 // Single packed integer for compile-time comparison.

@@ -14,6 +14,17 @@ namespace minihost_desktop {
 
 namespace {
 
+// Node accents by category, so a graph reads as sources -> processing ->
+// sinks. kMidi matches the MIDI edge and port colour in canvas.cpp.
+namespace palette {
+const juce::Colour kSource  (0xff4a90d9);  // file, device and metronome inputs
+const juce::Colour kPlugin  (0xff3fb5a5);
+const juce::Colour kRouting (0xff74b36a);  // mix, gain, bus, channel pick/merge
+const juce::Colour kMidi    (0xffb98be0);
+const juce::Colour kSink    (0xffe08a3c);  // file and device outputs
+const juce::Colour kMonitor (0xff8a9bb0);
+} // namespace palette
+
 using project::ProjectDocument;
 using project::LoadedProject;
 
@@ -152,7 +163,7 @@ NodeKindEntry makeInput()
 {
     NodeKindEntry e;
     e.kind_string = "input";
-    e.colour      = juce::Colour(0xff3a6f99);
+    e.colour      = palette::kSource;
     e.count       = count_of  <&ProjectDocument::inputs>;
     e.id_at       = id_of     <&ProjectDocument::inputs>;
     e.erase_by_id = erase_of  <&ProjectDocument::inputs>;
@@ -252,7 +263,7 @@ NodeKindEntry makePlugin()
 {
     NodeKindEntry e;
     e.kind_string = "plugin";
-    e.colour      = juce::Colour(0xff707070);
+    e.colour      = palette::kPlugin;
     e.count       = count_of  <&ProjectDocument::plugins>;
     e.id_at       = id_of     <&ProjectDocument::plugins>;
     e.erase_by_id = erase_of  <&ProjectDocument::plugins>;
@@ -285,6 +296,13 @@ NodeKindEntry makePlugin()
             if (v.isBool() || v.isInt() || v.isInt64())
                 s.receives_midi = ((bool) v);
         }
+        if (n.getDynamicObject()->hasProperty("bypass"))
+        {
+            if (!n["bypass"].isBool())
+                throw project::ProjectError(
+                    ("plugin " + id + ": field 'bypass' must be true or false").toStdString());
+            s.bypass = (bool) n["bypass"];
+        }
         // Cached probe from when the node was added; drives the canvas
         // ports. The loader re-derives the real values from the plugin.
         const auto probe = n["probe"];
@@ -294,6 +312,7 @@ NodeKindEntry makePlugin()
             s.probed_out_channels = prop_int(probe, "out_channels", -1);
             s.accepts_midi        = (bool) probe["accepts_midi"];
             s.produces_midi       = (bool) probe["produces_midi"];
+            s.probed_latency      = prop_int(probe, "latency", -1);
         }
         d.plugins.push_back(std::move(s));
     };
@@ -312,6 +331,8 @@ NodeKindEntry makePlugin()
                 o->setProperty("state_b64", n.state_b64);
             if (!n.receives_midi)
                 o->setProperty("receives_midi", false);
+            if (n.bypass)
+                o->setProperty("bypass", true);
             if (n.probed_in_channels >= 0)
             {
                 auto* probe = new juce::DynamicObject();
@@ -319,6 +340,8 @@ NodeKindEntry makePlugin()
                 probe->setProperty("out_channels",  n.probed_out_channels);
                 probe->setProperty("accepts_midi",  n.accepts_midi);
                 probe->setProperty("produces_midi", n.produces_midi);
+                if (n.probed_latency >= 0)
+                    probe->setProperty("latency", n.probed_latency);
                 o->setProperty("probe", juce::var(probe));
             }
             push(o, "plugin", n.id);
@@ -338,6 +361,7 @@ NodeKindEntry makePlugin()
         // back to the stored plugin name.
         juce::String label = s.path.getFileNameWithoutExtension();
         if (label.isEmpty()) label = s.display_name;
+        if (s.bypass) label = "bypassed: " + label;
         return CanvasNodeInfo{ s.id + "\n" + label, in_ports, 1,
                                !probed || s.accepts_midi };
     };
@@ -362,6 +386,8 @@ NodeKindEntry makePlugin()
                          juce::String((int) s.state_b64.length()),
                          "state_b64 length");
         aw.getTextEditor("state_b64_size")->setReadOnly(true);
+        aw.addComboBox("bypass", { "off", "on" }, "bypass");
+        aw.getComboBoxComponent("bypass")->setSelectedItemIndex(s.bypass ? 1 : 0);
         aw.addTextEditor("receives_midi", s.receives_midi ? "1" : "0",
                          "receives MIDI input (1/0; legacy)");
     };
@@ -372,6 +398,7 @@ NodeKindEntry makePlugin()
         if (s.id != new_id) { rename(s.id, new_id); s.id = new_id; }
         s.receives_midi = read_int(aw, "receives_midi",
                                     s.receives_midi ? 1 : 0) != 0;
+        s.bypass = aw.getComboBoxComponent("bypass")->getSelectedItemIndex() == 1;
     };
 
     // Plugin add happens after loadProject has already opened the
@@ -382,7 +409,9 @@ NodeKindEntry makePlugin()
                     std::unordered_map<std::string, MH_NodeId>& id_to_node,
                     LoadedProject& lp) {
         const auto& s = d.plugins[(size_t) i];
-        id_to_node[s.id.toStdString()] = g.addPlugin(lp.plugins[(size_t) i]);
+        const auto node = g.addPlugin(lp.plugins[(size_t) i]);
+        if (s.bypass) g.setNodeBypass(node, true);
+        id_to_node[s.id.toStdString()] = node;
     };
     return e;
 }
@@ -392,7 +421,7 @@ NodeKindEntry makeMix()
 {
     NodeKindEntry e;
     e.kind_string = "mix";
-    e.colour      = juce::Colour(0xff5c7a3a);
+    e.colour      = palette::kRouting;
     e.count       = count_of  <&ProjectDocument::mixes>;
     e.id_at       = id_of     <&ProjectDocument::mixes>;
     e.erase_by_id = erase_of  <&ProjectDocument::mixes>;
@@ -517,7 +546,7 @@ NodeKindEntry makeOutput()
 {
     NodeKindEntry e;
     e.kind_string = "output";
-    e.colour      = juce::Colour(0xff8e4a3a);
+    e.colour      = palette::kSink;
     e.count       = count_of  <&ProjectDocument::outputs>;
     e.id_at       = id_of     <&ProjectDocument::outputs>;
     e.erase_by_id = erase_of  <&ProjectDocument::outputs>;
@@ -593,7 +622,7 @@ NodeKindEntry makeMidiInput()
 {
     NodeKindEntry e;
     e.kind_string = "midi_input";
-    e.colour      = juce::Colour(0xff7a4ea0);
+    e.colour      = palette::kMidi;
     e.count       = count_of  <&ProjectDocument::midi_inputs>;
     e.id_at       = id_of     <&ProjectDocument::midi_inputs>;
     e.erase_by_id = erase_of  <&ProjectDocument::midi_inputs>;
@@ -692,7 +721,7 @@ NodeKindEntry makeMidiOutput()
 {
     NodeKindEntry e;
     e.kind_string = "midi_output";
-    e.colour      = juce::Colour(0xffa05a99);
+    e.colour      = palette::kMidi;
     e.count       = count_of  <&ProjectDocument::midi_outputs>;
     e.id_at       = id_of     <&ProjectDocument::midi_outputs>;
     e.erase_by_id = erase_of  <&ProjectDocument::midi_outputs>;
@@ -770,7 +799,7 @@ NodeKindEntry makeDeviceOutput()
 {
     NodeKindEntry e;
     e.kind_string = "device_output";
-    e.colour      = juce::Colour(0xffc97a2c);
+    e.colour      = palette::kSink;
     e.count       = count_of  <&ProjectDocument::device_outputs>;
     e.id_at       = id_of     <&ProjectDocument::device_outputs>;
     e.erase_by_id = erase_of  <&ProjectDocument::device_outputs>;
@@ -851,7 +880,7 @@ NodeKindEntry makeDeviceInput()
 {
     NodeKindEntry e;
     e.kind_string = "device_input";
-    e.colour      = juce::Colour(0xff2c8ec9);
+    e.colour      = palette::kSource;
     e.count       = count_of  <&ProjectDocument::device_inputs>;
     e.id_at       = id_of     <&ProjectDocument::device_inputs>;
     e.erase_by_id = erase_of  <&ProjectDocument::device_inputs>;
@@ -933,7 +962,7 @@ NodeKindEntry makeMeter()
 {
     NodeKindEntry e;
     e.kind_string = "meter";
-    e.colour      = juce::Colour(0xff444a55);
+    e.colour      = palette::kMonitor;
     e.count       = count_of  <&ProjectDocument::meters>;
     e.id_at       = id_of     <&ProjectDocument::meters>;
     e.erase_by_id = erase_of  <&ProjectDocument::meters>;
@@ -1010,7 +1039,7 @@ NodeKindEntry makeGain()
 {
     NodeKindEntry e;
     e.kind_string = "gain";
-    e.colour      = juce::Colour(0xff5c7a99);
+    e.colour      = palette::kRouting;
     e.count       = count_of  <&ProjectDocument::gains>;
     e.id_at       = id_of     <&ProjectDocument::gains>;
     e.erase_by_id = erase_of  <&ProjectDocument::gains>;
@@ -1086,7 +1115,7 @@ NodeKindEntry makeBus()
 {
     NodeKindEntry e;
     e.kind_string = "bus";
-    e.colour      = juce::Colour(0xff6a6a6a);
+    e.colour      = palette::kRouting;
     e.count       = count_of  <&ProjectDocument::buses>;
     e.id_at       = id_of     <&ProjectDocument::buses>;
     e.erase_by_id = erase_of  <&ProjectDocument::buses>;
@@ -1151,11 +1180,115 @@ NodeKindEntry makeBus()
     return e;
 }
 
+// Chain inlets and outlets (docs/dev/chains.md). One outside a chain is
+// rejected when the project loads (loadProject), not when it parses, so a
+// file with one still opens for editing. One with no cable in loads with
+// no inputs: it passes silence.
+int portInputs(const ProjectDocument& d, const juce::String& id)
+{
+    return std::any_of(d.edges.begin(), d.edges.end(),
+                       [&](const project::EdgeSpec& e) { return e.dst == id; }) ? 1 : 0;
+}
+
+template <auto VecPtr>
+NodeKindEntry makeAudioPort(const char* kind, bool in)
+{
+    NodeKindEntry e;
+    e.kind_string = kind;
+    e.colour      = palette::kRouting;
+    e.count       = count_of  <VecPtr>;
+    e.id_at       = id_of     <VecPtr>;
+    e.erase_by_id = erase_of  <VecPtr>;
+
+    e.parse = [](const juce::var& n, const juce::String& id,
+                 ProjectDocument& d, const juce::File&) {
+        (d.*VecPtr).push_back({ id, prop_int(n, "channels", 2) });
+    };
+    e.serialize_all = [kind](const ProjectDocument& d, NodeKindEntry::PushNodeFn& push) {
+        for (const auto& n : d.*VecPtr) {
+            auto* o = new juce::DynamicObject();
+            o->setProperty("channels", n.channels);
+            push(o, kind, n.id);
+        }
+    };
+    e.canvas_info = [in](const ProjectDocument& d, int i) {
+        const auto& s = (d.*VecPtr)[(size_t) i];
+        return CanvasNodeInfo{ s.id + "\n(audio " + (in ? "inlet" : "outlet") + ", "
+                                   + juce::String(s.channels) + "ch)", 1, 1 };
+    };
+    e.channels_for = [](const ProjectDocument& d, int i, bool) {
+        return (d.*VecPtr)[(size_t) i].channels;
+    };
+    e.dialog_title = [in](const ProjectDocument&, int) {
+        return juce::String(in ? "Audio inlet" : "Audio outlet");
+    };
+    e.dialog_emit = [](const ProjectDocument& d, int i, juce::AlertWindow& aw) {
+        aw.addTextEditor("channels", juce::String((d.*VecPtr)[(size_t) i].channels), "channels");
+    };
+    e.dialog_apply = [](ProjectDocument& d, int i, juce::AlertWindow& aw,
+                        const juce::String& new_id, NodeKindEntry::RenameFn& rename) {
+        auto& s = (d.*VecPtr)[(size_t) i];
+        if (s.id != new_id) { rename(s.id, new_id); s.id = new_id; }
+        s.channels = std::max(1, read_int(aw, "channels", s.channels));
+    };
+    e.load_one = [](const ProjectDocument& d, int i, minihost::PluginGraph& g,
+                    std::unordered_map<std::string, MH_NodeId>& id_to_node, LoadedProject&) {
+        const auto& s = (d.*VecPtr)[(size_t) i];
+        id_to_node[s.id.toStdString()] = g.addMix(portInputs(d, s.id), s.channels);
+    };
+    return e;
+}
+
+template <auto VecPtr>
+NodeKindEntry makeMidiPort(const char* kind, bool in)
+{
+    NodeKindEntry e;
+    e.kind_string = kind;
+    e.colour      = palette::kMidi;
+    e.count       = count_of  <VecPtr>;
+    e.id_at       = id_of     <VecPtr>;
+    e.erase_by_id = erase_of  <VecPtr>;
+    e.is_midi_source = true;
+    e.is_midi_sink   = true;
+
+    e.parse = [](const juce::var&, const juce::String& id,
+                 ProjectDocument& d, const juce::File&) {
+        (d.*VecPtr).push_back({ id });
+    };
+    e.serialize_all = [kind](const ProjectDocument& d, NodeKindEntry::PushNodeFn& push) {
+        for (const auto& n : d.*VecPtr) push(new juce::DynamicObject(), kind, n.id);
+    };
+    e.canvas_info = [in](const ProjectDocument& d, int i) {
+        return CanvasNodeInfo{ (d.*VecPtr)[(size_t) i].id + "\n(MIDI " + (in ? "inlet" : "outlet") + ")", 1, 1 };
+    };
+    e.channels_for = [](const ProjectDocument&, int, bool) { return -1; };
+    e.dialog_title = [in](const ProjectDocument&, int) {
+        return juce::String(in ? "MIDI inlet" : "MIDI outlet");
+    };
+    e.dialog_emit = [](const ProjectDocument&, int, juce::AlertWindow&) {};
+    e.dialog_apply = [](ProjectDocument& d, int i, juce::AlertWindow&,
+                        const juce::String& new_id, NodeKindEntry::RenameFn& rename) {
+        auto& s = (d.*VecPtr)[(size_t) i];
+        if (s.id != new_id) { rename(s.id, new_id); s.id = new_id; }
+    };
+    e.load_one = [kind](const ProjectDocument& d, int i, minihost::PluginGraph& g,
+                        std::unordered_map<std::string, MH_NodeId>& id_to_node, LoadedProject&) {
+        const auto& s = (d.*VecPtr)[(size_t) i];
+        char err[256] = {0};
+        auto nid = mh_graph_add_midi_merge(g.handle(), portInputs(d, s.id), err, sizeof(err));
+        if (nid < 0)
+            throw project::ProjectError((juce::String(kind) + " " + s.id + ": "
+                + juce::String(static_cast<const char*>(err))).toStdString());
+        id_to_node[s.id.toStdString()] = nid;
+    };
+    return e;
+}
+
 NodeKindEntry makePickChannel()
 {
     NodeKindEntry e;
     e.kind_string = "pick_channel";
-    e.colour      = juce::Colour(0xff8a6f3a);
+    e.colour      = palette::kRouting;
     e.count       = count_of  <&ProjectDocument::pick_channels>;
     e.id_at       = id_of     <&ProjectDocument::pick_channels>;
     e.erase_by_id = erase_of  <&ProjectDocument::pick_channels>;
@@ -1231,7 +1364,7 @@ NodeKindEntry makeMergeChannels()
 {
     NodeKindEntry e;
     e.kind_string = "merge_channels";
-    e.colour      = juce::Colour(0xff8a3a6f);
+    e.colour      = palette::kRouting;
     e.count       = count_of  <&ProjectDocument::merge_channels>;
     e.id_at       = id_of     <&ProjectDocument::merge_channels>;
     e.erase_by_id = erase_of  <&ProjectDocument::merge_channels>;
@@ -1312,7 +1445,7 @@ NodeKindEntry makeMetronome()
 {
     NodeKindEntry e;
     e.kind_string = "metronome";
-    e.colour      = juce::Colour(0xff3a8aa0);
+    e.colour      = palette::kSource;
     e.count       = count_of  <&ProjectDocument::metronomes>;
     e.id_at       = id_of     <&ProjectDocument::metronomes>;
     e.erase_by_id = erase_of  <&ProjectDocument::metronomes>;
@@ -1395,7 +1528,7 @@ NodeKindEntry makeMidiClock()
 {
     NodeKindEntry e;
     e.kind_string = "midi_clock";
-    e.colour      = juce::Colour(0xffa05a3a);
+    e.colour      = palette::kMidi;
     e.count       = count_of  <&ProjectDocument::midi_clocks>;
     e.id_at       = id_of     <&ProjectDocument::midi_clocks>;
     e.erase_by_id = erase_of  <&ProjectDocument::midi_clocks>;
@@ -1457,7 +1590,7 @@ NodeKindEntry makeSequencer()
 {
     NodeKindEntry e;
     e.kind_string = "sequencer";
-    e.colour      = juce::Colour(0xff4a7a5a);
+    e.colour      = palette::kMidi;
     e.count       = count_of  <&ProjectDocument::sequencers>;
     e.id_at       = id_of     <&ProjectDocument::sequencers>;
     e.erase_by_id = erase_of  <&ProjectDocument::sequencers>;
@@ -1622,7 +1755,7 @@ NodeKindEntry makeMidiFilter()
 {
     NodeKindEntry e;
     e.kind_string = "midi_filter";
-    e.colour      = juce::Colour(0xff5c4a7a);
+    e.colour      = palette::kMidi;
     e.count       = count_of  <&ProjectDocument::midi_filters>;
     e.id_at       = id_of     <&ProjectDocument::midi_filters>;
     e.erase_by_id = erase_of  <&ProjectDocument::midi_filters>;
@@ -1704,7 +1837,7 @@ NodeKindEntry makeMidiTranspose()
 {
     NodeKindEntry e;
     e.kind_string = "midi_transpose";
-    e.colour      = juce::Colour(0xff5c5a7a);
+    e.colour      = palette::kMidi;
     e.count       = count_of  <&ProjectDocument::midi_transposes>;
     e.id_at       = id_of     <&ProjectDocument::midi_transposes>;
     e.erase_by_id = erase_of  <&ProjectDocument::midi_transposes>;
@@ -1775,7 +1908,7 @@ NodeKindEntry makeMidiVelocityCurve()
 {
     NodeKindEntry e;
     e.kind_string = "midi_velocity_curve";
-    e.colour      = juce::Colour(0xff5c6a7a);
+    e.colour      = palette::kMidi;
     e.count       = count_of  <&ProjectDocument::midi_velocity_curves>;
     e.id_at       = id_of     <&ProjectDocument::midi_velocity_curves>;
     e.erase_by_id = erase_of  <&ProjectDocument::midi_velocity_curves>;
@@ -1847,7 +1980,7 @@ NodeKindEntry makeMidiMerge()
 {
     NodeKindEntry e;
     e.kind_string = "midi_merge";
-    e.colour      = juce::Colour(0xff7a5a99);
+    e.colour      = palette::kMidi;
     e.count       = count_of  <&ProjectDocument::midi_merges>;
     e.id_at       = id_of     <&ProjectDocument::midi_merges>;
     e.erase_by_id = erase_of  <&ProjectDocument::midi_merges>;
@@ -1952,6 +2085,8 @@ const std::vector<NodeKindEntry>& nodeRegistry()
         v.push_back(makeMeter());
         v.push_back(makeGain());
         v.push_back(makeBus());
+        v.push_back(makeAudioPort<&ProjectDocument::audio_inlets>("audio_inlet", true));
+        v.push_back(makeAudioPort<&ProjectDocument::audio_outlets>("audio_outlet", false));
         v.push_back(makePickChannel());
         v.push_back(makeMergeChannels());
         v.push_back(makeMetronome());
@@ -1961,6 +2096,8 @@ const std::vector<NodeKindEntry>& nodeRegistry()
         v.push_back(makeMidiTranspose());
         v.push_back(makeMidiVelocityCurve());
         v.push_back(makeMidiMerge());
+        v.push_back(makeMidiPort<&ProjectDocument::midi_inlets>("midi_inlet", true));
+        v.push_back(makeMidiPort<&ProjectDocument::midi_outlets>("midi_outlet", false));
         return v;
     }();
     return kRegistry;
