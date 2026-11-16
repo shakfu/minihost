@@ -64,7 +64,8 @@ void mh_bus_close(MH_PluginBus* graph);
 // 0.0 to mute a branch without removing it.
 //
 // Returns the branch index (>= 0) on success, or -1 on failure (e.g.,
-// NULL chain, non-finite gain, channel-count mismatch with the graph,
+// NULL chain, non-finite gain, more input channels than the graph or a
+// different output channel count,
 // sample-rate mismatch, or a chain or plugin already in another branch, which
 // would be processed twice per block).
 int mh_bus_add_branch(MH_PluginBus* graph,
@@ -96,8 +97,9 @@ int mh_bus_process(MH_PluginBus* graph,
                       int nframes);
 
 // Process audio with MIDI fanned out to every branch. The same
-// midi_in events are delivered to each branch (to that branch's first
-// plugin, per mh_chain_process_midi_io semantics), which is what makes
+// midi_in events are delivered to each branch, which routes them as
+// mh_chain_process_midi_io does (to its first plugin that accepts MIDI),
+// which is what makes
 // the bus a layering primitive: one MIDI part drives N parallel
 // instruments whose audio is summed.
 //
@@ -119,8 +121,8 @@ int mh_bus_process_midi(MH_PluginBus* graph,
 
 // Process audio with MIDI fanned out to every branch (as
 // mh_bus_process_midi), and additionally collect and merge the MIDI
-// produced by each branch (from each branch's first plugin, per
-// mh_chain_process_midi_io semantics) into a single time-ordered
+// leaving each branch's last plugin (as mh_chain_process_midi_io
+// returns it) into a single time-ordered
 // stream. This completes the bus for parallel MIDI effects (e.g. a
 // layer of arpeggiators driven by one part).
 //

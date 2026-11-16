@@ -618,7 +618,7 @@ ProjectDocument parseProject(const juce::var& doc, const juce::File& project_dir
             lane.param = item["param"];
             if (!(lane.param.isInt() || lane.param.isInt64() || lane.param.isString()))
                 throwErr(where + ": param must be an index or a name");
-            if (!lane.param.isString() && (int64_t) lane.param < 0)
+            if (!lane.param.isString() && (juce::int64) lane.param < 0)
                 throwErr(where + ": param index must be >= 0");
             const auto* points = item["points"].getArray();
             if (points == nullptr || points->isEmpty())

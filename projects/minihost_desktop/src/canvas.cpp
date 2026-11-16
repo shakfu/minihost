@@ -2260,6 +2260,27 @@ void CanvasComponent::addRegistryNode(const NodeKindEntry& entry)
     repaint();
 }
 
+namespace {
+enum ChainMenuId { kChainSave = 1, kChainUpdate, kChainUngroup, kChainOpen,
+                   kChainCut, kChainCopy, kChainDuplicate, kChainDelete };
+}
+
+bool CanvasComponent::saveAsChainScripted(const juce::var& op, juce::DynamicObject& result)
+{
+    const auto suggested = saveAsChainSuggestion();
+    result.setProperty("shown", suggested.has_value());
+    if (!suggested) return true;
+    result.setProperty("suggested", *suggested);
+    if (!op.hasProperty("name")) return true;
+    bool asked = false;
+    saveAsChainAnswered(op["name"].toString(), [&](std::function<void()> save) {
+        asked = true;
+        if ((bool) op["replace"]) save();
+    });
+    result.setProperty("asked_replace", asked);
+    return true;
+}
+
 void CanvasComponent::warn(const juce::String& title, const juce::String& message)
 {
     if (script_warnings_ != nullptr)
@@ -2418,6 +2439,43 @@ bool CanvasComponent::applyScriptOp(const juce::var& op,
         return cid.isNotEmpty();
     }
     if (name == "chain_ungroup") return ungroupChain(op["chain"].toString(), error);
+    if (name == "key")
+    {
+        const auto key = juce::KeyPress::createFromDescription(op["key"].toString());
+        if (!key.isValid()) { error = "bad key " + op["key"].toString(); return false; }
+        result.setProperty("handled", keyPressed(key));
+        return true;
+    }
+    if (name == "chain_menu")
+    {
+        // A right-click on the box: lists the menu, then runs "choose".
+        const int i = node_index(op["chain"]);
+        if (i < 0) return false;
+        if (nodes_[(size_t) i].kind != "chain") { error = "not a chain: " + nodes_[(size_t) i].id; return false; }
+        const auto cid = nodes_[(size_t) i].id;
+        if (!isSelected(i)) selectOnly(cid);
+        juce::Array<juce::var> items;
+        int chosen = 0;
+        bool enabled = false;
+        for (const auto& item : chainMenuItems(cid))
+        {
+            if (item.id == 0) continue;
+            auto* o = new juce::DynamicObject();
+            o->setProperty("text", item.text);
+            o->setProperty("enabled", item.enabled);
+            items.add(juce::var(o));
+            if (op.hasProperty("choose") && item.text.startsWith(op["choose"].toString()))
+            { chosen = item.id; enabled = item.enabled; }
+        }
+        result.setProperty("items", items);
+        if (!op.hasProperty("choose")) return true;
+        if (chosen == 0) { error = "no menu item " + op["choose"].toString(); return false; }
+        if (!enabled) { error = "menu item disabled: " + op["choose"].toString(); return false; }
+        if (chosen == kChainSave) { selectOnly(cid); return saveAsChainScripted(op, result); }
+        runChainMenuItem(cid, chosen);
+        return true;
+    }
+    if (name == "save_as_chain") return saveAsChainScripted(op, result);
     if (name == "open_chain")
     {
         const auto cid = op["chain"].toString();
@@ -2510,16 +2568,20 @@ bool CanvasComponent::applyScriptOp(const juce::var& op,
     }
     if (name == "click")
     {
-        // A node's centre, or canvas point x, y.
-        juce::Point<float> at;
-        if (const auto xy = point()) at = *xy;
+        // A node's centre, canvas point x, y, or the open chain's bar.
+        juce::Point<float> pos;
+        if ((bool) op["bar"])
+        {
+            if (scope_.isEmpty()) { error = "no chain is open"; return false; }
+            pos = scopeBar().getCentre();
+        }
+        else if (const auto xy = point()) pos = xy->transformedBy(viewTransform());
         else
         {
             const int i = node_index(op["id"]);
             if (i < 0) return false;
-            at = nodes_[(size_t) i].bounds.getCentre();
+            pos = nodes_[(size_t) i].bounds.getCentre().transformedBy(viewTransform());
         }
-        const auto pos = at.transformedBy(viewTransform());
         const juce::ModifierKeys mods(juce::ModifierKeys::leftButtonModifier);
         auto src = juce::Desktop::getInstance().getMainMouseSource();
         const juce::MouseEvent ev(src, pos, mods, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
@@ -3235,71 +3297,103 @@ bool CanvasComponent::updateChainFromLibrary(const juce::String& cid, juce::Stri
     return editAsJson([&](juce::var& j) { chains::replace(j, cid, chain); }, error);
 }
 
-void CanvasComponent::promptSaveAsChain()
+std::optional<juce::String> CanvasComponent::saveAsChainSuggestion()
 {
-    if (doc_ == nullptr || selection_.isEmpty()) return;
+    if (doc_ == nullptr || selection_.isEmpty()) return std::nullopt;
     if (scope_.isNotEmpty() && !(selection_.size() == 1 && kindOf(selection_[0]) == "chain"))
     {
         warn("Cannot save chain", "Chains cannot contain chains. Close the chain to group nodes.");
-        return;
+        return std::nullopt;
     }
     juce::String suggested = kindOf(selection_[0]) == "chain" ? selection_[0] : juce::String();
     for (const auto& c : doc_->chains)
         if (c.id == suggested && c.source.isNotEmpty()) suggested = c.source;
+    return suggested;
+}
+
+void CanvasComponent::saveAsChainAnswered(
+    const juce::String& raw, const std::function<void(std::function<void()>)>& ask_replace)
+{
+    const auto name = raw.trim();
+    auto save = [sp = SafePointer<CanvasComponent>(this), name] {
+        if (sp == nullptr) return;
+        juce::String err;
+        if (!sp->saveSelectionAsChain(name, err)) sp->warn("Cannot save chain", err);
+    };
+    if (chains::validName(name) && chains::fileFor(name).existsAsFile()) ask_replace(save);
+    else save();
+}
+
+void CanvasComponent::promptSaveAsChain()
+{
+    const auto suggested = saveAsChainSuggestion();
+    if (!suggested) return;
     auto* aw = new juce::AlertWindow("Save as Chain",
         "Save the selected nodes to the chain library.", juce::MessageBoxIconType::NoIcon, this);
-    aw->addTextEditor("name", suggested, "Name:");
+    aw->addTextEditor("name", *suggested, "Name:");
     aw->addButton("Save", 1, juce::KeyPress(juce::KeyPress::returnKey));
     aw->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
     aw->enterModalState(true, juce::ModalCallbackFunction::create(
         [sp = SafePointer<CanvasComponent>(this), aw](int r) {
-            const auto name = aw->getTextEditorContents("name").trim();
             if (sp == nullptr || r != 1) return;
-            auto save = [sp, name] {
-                if (sp == nullptr) return;
-                juce::String err;
-                if (!sp->saveSelectionAsChain(name, err)) sp->warn("Cannot save chain", err);
-            };
-            if (!chains::fileFor(name).existsAsFile()) { save(); return; }
-            juce::AlertWindow::showOkCancelBox(juce::MessageBoxIconType::QuestionIcon,
-                "Replace chain?", "The library already has a chain named \"" + name
-                    + "\". Projects that use it keep their copy.",
-                "Replace", "Cancel", sp.getComponent(),
-                juce::ModalCallbackFunction::create([save](int ok) { if (ok) save(); }));
+            const auto name = aw->getTextEditorContents("name").trim();
+            sp->saveAsChainAnswered(name,
+                [sp, name](std::function<void()> save) {
+                    juce::AlertWindow::showOkCancelBox(juce::MessageBoxIconType::QuestionIcon,
+                        "Replace chain?", "The library already has a chain named \"" + name
+                            + "\". Projects that use it keep their copy.",
+                        "Replace", "Cancel", sp.getComponent(),
+                        juce::ModalCallbackFunction::create([save](int ok) { if (ok) save(); }));
+                });
         }), /*deleteWhenDismissed=*/true);
 }
 
-void CanvasComponent::showChainMenu(const juce::String& cid, juce::Point<int> screen_pos)
+std::vector<CanvasComponent::MenuItem> CanvasComponent::chainMenuItems(const juce::String& cid) const
 {
     juce::String source;
     for (const auto& c : doc_->chains) if (c.id == cid) source = c.source;
     const bool in_library = source.isNotEmpty() && chains::fileFor(source).existsAsFile();
-    enum { kSave = 1, kUpdate, kUngroup, kOpen, kCut, kCopy, kDuplicate, kDelete };
+    return {
+        { kChainOpen, "Open Chain    Return", true },
+        { 0, {}, false },
+        { kChainSave, "Save to Library...", true },
+        { kChainUpdate, "Update from Library"
+              + (source.isNotEmpty() ? " (" + source + ")" : juce::String()), in_library },
+        { kChainUngroup, "Ungroup", true },
+        { 0, {}, false },
+        { kChainCut,       "Cut          Cmd+X", true },
+        { kChainCopy,      "Copy         Cmd+C", true },
+        { kChainDuplicate, "Duplicate    Cmd+D", true },
+        { kChainDelete,    "Delete       Delete", true },
+    };
+}
+
+void CanvasComponent::runChainMenuItem(const juce::String& cid, int chosen)
+{
+    juce::String err;
+    switch (chosen)
+    {
+        case kChainOpen:      openChain(cid);       return;
+        case kChainCut:       cutSelection();       return;
+        case kChainCopy:      copySelection();      return;
+        case kChainDuplicate: duplicateSelection(); return;
+        case kChainDelete:    deleteSelection();    return;
+        case kChainSave:      selectOnly(cid); promptSaveAsChain(); return;
+        case kChainUpdate:    if (!updateChainFromLibrary(cid, err)) warn("Chain " + cid, err); return;
+        case kChainUngroup:   if (!ungroupChain(cid, err)) warn("Chain " + cid, err); return;
+        default: return;
+    }
+}
+
+void CanvasComponent::showChainMenu(const juce::String& cid, juce::Point<int> screen_pos)
+{
     juce::PopupMenu m;
-    m.addItem(kOpen, "Open Chain    Return");
-    m.addSeparator();
-    m.addItem(kSave, "Save to Library...");
-    m.addItem(kUpdate, "Update from Library" + (source.isNotEmpty() ? " (" + source + ")" : juce::String()),
-              in_library);
-    m.addItem(kUngroup, "Ungroup");
-    m.addSeparator();
-    m.addItem(kCut,       "Cut          Cmd+X");
-    m.addItem(kCopy,      "Copy         Cmd+C");
-    m.addItem(kDuplicate, "Duplicate    Cmd+D");
-    m.addItem(kDelete,    "Delete       Delete");
+    for (const auto& item : chainMenuItems(cid))
+        if (item.id == 0) m.addSeparator();
+        else m.addItem(item.id, item.text, item.enabled);
     m.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea({ screen_pos, screen_pos }),
         [sp = SafePointer<CanvasComponent>(this), cid](int chosen) {
-            if (sp == nullptr || chosen == 0) return;
-            juce::String err;
-            if (chosen == kOpen)      { sp->openChain(cid);          return; }
-            if (chosen == kCut)       { sp->cutSelection();          return; }
-            if (chosen == kCopy)      { sp->copySelection();         return; }
-            if (chosen == kDuplicate) { sp->duplicateSelection();    return; }
-            if (chosen == kDelete)    { sp->deleteSelection();       return; }
-            if (chosen == kSave) { sp->selectOnly(cid); sp->promptSaveAsChain(); return; }
-            const bool ok = chosen == kUpdate ? sp->updateChainFromLibrary(cid, err)
-                                              : sp->ungroupChain(cid, err);
-            if (!ok) sp->warn("Chain " + cid, err);
+            if (sp != nullptr && chosen != 0) sp->runChainMenuItem(cid, chosen);
         });
 }
 

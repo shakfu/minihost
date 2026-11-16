@@ -238,6 +238,13 @@ public:
     bool updateChainFromLibrary(const juce::String& cid, juce::String& error);
     // Asks for a name, then saveSelectionAsChain.
     void promptSaveAsChain();
+    // The Save as Chain dialog's suggested name, or nullopt after a
+    // warning when the selection cannot be saved.
+    std::optional<juce::String> saveAsChainSuggestion();
+    // The dialog's Save with `name`. If the library has that name,
+    // `ask_replace` gets the save to run if the user confirms.
+    void saveAsChainAnswered(const juce::String& name,
+                             const std::function<void(std::function<void()>)>& ask_replace);
     // The chain a node belongs to, or empty.
     juce::String chainOf(const juce::String& node_id) const;
 
@@ -274,11 +281,23 @@ public:
     //   {"op":"fit"}       result "zoom"
     //   {"op":"meter","id":id,"peaks":[gain,...],"t":seconds}  feeds a meter
     //   {"op":"meter_state","id":id}  result "level_db", "hold_db", "clip"
-    //   {"op":"click","id":id}  a click on the node (clears a clip light)
+    //   {"op":"click","id":id}  a click on the node (clears a clip light);
+    //                    "x","y" for a canvas point, "bar": true for the open chain's bar
+    //   {"op":"key","key":desc}  a key press (juce::KeyPress description,
+    //                    e.g. "escape", "command + cursor up"); result "handled".
+    //                    Keys that open dialogs (Cmd+G) are not scriptable.
     //   {"op":"add","kind":"audio_inlet"|"audio_outlet"|"midi_inlet"|"midi_outlet"}
     //   {"op":"open_chain","chain":id} / {"op":"close_chain"}
     //   {"op":"chains"}  result "chains" [{id, source, members, box, inlets,
     //                    outlets}], "library", "open"
+    //   {"op":"chain_menu","chain":id[,"choose":prefix]}  a right-click on the
+    //                    box: result "items" [{text, enabled}]; runs the item
+    //                    whose text starts with "choose" ("Save to Library"
+    //                    runs save_as_chain with this op's "name", "replace")
+    //   {"op":"save_as_chain"[,"name":n,"replace":bool]}  the Save as Chain
+    //                    dialog: result "shown", "suggested"; with "name", its
+    //                    Save. "asked_replace": the Replace prompt was shown,
+    //                    and "replace" answers it.
     // Ops that report data set properties on `result`. Warnings that
     // would open a dialog are appended to `warnings`. Returns false and
     // sets `error` for a malformed op or unknown node.
@@ -435,6 +454,11 @@ private:
     juce::String freeChainId(const juce::String& name) const;
     juce::StringArray chainMembers(const juce::String& cid) const;
     void showChainMenu(const juce::String& cid, juce::Point<int> screen_pos);
+    // A chain box's menu; id 0 is a separator.
+    struct MenuItem { int id; juce::String text; bool enabled; };
+    std::vector<MenuItem> chainMenuItems(const juce::String& cid) const;
+    void runChainMenuItem(const juce::String& cid, int chosen);
+    bool saveAsChainScripted(const juce::var& op, juce::DynamicObject& result);
     void startMove(int node_index, juce::Point<float> p);
     // `local` in the open chain ("vox/local"), or `local` at the top.
     juce::String scoped(const juce::String& local) const

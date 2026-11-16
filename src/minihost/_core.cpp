@@ -5026,9 +5026,9 @@ NB_MODULE(_core, m) {
         .def("add_branch", &PluginBus::add_branch,
              nb::arg("chain"), nb::arg("gain") = 1.0f,
              "Add a PluginChain branch with the given summing gain "
-             "(linear; default 1.0). The branch's input and output "
-             "channel counts must match the graph's. Returns the "
-             "branch index.")
+             "(linear; default 1.0). The branch must produce the bus's "
+             "output channel count and read at most its input channel "
+             "count. Returns the branch index.")
         .def("set_branch_gain", &PluginBus::set_branch_gain,
              nb::arg("branch_index"), nb::arg("gain"),
              "Set a branch's summing gain.")
@@ -5053,14 +5053,14 @@ NB_MODULE(_core, m) {
         .def("process_midi", &PluginBus::process_midi,
              nb::arg("input"), nb::arg("output"), nb::arg("midi_in"),
              nb::arg("midi_out_capacity") = MIDI_OUT_CAPACITY,
-             "Fan input audio and MIDI to every branch (MIDI goes to "
-             "each branch's first plugin), then sum branch outputs "
+             "Fan input audio and MIDI to every branch (each branch "
+             "routes MIDI as PluginChain.process_midi does), then sum branch outputs "
              "(each scaled by its gain) into output. This is the "
              "layering primitive: one MIDI part drives N parallel "
              "instruments whose audio is summed. midi_in is a list of "
              "(sample_offset, status, data1, data2) tuples. Muted "
              "branches (gain 0.0) are skipped. Returns a (events, overflow) "
-             "tuple: the merged branch MIDI as a list of (sample_offset, "
+             "tuple: the MIDI leaving each branch's last plugin, merged, as a list of (sample_offset, "
              "status, data1, data2) tuples, stably sorted by offset (branch "
              "order preserved at equal offsets), and a bool that is True if "
              "the merge hit midi_out_capacity (default 256) and events may "

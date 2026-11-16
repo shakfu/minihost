@@ -89,7 +89,7 @@ Schema notes:
 
 Every node kind the desktop app writes is accepted, so a project built in
 the app renders here with the same result (tests/test_project_desktop_kinds.py).
-Still omitted from both: parameter automation and plugin sidechain buses
+Still omitted from both: plugin sidechain buses
 (tracked in docs/dev/desktop_app_todo.md).
 """
 

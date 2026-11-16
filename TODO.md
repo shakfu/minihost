@@ -104,7 +104,7 @@
   - window bounds, recent files and New from Template (window bounds were checked by hand: they are saved on quit and restored);
   - A/B Compare's render-then-capture flow and device playback (`--ab-selftest` covers the comparison and switching);
   - the plugin CPU share, which needs Live (`PluginGraph.node_time` is tested);
-  - chains: the Save as Chain name dialog and replace prompt, the box's right-click menu, the open chain's bar, Escape and Cmd+Up (opening and closing are tested through script ops).
+  - chains: the Save as Chain and Replace dialog widgets, and the box's `PopupMenu` (script ops cover the code behind them, the bar, Escape and Cmd+Up since 2026-11-16).
 
 - [ ] **Chains: planned features** (`docs/dev/chains.md`).
   - Macro parameters on the chain box, mapped to inner plugin parameters.
@@ -145,7 +145,7 @@
 
 - [ ] **Chain and bus error messages and validation.** (Non-finite branch gain fixed 2026-10-18.) Calls on a closed chain or bus give unrelated messages ("Frame count 512 exceeds max block size 0"; `set_mix` blames channel counts; `add_branch` gives an empty error). A 0-frame block is accepted by `Plugin` but fails for chains and buses. All confirmed (`build/audit-chain-bus/misc.py`). Check finiteness and a closed flag in the wrappers; make the 0-frame rule consistent.
 
-- [ ] **Stale bus docs.** `minihost_graph.h:121` and the `process_midi` docstring say branch MIDI output comes from each branch's first plugin; since C ABI 2.5.0 it is the last plugin's. The `add_branch` docstring (`_core.cpp`) says input channels must match; the code allows fewer.
+- [x] **Stale bus docs.** Fixed 2026-11-16, with the `PluginBus.process_midi` stub, which returned `None`. `minihost_graph.h:121` and the `process_midi` docstring say branch MIDI output comes from each branch's first plugin; since C ABI 2.5.0 it is the last plugin's. The `add_branch` docstring (`_core.cpp`) says input channels must match; the code allows fewer.
 
 - [ ] **Hide JUCE's emulated MIDI CC parameters?** A JUCE-built VST3 lists 2080 extra parameters named `MIDI CC <ch>|<cc>` (found 2026-10-18 via `MinihostTestFx`). They are how a VST3 receives CC, pitch bend and channel pressure, so setting one is meaningful, but they swamp `num_params`, parameter listings and `minihost touch` surfaces. They are not automatable (VST3 flags 0); filtering on that is the likely route. Needs a decision on whether hiding them breaks index-based callers.
 

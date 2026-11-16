@@ -889,6 +889,172 @@ def test_duplicate_of_a_chain_box_copies_the_chain(tmp_path, monkeypatch):
 
 
 @skip_if_no_desktop
+def test_save_as_chain_dialog_suggests_saves_and_asks_to_replace(
+    tmp_path, monkeypatch
+):
+    proj = _canvas(tmp_path, monkeypatch)
+    results, saved = _run(
+        tmp_path,
+        proj,
+        [
+            {"op": "select", "ids": ["g1", "g2"]},
+            {"op": "save_as_chain"},
+            {"op": "save_as_chain", "name": "  Two Gains "},
+            {"op": "save_as_chain"},
+            {"op": "select", "ids": ["src"]},
+            {"op": "save_as_chain", "name": "Two Gains", "replace": False},
+            {"op": "chains"},
+            {"op": "save_as_chain", "name": "Two Gains", "replace": True},
+            {"op": "select", "ids": ["dst"]},
+            {"op": "save_as_chain", "name": ""},
+        ],
+    )
+    assert all(r["ok"] for r in results), results
+    # A new group has no suggestion; a saved chain suggests its source.
+    assert results[1]["shown"] and results[1]["suggested"] == ""
+    assert not results[2]["asked_replace"]
+    assert results[3]["suggested"] == "Two Gains"
+    # A taken name asks first; Cancel saves nothing.
+    assert results[5]["asked_replace"]
+    assert [c["id"] for c in results[6]["chains"]] == ["two_gains"]
+    assert results[7]["asked_replace"]
+    assert chain_library.names() == ["Two Gains"]
+    assert [n["id"] for n in chain_library.read("Two Gains")["nodes"]] == ["src", "outlet"]
+    assert sorted(_chain_nodes(saved)) == ["two_gains", "two_gains_2"]
+    assert any("invalid chain name" in w for w in results[9]["warnings"])
+
+
+@skip_if_no_desktop
+def test_save_as_chain_is_refused_inside_an_open_chain(tmp_path, monkeypatch):
+    proj = _canvas(tmp_path, monkeypatch)
+    results, saved = _run(
+        tmp_path,
+        proj,
+        [
+            *GROUP,
+            {"op": "open_chain", "chain": "two_gains"},
+            {"op": "select", "ids": ["two_gains/g1"]},
+            {"op": "save_as_chain", "name": "Inner"},
+        ],
+    )
+    assert results[4]["ok"] and not results[4]["shown"]
+    assert any("Chains cannot contain chains" in w for w in results[4]["warnings"])
+    assert chain_library.names() == ["Two Gains"]
+    assert sorted(_chain_nodes(saved)) == ["two_gains"]
+
+
+@skip_if_no_desktop
+def test_chain_menu_lists_and_runs_its_items(tmp_path, monkeypatch):
+    proj = _canvas(tmp_path, monkeypatch)
+    results, _ = _run(
+        tmp_path,
+        proj,
+        [
+            *GROUP,
+            {"op": "select", "ids": []},
+            {"op": "chain_menu", "chain": "two_gains"},
+            {"op": "chain_menu", "chain": "two_gains", "choose": "Open Chain"},
+            {"op": "chains"},
+            {"op": "close_chain"},
+            {"op": "chain_menu", "chain": "two_gains", "choose": "Save to Library",
+             "name": "Copy"},
+            {"op": "chains"},
+        ],
+    )
+    assert all(r["ok"] for r in results), results
+    items = {i["text"].split("  ")[0]: i["enabled"] for i in results[3]["items"]}
+    assert items == {
+        "Open Chain": True,
+        "Save to Library...": True,
+        "Update from Library (Two Gains)": True,
+        "Ungroup": True,
+        "Cut": True,
+        "Copy": True,
+        "Duplicate": True,
+        "Delete": True,
+    }
+    assert results[5]["open"] == "two_gains"
+    assert not results[7]["asked_replace"]
+    assert results[8]["chains"][0]["source"] == "Copy"
+    assert chain_library.names() == ["Copy", "Two Gains"]
+
+    # Update is disabled once the library file is gone.
+    (chain_library.library_dir() / "Copy.mhchain").unlink()
+    results, saved = _run(
+        tmp_path,
+        tmp_path / "saved.json",
+        [
+            {"op": "chain_menu", "chain": "two_gains"},
+            {"op": "chain_menu", "chain": "two_gains", "choose": "Update"},
+            {"op": "chain_menu", "chain": "two_gains", "choose": "Ungroup"},
+        ],
+        ok=False,
+    )
+    update = next(i for i in results[0]["items"] if i["text"].startswith("Update"))
+    assert not update["enabled"]
+    assert not results[1]["ok"] and "disabled" in results[1]["error"]
+    assert results[2]["ok"]
+    assert not _chain_nodes(saved)
+    assert _edge_set(saved) == FLAT_EDGES
+
+
+@skip_if_no_desktop
+def test_chain_menu_delete_acts_on_the_box(tmp_path, monkeypatch):
+    proj = _canvas(tmp_path, monkeypatch)
+    _, saved = _run(
+        tmp_path,
+        proj,
+        [
+            *GROUP,
+            {"op": "select", "ids": ["src"]},
+            {"op": "chain_menu", "chain": "two_gains", "choose": "Delete"},
+        ],
+    )
+    # The right-click selects the box, so src survives.
+    assert not _chain_nodes(saved)
+    assert sorted(n["id"] for n in saved["nodes"]) == ["dst", "spk", "src"]
+
+
+@skip_if_no_desktop
+def test_escape_cmd_up_and_the_bar_close_an_open_chain(tmp_path, monkeypatch):
+    proj = _canvas(tmp_path, monkeypatch)
+    open_ = {"op": "open_chain", "chain": "two_gains"}
+    chains = {"op": "chains"}
+    results, _ = _run(
+        tmp_path,
+        proj,
+        [
+            *GROUP,
+            open_,
+            {"op": "select", "ids": ["two_gains/g1"]},
+            {"op": "key", "key": "escape"},
+            chains,
+            {"op": "key", "key": "escape"},
+            chains,
+            open_,
+            {"op": "key", "key": "command + cursor up"},
+            chains,
+            open_,
+            # Sizes the canvas, as a window does, and paints the bar.
+            {"op": "snapshot", "path": "open.png"},
+            {"op": "click", "bar": True},
+            chains,
+            {"op": "select", "ids": []},
+            {"op": "click", "bar": True},
+        ],
+        ok=False,
+    )
+    assert all(r["ok"] for r in results[:-1]), results
+    # The first Escape clears the selection; the second closes the chain.
+    assert results[5]["open"] == "two_gains"
+    assert results[7]["open"] == ""
+    assert results[9]["handled"] and results[10]["open"] == ""
+    assert results[14]["open"] == ""
+    # At the top there is no bar.
+    assert not results[16]["ok"] and "no chain is open" in results[16]["error"]
+
+
+@skip_if_no_desktop
 def test_midi_ports_pass_notes_through(tmp_path):
     # sequencer -> chain(midi_inlet -> transpose -> midi_outlet) -> midi_output
     chain = {

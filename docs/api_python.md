@@ -249,7 +249,7 @@ Every branch added later must produce exactly `num_out_channels` outputs and run
 | `set_branch_gain(branch_index, gain)` | Set a branch's summing gain (0.0 mutes; muted branches skip processing) |
 | `get_branch_gain(branch_index)` | Get a branch's summing gain |
 | `process(input, output)` | Fan input to every branch, sum (per-branch gain) into output |
-| `process_midi(input, output, midi_in)` | Fan input audio **and** the same MIDI to every branch (MIDI to each branch's first plugin), then sum. The layering primitive. Branch MIDI output is not collected |
+| `process_midi(input, output, midi_in)` | Fan input audio **and** the same MIDI to every branch (each chain routes MIDI as `PluginChain.process_midi` does), then sum. The layering primitive. Returns `(events, overflow)`: the MIDI leaving each branch's last plugin, merged by offset, and whether it hit `midi_out_capacity` |
 | `close()` | Release internal resources (idempotent). Branches are not closed |
 
 Supports the context-manager protocol (`with minihost.PluginBus(...) as bus:`).

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.12.0]
+
 ### Changed
 
 - Desktop: nodes are coloured by category, not by kind. Sources, plugins, audio routing, MIDI, sinks and meters each get one accent, drawn as a header band on a dark body. The 20 per-kind fills had no grouping, and white text on the lighter ones was hard to read. The node id is the bold title, and the kind's detail is the subtitle. Nodes are 150x48, down from 160x64; a node with more than 2 input ports, MIDI included, grows 12 px per extra port so the ports stay apart. Ports sit below the header, and the selection is drawn in white.
@@ -13,7 +15,7 @@
 
   The delays follow each plugin's reported latency block by block, up to 32768 samples, from rings sized at compile. Reading latency once at compile was simpler, but a VST3 reports a latency it sets after loading state, or while playing, only when JUCE's message queue runs, so a compile-time value can be stale. MIDI is not compensated.
 
-- Tests: `--canvas-script` has ops for the selection, clipboard, moves onto cables, file drops, quick add, meters, problems and the view, plus `snapshot` (the canvas as a PNG, optionally with the properties panel) and `panel`. `--ab-selftest` checks A/B Compare.
+- Tests: `--canvas-script` has ops for the selection, clipboard, moves onto cables, file drops, quick add, meters, problems and the view, plus `snapshot` (the canvas as a PNG, optionally with the properties panel) and `panel`. `key`, `chain_menu`, `save_as_chain` and `click` with `"bar": true` run the code behind key presses, a chain box's menu, the Save as Chain dialog and its Replace prompt, and the open chain's bar. `--ab-selftest` checks A/B Compare.
 
 - Python 3.12 or later is required. Releases ship one `cp312-abi3` wheel per platform, built against the Python limited API, where they used to ship one wheel per CPython version. The same wheel installs on 3.12, 3.13, 3.14 and later. Python 3.10 and 3.11 are no longer supported.
 
@@ -84,6 +86,8 @@
 - `mh_audio_get_midi_error()` returns why the last MIDI connect or virtual-port create on a device failed. `AudioDevice.connect_midi_*` and `create_virtual_midi_*` include it in the `RuntimeError`, and the CLIs print it. The device layer used to discard libremidi's reason, so a CoreMIDI refusal on the macOS CI runner showed only "may not be supported on this platform". A separate out-parameter would have broken the existing signatures. MIDI open errors also name the back-end and add libremidi's `on_error` text. When the back-end client fails to open, libremidi's open call returns only `ENOTCONN` ("Transport endpoint is not connected"); the real cause, such as `MIDIClientCreate`'s OSStatus, goes only to that callback.
 
 ### Fixed
+
+- `PluginBus.process_midi`'s type stub said it returned `None` and had no `midi_out_capacity`. It returns `(events, overflow)`. The bus docs also said branch MIDI output comes from each branch's first plugin; it comes from the last.
 
 - Desktop: a node added to a project with a saved layout was placed at the first auto-layout slot of its column, often on top of a saved node. It now takes the next free slot.
 
