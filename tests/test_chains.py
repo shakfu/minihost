@@ -889,9 +889,7 @@ def test_duplicate_of_a_chain_box_copies_the_chain(tmp_path, monkeypatch):
 
 
 @skip_if_no_desktop
-def test_save_as_chain_dialog_suggests_saves_and_asks_to_replace(
-    tmp_path, monkeypatch
-):
+def test_save_as_chain_dialog_suggests_saves_and_asks_to_replace(tmp_path, monkeypatch):
     proj = _canvas(tmp_path, monkeypatch)
     results, saved = _run(
         tmp_path,
@@ -919,7 +917,10 @@ def test_save_as_chain_dialog_suggests_saves_and_asks_to_replace(
     assert [c["id"] for c in results[6]["chains"]] == ["two_gains"]
     assert results[7]["asked_replace"]
     assert chain_library.names() == ["Two Gains"]
-    assert [n["id"] for n in chain_library.read("Two Gains")["nodes"]] == ["src", "outlet"]
+    assert [n["id"] for n in chain_library.read("Two Gains")["nodes"]] == [
+        "src",
+        "outlet",
+    ]
     assert sorted(_chain_nodes(saved)) == ["two_gains", "two_gains_2"]
     assert any("invalid chain name" in w for w in results[9]["warnings"])
 
@@ -956,8 +957,12 @@ def test_chain_menu_lists_and_runs_its_items(tmp_path, monkeypatch):
             {"op": "chain_menu", "chain": "two_gains", "choose": "Open Chain"},
             {"op": "chains"},
             {"op": "close_chain"},
-            {"op": "chain_menu", "chain": "two_gains", "choose": "Save to Library",
-             "name": "Copy"},
+            {
+                "op": "chain_menu",
+                "chain": "two_gains",
+                "choose": "Save to Library",
+                "name": "Copy",
+            },
             {"op": "chains"},
         ],
     )

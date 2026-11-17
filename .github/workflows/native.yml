@@ -98,7 +98,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             cmake-args: ""
             c-bin: build-debug/projects/minihost_c/minihost_c
             cpp-bin: build-debug/projects/minihost_cpp/minihost_cpp
