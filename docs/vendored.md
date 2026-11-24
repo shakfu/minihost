@@ -11,6 +11,7 @@ This file tracks the vendored C/C++ libraries included in `projects/`. JUCE is n
 | libremidi | 5.3.1 | `projects/libremidi/` | <https://github.com/jcelerier/libremidi> | BSD-2-Clause |
 | midifile | unversioned (2021) | `projects/midifile/` | <https://github.com/craigsapp/midifile> | BSD-2-Clause |
 | libsamplerate | 0.2.2 | `projects/libsamplerate/` | <https://github.com/libsndfile/libsamplerate> | BSD-2-Clause |
+| CLAP SDK | 1.2.10 | `projects/clap/` | <https://github.com/free-audio/clap> | MIT |
 | py2tosc `check_json.py` | 0.6.0 | `tests/check_json.py` | <https://github.com/shakfu/py2tosc> | MIT |
 
 ## Update Process
@@ -22,6 +23,8 @@ This file tracks the vendored C/C++ libraries included in `projects/`. JUCE is n
 3. Build and run tests: `make clean && make build && make test`.
 
 libsamplerate is a subset of the release tarball (`libsamplerate-0.2.2.tar.xz`, SHA-256 `3258da280511d24b49d6b08615bbe824d0cacc9842b0e4caf11c52cf2b043893`): `COPYING`, `include/samplerate.h`, and from `src/` the four `.c` files, `common.h` and the three coefficient headers. Its generated `config.h` is replaced by compile definitions in `projects/libminihost_audio/CMakeLists.txt`.
+
+The CLAP SDK is `include/` and `LICENSE` from commit `195b42a004144fab0b3cf95e9c067187d15365b7` (tag 1.2.10), recorded in `projects/clap/VERSION`. It is header-only; nothing is compiled from it.
 
 Note that `tests/check_json.py` is a test-only vendoring, not a build dependency: a single stdlib-only file that py2tosc publishes for projects which *generate* `.ui.json` descriptions and want to validate them without depending on the compiler. It is re-copied on a py2tosc schema bump.
 

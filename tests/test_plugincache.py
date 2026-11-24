@@ -112,11 +112,18 @@ def test_discovery_ignores_formats_the_host_cannot_load(cache_env):
     be discovered: probing it can only record a permanent error entry."""
     plugins, _ = cache_env
     _touch_plugin(plugins, "real.vst3")
-    for name in ("libfoo.so", "helper.dll", "old.vst", "modern.clap"):
+    for name in ("libfoo.so", "helper.dll", "old.vst"):
         _touch_plugin(plugins, name)
 
     found = plugincache._discover_plugins(str(plugins))
     assert [os.path.basename(p) for p in found] == ["real.vst3"]
+
+
+def test_discovery_finds_clap(cache_env):
+    plugins, _ = cache_env
+    _touch_plugin(plugins, "modern.clap")
+    found = plugincache._discover_plugins(str(plugins))
+    assert [os.path.basename(p) for p in found] == ["modern.clap"]
 
 
 @pytest.mark.skipif(

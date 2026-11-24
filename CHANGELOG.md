@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- CLAP plugins open, scan and process like VST3, AU and LV2 (`.clap`, format `"CLAP"`). JUCE has no CLAP host, so `projects/libminihost/minihost_clap.cpp` implements one as a `juce::AudioPluginFormat`. Chains, graphs, state, name lookup and the CLIs then work unchanged, with no second code path. Supported: audio and note ports (MIDI and CLAP note dialects), parameters, state, latency, tail, transport and render mode. Not supported: note expressions, per-voice modulation and port reconfiguration. A plugin that reports a new latency is deactivated and reactivated on the plugin thread, as CLAP requires, so its DSP state resets. The CLAP SDK 1.2.10 headers are vendored in `projects/clap/`.
+
+- Desktop: CLAP plugins appear in the plugin library (in-process and out-of-process scans, `--scan-format=CLAP`) and the file choosers, and open native editor windows on macOS. On Windows and Linux a CLAP plugin opens without its editor: embedding there is unwritten, not tested. A `.clap` holding several plugins opens the chosen one through its descriptor, as an AudioUnit does, since the path alone names the first. The desktop app owns its plugins on the main thread, so CLAP requests (restart, latency, `on_main_thread`) are now serviced on the thread that created each plugin, woken through JUCE's message queue.
+
+- Tests: CLAP builds of `MinihostTestFx` and `MinihostTestSynth` (`make fixtures`). They keep the VST3 fixtures' parameter contract and add two read-only parameters that report the transport they saw. `tests/test_clap.py` runs against them; CI sets `MINIHOST_TEST_CLAP_FX` and `MINIHOST_TEST_CLAP_SYNTH`.
+
 ## [0.12.0]
 
 ### Changed

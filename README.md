@@ -1,6 +1,6 @@
 # minihost
 
-Minihost is a headless, JUCE-based audio plugin host that supports VST3, AudioUnit, and LV2 plugins. It provides a C/C++ API for integration and a Python API powered by nanobind.
+Minihost is a headless, JUCE-based audio plugin host that supports VST3, AudioUnit, LV2, and CLAP plugins. It provides a C/C++ API for integration and a Python API powered by nanobind.
 
 ## At a glance
 
@@ -29,6 +29,8 @@ with (
 - Load AudioUnit plugins (macOS only)
 
 - Load LV2 plugins (macOS, Windows, Linux)
+
+- Load CLAP plugins (macOS, Windows, Linux) -- audio and note ports, parameters, state, latency, transport; no editor
 
 - **Headless mode** (default) - no GUI dependencies, uses JUCE's `juce_audio_processors_headless` module
 
@@ -110,7 +112,7 @@ with (
 
 minihost ships as two separate static libraries with a one-way dependency: `libminihost_audio` builds on `libminihost`, never the reverse.
 
-- **`libminihost`** -- the plugin host core (`projects/libminihost/`). Loads and runs VST3/AU/LV2 plugins and processes audio blocks you hand it: MIDI in/out, parameters, state save/restore, sample-accurate automation, sidechain, transport, bus layouts, and the routing abstractions (`PluginChain`, `PluginBus`, `PluginGraph`). Depends only on JUCE. C ABI prefix: `mh_*` (e.g. `mh_open`, `mh_process`, `mh_chain_*`, `mh_bus_*`, `mh_graph_*`). Header: `minihost.h`. Link this alone to load a plugin and feed it your own buffers -- the offline and embedded path, with no device or codec dependencies.
+- **`libminihost`** -- the plugin host core (`projects/libminihost/`). Loads and runs VST3/AU/LV2/CLAP plugins and processes audio blocks you hand it: MIDI in/out, parameters, state save/restore, sample-accurate automation, sidechain, transport, bus layouts, and the routing abstractions (`PluginChain`, `PluginBus`, `PluginGraph`). Depends only on JUCE. C ABI prefix: `mh_*` (e.g. `mh_open`, `mh_process`, `mh_chain_*`, `mh_bus_*`, `mh_graph_*`). Header: `minihost.h`. Link this alone to load a plugin and feed it your own buffers -- the offline and embedded path, with no device or codec dependencies.
 
 - **`libminihost_audio`** -- the I/O layer around the core (`projects/libminihost_audio/`). It has no plugin-format knowledge; it gets audio and MIDI in and out of the machine and drives a plugin or chain through its real-time audio callback. Provides live audio device playback/capture (miniaudio), audio file read/write (read WAV/FLAC/MP3/Vorbis; write WAV/FLAC via miniaudio + tflac), MIDI ports (libremidi), and the lock-free ring buffers. Depends on `libminihost` plus the vendored miniaudio, tflac, libremidi and libsamplerate. C ABI prefix: `mh_audio_*`. Headers: `minihost_audio.h`, `minihost_audiofile.h`, `minihost_midi.h`. Link this in addition to `libminihost` when you want real-time devices, file I/O, or MIDI hardware.
 
@@ -118,7 +120,7 @@ In short: `libminihost` runs the plugin; `libminihost_audio` connects it to spea
 
 ## Desktop application
 
-`minihost_desktop` (`projects/minihost_desktop/`) is a developer-facing GUI host built on the same libraries. It loads VST3/AU/LV2 plugins, wires them into a node graph on a canvas, opens native plugin editor windows, renders the graph to disk offline, and drives a realtime audio device with live MIDI input and a transport (BPM / loop region). Project files are JSON, schema-versioned, and round-trip with the Python loader (`minihost.load_project` / `render_project`), so a graph built in the app renders identically from the command line.
+`minihost_desktop` (`projects/minihost_desktop/`) is a developer-facing GUI host built on the same libraries. It loads VST3/AU/LV2/CLAP plugins (CLAP editors on macOS only), wires them into a node graph on a canvas, opens native plugin editor windows, renders the graph to disk offline, and drives a realtime audio device with live MIDI input and a transport (BPM / loop region). Project files are JSON, schema-versioned, and round-trip with the Python loader (`minihost.load_project` / `render_project`), so a graph built in the app renders identically from the command line.
 
 Each plugin window carries the host-side controls a plugin's own editor usually leaves out: a factory-program selector, a bypass toggle (backed by the plugin's own bypass parameter where it publishes one), and `.vstpreset` load/save for interchange with other hosts. Offline renders put every plugin into non-realtime mode for the duration, so a bounce uses the plugin's offline code path rather than its realtime one.
 
@@ -153,7 +155,7 @@ Headless entry points for scripting and CI: `minihost_desktop --render-project=<
 
 - JUCE framework (automatically downloaded if not present)
 
-- Vendored C libraries: miniaudio, tflac, libremidi, midifile (see [docs/vendored.md](docs/vendored.md))
+- Vendored C libraries: miniaudio, tflac, libremidi, midifile, CLAP SDK headers (see [docs/vendored.md](docs/vendored.md))
 
 ### Platform-specific
 

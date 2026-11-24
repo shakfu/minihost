@@ -3,7 +3,7 @@
 minihost - Audio plugin hosting CLI.
 
 A command-line interface for loading, inspecting, and rendering audio through
-VST3, AudioUnit, and LV2 plugins.
+VST3, AudioUnit, LV2, and CLAP plugins.
 
 Usage:
     minihost info /path/to/plugin.vst3
@@ -2440,7 +2440,7 @@ Examples:
     cache_sub.add_parser("prune", help="Drop entries whose plugin is gone")
     cache_list_p = cache_sub.add_parser("list", help="Query cached plugins")
     cache_list_p.add_argument("-j", "--json", action="store_true")
-    cache_list_p.add_argument("--format", help="Filter by format (VST3/AU/LV2)")
+    cache_list_p.add_argument("--format", help="Filter by format (VST3/AU/LV2/CLAP)")
     cache_list_p.add_argument("--name", help="Filter by name substring")
     cache_list_p.add_argument("--vendor", help="Filter by vendor substring")
     cache_list_p.add_argument(

@@ -1,6 +1,6 @@
 # minihost_desktop - GUI host application
 #
-# A working node-graph plugin host: load VST3/AU/LV2 plugins, wire them into a
+# A working node-graph plugin host: load VST3/AU/LV2/CLAP plugins, wire them into a
 # DAG on a canvas, open plugin editor windows, render offline, and drive a
 # realtime audio device (Phase 2). See docs/dev/desktop_app.md for the design
 # and docs/dev/desktop_app_todo.md for the status of individual features.

@@ -235,7 +235,7 @@ typedef struct MH_PluginDesc {
     char name[256];
     char vendor[256];
     char version[64];
-    char format[16];            // "VST3", "AU", or "LV2"
+    char format[16];            // "VST3", "AudioUnit", "LV2", or "CLAP"
     char unique_id[64];         // for state compatibility checking
     char path[1024];            // full path to plugin file (populated by mh_scan_directory)
     int accepts_midi;           // best-effort heuristic (instruments=1, others=0); mh_get_info() is authoritative

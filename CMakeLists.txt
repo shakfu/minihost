@@ -111,7 +111,7 @@ endif()
 # JUCE plugin-client compile and nothing that ships links them. CI builds them
 # and points MINIHOST_TEST_PLUGIN at the result so the signal-level tests run
 # instead of skipping. See projects/test_plugin/.
-option(MINIHOST_BUILD_TEST_PLUGIN "Build the deterministic VST3 test fixtures" OFF)
+option(MINIHOST_BUILD_TEST_PLUGIN "Build the deterministic VST3 and CLAP test fixtures" OFF)
 if(MINIHOST_BUILD_TEST_PLUGIN)
     add_subdirectory(projects/test_plugin)
 endif()

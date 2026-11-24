@@ -38,7 +38,7 @@ def synthetic(path: str) -> dict:
     """
     name = os.path.splitext(os.path.basename(path))[0]
     ext = os.path.splitext(path)[1].lower()
-    fmt = {".vst3": "VST3", ".component": "AudioUnit", ".lv2": "LV2"}.get(ext, "VST3")
+    fmt = {".vst3": "VST3", ".component": "AudioUnit", ".lv2": "LV2", ".clap": "CLAP"}.get(ext, "VST3")
 
     if name.startswith("broken"):
         raise RuntimeError(f"cannot probe {name}")

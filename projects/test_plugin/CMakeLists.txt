@@ -64,3 +64,31 @@ target_compile_definitions(MinihostTestSynth PUBLIC MINIHOST_TEST_SYNTH=1)
 # off to keep its parameter list to the fixture's own.
 target_compile_definitions(MinihostTestFx PUBLIC JUCE_VST3_EMULATE_MIDI_CC_WITH_PARAMETERS=1)
 target_compile_definitions(MinihostTestSynth PUBLIC JUCE_VST3_EMULATE_MIDI_CC_WITH_PARAMETERS=0)
+
+# CLAP counterparts, same contract and names (clap/minihost_test_clap.c).
+# Plain C against the vendored SDK: no JUCE plugin client is involved.
+# Output: clap_artefacts/<config>/<name>.clap -- a bundle on macOS, a single
+# shared library elsewhere.
+foreach(_name MinihostTestFx MinihostTestSynth)
+    set(_target ${_name}_CLAP)
+    add_library(${_target} MODULE clap/minihost_test_clap.c)
+    target_include_directories(${_target} PRIVATE ${CMAKE_SOURCE_DIR}/projects/clap/include)
+    set_target_properties(${_target} PROPERTIES
+        OUTPUT_NAME ${_name}
+        PREFIX ""
+        C_VISIBILITY_PRESET hidden
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/clap_artefacts/$<CONFIG>")
+    if(APPLE)
+        set_target_properties(${_target} PROPERTIES
+            BUNDLE TRUE
+            BUNDLE_EXTENSION clap
+            MACOSX_BUNDLE_GUI_IDENTIFIER net.minihost.${_name}
+            MACOSX_BUNDLE_BUNDLE_NAME ${_name})
+    else()
+        set_target_properties(${_target} PROPERTIES SUFFIX ".clap")
+    endif()
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(${_target} PRIVATE m)
+    endif()
+endforeach()
+target_compile_definitions(MinihostTestSynth_CLAP PRIVATE MINIHOST_TEST_SYNTH=1)

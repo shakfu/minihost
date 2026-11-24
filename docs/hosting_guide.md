@@ -94,7 +94,7 @@ target_link_libraries(your_app PRIVATE
 ```c
 char err[1024];
 MH_Plugin* plugin = mh_open(
-    "/path/to/plugin.vst3",  // or .component for AU, .lv2 for LV2
+    "/path/to/plugin.vst3",  // or .component for AU, .lv2 for LV2, .clap for CLAP
     48000.0,                  // sample rate
     512,                      // max block size
     2,                        // input channels
@@ -603,11 +603,15 @@ printf("Found %d plugins\n", count);
 
 - `~/Library/Audio/Plug-Ins/Components/` (AU user)
 
+- `/Library/Audio/Plug-Ins/CLAP/` and `~/Library/Audio/Plug-Ins/CLAP/` (CLAP)
+
 **Windows:**
 
 - `C:\Program Files\Common Files\VST3\`
 
 - `C:\Program Files (x86)\Common Files\VST3\`
+
+- `C:\Program Files\Common Files\CLAP\` (CLAP)
 
 **Linux:**
 
@@ -618,6 +622,8 @@ printf("Found %d plugins\n", count);
 - `/usr/lib/lv2/` (LV2 system)
 
 - `~/.lv2/` (LV2 user)
+
+- `/usr/lib/clap/` and `~/.clap/` (CLAP)
 
 ---
 

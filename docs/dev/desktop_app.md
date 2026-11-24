@@ -6,7 +6,7 @@ Working name: `minihost-desktop` (binary), `minihost.app` on macOS. Source lives
 
 ## Goal
 
-A developer-facing host app that loads VST3/AU/LV2 plugins, wires them into a node graph, exposes plugin editor windows, and renders to disk offline. v2 extends the same graph executor to drive a realtime audio device callback.
+A developer-facing host app that loads VST3/AU/LV2/CLAP plugins, wires them into a node graph, exposes plugin editor windows, and renders to disk offline. v2 extends the same graph executor to drive a realtime audio device callback.
 
 Non-goals (both phases):
 

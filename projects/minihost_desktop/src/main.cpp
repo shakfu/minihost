@@ -128,7 +128,7 @@
 //       tests/test_desktop_pluginbrowser.py.
 //
 //   minihost_desktop --scan-plugins[=<dir1;dir2>] [--scan-out=<file.xml>]
-//                     [--scan-format=<VST3|AudioUnit|LV2>] [--scan-oop]
+//                     [--scan-format=<VST3|AudioUnit|LV2|CLAP>] [--scan-oop]
 //       (--scan-oop routes each probe through a disposable child process for
 //       crash containment -- the same path the interactive GUI scan uses.)
 //       Headless in-process plugin scan. Registers the host formats and
@@ -836,6 +836,11 @@ private:
         });
     }
 
+public:
+    // The plugin's own editor, not the "no editor" placeholder.
+    bool hasPluginEditor() const { return editor_ != nullptr; }
+
+private:
     EditorOptions                               opts_;
     MH_Plugin*                                  plugin_ = nullptr;
     juce::AudioProcessor*                       proc_   = nullptr;
@@ -1502,7 +1507,7 @@ private:
         chooser_ = std::make_unique<juce::FileChooser>(
             "Choose a plugin",
             juce::File("/Library/Audio/Plug-Ins"),
-            "*.vst3;*.component;*.lv2");
+            "*.vst3;*.component;*.lv2;*.clap");
 
         const int flags = juce::FileBrowserComponent::openMode
                         | juce::FileBrowserComponent::canSelectFiles
@@ -2160,10 +2165,7 @@ public:
             // Plugin library: register the host formats and restore the
             // previously-scanned plugin list. Scanning is user-driven
             // via the Plugin Browser; nothing is scanned at startup.
-            // (JUCE 8.0.11 moved AudioPluginFormatManager to the headless
-            // module and deleted its addDefaultFormats(); the non-headless
-            // free function registers the real hosting formats.)
-            juce::addDefaultFormatsToManager(plugin_format_manager_);
+            addHostFormats(plugin_format_manager_);
             // Scan plugins out-of-process so a plugin that crashes or calls
             // exit() during instantiation-during-scan takes down only a
             // disposable child, not the app. Routes both the interactive
@@ -2676,7 +2678,7 @@ public:
         plugin_chooser_ = std::make_unique<juce::FileChooser>(
             "Choose a plugin",
             juce::File("/Library/Audio/Plug-Ins"),
-            "*.vst3;*.component;*.lv2");
+            "*.vst3;*.component;*.lv2;*.clap");
         const int flags = juce::FileBrowserComponent::openMode
                         | juce::FileBrowserComponent::canSelectFiles
                         | juce::FileBrowserComponent::canSelectDirectories;
@@ -2711,7 +2713,7 @@ private:
         EditorOptions opts{};
         opts.output_path = juce::String(kDefaultOut);
         opts.mode        = EditorMode::Interactive;
-        if (juce::File(pd.fileOrIdentifier).exists())
+        if (loadsByPath(pd))
             opts.plugin_path = pd.fileOrIdentifier;
         else if (auto xml = pd.createXml())
             opts.descriptor_xml = xml->toString();
@@ -3665,6 +3667,8 @@ private:
             std::move(opts), loaded.plugin, loaded.proc,
             [](EditorWindow*) {});
         armEditorBaseline(*w);
+        std::fprintf(stderr, "editor-sync-selftest: editor=%s\n",
+                     w->hasPluginEditor() ? "plugin" : "placeholder");
 
         project::ProjectDocument doc;
         project::PluginNodeSpec spec;
@@ -3737,7 +3741,7 @@ private:
         // Formats registered as in the GUI shell, so PluginListComponent is
         // built against a realistic format manager. owns_library_ stays
         // false: this mode must never write the user's known_plugins.xml.
-        juce::addDefaultFormatsToManager(plugin_format_manager_);
+        addHostFormats(plugin_format_manager_);
 
         auto fail = [this](const juce::String& m) {
             std::fprintf(stderr, "plugin-browser-selftest FAIL: %s\n",
@@ -3950,7 +3954,7 @@ private:
                        bool out_of_process)
     {
         juce::AudioPluginFormatManager fm;
-        juce::addDefaultFormatsToManager(fm);
+        addHostFormats(fm);
 
         // Merge into the list already at the destination, as a GUI rescan
         // does. Starting empty replaced the user's whole library, blacklist

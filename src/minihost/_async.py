@@ -40,7 +40,7 @@ def open_async(
         plugin.close()
 
     Args:
-        path: Path to the plugin (.vst3, .component, .lv2).
+        path: Path to the plugin (.vst3, .component, .lv2, .clap).
         sample_rate: Sample rate in Hz.
         max_block_size: Maximum audio block size in samples.
         in_channels: Requested input channels.

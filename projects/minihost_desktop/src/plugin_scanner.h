@@ -36,6 +36,14 @@
 
 namespace minihost_desktop {
 
+// JUCE's hosting formats plus CLAP, which JUCE does not host
+// (libminihost's minihost_clap.h). Every format manager here uses this.
+void addHostFormats (juce::AudioPluginFormatManager&);
+
+// Whether `pd` opens by its file path. Not for AudioUnits (no file), nor
+// for one plugin of several in a .clap: the path alone names the first.
+bool loadsByPath (const juce::PluginDescription& pd);
+
 // Command-line token that marks a relaunch of this binary as a scan worker.
 constexpr const char* kScannerProcessUID = "minihostPluginScanner";
 

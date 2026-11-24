@@ -6,11 +6,29 @@
 
 #include "plugin_scanner.h"
 
+#include "minihost_clap.h"
+
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 
 namespace minihost_desktop {
+
+void addHostFormats (juce::AudioPluginFormatManager& fm)
+{
+    // JUCE 8.0.11 moved AudioPluginFormatManager to the headless module and
+    // deleted addDefaultFormats(); the free function registers the real
+    // hosting formats.
+    juce::addDefaultFormatsToManager (fm);
+    fm.addFormat (minihost::clapfmt::createFormat());
+}
+
+bool loadsByPath (const juce::PluginDescription& pd)
+{
+    if (! juce::File (pd.fileOrIdentifier).exists())
+        return false;
+    return ! (pd.pluginFormatName == "CLAP" && pd.hasSharedContainer);
+}
 
 // ------------------------------------------------------------------ //
 // Child side                                                         //
@@ -18,10 +36,7 @@ namespace minihost_desktop {
 
 PluginScannerSubprocess::PluginScannerSubprocess()
 {
-    // JUCE 8.0.11 moved AudioPluginFormatManager to the headless module and
-    // deleted addDefaultFormats(); the free function registers the real
-    // hosting formats.
-    juce::addDefaultFormatsToManager (format_manager_);
+    addHostFormats (format_manager_);
 }
 
 void PluginScannerSubprocess::handleMessageFromCoordinator (const juce::MemoryBlock& mb)

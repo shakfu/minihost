@@ -36,11 +36,13 @@ build: juce
 # Alias for build
 rebuild: build
 
-# Build the deterministic VST3 fixtures the signal tests load from build/.
-# Without this, a fixture change leaves a stale bundle that tests still find.
+# Build the deterministic VST3 and CLAP fixtures the signal tests load from
+# build/. Without this, a fixture change leaves a stale bundle that tests
+# still find.
 fixtures: juce
 	@cmake -B build -DCMAKE_BUILD_TYPE=Release -DMINIHOST_BUILD_TEST_PLUGIN=ON
-	@cmake --build build --config Release --target MinihostTestFx_VST3 MinihostTestSynth_VST3
+	@cmake --build build --config Release --target MinihostTestFx_VST3 MinihostTestSynth_VST3 \
+		MinihostTestFx_CLAP MinihostTestSynth_CLAP
 
 # Run Python tests
 test: build fixtures

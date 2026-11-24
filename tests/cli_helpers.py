@@ -61,3 +61,23 @@ def find_test_plugin(name: str, env_var: str) -> str | None:
     if not existing:
         return None
     return str(max(existing, key=lambda p: p.stat().st_mtime))
+
+
+def find_test_clap(name: str, env_var: str) -> str | None:
+    """Locate a `projects/test_plugin` CLAP build via env var or build trees.
+
+    Same selection as `find_test_plugin`. A bundle on macOS must contain its
+    executable; elsewhere the .clap is the shared library itself.
+    """
+    env = os.environ.get(env_var)
+    if env:
+        return env
+    pattern = f"build*/projects/test_plugin/clap_artefacts/*/{name}.clap"
+    existing = [
+        b
+        for b in _REPO_ROOT.glob(pattern)
+        if b.is_file() or (b / "Contents" / "MacOS" / name).is_file()
+    ]
+    if not existing:
+        return None
+    return str(max(existing, key=lambda p: p.stat().st_mtime))

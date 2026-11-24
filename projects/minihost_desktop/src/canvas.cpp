@@ -7,6 +7,7 @@
 
 #include "minihost_audiofile.h"
 #include "node_registry.h"
+#include "plugin_scanner.h"
 
 #include <algorithm>
 #include <cmath>
@@ -43,7 +44,7 @@ const juce::StringArray& audioExtensions()
 const juce::StringArray& midiExtensions()
 { static const juce::StringArray e{ ".mid", ".midi" }; return e; }
 const juce::StringArray& pluginExtensions()
-{ static const juce::StringArray e{ ".vst3", ".component", ".lv2" }; return e; }
+{ static const juce::StringArray e{ ".vst3", ".component", ".lv2", ".clap" }; return e; }
 
 // Clears a flag for a scope: rebuilds that restore or reparse a document
 // must not move its nodes into the open chain.
@@ -1809,7 +1810,7 @@ void CanvasComponent::showQuickAdd(std::optional<juce::Point<float>> at_opt)
         items.push_back({ "Output to file...", "output render wav flac",
                           [this, place] { place(); addOutputNode(); } });
     }
-    items.push_back({ "Plugin from file...", "plugin vst3 au lv2",
+    items.push_back({ "Plugin from file...", "plugin vst3 au lv2 clap",
                       [this, place, at] {
                           place();
                           pending_plugin_at_ = at;
@@ -2899,7 +2900,7 @@ void CanvasComponent::addPluginNode()
     chooser_ = std::make_unique<juce::FileChooser>(
         "Choose a plugin",
         juce::File("/Library/Audio/Plug-Ins"),
-        "*.vst3;*.component;*.lv2");
+        "*.vst3;*.component;*.lv2;*.clap");
     const int flags = juce::FileBrowserComponent::openMode
                     | juce::FileBrowserComponent::canSelectFiles
                     | juce::FileBrowserComponent::canSelectDirectories;
@@ -2938,11 +2939,11 @@ void CanvasComponent::addPluginFromDescription(const juce::PluginDescription& pd
         = pd.name.isNotEmpty() ? std::optional<bool>(pd.isInstrument)
                                : std::nullopt;
 
-    // Path-based formats (VST3, LV2, or a browsed file) keep loading by
-    // path -- their fileOrIdentifier is a real file. Only formats without a
-    // usable file path (AudioUnits) take the descriptor route.
+    // Path-based formats (VST3, LV2, CLAP, or a browsed file) keep loading
+    // by path. AudioUnits (no file) and one plugin of several in a .clap
+    // take the descriptor route.
     const juce::File f(pd.fileOrIdentifier);
-    if (f.exists())
+    if (loadsByPath(pd))
     {
         addPluginFromFile(f, is_instrument);
         return;

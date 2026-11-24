@@ -502,7 +502,8 @@ jobs:
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Release -DMINIHOST_BUILD_TEST_PLUGIN=ON
           cmake --build build --config Release \
-            --target MinihostTestFx_VST3 MinihostTestSynth_VST3 minihost_c minihost_cpp
+            --target MinihostTestFx_VST3 MinihostTestSynth_VST3 minihost_c minihost_cpp \
+                     MinihostTestFx_CLAP MinihostTestSynth_CLAP
 
       - name: Install minihost
         run: pip install --verbose '.[numpy]' pytest
@@ -519,8 +520,12 @@ jobs:
           root=build/projects/test_plugin
           export MINIHOST_TEST_PLUGIN="$PWD/$root/MinihostTestSynth_artefacts/Release/VST3/MinihostTestSynth.vst3"
           export MINIHOST_TEST_PLUGIN_FX="$PWD/$root/MinihostTestFx_artefacts/Release/VST3/MinihostTestFx.vst3"
+          export MINIHOST_TEST_CLAP_FX="$PWD/$root/clap_artefacts/Release/MinihostTestFx.clap"
+          export MINIHOST_TEST_CLAP_SYNTH="$PWD/$root/clap_artefacts/Release/MinihostTestSynth.clap"
           test -e "$MINIHOST_TEST_PLUGIN"
           test -e "$MINIHOST_TEST_PLUGIN_FX"
+          test -e "$MINIHOST_TEST_CLAP_FX"
+          test -e "$MINIHOST_TEST_CLAP_SYNTH"
           python -m pytest tests/ -v -rs
 
   build-sdist:

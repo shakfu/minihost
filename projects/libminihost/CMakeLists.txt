@@ -24,15 +24,26 @@ set(_minihost_sources
     minihost_graph.cpp
     minihost_graph_v2.cpp
     minihost_vstpreset.c
-    # Empty outside Apple; kept in the list so the file is never orphaned.
+    minihost_clap.cpp
+    # Empty outside Apple; kept in the list so the files are never orphaned.
     minihost_pump_mac.cpp
+    minihost_clap_bundle_mac.cpp
 )
+if(APPLE)
+    # Empty in the headless library.
+    list(APPEND _minihost_sources minihost_clap_gui_mac.mm)
+endif()
 
 # Common configuration applied to both flavours. JUCE module selection
 # is the only thing that differs between them.
 function(_minihost_configure_common target)
     set_target_properties(${target} PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_include_directories(${target} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+    # CLAP SDK headers (vendored, header-only). Private: no public header
+    # mentions a clap type.
+    target_include_directories(${target} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../clap/include)
+    target_link_libraries(${target} PRIVATE minihost_version)
     target_compile_definitions(${target} PRIVATE
         JUCE_PLUGINHOST_VST3=1
         JUCE_PLUGINHOST_AU=1

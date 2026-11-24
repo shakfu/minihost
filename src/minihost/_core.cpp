@@ -3802,7 +3802,7 @@ NB_MODULE(_core, m) {
 
     m.def("scan_directory", &scan_directory,
           nb::arg("directory_path"),
-          "Scan a directory for plugins (VST3, AudioUnit). Returns list of plugin metadata dicts.");
+          "Scan a directory for plugins (VST3, AudioUnit, LV2, CLAP). Returns list of plugin metadata dicts.");
 
     // Session: shared format-manager state across loads/probes/scans.
     // Snapshot interpolation, exposed so minihost.morph.lerp can delegate

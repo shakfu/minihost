@@ -64,7 +64,7 @@ DEFAULT_PROBE_TIMEOUT = 60.0
 # to the cache. That previously included .so and .dll, so every unrelated
 # shared library under a scanned directory became a cached failure.
 PLUGIN_EXTS = frozenset(
-    {".vst3", ".lv2"} | ({".component"} if sys.platform == "darwin" else set())
+    {".vst3", ".lv2", ".clap"} | ({".component"} if sys.platform == "darwin" else set())
 )
 
 

@@ -38,6 +38,7 @@
 #include <string>
 #include <thread>
 
+#include "minihost_clap.h"
 #include "minihost_diag.h"
 #if defined(__APPLE__)
 #include <pthread.h>
@@ -232,6 +233,7 @@ public:
                     // After a task as well as when idle: a control call is
                     // exactly what makes a plugin post.
                     pumpJuceMessages();
+                    minihost::clapfmt::service();
                 }
                 // Delete the MessageManager on its own (this) thread before the
                 // thread ends. Leaving it alive on a background thread past
@@ -346,15 +348,21 @@ extern "C" void mh_message_thread_shutdown(void)
 
 extern "C" int mh_message_thread_poll(void)
 {
+    int n = 0;
    #if JUCE_MAC || JUCE_IOS
-    return pumpJuceMessages();
+    n = pumpJuceMessages();
+    // CLAP requests are serviced on the plugin thread, not the main run loop.
+    MinihostMessageThread::instance().run([&n] { n += minihost::clapfmt::service(); });
    #else
     // Pump on the worker and wait: its own pump runs up to kPumpIntervalMs
     // later, so a latency reported by the last block was not yet visible.
-    int n = 0;
-    MinihostMessageThread::instance().run([&n] { n = pumpJuceMessages(); });
-    return n;
+    MinihostMessageThread::instance().run([&n]
+    {
+        n = pumpJuceMessages();
+        n += minihost::clapfmt::service();
+    });
    #endif
+    return n;
 }
 
 // Run a callable on the JUCE plugin thread and return its result (or void).
@@ -1409,6 +1417,9 @@ static void initFormatManager(AudioPluginFormatManager& fm)
    #if JUCE_MAC
     fm.addFormat(std::make_unique<AUFormat>());
    #endif
+    // Before LV2: lilv prints errors for any bundle it is handed, and the
+    // first format that recognises a file wins.
+    fm.addFormat(minihost::clapfmt::createFormat());
    #if JUCE_PLUGINHOST_LV2
     fm.addFormat(std::make_unique<LV2Format>());
    #endif
@@ -2219,6 +2230,9 @@ extern "C" int mh_scan_directory(const char* directory_path,
     dir.findChildFiles(pluginFiles, File::findDirectories, true, "*.lv2");
    #endif
 
+    // CLAP: a bundle directory on macOS, a single file elsewhere.
+    dir.findChildFiles(pluginFiles, File::findFilesAndDirectories, true, "*.clap");
+
     // Create one format manager for the entire scan instead of one per plugin.
     AudioPluginFormatManager fm;
     initFormatManager(fm);
@@ -2485,6 +2499,7 @@ static int scanDirectoryWithFm(AudioPluginFormatManager& fm,
    #if JUCE_PLUGINHOST_LV2
     dir.findChildFiles(pluginFiles, File::findDirectories, true, "*.lv2");
    #endif
+    dir.findChildFiles(pluginFiles, File::findFilesAndDirectories, true, "*.clap");
 
     for (const auto& pluginFile : pluginFiles)
     {
@@ -2720,15 +2735,20 @@ static juce::StringArray defaultPluginDirs()
    #if JUCE_MAC
     dirs.add("/Library/Audio/Plug-Ins/VST3");
     dirs.add("/Library/Audio/Plug-Ins/Components");
+    dirs.add("/Library/Audio/Plug-Ins/CLAP");
     dirs.add(home.getChildFile("Library/Audio/Plug-Ins/VST3").getFullPathName());
     dirs.add(home.getChildFile("Library/Audio/Plug-Ins/Components").getFullPathName());
+    dirs.add(home.getChildFile("Library/Audio/Plug-Ins/CLAP").getFullPathName());
    #elif JUCE_WINDOWS
     dirs.add("C:\\Program Files\\Common Files\\VST3");
     dirs.add("C:\\Program Files (x86)\\Common Files\\VST3");
+    dirs.add("C:\\Program Files\\Common Files\\CLAP");
    #else
     dirs.add("/usr/lib/vst3");
     dirs.add("/usr/local/lib/vst3");
     dirs.add(home.getChildFile(".vst3").getFullPathName());
+    dirs.add("/usr/lib/clap");
+    dirs.add(home.getChildFile(".clap").getFullPathName());
    #endif
 
     juce::StringArray existing;
@@ -3253,6 +3273,7 @@ static juce::String normaliseFormat(const juce::String& raw)
     const auto f = raw.trim().toLowerCase();
     if (f == "au" || f == "component" || f == "audiounit") return "audiounit";
     if (f == "vst3") return "vst3";
+    if (f == "clap") return "clap";
     return f;
 }
 
@@ -3299,7 +3320,7 @@ static juce::Array<CacheCandidate> cacheMatches(const juce::String& name,
 
     // The same plugin in two formats is one plugin as far as the user is
     // concerned, so collapse rather than refuse: prefer the format asked
-    // for, else VST3, else AudioUnit.
+    // for, else VST3, else AudioUnit, else CLAP.
     if (matches.size() > 1)
     {
         bool same_name = true;
@@ -3308,7 +3329,7 @@ static juce::Array<CacheCandidate> cacheMatches(const juce::String& name,
 
         if (same_name)
         {
-            const juce::String order[] = { want_format, "vst3", "audiounit" };
+            const juce::String order[] = { want_format, "vst3", "audiounit", "clap" };
             for (const auto& want : order)
             {
                 if (want.isEmpty()) continue;
