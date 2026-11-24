@@ -1,19 +1,22 @@
 // minihost_clap.cpp
 // CLAP plugin format for JUCE. See minihost_clap.h for scope.
 //
-// Threads. CLAP's "main thread" is minihost's plugin thread: every control
-// call reaches the instance through runOnMsg there. Requests a plugin makes
-// from any thread (request_callback, request_restart, latency changed,
-// request_flush) only set flags; service() acts on them from the plugin
-// thread. JUCE's own async queue is not used for this: on macOS it delivers
-// on the process main thread, which is not the thread the plugin was made on.
+// Threads. CLAP's "main thread" is the thread that created the plugin:
+// minihost's plugin thread, or a JUCE app's message thread when the app
+// disables it. Requests a plugin makes from any thread (request_callback,
+// request_restart, latency changed, request_flush) only set flags; service()
+// acts on them on that thread.
 //
 // CLAP's "audio thread" calls (process, start/stop_processing, reset, flush
-// while active) are serialised by a spin token. The control thread takes it
-// for the short audio-thread calls it has to make itself (reset, a flush
-// before saving state, deactivate/activate on restart), so they never run
-// concurrently with process(). The thread-check extension reports "audio
-// thread" exactly while one of those calls is in progress.
+// while active) are serialised by a spin token, so they never run concurrently
+// with process(). The thread-check extension reports "audio thread" exactly
+// while one is in progress. State calls and reset wait for the token: the C
+// API forbids overlapping them with processing. Plugin-requested work only
+// tries it, and retries with backoff, so a plugin stuck in process() cannot
+// hold the thread that services every other plugin.
+//
+// No global lock is held while plugin code runs: not across on_main_thread,
+// nor across clap_entry.init. A plugin that hangs blocks its own callers only.
 
 #include "minihost_clap.h"
 
@@ -31,6 +34,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -39,6 +43,7 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 // Plugin editors: the GUI build only, and Cocoa embedding only so far.
@@ -83,15 +88,23 @@ struct AudioScope
 struct Module
 {
     String path;
-    int refs = 0;
+    int refs = 0;              // guarded by gModMtx
+
+    // Guards loading and unloading this one module, so a plugin that hangs
+    // in clap_entry.init() blocks only those opening the same file.
+    std::mutex mtx;
+    bool loaded = false;
     const clap_plugin_entry* entry = nullptr;
     std::unique_ptr<DynamicLibrary> lib;
     void* bundle = nullptr;
 };
 
+// Records are never erased, so a Module* stays valid for the process. One
+// per distinct path ever opened.
 std::mutex gModMtx;
 std::map<String, std::unique_ptr<Module>> gModules;
 
+// m.mtx held.
 void unloadLocked(Module& m)
 {
    #if JUCE_MAC
@@ -99,8 +112,56 @@ void unloadLocked(Module& m)
     m.bundle = nullptr;
    #endif
     m.lib.reset();
+    m.entry = nullptr;
+    m.loaded = false;
 }
 
+// m.mtx held.
+bool loadLocked(Module& m, String& err)
+{
+    void* sym = nullptr;
+   #if JUCE_MAC
+    if (File(m.path).isDirectory())
+    {
+        m.bundle = mh_clap_bundle_open(m.path.toRawUTF8());
+        if (m.bundle != nullptr)
+            sym = mh_clap_bundle_symbol(m.bundle, "clap_entry");
+    }
+    else
+   #endif
+    {
+        m.lib = std::make_unique<DynamicLibrary>();
+        if (m.lib->open(m.path))
+            sym = m.lib->getFunction("clap_entry");
+    }
+
+    if (sym == nullptr)
+    {
+        err = "not a loadable CLAP module (no clap_entry): " + m.path;
+        unloadLocked(m);
+        return false;
+    }
+    m.entry = static_cast<const clap_plugin_entry*>(sym);
+    if (! clap_version_is_compatible(m.entry->clap_version))
+    {
+        err = "incompatible CLAP version " + String(m.entry->clap_version.major)
+              + "." + String(m.entry->clap_version.minor) + ": " + m.path;
+        unloadLocked(m);
+        return false;
+    }
+    if (! m.entry->init(m.path.toRawUTF8()))
+    {
+        err = "clap_entry.init failed: " + m.path;
+        unloadLocked(m);
+        return false;
+    }
+    m.loaded = true;
+    return true;
+}
+
+// One clap_entry init() per binary while any instance or scan uses it,
+// deinit() when the last one lets go, as the entry contract requires.
+// Lock order: Module::mtx before gModMtx, never the reverse.
 class ModuleRef
 {
 public:
@@ -111,57 +172,27 @@ public:
 
     static ModuleRef acquire(const String& path, String& err)
     {
-        std::lock_guard<std::mutex> lk(gModMtx);
-        auto it = gModules.find(path);
-        if (it != gModules.end())
+        Module* m = nullptr;
         {
-            ++it->second->refs;
-            return ModuleRef(it->second.get());
+            std::lock_guard<std::mutex> lk(gModMtx);
+            auto& slot = gModules[path];
+            if (slot == nullptr)
+            {
+                slot = std::make_unique<Module>();
+                slot->path = path;
+            }
+            m = slot.get();
+            ++m->refs;
         }
 
-        auto m = std::make_unique<Module>();
-        m->path = path;
-        void* sym = nullptr;
-       #if JUCE_MAC
-        if (File(path).isDirectory())
+        std::lock_guard<std::mutex> ml(m->mtx);
+        if (! m->loaded && ! loadLocked(*m, err))
         {
-            m->bundle = mh_clap_bundle_open(path.toRawUTF8());
-            if (m->bundle != nullptr)
-                sym = mh_clap_bundle_symbol(m->bundle, "clap_entry");
-        }
-        else
-       #endif
-        {
-            m->lib = std::make_unique<DynamicLibrary>();
-            if (m->lib->open(path))
-                sym = m->lib->getFunction("clap_entry");
-        }
-
-        if (sym == nullptr)
-        {
-            err = "not a loadable CLAP module (no clap_entry): " + path;
-            unloadLocked(*m);
+            std::lock_guard<std::mutex> lk(gModMtx);
+            --m->refs;
             return {};
         }
-        m->entry = static_cast<const clap_plugin_entry*>(sym);
-        if (! clap_version_is_compatible(m->entry->clap_version))
-        {
-            err = "incompatible CLAP version " + String(m->entry->clap_version.major)
-                  + "." + String(m->entry->clap_version.minor) + ": " + path;
-            unloadLocked(*m);
-            return {};
-        }
-        if (! m->entry->init(path.toRawUTF8()))
-        {
-            err = "clap_entry.init failed: " + path;
-            unloadLocked(*m);
-            return {};
-        }
-
-        m->refs = 1;
-        auto* raw = m.get();
-        gModules[path] = std::move(m);
-        return ModuleRef(raw);
+        return ModuleRef(m);
     }
 
     explicit operator bool() const { return m_ != nullptr; }
@@ -179,14 +210,24 @@ private:
     void release()
     {
         if (m_ == nullptr) return;
-        std::lock_guard<std::mutex> lk(gModMtx);
-        if (--m_->refs == 0)
+        Module* m = std::exchange(m_, nullptr);
         {
-            m_->entry->deinit();
-            unloadLocked(*m_);
-            gModules.erase(m_->path);
+            std::lock_guard<std::mutex> lk(gModMtx);
+            if (--m->refs > 0) return;
         }
-        m_ = nullptr;
+        // Re-checked under the module lock: an acquire may have taken a
+        // reference since, and then the module stays loaded.
+        std::lock_guard<std::mutex> ml(m->mtx);
+        bool idle;
+        {
+            std::lock_guard<std::mutex> lk(gModMtx);
+            idle = m->refs == 0;
+        }
+        if (idle && m->loaded)
+        {
+            m->entry->deinit();
+            unloadLocked(*m);
+        }
     }
 
     Module* m_ = nullptr;
@@ -270,10 +311,20 @@ std::vector<Host*> gHosts;
 
 // Wakes a JUCE message loop so it services the plugins created on its
 // thread: the case where the app, not minihost's plugin thread, owns them.
-// Leaked, because a pending update may still arrive during static teardown.
-struct Notifier final : AsyncUpdater
+// The timer is a deferred retry. Leaked, because a pending update may still
+// arrive during static teardown.
+struct Notifier final : AsyncUpdater, Timer
 {
     void handleAsyncUpdate() override { service(); }
+    void timerCallback() override { stopTimer(); service(); }
+
+    // Only a JUCE message loop needs this; minihost's plugin thread services
+    // on every pump anyway.
+    void retryIn(int ms)
+    {
+        if (MessageManager::getInstanceWithoutCreating() != nullptr)
+            startTimer(ms);
+    }
 };
 
 Notifier& notifier()
@@ -282,44 +333,58 @@ Notifier& notifier()
     return *n;
 }
 
+// Shared: service() holds a reference while it calls into a host's plugin,
+// so the host outlives the call even if its instance is closed meanwhile.
 struct Host : clap_host
 {
-    const clap_plugin* plugin = nullptr;
-    ClapInstance* inst = nullptr;
+    // Null once detached: service() then leaves the plugin alone.
+    std::atomic<const clap_plugin*> plugin{nullptr};
+    std::atomic<ClapInstance*> inst{nullptr};
 
     std::atomic<bool> wantCallback{false};
     std::atomic<bool> wantRestart{false};
     std::atomic<bool> wantLatency{false};
     std::atomic<bool> wantFlush{false};
 
+    // service() calls into this host's plugin right now.
+    std::atomic<int> inService{0};
+
     // CLAP's main thread: the one the plugin is created on.
     const std::thread::id mainThread = std::this_thread::get_id();
 
-    Host()
+    // Backoff for work deferred because process() held the audio token.
+    // mainThread only.
+    int retryMs = 0;
+    std::chrono::steady_clock::time_point retryAt{};
+
+    static std::shared_ptr<Host> make()
     {
-        clap_version = CLAP_VERSION;
-        host_data = this;
-        name = "minihost";
-        vendor = "minihost";
-        url = "https://github.com/shakfu/minihost";
-        version = MINIHOST_VERSION;
-        get_extension = &Host::getExtension;
-        request_restart  = [](const clap_host* h) { from(h)->request(from(h)->wantRestart); };
-        request_process  = [](const clap_host*) {};
-        request_callback = [](const clap_host* h) { from(h)->request(from(h)->wantCallback); };
-
-        notifier();   // constructed here, never first on the audio thread
-
+        std::shared_ptr<Host> h(new Host());
+        h->self_ = h;
         std::lock_guard<std::mutex> lk(gHostMtx);
-        gHosts.push_back(this);
+        gHosts.push_back(h.get());
+        return h;
     }
 
-    ~Host() { unregister(); }
-
-    void unregister()
+    ~Host()
     {
         std::lock_guard<std::mutex> lk(gHostMtx);
         gHosts.erase(std::remove(gHosts.begin(), gHosts.end(), this), gHosts.end());
+    }
+
+    // Stop servicing the plugin before it is destroyed. Waits out a
+    // service() inside it on another thread; on this thread that would be
+    // the plugin closing itself from its own callback, so it does not wait.
+    void detach()
+    {
+        {
+            std::lock_guard<std::mutex> lk(gHostMtx);
+            plugin = nullptr;
+            inst = nullptr;
+        }
+        if (std::this_thread::get_id() != mainThread)
+            while (inService.load(std::memory_order_acquire) > 0)
+                std::this_thread::yield();
     }
 
     static Host* from(const clap_host* h) { return static_cast<Host*>(h->host_data); }
@@ -331,10 +396,37 @@ struct Host : clap_host
         notifier().triggerAsyncUpdate();
     }
 
-    int serviceLocked();
+    bool pending() const
+    {
+        return wantCallback.load() || wantRestart.load() || wantLatency.load() || wantFlush.load();
+    }
+
+    std::shared_ptr<Host> share() const { return self_.lock(); }
+
+    int serviceOne();
 
     static const void* getExtension(const clap_host*, const char* id);
+
+private:
+    Host();
+    std::weak_ptr<Host> self_;
 };
+
+Host::Host()
+{
+    clap_version = CLAP_VERSION;
+    host_data = this;
+    name = "minihost";
+    vendor = "minihost";
+    url = "https://github.com/shakfu/minihost";
+    version = MINIHOST_VERSION;
+    get_extension = &Host::getExtension;
+    request_restart  = [](const clap_host* h) { from(h)->request(from(h)->wantRestart); };
+    request_process  = [](const clap_host*) {};
+    request_callback = [](const clap_host* h) { from(h)->request(from(h)->wantCallback); };
+
+    notifier();   // constructed here, never first on the audio thread
+}
 
 // ---------------------------------------------------------------------------
 // Parameters
@@ -528,6 +620,7 @@ public:
         while (busy_.exchange(true, std::memory_order_acquire))
             std::this_thread::yield();
     }
+    bool try_lock() noexcept { return ! busy_.exchange(true, std::memory_order_acquire); }
     void unlock() noexcept { busy_.store(false, std::memory_order_release); }
 
 private:
@@ -544,7 +637,7 @@ public:
                                                 String& err)
     {
         auto* factory = mod.factory();
-        auto host = std::make_unique<Host>();
+        auto host = Host::make();
         const clap_plugin* plugin = factory->create_plugin(factory, host.get(), desc.id);
         if (plugin == nullptr)
         {
@@ -554,7 +647,7 @@ public:
         host->plugin = plugin;
         if (! plugin->init(plugin))
         {
-            host->unregister();
+            host->detach();
             plugin->destroy(plugin);
             err = "plugin init failed for " + str(desc.id);
             return nullptr;
@@ -568,8 +661,7 @@ public:
 
     ~ClapInstance() override
     {
-        host_->unregister();
-        host_->inst = nullptr;
+        host_->detach();
         {
             std::lock_guard<AudioToken> lk(token_);
             deactivateLocked();
@@ -788,32 +880,28 @@ public:
 
     // ---- Host-side services (plugin thread) ---------------------------------
 
-    int serviceMain()
+    // Plugin-requested work. None of it waits for the audio token: a plugin
+    // stuck in process() would hold this thread, and with it every plugin
+    // the thread services. Work that finds the token busy is re-armed and
+    // false is returned, so the caller retries after a backoff.
+    bool serviceMain(int& n)
     {
-        int n = 0;
-        if (host_->wantRestart.exchange(false))
+        bool done = true;
+        auto run = [&](std::atomic<bool>& flag, bool (ClapInstance::*fn)())
         {
-            restart();
-            ++n;
-        }
-        if (host_->wantLatency.exchange(false))
-        {
-            int latency = -1;
+            if (! flag.exchange(false)) return;
+            if ((this->*fn)())
+                ++n;
+            else
             {
-                std::lock_guard<AudioToken> lk(token_);
-                if (active_ && latency_ != nullptr)
-                    latency = (int) latency_->get(plugin_);
+                flag = true;
+                done = false;
             }
-            if (latency >= 0 && latency != getLatencySamples())
-                setLatencySamples(latency);
-            ++n;
-        }
-        if (host_->wantFlush.exchange(false))
-        {
-            flushParams(/*force=*/true);
-            ++n;
-        }
-        return n;
+        };
+        run(host_->wantRestart, &ClapInstance::restart);
+        run(host_->wantLatency, &ClapInstance::requeryLatency);
+        run(host_->wantFlush, &ClapInstance::requestedFlush);
+        return done;
     }
 
     void rescanParams(uint32_t flags)
@@ -873,7 +961,7 @@ public:
     void markStateDirty() { updateHostDisplay(ChangeDetails{}.withNonParameterStateChanged(true)); }
 
 private:
-    ClapInstance(ModuleRef mod, std::unique_ptr<Host> host, const clap_plugin* plugin,
+    ClapInstance(ModuleRef mod, std::shared_ptr<Host> host, const clap_plugin* plugin,
                  Ports ports, const clap_plugin_descriptor& desc, const String& path,
                  bool sharedContainer)
         : AudioPluginInstance(busesFor(ports)),
@@ -1042,12 +1130,14 @@ private:
         }
     }
 
-    void restart()
+    // The three below return false only when the token was busy.
+    bool restart()
     {
         int latency = -1;
         {
-            std::lock_guard<AudioToken> lk(token_);
-            if (! active_) return;
+            std::unique_lock<AudioToken> lk(token_, std::try_to_lock);
+            if (! lk.owns_lock()) return false;
+            if (! active_) return true;
             const double rate = activeRate_;
             const int max = activeMax_;
             deactivateLocked();
@@ -1055,15 +1145,44 @@ private:
         }
         if (latency != getLatencySamples())
             setLatencySamples(latency);
+        return true;
     }
 
-    // Deliver pending parameter changes outside process(). `force` also
-    // flushes with nothing pending, for a plugin's request_flush.
-    void flushParams(bool force = false)
+    bool requeryLatency()
+    {
+        int latency = -1;
+        {
+            std::unique_lock<AudioToken> lk(token_, std::try_to_lock);
+            if (! lk.owns_lock()) return false;
+            if (active_ && latency_ != nullptr)
+                latency = (int) latency_->get(plugin_);
+        }
+        if (latency >= 0 && latency != getLatencySamples())
+            setLatencySamples(latency);
+        return true;
+    }
+
+    bool requestedFlush()
+    {
+        std::unique_lock<AudioToken> lk(token_, std::try_to_lock);
+        if (! lk.owns_lock()) return false;
+        flushLocked();
+        return true;
+    }
+
+    // Deliver pending parameter changes outside process(). For state calls,
+    // which the C API forbids overlapping process(), so waiting is bounded.
+    void flushParams()
+    {
+        if (params_ == nullptr || ! paramsDirty_.load(std::memory_order_acquire)) return;
+        std::lock_guard<AudioToken> lk(token_);
+        flushLocked();
+    }
+
+    // Token held.
+    void flushLocked()
     {
         if (params_ == nullptr) return;
-        if (! force && ! paramsDirty_.load(std::memory_order_acquire)) return;
-        std::lock_guard<AudioToken> lk(token_);
         inEvents_.clear();
         outEvents_.clear();
         pushDirtyParams();
@@ -1303,7 +1422,7 @@ private:
 
     // Declared first: destroyed last, after the plugin and host are gone.
     ModuleRef mod_;
-    std::unique_ptr<Host> host_;
+    std::shared_ptr<Host> host_;
     const clap_plugin* plugin_ = nullptr;
     Ports ports_;
     std::vector<int> busInPorts_, busOutPorts_;   // JUCE bus -> index into ports_
@@ -1424,9 +1543,10 @@ AudioProcessorEditor* ClapInstance::createEditor()
 bool requestResize(const clap_host* h, uint32_t w, uint32_t height)
 {
     auto* host = Host::from(h);
-    if (host->inst == nullptr || std::this_thread::get_id() != host->mainThread)
+    auto* inst = host->inst.load();
+    if (inst == nullptr || std::this_thread::get_id() != host->mainThread)
         return false;
-    auto* ed = host->inst->editor;
+    auto* ed = inst->editor;
     if (ed == nullptr) return false;
     ed->setSizeFromPlugin(w, height);
     return true;
@@ -1468,17 +1588,33 @@ float ClapParam::getValueForText(const String& text) const
 // Host extensions
 // ---------------------------------------------------------------------------
 
-int Host::serviceLocked()
+// mainThread only. detach() waits for this to return before the plugin
+// is destroyed, so the pointers loaded here stay valid throughout.
+int Host::serviceOne()
 {
-    if (plugin == nullptr) return 0;
+    const auto* pl = plugin.load();
+    if (pl == nullptr) return 0;
     int n = 0;
     if (wantCallback.exchange(false))
     {
-        plugin->on_main_thread(plugin);
+        pl->on_main_thread(pl);
         ++n;
     }
-    if (inst != nullptr)
-        n += inst->serviceMain();
+    auto* in = inst.load();
+    if (in == nullptr) return n;
+
+    const auto now = std::chrono::steady_clock::now();
+    if (retryMs > 0 && now < retryAt) return n;
+    if (in->serviceMain(n))
+    {
+        retryMs = 0;
+    }
+    else
+    {
+        retryMs = retryMs == 0 ? 10 : std::min(retryMs * 2, 250);
+        retryAt = now + std::chrono::milliseconds(retryMs);
+        notifier().retryIn(retryMs);
+    }
     return n;
 }
 
@@ -1501,7 +1637,7 @@ const clap_host_thread_check kThreadCheck{
 const clap_host_params kParams{
     [](const clap_host* h, clap_param_rescan_flags flags)
     {
-        if (auto* inst = Host::from(h)->inst) inst->rescanParams(flags);
+        if (auto* inst = Host::from(h)->inst.load()) inst->rescanParams(flags);
     },
     [](const clap_host*, clap_id, clap_param_clear_flags) {},
     [](const clap_host* h) { Host::from(h)->request(Host::from(h)->wantFlush); },
@@ -1518,7 +1654,7 @@ const clap_host_tail kTail{
 const clap_host_state kState{
     [](const clap_host* h)
     {
-        if (auto* inst = Host::from(h)->inst) inst->markStateDirty();
+        if (auto* inst = Host::from(h)->inst.load()) inst->markStateDirty();
     },
 };
 
@@ -1564,17 +1700,17 @@ bool looksLikeClap(const String& path)
 // instantiate: the description is still listed so the open reports why.
 std::pair<int, int> probeChannels(const clap_plugin_factory& factory, const char* id)
 {
-    Host host;
-    const clap_plugin* plugin = factory.create_plugin(&factory, &host, id);
+    auto host = Host::make();
+    const clap_plugin* plugin = factory.create_plugin(&factory, host.get(), id);
     if (plugin == nullptr) return { 0, 0 };
-    host.plugin = plugin;
+    host->plugin = plugin;
     std::pair<int, int> result{ 0, 0 };
     if (plugin->init(plugin))
     {
         const auto ports = readPorts(plugin);
         result = { mainChannels(ports.audioIn), mainChannels(ports.audioOut) };
     }
-    host.unregister();
+    host->detach();
     plugin->destroy(plugin);
     return result;
 }
@@ -1731,14 +1867,28 @@ std::unique_ptr<juce::AudioPluginFormat> createFormat()
 
 int service()
 {
-    std::lock_guard<std::mutex> lk(gHostMtx);
-    int n = 0;
     // Only plugins whose main thread this is: CLAP's main-thread calls
     // must stay on the thread that created the plugin.
     const auto self = std::this_thread::get_id();
-    for (size_t i = 0; i < gHosts.size(); ++i)
-        if (gHosts[i]->mainThread == self)
-            n += gHosts[i]->serviceLocked();
+    std::vector<std::shared_ptr<minihost::clapfmt::Host>> mine;
+    {
+        std::lock_guard<std::mutex> lk(gHostMtx);
+        for (auto* h : gHosts)
+            if (h->mainThread == self && h->pending())
+                if (auto sp = h->share())
+                {
+                    sp->inService.fetch_add(1, std::memory_order_acq_rel);
+                    mine.push_back(std::move(sp));
+                }
+    }
+    // Outside the lock: a plugin that hangs here stalls this thread, not
+    // other threads opening, closing or servicing their own plugins.
+    int n = 0;
+    for (auto& h : mine)
+    {
+        n += h->serviceOne();
+        h->inService.fetch_sub(1, std::memory_order_acq_rel);
+    }
     return n;
 }
 

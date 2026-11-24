@@ -20,7 +20,14 @@
  *                       MIDI <-> CLAP note conversion is exercised.
  *
  * Both echo every note/MIDI event they receive to their note output, at the
- * same sample offset. State is the three values behind a magic header; any
+ * same sample offset.
+ *
+ * Stalls on request, for the host's hang handling (tests/test_clap_stalls.py):
+ *   CC 119, value v   request_restart, then sleep v*10 ms inside process()
+ *   CC 118, value v   request_callback; on_main_thread then sleeps v*10 ms
+ *   MINIHOST_TEST_CLAP_HANG_INIT="<substring>:<ms>"
+ *                     clap_entry.init() sleeps <ms> when its path contains
+ *                     <substring> State is the three values behind a magic header; any
  * other blob is rejected, so a host that ignores load() failure is caught.
  */
 
@@ -30,6 +37,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#include <windows.h>
+static void sleep_ms(int ms) { Sleep((DWORD) ms); }
+#else
+#include <time.h>
+static void sleep_ms(int ms)
+{
+    struct timespec ts;
+    ts.tv_sec = ms / 1000;
+    ts.tv_nsec = (long) (ms % 1000) * 1000000L;
+    while (nanosleep(&ts, &ts) != 0) {}
+}
+#endif
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -76,6 +97,8 @@ typedef struct {
     /* transport as last reported to the host */
     double seen_tempo;
     uint32_t seen_flags;
+
+    int main_thread_sleep_ms;   /* consumed by on_main_thread */
 } fixture;
 
 static fixture* self(const clap_plugin_t* p) { return (fixture*) p->plugin_data; }
@@ -222,6 +245,16 @@ static void handle_event(fixture* f, const clap_event_header_t* h, const clap_ou
             const uint8_t kind = ev->data[0] & 0xF0;
             if (kind == 0x90 && ev->data[2] > 0) note_on(f, ev->data[1], ev->data[2] / 127.0);
             else if (kind == 0x80 || kind == 0x90) note_off(f, ev->data[1]);
+            else if (kind == 0xB0 && ev->data[1] == 119)
+            {
+                f->host->request_restart(f->host);
+                sleep_ms(ev->data[2] * 10);
+            }
+            else if (kind == 0xB0 && ev->data[1] == 118)
+            {
+                f->main_thread_sleep_ms = ev->data[2] * 10;
+                f->host->request_callback(f->host);
+            }
             break;
         }
         case CLAP_EVENT_MIDI_SYSEX:
@@ -326,7 +359,13 @@ static clap_process_status fx_process(const clap_plugin_t* p, const clap_process
     return CLAP_PROCESS_CONTINUE;
 }
 
-static void fx_on_main_thread(const clap_plugin_t* p) { (void) p; }
+static void fx_on_main_thread(const clap_plugin_t* p)
+{
+    fixture* f = self(p);
+    const int ms = f->main_thread_sleep_ms;
+    f->main_thread_sleep_ms = 0;
+    if (ms > 0) sleep_ms(ms);
+}
 
 /* ---- extensions --------------------------------------------------------- */
 
@@ -601,7 +640,22 @@ static const clap_plugin_t* factory_create(const clap_plugin_factory_t* fac, con
 
 static const clap_plugin_factory_t factory = { factory_count, factory_desc, factory_create };
 
-static bool entry_init(const char* path) { (void) path; return true; }
+static bool entry_init(const char* path)
+{
+    const char* spec = getenv("MINIHOST_TEST_CLAP_HANG_INIT");
+    const char* colon = spec ? strrchr(spec, ':') : NULL;
+    if (colon != NULL && path != NULL)
+    {
+        char needle[256];
+        size_t len = (size_t) (colon - spec);
+        if (len >= sizeof(needle)) len = sizeof(needle) - 1;
+        memcpy(needle, spec, len);
+        needle[len] = '\0';
+        if (len > 0 && strstr(path, needle) != NULL)
+            sleep_ms(atoi(colon + 1));
+    }
+    return true;
+}
 static void entry_deinit(void) {}
 
 static const void* entry_factory(const char* id)

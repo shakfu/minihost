@@ -8,6 +8,10 @@
 
 - Desktop: CLAP plugins appear in the plugin library (in-process and out-of-process scans, `--scan-format=CLAP`) and the file choosers, and open native editor windows on macOS. On Windows and Linux a CLAP plugin opens without its editor: embedding there is unwritten, not tested. A `.clap` holding several plugins opens the chosen one through its descriptor, as an AudioUnit does, since the path alone names the first. The desktop app owns its plugins on the main thread, so CLAP requests (restart, latency, `on_main_thread`) are now serviced on the thread that created each plugin, woken through JUCE's message queue.
 
+- A hung CLAP plugin stalls only its own callers. A plugin stuck in `process()` used to hold minihost's plugin thread, which queues every plugin's control calls: the restart or latency re-query the plugin had requested waited for it. Plugin-requested work now tries the audio lock once and retries with a 10-250 ms backoff. No global lock is held while plugin code runs, so a plugin hanging in `on_main_thread` or `clap_entry.init()` no longer blocks other threads opening, probing or closing CLAP plugins. State calls and `reset` still wait, since the C API forbids overlapping them with processing. `tests/test_clap_stalls.py` drives each case with a fixture that stalls on request.
+
+- Python: `probe()` and `Plugin.poll_callbacks()` release the GIL. Both run plugin code, so a slow probe or a stalled callback froze every Python thread.
+
 - Tests: CLAP builds of `MinihostTestFx` and `MinihostTestSynth` (`make fixtures`). They keep the VST3 fixtures' parameter contract and add two read-only parameters that report the transport they saw. `tests/test_clap.py` runs against them; CI sets `MINIHOST_TEST_CLAP_FX` and `MINIHOST_TEST_CLAP_SYNTH`.
 
 ## [0.12.0]

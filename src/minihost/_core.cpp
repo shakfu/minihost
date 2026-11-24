@@ -1425,7 +1425,12 @@ public:
         // queue drained just below, so they arrive on this poll rather than
         // the next. On Linux and Windows it flushes the plugin thread's
         // queue rather than waiting for its next 10 ms pump.
-        mh_message_thread_poll();
+        // Without the GIL: plugin code runs here, and the native callbacks
+        // it triggers only enqueue.
+        {
+            nb::gil_scoped_release nogil;
+            mh_message_thread_poll();
+        }
         warn_on_callback_overflow();
 
         // A callback that polls again would overwrite dispatch_buffer_ while
@@ -3134,7 +3139,13 @@ nb::dict probe_plugin(const std::string& path) {
     MH_PluginDesc desc;
     char err[1024] = {0};
 
-    if (!mh_probe(path.c_str(), &desc, err, sizeof(err))) {
+    int ok;
+    {
+        // A probe instantiates the plugin: seconds, for some.
+        nb::gil_scoped_release nogil;
+        ok = mh_probe(path.c_str(), &desc, err, sizeof(err));
+    }
+    if (!ok) {
         throw std::runtime_error(std::string("Failed to probe plugin: ") + err);
     }
 
