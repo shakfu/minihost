@@ -12,6 +12,8 @@
 
 - Python: `probe()` and `Plugin.poll_callbacks()` release the GIL. Both run plugin code, so a slow probe or a stalled callback froze every Python thread.
 
+- CI: the `integration` job runs on Windows too, with the VST3 and CLAP fixtures. Windows built the library but ran no plugin-hosting test, so the CLAP adapter's Windows paths had never executed.
+
 - Tests: CLAP builds of `MinihostTestFx` and `MinihostTestSynth` (`make fixtures`). They keep the VST3 fixtures' parameter contract and add two read-only parameters that report the transport they saw. `tests/test_clap.py` runs against them; CI sets `MINIHOST_TEST_CLAP_FX` and `MINIHOST_TEST_CLAP_SYNTH`.
 
 ## [0.12.0]

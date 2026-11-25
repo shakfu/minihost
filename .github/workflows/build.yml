@@ -467,7 +467,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-15]
+        os: [ubuntu-22.04, macos-15, windows-2022]
 
     steps:
       - uses: actions/checkout@v7
@@ -504,6 +504,7 @@ jobs:
       # plugin and a CLI: build-cli has no plugin, so every plugin-gated CLI
       # test skips there.
       - name: Build the test plugin fixtures and the CLIs
+        shell: bash
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Release -DMINIHOST_BUILD_TEST_PLUGIN=ON
           cmake --build build --config Release \
@@ -517,16 +518,19 @@ jobs:
       # out) -- the plugin-gated tests render notes through it. The effect
       # fixture is exported separately for tests that need audio input,
       # latency or a sidechain.
+      #
+      # Git Bash's $PWD is /d/a/..., which Windows Python cannot open;
+      # `pwd -W` gives D:/a/... there and fails elsewhere, falling back.
       - name: Run the suite against the fixture
         shell: bash
         timeout-minutes: 30
         run: |
           set -euo pipefail
-          root=build/projects/test_plugin
-          export MINIHOST_TEST_PLUGIN="$PWD/$root/MinihostTestSynth_artefacts/Release/VST3/MinihostTestSynth.vst3"
-          export MINIHOST_TEST_PLUGIN_FX="$PWD/$root/MinihostTestFx_artefacts/Release/VST3/MinihostTestFx.vst3"
-          export MINIHOST_TEST_CLAP_FX="$PWD/$root/clap_artefacts/Release/MinihostTestFx.clap"
-          export MINIHOST_TEST_CLAP_SYNTH="$PWD/$root/clap_artefacts/Release/MinihostTestSynth.clap"
+          root="$(pwd -W 2>/dev/null || pwd)/build/projects/test_plugin"
+          export MINIHOST_TEST_PLUGIN="$root/MinihostTestSynth_artefacts/Release/VST3/MinihostTestSynth.vst3"
+          export MINIHOST_TEST_PLUGIN_FX="$root/MinihostTestFx_artefacts/Release/VST3/MinihostTestFx.vst3"
+          export MINIHOST_TEST_CLAP_FX="$root/clap_artefacts/Release/MinihostTestFx.clap"
+          export MINIHOST_TEST_CLAP_SYNTH="$root/clap_artefacts/Release/MinihostTestSynth.clap"
           test -e "$MINIHOST_TEST_PLUGIN"
           test -e "$MINIHOST_TEST_PLUGIN_FX"
           test -e "$MINIHOST_TEST_CLAP_FX"
