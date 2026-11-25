@@ -264,7 +264,11 @@ def test_parameter_info_comes_from_the_plugin():
         assert plugin.num_params == 5
         info = [plugin.get_param_info(i) for i in range(plugin.num_params)]
         assert [i["name"] for i in info] == [
-            "Gain", "Latency", "Sidechain Mix", "Seen Tempo", "Seen Transport Flags",
+            "Gain",
+            "Latency",
+            "Sidechain Mix",
+            "Seen Tempo",
+            "Seen Transport Flags",
         ]
         assert [i["id"] for i in info] == ["0", "1", "2", "3", "4"]
         assert info[P_GAIN]["default_value"] == 1.0
@@ -319,7 +323,9 @@ def test_transport_reaches_the_plugin():
 
         plugin.set_transport(bpm=133.0, position_beats=2.0)
         plugin.process(silence, np.zeros_like(silence))
-        assert plugin.get_param(P_SEEN_TEMPO) * TEMPO_MAX == pytest.approx(133.0, abs=1e-3)
+        assert plugin.get_param(P_SEEN_TEMPO) * TEMPO_MAX == pytest.approx(
+            133.0, abs=1e-3
+        )
         flags = round(plugin.get_param(P_SEEN_FLAGS) * 255)
         assert flags == HAS_TEMPO | HAS_BEATS | HAS_SECONDS | HAS_TIME_SIG | IS_PLAYING
 
@@ -335,7 +341,9 @@ def test_plugin_parameter_changes_reach_the_value_callback():
     plugin = _open()
     try:
         seen = []
-        plugin.set_param_value_callback(lambda index, value: seen.append((index, value)))
+        plugin.set_param_value_callback(
+            lambda index, value: seen.append((index, value))
+        )
         plugin.set_transport(bpm=120.0)
         silence = np.zeros((2, BLOCK), dtype=np.float32)
         plugin.process(silence, np.zeros_like(silence))
@@ -434,7 +442,8 @@ def test_synth_renders_the_note_it_was_sent():
         out = np.zeros((2, BLOCK), dtype=np.float32)
         on, off = 0, 400
         plugin.process_midi(
-            np.zeros((0, BLOCK), dtype=np.float32), out,
+            np.zeros((0, BLOCK), dtype=np.float32),
+            out,
             [(on, 0x90, 69, 127), (off, 0x80, 69, 0)],
         )
         delta = 2.0 * np.pi * 440.0 / SR

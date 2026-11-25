@@ -64,15 +64,15 @@ def test_library_scan_lists_clap_plugins(tmp_path, out_of_process):
     res = subprocess.run(argv, capture_output=True, text=True, timeout=120)
     assert res.returncode == 0, res.stderr
 
-    found = {
-        p.get("name"): p for p in ET.parse(out_xml).getroot().findall("PLUGIN")
-    }
+    found = {p.get("name"): p for p in ET.parse(out_xml).getroot().findall("PLUGIN")}
     assert set(found) == {"MinihostTestFx", "MinihostTestSynth"}, res.stderr
     assert all(p.get("format") == "CLAP" for p in found.values())
     assert found["MinihostTestSynth"].get("isInstrument") == "1"
     assert found["MinihostTestFx"].get("isInstrument") == "0"
-    assert (found["MinihostTestFx"].get("numInputs"),
-            found["MinihostTestFx"].get("numOutputs")) == ("2", "2")
+    assert (
+        found["MinihostTestFx"].get("numInputs"),
+        found["MinihostTestFx"].get("numOutputs"),
+    ) == ("2", "2")
 
 
 @skip_if_no_desktop
@@ -95,8 +95,13 @@ def test_desktop_renders_a_clap_synth_like_python(tmp_path):
             "nodes": [
                 {"id": "midi", "kind": "midi_input", "source": str(mid)},
                 {"id": "synth", "kind": "plugin", "path": SYNTH},
-                {"id": "out", "kind": "output", "channels": 2,
-                 "sink": str(sink), "bit_depth": 24},
+                {
+                    "id": "out",
+                    "kind": "output",
+                    "channels": 2,
+                    "sink": str(sink),
+                    "bit_depth": 24,
+                },
             ],
             "edges": [
                 {"kind": "midi", "src": "midi", "dst": "synth"},
@@ -110,7 +115,9 @@ def test_desktop_renders_a_clap_synth_like_python(tmp_path):
     out_cpp, out_py = tmp_path / "cpp.wav", tmp_path / "py.wav"
     res = subprocess.run(
         [str(DESKTOP_BIN), f"--render-project={project(out_cpp)}"],
-        capture_output=True, text=True, timeout=120,
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
     assert res.returncode == 0, res.stderr
     minihost.render_project(project(out_py))
@@ -134,14 +141,18 @@ def _editor_plugin() -> str | None:
 
 
 @skip_if_no_desktop
-@pytest.mark.skipif(sys.platform != "darwin", reason="CLAP editors are embedded on macOS only")
+@pytest.mark.skipif(
+    sys.platform != "darwin", reason="CLAP editors are embedded on macOS only"
+)
 def test_clap_editor_window_opens_and_closes(tmp_path):
     plugin = _editor_plugin()
     if plugin is None:
         pytest.skip("no CLAP plugin with a GUI; set MINIHOST_TEST_CLAP_EDITOR")
     res = subprocess.run(
         [str(DESKTOP_BIN), f"--editor-sync-selftest={plugin}"],
-        capture_output=True, text=True, timeout=120,
+        capture_output=True,
+        text=True,
+        timeout=120,
         env=dict(os.environ, MINIHOST_DESKTOP_SETTINGS_DIR=str(tmp_path)),
     )
     assert res.returncode == 0, res.stderr

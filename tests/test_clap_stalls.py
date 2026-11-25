@@ -39,7 +39,7 @@ SR = 48000.0
 BLOCK = 512
 STALL_S = 1.0
 STALL_CC = int(STALL_S * 100)  # the fixture sleeps value * 10 ms
-FAST_S = 0.5                   # an unrelated call must finish inside this
+FAST_S = 0.5  # an unrelated call must finish inside this
 P_LATENCY, LATENCY_MAX = 1, 4096
 
 
@@ -69,7 +69,9 @@ def test_a_stuck_process_does_not_stall_other_plugins():
         elapsed = time.monotonic() - t0
         worker.join()
 
-        assert elapsed < FAST_S, f"control call waited {elapsed:.2f}s for another plugin"
+        assert elapsed < FAST_S, (
+            f"control call waited {elapsed:.2f}s for another plugin"
+        )
 
         # The deferred restart still happens once process() returns.
         deadline = time.monotonic() + 5.0
@@ -134,7 +136,10 @@ def _run(script, *args, extra_env=None):
     env = dict(os.environ, MINIHOST_MESSAGE_THREAD="0", **(extra_env or {}))
     res = subprocess.run(
         [sys.executable, "-c", script, *map(str, args)],
-        capture_output=True, text=True, timeout=60, env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
     )
     assert res.returncode == 0, res.stderr
     return json.loads(res.stdout.strip().splitlines()[-1])
@@ -150,8 +155,12 @@ def test_a_hung_main_thread_callback_does_not_block_other_threads():
 @requires_fixtures
 def test_a_hung_module_init_does_not_block_other_modules():
     out = _run(
-        _INIT_HANG, SYNTH, FX,
-        extra_env={"MINIHOST_TEST_CLAP_HANG_INIT": f"MinihostTestSynth:{int(STALL_S * 1000)}"},
+        _INIT_HANG,
+        SYNTH,
+        FX,
+        extra_env={
+            "MINIHOST_TEST_CLAP_HANG_INIT": f"MinihostTestSynth:{int(STALL_S * 1000)}"
+        },
     )
     assert out["slow_s"] >= STALL_S * 0.9, out
     assert out["fast_s"] < FAST_S, out
