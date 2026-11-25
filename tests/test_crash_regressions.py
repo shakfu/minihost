@@ -133,14 +133,16 @@ def test_from_numpy_rejects_dimension_above_int_max(frames):
 
 @pytest.mark.skipif(not FX or not os.path.exists(FX), reason="MinihostTestFx not built")
 def test_process_rejects_frames_above_int_max():
-    # (int) 2**32+10 is 10: channel 1's pointer landed on channel 0's data.
+    # (int) 2**31 is negative. (2, 2**32+10) also wrapped, to 10 frames, but
+    # needs 32 GiB per array, past the Windows runner's commit limit. In-place
+    # keeps this at 16 GiB, which that runner commits.
     out = run_isolated(
         _HUGE_ZEROS
         + textwrap.dedent(f"""
         p = minihost.Plugin({FX!r}, sample_rate=48000.0, max_block_size=512)
-        x = huge_zeros((2, 2**32 + 10))
+        x = huge_zeros((2, 2**31))
         try:
-            p.process(x, huge_zeros(x.shape)); print("accepted")
+            p.process(x, x); print("accepted")
         except ValueError:
             print("ValueError")
     """)

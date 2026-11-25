@@ -205,6 +205,9 @@ def test_closed_plugin_raises_instead_of_answering_defaults():
 
 
 @requires_fx
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="_core.pyd does not export the mh_* C API"
+)
 def test_state_size_and_data_come_from_one_snapshot():
     # mh_get_state_size and mh_get_state each serialised the state: twice the
     # cost, and a change between the calls could make the second dump outgrow
